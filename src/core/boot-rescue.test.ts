@@ -276,11 +276,17 @@ test('B-02d exitRescueMode：homeDir 换个写法进出，仍能还原（不再�
   await seedOriginals(homeDir);
   const original = await readText(p.profilePatch);
 
-  // 进入用反斜杠原生形式
+  // 进入用原生形式
   await enterOk(enterOpts(homeDir, backupDir));
-  // 退出用正斜杠写法（等价于 CLI 手写 DSH_HOME）
-  const slashed = homeDir.split(path.sep).join('/');
+  // 退出用一个「等价但写法不同」的路径（模拟 CLI 手写 DSH_HOME）。
+  // 必须按平台选写法：Windows 用正斜杠（手写最常见），POSIX 用尾随分隔符——
+  // 不能统一写 split(path.sep).join('/')，POSIX 上 path.sep 本来就是 '/'，
+  // 换完与原串逐字节相同，前置断言会在 Linux CI 上失败（v0.1.60 首次发布时实测踩到）。
+  const slashed = process.platform === 'win32'
+    ? homeDir.split(path.sep).join('/')
+    : `${homeDir}${path.sep}`;
   assert.notEqual(slashed, homeDir, '前置条件：两种写法确实是不同字符串');
+  assert.equal(path.resolve(slashed), path.resolve(homeDir), '前置条件：两种写法指向同一目录');
   const restored = await exitOk({ homeDir: slashed, backupDir });
   assert.ok(restored.length > 0, '必须真的还原了文件');
   assert.equal(await readText(p.profilePatch), original, 'profile patch 必须逐字节还原');
