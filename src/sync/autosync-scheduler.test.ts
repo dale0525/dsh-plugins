@@ -15,7 +15,9 @@ import {
   AutoSyncScheduler, intervalToMs, shouldTriggerStartupRun, buildAutoApplyPlan,
 } from './autosync-scheduler.ts';
 import { RunRegistry } from '../core/run-registry.ts';
-import { nullLogger } from '../utils/logger.ts';
+import { nullLogger, createLogger } from '../utils/logger.ts';
+import type { LogSink } from '../utils/logger.ts';
+import type { MutationLockPort, MutationLockToken } from '../utils/env-lock.ts';
 import type { AutosyncConfig } from './autosync-config.ts';
 import type { AutosyncHistoryEntry } from './sync-history.ts';
 import type { MergePlan, MergeSectionResult } from './merge.ts';
@@ -51,13 +53,17 @@ function makeScheduler(opts: {
   engine: Partial<SyncEngine>;
   history: AutosyncHistoryEntry[];
   syncCfg?: SyncConfig | null;
+  /** issue #31：注入锁端口以覆盖「被锁挡下」的路径（缺省 = 无锁环境） */
+  mutationLock?: MutationLockPort;
+  /** issue #31：捕获日志行（断言 stale 指引确实写给用户） */
+  logSink?: LogSink;
 }) {
   const runs = new RunRegistry();
   const entries: AutosyncHistoryEntry[] = [...opts.history];
   let config = opts.cfg;
   const scheduler = new AutoSyncScheduler({
     syncDir: '/tmp',
-    host: { log: nullLogger() },
+    host: { log: opts.logSink !== undefined ? createLogger({ level: 'debug', sink: opts.logSink }) : nullLogger() },
     makeSyncEngine: () => opts.engine as SyncEngine,
     msg: (k: string) => k,
     runs,
@@ -67,9 +73,19 @@ function makeScheduler(opts: {
     readSyncConfigFn: async (_channel: SyncTransportType) => opts.syncCfg !== undefined ? opts.syncCfg : ({ schemaVersion: 2, transport: 'git', git: { repoUrl: 'git@github.com:foo/bar.git' } }),
     readHistoryFn: async () => ({ schemaVersion: 1, autosyncEntries: entries, updatedAt: '' }),
     appendHistoryFn: async (e) => { entries.push(e); },
+    ...(opts.mutationLock !== undefined ? { mutationLock: opts.mutationLock } : {}),
     // 测试不用真实定时器：不调 start()
   });
   return { scheduler, runs, getConfig: () => config, getEntries: () => entries };
+}
+
+/** issue #31：模拟 acquire 被判 stale 的锁端口（真实 manager 在残留锁下返回同一状态）。 */
+function staleLockPort(detail = 'owner pid=24140 确证不存在 (heartbeat expired)'): MutationLockPort {
+  return {
+    acquire: async () => ({ state: 'STALE_LOCK_DETECTED', token: null, detail }),
+    validate: (tok: unknown): tok is MutationLockToken => false,
+    release: async () => undefined,
+  };
 }
 
 function mergeResult(id: string, decision: MergeSectionResult['decision']): MergeSectionResult {
@@ -90,8 +106,59 @@ test('runOnce: enabled=false → skipped(disabled)，不写历史', async () => 
   assert.equal(getConfig().consecutiveFailures, 0);
 });
 
-test('runOnce: 历史记录携带触发通道（transport=调用通道 git/webdav）', async () => {
+// ---------- issue #31：被锁挡下必须留痕（历史 + 指引），不能静默 ----------
+
+test('runOnce: 残留锁挡住 → skipped(mutation-locked) 且**写历史**（issue #31：此前连历史都不写）', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
+  const { scheduler, getEntries, getConfig } = makeScheduler({
+    cfg, engine: {}, history: [], mutationLock: staleLockPort(),
+  });
+  const result = await scheduler.runOnce('git');
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.skipReason, 'mutation-locked');
+  const entries = getEntries();
+  assert.equal(entries.length, 1, '被锁挡下必须留一条历史（否则用户只看得到「自动同步不再更新」）');
+  assert.equal(entries[0]!.status, 'skipped');
+  assert.equal(entries[0]!.skipReason, 'mutation-locked');
+  assert.equal(entries[0]!.transport, 'git');
+  assert.equal(getConfig().consecutiveFailures, 0, '被锁挡下不计入连续失败');
+});
+
+test('runOnce: 残留锁挡住 → 日志给出与 423 同源的 stale 指引（重试/重启无效 + 回收方式）', async () => {
+  const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
+  const lines: Array<{ level: string; message: string }> = [];
+  const { scheduler } = makeScheduler({
+    cfg, engine: {}, history: [], mutationLock: staleLockPort(),
+    logSink: (level, message) => { lines.push({ level, message }); },
+  });
+  await scheduler.runOnce('git');
+  const staleLine = lines.find((l) => l.message.includes('自动同步已跳过'));
+  assert.ok(staleLine !== undefined, `应有跳过日志: ${JSON.stringify(lines)}`);
+  assert.match(staleLine!.message, /残留/);
+  assert.match(staleLine!.message, /recover-stale-lock/, '必须给出可执行的回收方式');
+  assert.equal(staleLine!.message.includes('24140'), false, 'owner pid 属内部诊断，不得进用户文案');
+});
+
+test('issue #31 D：acquire 本身抛错（锁目录 IO）同样必须写历史，不得静默跳过', async () => {
+  const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
+  // 端口「已配置但 acquire 抛错」：模拟锁目录 IO/权限故障
+  const throwingPort = {
+    acquire: async () => { throw new Error('lock dir IO error') },
+    validate: () => false,
+    release: async () => {},
+  } as unknown as Parameters<typeof makeScheduler>[0]['mutationLock'];
+  const { scheduler, getEntries, getConfig } = makeScheduler({
+    cfg, engine: {}, history: [], mutationLock: throwingPort,
+  });
+  const result = await scheduler.runOnce('git');
+  assert.equal(result.status, 'skipped');
+  assert.equal(result.skipReason, 'mutation-locked');
+  assert.equal(getEntries().length, 1, 'acquire 抛错也是「被挡」，同样要留历史');
+  assert.equal(getEntries()[0]!.skipReason, 'mutation-locked');
+  assert.equal(getConfig().consecutiveFailures, 0, '不计入连续失败');
+});
+
+test('runOnce: 历史记录携带触发通道（transport=调用通道 git/webdav）', async () => {  const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
   // 两端无变化 → upToDate 成功历史（走 appendHistory）
   const engine = {
     hasNewRemoteSnapshot: async () => false,

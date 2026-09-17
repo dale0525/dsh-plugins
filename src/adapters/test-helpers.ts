@@ -15,6 +15,8 @@ import type { Manifest, SectionId, WorkspaceRecord } from '../schema/types.ts';
 
 export class MemFs implements FileSystemFacade {
   files = new Map<string, Uint8Array>();
+  /** 可选（issue #37）：详细的链接遍历。测试按需注入；缺省走 listRecursive 回退路径。 */
+  listRecursiveDetailed?: FileSystemFacade['listRecursiveDetailed'];
   private readonly homeDir: string;
   constructor(homeDir: string) {
     this.homeDir = homeDir;

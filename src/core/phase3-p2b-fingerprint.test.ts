@@ -79,6 +79,12 @@ test('runJournaled journalCtx.recordStep：文件/外部 step 落 journal', asyn
     fn: async (ctx) => {
       await ctx?.recordStep({ id: 'skills:a.md', adapter: 'skills', kind: 'Update', ref: '/abs/skills/a.md', external: false, status: 'done', beforeFp: null, afterFp: 'fp-after' });
       await ctx?.recordStep({ id: 'plugins:pkg', adapter: 'plugins', kind: 'Install', ref: '', external: true, status: 'attention' });
+      // issue #35：结论文案必须落盘——否则事后审计只能看到 status，无法区分
+      // 「安装失败」与「用户主动跳过」。
+      await ctx?.recordStep({
+        id: 'plugin:broken', adapter: 'plugins', kind: 'Install', ref: '', external: true,
+        status: 'attention', message: '插件安装失败：Failed to read patch file',
+      });
       return 1;
     },
   });
@@ -89,6 +95,8 @@ test('runJournaled journalCtx.recordStep：文件/外部 step 落 journal', asyn
   assert.equal(j!.steps['plugins:pkg']?.external, true);
   assert.ok(j!.plannedSteps.includes('skills:a.md'));
   assert.ok(j!.plannedSteps.includes('plugins:pkg'));
+  assert.equal(j!.steps['plugin:broken']?.status, 'attention');
+  assert.equal(j!.steps['plugin:broken']?.message, '插件安装失败：Failed to read patch file');
 });
 
 // ---------- 3. reconcile 集成 ----------

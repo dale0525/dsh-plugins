@@ -8,6 +8,7 @@
 import type { EncryptionInfo, Manifest, SectionId, WorkspaceRecord } from '../schema/types.ts';
 import type { TombstoneKind } from '../schema/tombstones.ts';
 import type { MutationLockPort } from '../utils/env-lock.ts';
+import type { RecursiveListing } from '../utils/recursive-walk.ts';
 import type { Logger } from '../utils/logger.ts';
 import { zhMsg } from './messages.ts';
 import type { MsgFunc } from './messages.ts';
@@ -114,6 +115,11 @@ export interface FileSystemFacade {
   copy(from: string, to: string): Promise<void>;
   remove(relPath: string): Promise<void>;
   listRecursive(dir: string): Promise<string[]>;
+  /**
+   * 与 listRecursive 相同的遍历，但**跟随**目录 junction / 符号链接，并附带被跳过的链接清单
+   * （issue #37）。可选：未实现时调用方回退到 listRecursive（行为与旧版一致）。
+   */
+  listRecursiveDetailed?(dir: string): Promise<RecursiveListing>;
   mkdir(dir: string): Promise<void>;
 }
 
@@ -412,6 +418,8 @@ export interface JournalStepRecord {
   beforeFp?: string | null;
   /** side effect 后重读磁盘指纹（null = 不可指纹）。 */
   afterFp?: string | null;
+  /** 该项的结论文案（issue #35：安装失败与「用户跳过」必须可区分）。 */
+  message?: string | null;
 }
 
 export interface TransactionSnapshotContext {

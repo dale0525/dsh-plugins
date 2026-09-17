@@ -27,7 +27,9 @@
  * ## 安全不变量（与 README「默认不含任何密钥」硬规则一致）
  *  - 凭据类文件（`.credentials.*` / `.env` / `*.pem` 等）**显式黑名单排除**；
  *  - 只收集白名单目录与显式文件，**绝不对 homeDir 整目录递归**；
- *  - 只收普通文件：symlink 与特殊文件一律跳过（备份绝不跟随链接）；
+ *  - 只收普通文件：特殊文件（设备/FIFO/套接字）一律跳过；**目录 junction / 符号链接
+ *    会被跟随**（issue #37：与 GUI 导出同一内核 `utils/recursive-walk.ts`），
+ *    目标越出 homeDir 或断链的链接跳过但**写进 warnings**——绝不静默少收内容；
  *  - 命中 `isReservedInternalRel` 的内部命名空间（locks/snapshots/transactions…）跳过；
  *  - `pluginFiles`（`dsh-ssh.json` 等第三方插件自有文件）**默认不收**：该分区与 GUI
  *    侧同为 deviceSpecific「任意文件直通、无内容过滤」，`dsh-ssh.json` 里是明文主机
@@ -38,6 +40,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { listRecursiveFollowingLinks } from '../utils/recursive-walk.ts';
 import { normalizePath, isPathSafe, isReservedInternalRel } from '../utils/paths.ts';
 import { SECTION_FILE_PREFIXES } from '../schema/config.ts';
 import type { SectionId } from '../schema/types.ts';
@@ -171,30 +174,30 @@ export interface BackupCollection {
   empty: SectionId[];
 }
 
-/** 递归列出目录下全部**普通文件**（相对 dir 的 posix 路径，已排序）；目录不存在 → 空 */
-async function listFilesRecursive(dirAbs: string, warnings: string[], label: string): Promise<string[]> {
-  const out: string[] = [];
-  const queue: string[] = [''];
-  while (queue.length > 0) {
-    const rel = queue.shift()!;
-    const abs = rel === '' ? dirAbs : path.join(dirAbs, ...rel.split('/'));
-    let dirents;
-    try {
-      dirents = await fs.readdir(abs, { withFileTypes: true });
-    } catch (err) {
-      // 目录不存在 → 视为空（与 GUI adapter「目录不存在视为空」一致，不告警）
-      if ((err as { code?: string }).code === 'ENOENT' && rel === '') return out;
-      warnings.push(`读取目录失败 / failed to read directory: ${label}${rel === '' ? '' : '/' + rel}（${err instanceof Error ? err.message : String(err)}）`);
-      continue;
-    }
-    for (const d of dirents) {
-      const childRel = rel === '' ? d.name : `${rel}/${d.name}`;
-      // 只跟普通文件与目录：symlink / 设备 / 套接字一律跳过（备份绝不跟随链接）
-      if (d.isDirectory()) queue.push(childRel);
-      else if (d.isFile()) out.push(childRel);
-    }
+/**
+ * 递归列出目录下全部普通文件（**相对 homeDir** 的 posix 路径，已排序）；目录不存在 → 空。
+ *
+ * issue #37：与 GUI 导出共用 `utils/recursive-walk.ts` —— **跟随**目录 junction / 符号链接，
+ * 并把「跟随了多少链接」「哪些链接/目录没进来（及原因）」写进 warnings。
+ * 旧实现遇到链接目录直接跳过且零告警，用户拿到的是「成功但缺斤少两」的备份。
+ */
+async function listFilesRecursive(
+  dirAbs: string,
+  homeDir: string,
+  warnings: string[],
+  label: string,
+): Promise<string[]> {
+  const listing = await listRecursiveFollowingLinks(dirAbs, homeDir);
+  for (const s of listing.skippedLinks) {
+    warnings.push(`链接未进备份 / link NOT in this backup: ${label}/${s.path}（${s.reason}）`);
   }
-  return out.sort();
+  for (const dir of listing.unreadableDirs) {
+    warnings.push(`目录读取失败，其内容未进备份 / directory unreadable, content NOT in this backup: ${dir}`);
+  }
+  if (listing.followedLinks > 0) {
+    warnings.push(`已跟随 ${listing.followedLinks} 个链接目录收集内容 / followed ${listing.followedLinks} linked director(ies)`);
+  }
+  return listing.paths;
 }
 
 /** home 相对路径去 baseDir 前缀 → 该分区 adapter 的 relativePath */
@@ -288,11 +291,11 @@ export async function collectBackupEntries(
     // 1) 固定文件（存在才收）
     for (const homeRel of spec.files ?? []) await consider(homeRel);
 
-    // 2) 递归目录
+    // 2) 递归目录（跟随 junction/符号链接；未跟随的链接与不可读目录写进 warnings）
     for (const dirRel of spec.dirs ?? []) {
       const dirAbs = path.join(homeDir, ...normalizePath(dirRel).split('/'));
-      const rels = await listFilesRecursive(dirAbs, warnings, dirRel);
-      for (const rel of rels) await consider(`${normalizePath(dirRel)}/${rel}`);
+      const rels = await listFilesRecursive(dirAbs, homeDir, warnings, normalizePath(dirRel));
+      for (const homeRel of rels) await consider(homeRel);
     }
 
     sections.push({

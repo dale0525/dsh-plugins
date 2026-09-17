@@ -70,7 +70,7 @@ export type MainView = 'export' | 'import'
  * parsePersistedState 将旧值迁移到 'overview'；旧 `panel:null`（主视图）语义
  * 由 view 字段承担，持久化载荷向后兼容。
  */
-export type PanelId = 'overview' | 'export' | 'import' | 'snapshots' | 'sync' | 'market' | 'profiles'
+export type PanelId = 'overview' | 'export' | 'import' | 'snapshots' | 'sync' | 'market' | 'profiles' | 'lifecycle'
 
 /** 导出模式。 */
 export type ExportMode = 'quick' | 'custom'
@@ -785,11 +785,18 @@ export function parsePersistedState(raw: string): PersistedState | null {
     case 'profiles':
     case 'export':
     case 'import':
+    case 'lifecycle':
       panel = rawPanel
       break
     case 'about':
       panel = 'overview'
       moreSub = 'about'
+      break
+    case 'recovery':
+      // 旧聚合 tab（Phase 5 引导式恢复）→ 备份与快照面板的恢复子 tab。
+      // 注意：'recovery' 是**遗留值**，不是当前面板 id；当前灾备页的 id 是 'lifecycle'。
+      panel = 'snapshots'
+      snapshotsSubTab = 'recovery'
       break
     case 'history':
       panel = 'overview'

@@ -3,6 +3,7 @@
  * 类型本体在 types.ts；本文件是「分区数据如何落盘/读回」的唯一出口。
  */
 import { parseJsonSafe } from '../utils/json.ts';
+import { isPathSafe } from '../utils/paths.ts';
 import type {
   CredentialsSection, FilesSection, McpSection, PluginsSection,
   PromptsSection, ProvidersSection, SectionData, SectionId,
@@ -96,6 +97,29 @@ export function validateSectionData(sectionId: SectionId, data: unknown): Sectio
     case 'plugins': {
       if (!Array.isArray(obj['plugins'])) issues.push({ path: 'plugins', message: 'plugins 必须是数组', severity: 'error' });
       if (obj['patch'] !== undefined && !Array.isArray(obj['patch'])) issues.push({ path: 'patch', message: 'patch 必须是数组', severity: 'error' });
+      // issue #35：patchFiles 会被写到 <home>/profiles/<profile>/<relativePath>，必须逐项校验
+      // （不可信 bundle 的路径穿越向量——与 file 类分区同级的防线）。
+      const patchFiles = obj['patchFiles'];
+      if (patchFiles !== undefined) {
+        if (!Array.isArray(patchFiles)) {
+          issues.push({ path: 'patchFiles', message: 'patchFiles 必须是数组', severity: 'error' });
+        } else {
+          patchFiles.forEach((pf, i) => {
+            const rec = (pf !== null && typeof pf === 'object') ? pf as Record<string, unknown> : null;
+            if (rec === null) {
+              issues.push({ path: `patchFiles[${i}]`, message: 'patch 文件条目必须是对象', severity: 'error' });
+              return;
+            }
+            const rel = rec['relativePath'];
+            if (typeof rel !== 'string' || rel === '' || !isPathSafe(rel)) {
+              issues.push({ path: `patchFiles[${i}].relativePath`, message: 'patch 文件路径必须是安全的相对路径（不得为绝对路径或含 ..）', severity: 'error' });
+            }
+            if (typeof rec['base64'] !== 'string') {
+              issues.push({ path: `patchFiles[${i}].base64`, message: 'patch 文件内容必须是 base64 字符串', severity: 'error' });
+            }
+          });
+        }
+      }
       break;
     }
     case 'mcp': {

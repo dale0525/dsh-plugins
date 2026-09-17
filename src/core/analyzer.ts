@@ -577,8 +577,8 @@ export class Analyzer {
         if (!this.shouldJournalStep(item)) continue;
         let rel: string | null = null;
         let beforeFp: string | null = null;
-        if (Analyzer.fileRelFor(item) !== null) {
-          rel = Analyzer.fileRelFor(item) as string;
+        if (Analyzer.fileRelFor(item, importCtx.target.profile) !== null) {
+          rel = Analyzer.fileRelFor(item, importCtx.target.profile) as string;
           beforeFp = await this.fileFp(importCtx, rel);
         }
         beforeFpByItem.set(item.id, beforeFp);
@@ -644,7 +644,7 @@ export class Analyzer {
         // P2-B（Phase 8）：逐项更新 journal step。文件类成功 → done + afterFp（reconcile 可判
         // recovered）；失败/warning/跳过 → 无不可靠 afterFp（attention/skipped → 保守 needs-attention）。
         if (sb?.recordStep !== undefined && beforeFpByItem.has(item.id)) {
-          const rel = Analyzer.fileRelFor(item);
+          const rel = Analyzer.fileRelFor(item, importCtx.target.profile);
           let afterFp: string | null = null;
           if (rel !== null && outcome.executed.status === 'ok') {
             afterFp = await this.fileFp(importCtx, rel);
@@ -655,14 +655,18 @@ export class Analyzer {
             kind: item.kind,
             ref: rel !== null ? resolveFileTarget(importCtx.target, item.adapter, item.target?.ref ?? '') : '',
             external: rel === null,
+            // issue #35：'warning'（如插件安装失败但非致命 §34.17）此前被记为 'skipped'，
+            // 与「用户主动跳过」在持久层不可区分 —— 事后审计会得出「用户跳过了这些插件」的错误结论。
+            // 失败/警告都是**不可证明已应用** → 一律 attention；'skipped' 只留给真正的跳过。
             status:
               outcome.executed.status === 'ok'
                 ? 'done'
-                : outcome.executed.status === 'failed'
-                  ? 'attention'
-                  : 'skipped',
+                : outcome.executed.status === 'skipped'
+                  ? 'skipped'
+                  : 'attention',
             beforeFp: beforeFpByItem.get(item.id) ?? null,
             afterFp,
+            message: outcome.executed.message ?? null,
           });
         }
         // 仅硬失败计入 anyFailed（warning 属非致命：目标不可达等，不触发回滚，§34.17）
@@ -771,12 +775,14 @@ export class Analyzer {
     return true;
   }
 
-  /** 文件类且可指纹 → 返回 home-relative 目标路径（posix）；否则 null（不可指纹外部项）。 */
-  private static fileRelFor(item: PlanItem): string | null {
+  /** 文件类且可指纹 → 返回 home-relative 目标路径（posix）；否则 null（不可指纹外部项）。
+   *  profile 必须传入：plugins 分区的 pnpm-workspace.yaml / patch 文件位于
+   *  `profiles/<profile>/` 下，缺了它算出的相对路径不存在 → 指纹恒 null（issue #35）。 */
+  private static fileRelFor(item: PlanItem, profile?: string): string | null {
     if (!isFileSection(item.adapter)) return null;
     const ref = item.target?.ref;
     if (ref === undefined || ref === '') return null;
-    return resolveFileTargetRel(item.adapter, ref);
+    return resolveFileTargetRel(item.adapter, ref, profile);
   }
 
   /** 读目标文件算 sha256（home-relative；经 HostContext.fs 使测试 mock 可注入）。失败返回 null。 */

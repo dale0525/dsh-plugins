@@ -57,10 +57,21 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import * as yaml from 'js-yaml'
 
 import { Exporter, FileSnapshotStore, Importer, verifySnapshot } from './core/index.ts'
-import { ProfileManager, isValidProfileName } from './profiles/index.ts'
+import { APPLY_ORDER, ProfileManager, isValidProfileName } from './profiles/index.ts'
 import { cleanupCaches } from './core/cache-cleaner.ts'
 import { deleteSnapshot, isValidSnapshotId, listSnapshots, planRestore, setSnapshotPinned, validateSnapshotForRestore, type RestorePlan, type RestoreReport, type RestoreSnapshotVerdict } from './core/restore.ts'
 import { rollback as performRollback } from './core/rollback.ts'
+// Phase 1 P0-1/P0-2：配置生命周期（自动快照 / 撤销 / 重做）与 P0-5 崩溃归因。
+// 监听工厂用真 fs.watch 注入（core 侧只依赖抽象，便于测试驱动时序）。
+import { ConfigLifecycle } from './core/config-lifecycle.ts'
+import { deleteConfigSnapshot } from './core/config-snapshot.ts'
+import {
+  adviceFor, beginBoot, computeBootAlert, listCandidateLogs, markBootOk,
+  readBootState, readCrashLogTail, writeBootState,
+} from './core/crash-report.ts'
+// Phase 1 P0-3：启动救援模式（备份 patch/package.json → 写最小 patch → 中和 bundles）
+import { enterRescueMode, exitRescueMode, rescueModeStatus } from './core/boot-rescue.ts'
+import { watch as fsWatch } from 'node:fs'
 import { recomputeRecoveryDecision, executeRecovery } from './core/reconcile.ts'
 import { verifyRecovery, recoveryTerminalState } from './core/verify-recovery.ts'
 import { createRecoveryOrchestrator, type RecoveryExecutorFns } from './core/recovery-orchestrator.ts'
@@ -88,10 +99,12 @@ import { createHardenedZipParser } from './security/zip-security.ts'
 import { atomicCopyFile, atomicWriteFile } from './utils/atomic-write.ts'
 import { EnvironmentLockManager, runWithMutationLock, EnvironmentLockUnavailableError, type MutationLockContext } from './utils/env-lock.ts'
 import { activeProxySummary } from './utils/proxy.ts'
+import { listRecursiveFollowingLinks } from './utils/recursive-walk.ts'
 import { Phase3Recovery, TransactionRecoveryRequiredError, mapLockStateForStartup } from './core/phase3-host.ts'
 import type { JournalRunContext } from './core/phase3-host.ts'
 import { classifyStartup } from './core/startup-barrier.ts'
 import type { MutationLockPort } from './utils/env-lock.ts'
+import type { RecursiveListing } from './utils/recursive-walk.ts'
 import { GitTransport } from './sync/git/git-transport.ts'
 import { WebDavTransport } from './sync/webdav/webdav-transport.ts'
 import { DeviceFlowStore, GitHubAuthClient } from './sync/github-auth.ts'
@@ -167,7 +180,7 @@ export const name = 'config-manager'
 export const inject = ['settings', 'credentials']
 
 /** Plugin version, kept in sync with package.json ("version"). */
-const PLUGIN_VERSION = '0.1.59'
+const PLUGIN_VERSION = '0.1.60'
 
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
@@ -314,7 +327,29 @@ const API = {
   // Phase 6：迁移历史审计（统一历史引擎；只读 GET + 导出）
   history: '/api/dsh-config-manager/history',
   historyExport: '/api/dsh-config-manager/history/export',
+  // Phase 1 P0-1/P0-2：配置生命周期（自动快照 / 撤销 / 重做）与崩溃归因
+  lifecycle: '/api/dsh-config-manager/lifecycle',
+  crash: '/api/dsh-config-manager/crash',
+  // Phase 1 P0-3：启动救援模式（禁用其它插件使 DSH 能启动）
+  rescue: '/api/dsh-config-manager/rescue',
 } as const
+
+/**
+ * 灾备子系统（Phase 1）总开关 —— 临时下线，待相关缺陷修复后再放出。
+ *
+ * 置 false 时整个灾备子系统停摆：
+ *  - 不启动配置变更监听 → 不产生自动快照（也不再刷「配置快照超出上限」告警）
+ *  - 不写 boot-state → 崩溃归因无观测数据（不影响启动）
+ *  - /lifecycle /crash /rescue 三条路由一律 503 feature-disabled
+ *
+ * 与客户端导航入口开关配套：src/client/ConfigManagerSection.tsx 的 SHOW_LIFECYCLE_NAV。
+ * 两者都置 true 才是一套完整的灾备功能。
+ *
+ * 为什么整体下线而不是只停自动快照：自动快照的采集走**全部 adapter**，其中 sessions
+ * 分区（历史会话，本机实测 340 MB）远超快照 64 MiB 上限，必然持续失败并刷告警；
+ * 在该缺陷修好前，撤销/重做/救援也没有可信的快照基线可用。
+ */
+const LIFECYCLE_ENABLED: boolean = false
 
 /**
  * 同步 token 的 DSH credentials 引用名（POSIX env-var 形态，满足 CredentialRef 品牌要求）。
@@ -845,28 +880,17 @@ class DshFileSystemFacade implements FileSystemFacade {
     await fs.rm(this.abs(relPath), { recursive: true, force: true })
   }
 
+  /** 仅路径列表（既有契约）：委托 listRecursiveDetailed，丢弃诊断。 */
   async listRecursive(dir: string): Promise<string[]> {
-    const base = this.abs(dir)
-    const out: string[] = []
-    const walk = async (current: string): Promise<void> => {
-      if (!isSameOrChild(current, this.homeDir)) return
-      let entries
-      try {
-        entries = await fs.readdir(current, { withFileTypes: true })
-      } catch {
-        return
-      }
-      for (const entry of entries) {
-        const p = join(current, entry.name)
-        if (entry.isDirectory()) {
-          await walk(p)
-        } else if (entry.isFile()) {
-          out.push(normalizePath(relative(this.homeDir, p)))
-        }
-      }
-    }
-    await walk(base)
-    return out.sort()
+    return (await this.listRecursiveDetailed(dir)).paths
+  }
+
+  /**
+   * 跟随 junction / 符号链接的遍历 + 被跳过链接清单（issue #37）。
+   * 实现下沉到 utils/recursive-walk.ts（可用真实临时目录直接单测）。
+   */
+  async listRecursiveDetailed(dir: string): Promise<RecursiveListing> {
+    return listRecursiveFollowingLinks(this.abs(dir), this.homeDir)
   }
 
   async mkdir(dir: string): Promise<void> {
@@ -1176,10 +1200,25 @@ export function extractSyncSections(
 
 /** 需要人工决策的 PlanItemKind（一键同步 needsReview 判定 + 逐项确认标记）。
  * 注意：'Install'（安装插件）不在此列 —— 同步拉取差异时插件按「自动安装」处理：
- * 默认采纳、不逐项展示、无需手动选择（product requirement）。 */
+ * 默认采纳、不逐项展示、无需手动选择（product requirement）。
+ * issue #35：'Warning' 必须**可见**——它承载「本次同步会剔除哪些无法满足的声明」这类
+ * 改变配置语义的信息；此前非决策项默认自动采用且不展示，用户只看到「同步成功」。 */
 const REVIEW_KINDS: ReadonlySet<PlanItemKind> = new Set([
-  'Conflict', 'MissingSecret', 'MissingDependency', 'Error', 'PathMapping',
+  'Conflict', 'MissingSecret', 'MissingDependency', 'Error', 'PathMapping', 'Warning',
 ])
+
+/**
+ * issue #35：会**改变工具链行为**的项 —— 只有 pnpm-workspace.yaml 在本次同步中
+ * 移除了无法满足的 patchedDependencies 声明时，才带 detail。
+ * 这类项此前属「非冲突项 → 自动采用且不展示」，用户即使已知风险也无法否决
+ * （issue #35 正是这条自动采用把目标机 pnpm 弄坏的）。
+ * 现在：进确认列表、可见、可取消；但**默认仍采用**（我们的 sanitize 结果严格更安全，
+ * 默认不采用反而会静默丢掉 allowBuilds / 冷静期配置）。
+ * 注意：与客户端 sync-view.ts 的同名判定必须保持一致（两侧刻意重复，避免跨端 import）。
+ */
+function isToolchainChangeItem(item: { itemId: string; detail?: string | undefined }): boolean {
+  return item.itemId === 'plugins:pnpm-workspace' && item.detail !== undefined && item.detail !== ''
+}
 
 /** 一键同步差异项（client 逐项确认的最小契约；与 sync-api.ts SyncConfirmItem 对齐） */
 interface SyncConfirmItem {
@@ -1503,8 +1542,31 @@ async function readPluginDiagnostics(host: HostContext): Promise<Partial<PluginD
 }
 
 /** Build the /api/dsh-config-manager route family. */
-function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSyncScheduler; makeSyncEngine: (cfg: SyncConfig) => SyncEngine } {
+function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSyncScheduler; makeSyncEngine: (cfg: SyncConfig) => SyncEngine; lifecycle: ConfigLifecycle } {
   const { host, adapters, exportsDir, tmpDir, snapshotsDir, runs, syncDir, marketDir, dataDir, credentials, githubClientId, githubClientSecret, backupScheduler, history } = deps
+  /**
+   * Phase 1 P0-1/P0-2：配置生命周期服务（自动快照 / 撤销 / 重做）。
+   *
+   * 与既有 `snapshotsDir`（导入前快照，plan 驱动）**分目录**：那里的快照只登记
+   * 「本次导入将写入的目标」，无法回答「配置整体变没变」；本服务的快照是状态驱动，
+   * 供撤销/重做与自动快照使用。两者保留策略与回放方式都不同，混用会产生错误语义。
+   *
+   * watchFactory 用真 fs.watch 注入（core 侧只依赖抽象 → 测试可完全驱动时序）。
+   * 监听不在此处启动：由 apply() 在「启动 recovery 分类完成且 NORMAL」后启动，
+   * 避免恢复进行中就开拍。
+   */
+  const lifecycle = new ConfigLifecycle({
+    dir: join(dataDir, 'config-snapshots'),
+    adapters,
+    ctx: host,
+    profile: host.profile ?? 'web',
+    applyOrder: APPLY_ORDER,
+    onWarn: (message, detail) => {
+      host.log.warn(`[lifecycle] ${message}${detail !== undefined ? `: ${detail instanceof Error ? detail.message : String(detail)}` : ''}`)
+    },
+    watchFactory: (dir, onEvent) => fsWatch(dir, (eventType, filename) => onEvent(eventType, filename)),
+  })
+
   const roots = [exportsDir, tmpDir]
   /**
    * m-retention：快照保留策略提供者（缺省 = 从 sync/backup-schedule.json 实时读取）。
@@ -1975,6 +2037,20 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
     // 仅当 recovery 成功且无其他未解决 incident 时由编排器调用（§5.3 / §10.2）。
     clearSafeMode: async () => {
       if (host.phase3Recovery !== undefined) await host.phase3Recovery.clearSafeMode()
+    },
+    // issue #31：环境锁只读探测 + 显式回收，供「事故恢复」面板显示/处理**残留锁**。
+    // 残留锁不是 journal（journalId 恒 null、transactions/active 为空），旧面板因此恒空。
+    inspectLockState: async () => {
+      const port = host.mutationLock as EnvironmentLockManager | undefined
+      if (port === undefined) return { state: 'FREE' }
+      const insp = await port.inspectLockState()
+      return { state: insp.state, ...(insp.detail !== undefined ? { detail: insp.detail } : {}) }
+    },
+    recoverStaleLock: async () => {
+      const port = host.mutationLock as EnvironmentLockManager | undefined
+      // 无锁端口（测试/未接线）→ 无可回收对象，诚实拒绝而非谎称成功
+      if (port === undefined) return { ok: false, removed: false, state: 'FREE', detail: 'no lock port configured' }
+      return port.recoverStaleLock()
     },
   })
   /** 构造 recovery 执行器（restore / rollback），供 execute/retry 注入（runId 用于进度埋点）。 */
@@ -3791,7 +3867,8 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
             config: syncCfg,
           })
           const items = planToConfirmItems(preview.plan)
-          const needsReview = items.some((i) => REVIEW_KINDS.has(i.kind)) || preview.analysis.pathIssues.length > 0
+          const needsReview = items.some((i) => REVIEW_KINDS.has(i.kind) || isToolchainChangeItem(i))
+    || preview.analysis.pathIssues.length > 0
           writeJson(res, 200, {
             ok: true,
             syncSessionId,
@@ -4567,6 +4644,33 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
           writeJson(res, r.status, r.body)
           return
         }
+        // issue #31：残留锁的显式回收路由（POST /recovery/lock/recover）。
+        // 必须放在 :operationId 解析**之前**——'lock' 不是 UUID，落到下面会被
+        // 400 invalid operationId 挡掉（那正是「文案指向空面板」的同一类错位）。
+        if (segments[0] === 'lock') {
+          if (segments.length !== 2 || segments[1] !== 'recover') { writeJson(res, 404, { error: 'not found' }); return }
+          if (req.method !== 'POST') { writeJson(res, 405, { error: 'method not allowed' }); return }
+          try {
+            // ⚠️ 故意**不**经 runWithMutationLock/withMutationGate：要回收的正是那把挡住
+            // acquire 的残留锁——先取锁必然拿到 STALE_LOCK_DETECTED 并抛 423，回收将永远
+            // 无法执行（与 CLI recover-stale-lock 同策略：只 inspect + prove stale + 原子回收，
+            // 判定在 EnvironmentLockManager.recoverStaleLock 内部重做，本路由不做删除决策）。
+            const body = await readJsonBody(req)
+            const r = await recoveryOrchestrator.recoverStaleLock(body?.['userConfirmed'] === true)
+            // Phase 6：审计史（成功与拒绝都记，便于事后追查「谁在什么时候回收了锁」）
+            await tryAppendHistory({
+              kind: 'recovery',
+              result: r.status === 200 ? 'success' : r.status >= 500 ? 'failed' : 'skipped',
+              sections: [],
+              source: 'recovery',
+              summary: '恢复操作 recover-stale-lock',
+            })
+            writeJson(res, r.status, r.body)
+          } catch (error) {
+            writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+          }
+          return
+        }
         if (segments.length !== 2) { writeJson(res, 404, { error: 'not found' }); return }
         const operationId = segments[0]!
         const action = segments[1]!
@@ -4617,8 +4721,177 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
         }
       },
     },
+    // ------------------------------------------------------------ Phase 1 P0
+    // 配置生命周期（自动快照 / 撤销 / 重做）：prefix 路由，内部按 path 分发。
+    // mutation 动作经 withMutationGate（GLOBAL 锁 + SAFE MODE 闸门）；status 只读不加锁。
+    {
+      kind: 'prefix',
+      path: API.lifecycle,
+      handler: async (req, res) => {
+        if (!LIFECYCLE_ENABLED) { writeJson(res, 503, { ok: false, code: 'feature-disabled', message: 'disaster recovery is temporarily disabled' }); return }
+        if (!isLoopbackRequest(req)) { writeJson(res, 403, { error: 'forbidden: loopback-only' }); return }
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const rel = url.pathname.slice(API.lifecycle.length).replace(/^\/+/, '')
+        const segments = rel.split('/').filter(Boolean)
+        if (segments.length === 0) { writeJson(res, 404, { error: 'not found' }); return }
+        if (segments[0] === 'status') {
+          if (req.method !== 'GET') { writeJson(res, 405, { error: 'method not allowed' }); return }
+          try {
+            const metas = await lifecycle.list()
+            const status = await lifecycle.status()
+            writeJson(res, 200, {
+              ...status,
+              snapshots: metas.map((m) => ({
+                id: m.id, createdAt: m.createdAt, kind: m.kind, reason: m.reason,
+                trigger: m.trigger ?? null, sections: m.sections, totalBytes: m.totalBytes,
+                note: m.note ?? null, tags: m.tags ?? [], pinned: m.pinned === true,
+              })),
+            })
+          } catch (error) {
+            writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+          }
+          return
+        }
+        if (segments[0] === 'snapshot') {
+          await withMutationGate('lifecycle-snapshot', async (rq, rs) => {
+            if (!guard(rq, rs, 'POST')) return
+            try {
+              const body = await readJsonBody(rq)
+              const meta = await lifecycle.snapshot({
+                kind: 'manual',
+                reason: typeof body?.['reason'] === 'string' && body['reason'] !== '' ? body['reason'] : 'manual',
+                trigger: 'route',
+                ...(typeof body?.['note'] === 'string' ? { note: body['note'] } : {}),
+                ...(Array.isArray(body?.['tags']) ? { tags: (body['tags'] as unknown[]).map((t) => String(t)) } : {}),
+              })
+              writeJson(rs, 200, { ok: true, id: meta.id, kind: meta.kind, totalBytes: meta.totalBytes })
+            } catch (error) {
+              if (error instanceof EnvironmentLockUnavailableError) { writeJson(rs, 423, { error: error.message, code: 'mutation-locked' }); return }
+              writeJson(rs, 500, { error: error instanceof Error ? error.message : String(error) })
+            }
+          })(req, res)
+          return
+        }
+        if (segments[0] === 'undo' || segments[0] === 'redo') {
+          await withMutationGate(`lifecycle-${segments[0]}`, async (rq, rs) => {
+            if (!guard(rq, rs, 'POST')) return
+            try {
+              const outcome = segments[0] === 'undo' ? await lifecycle.undo() : await lifecycle.redo()
+              writeJson(rs, 200, {
+                ok: outcome.ok,
+                targetId: outcome.targetId ?? null,
+                reason: outcome.reason ?? null,
+                report: outcome.report ?? null,
+              })
+            } catch (error) {
+              if (error instanceof EnvironmentLockUnavailableError) { writeJson(rs, 423, { error: error.message, code: 'mutation-locked' }); return }
+              writeJson(rs, 500, { error: error instanceof Error ? error.message : String(error) })
+            }
+          })(req, res)
+          return
+        }
+        if (segments[0] === 'remove') {
+          await withMutationGate('lifecycle-remove', async (rq, rs) => {
+            if (!guard(rq, rs, 'POST')) return
+            try {
+              const body = await readJsonBody(rq)
+              const id = typeof body?.['id'] === 'string' ? body['id'] : ''
+              const removed = await deleteConfigSnapshot(lifecycle.dir, id)
+              writeJson(rs, 200, { ok: true, removed })
+            } catch (error) {
+              writeJson(rs, 500, { error: error instanceof Error ? error.message : String(error) })
+            }
+          })(req, res)
+          return
+        }
+        writeJson(res, 404, { error: 'not found' })
+      },
+    },
+    // 崩溃归因（P0-5）：只读。上次启动是否异常 + 归因 + 建议动作 + last-good 快照。
+    {
+      kind: 'exact',
+      path: API.crash,
+      handler: async (req, res) => {
+        if (!LIFECYCLE_ENABLED) { writeJson(res, 503, { ok: false, code: 'feature-disabled', message: 'disaster recovery is temporarily disabled' }); return }
+        if (!guard(req, res, 'GET')) return
+        try {
+          const prev = await readBootState(join(dataDir, 'config-snapshots'))
+          const alert = computeBootAlert(prev, null)
+          const metas = await lifecycle.list()
+          const lastGoodAt = alert.lastGoodAt
+          const good = lastGoodAt !== null
+            ? metas.find((m) => m.kind !== 'pre-restore' && m.createdAt <= lastGoodAt) ?? null
+            : null
+          writeJson(res, 200, {
+            crashed: alert.crashed,
+            crashReason: alert.crashReason,
+            lastGoodAt: alert.lastGoodAt,
+            advice: adviceFor(alert.crashReason, alert.crashed),
+            lastGoodSnapshotId: good?.id ?? null,
+          })
+        } catch (error) {
+          writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    },
+    // 启动救援模式（P0-3）：on = 备份三处原件后，把 profile patch 改写成只挂载本插件的最小内容、
+    // 置空 home patch，并把 dsh.profile.bundles 收窄为 DSH 核心（@deepseek-ai/*）与本插件自身
+    // —— 其余用户插件本次启动不挂载（这才是「禁用其它插件」，只中和 patch 层救不了
+    // 「插件代码自己把 DSH 搞挂」）；off = 从备份完整还原。两侧都只动
+    // cordis.patch.yml / package.json / state.json，可完全回退。
+    {
+      kind: 'exact',
+      path: API.rescue,
+      handler: async (req, res) => {
+        if (!LIFECYCLE_ENABLED) { writeJson(res, 503, { ok: false, code: 'feature-disabled', message: 'disaster recovery is temporarily disabled' }); return }
+        if (!isLoopbackRequest(req)) { writeJson(res, 403, { error: 'forbidden: loopback-only' }); return }
+        const homeDir = host.homeDir
+        const profile = host.profile ?? 'web'
+        try {
+          if (req.method === 'GET') {
+            const status = await rescueModeStatus({ homeDir, profile })
+            writeJson(res, 200, { active: status.active, stale: status.stale, enteredAt: status.state?.enteredAt ?? null })
+            return
+          }
+          if (req.method !== 'POST') { writeJson(res, 405, { error: 'method not allowed' }); return }
+          const body = await readJsonBody(req)
+          const action = typeof body?.['action'] === 'string' ? body['action'] : 'status'
+          if (action === 'off') {
+            const r = await exitRescueMode({ homeDir })
+            if (!r.ok) { writeJson(res, 409, { ok: false, code: r.code, message: r.message }); return }
+            writeJson(res, 200, { ok: true, active: false, restored: r.restored, needsRestart: true })
+            return
+          }
+          if (action === 'on') {
+            if (body?.['confirm'] !== true) {
+              writeJson(res, 400, { ok: false, code: 'confirm-required', message: 'rescue mode rewrites cordis.patch.yml; pass confirm:true' })
+              return
+            }
+            // patch 内容由 core 依据 package.json 的 bundles 派生（本插件已由 bundle 层挂载时
+            // 只写空列表 —— 再插一行同 id 会让 loader 抛 duplicate id，DSH 直接起不来）
+            const r = await enterRescueMode({
+              homeDir,
+              profile,
+              rescueMount: {
+                packageName: PLUGIN_NAME,
+                row: { id: 'config-manager', name: PLUGIN_NAME },
+              },
+              // 真正禁用其它用户插件：只中和 patch 层治不了「bundle 能解析但插件代码把启动搞挂」
+              // 这一类；收窄 bundles 后 DSH 只挂载核心 + 本插件，退出时按备份逐字节还原。
+              disableUserBundles: true,
+            })
+            if (!r.ok) { writeJson(res, 409, { ok: false, code: r.code, message: r.message }); return }
+            writeJson(res, 200, { ok: true, active: true, enteredAt: r.state.enteredAt, needsRestart: true })
+            return
+          }
+          writeJson(res, 400, { error: 'unknown action (expected on|off)' })
+        } catch (error) {
+          writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    },
   ]
-  return { routes: routesList, scheduler, makeSyncEngine }
+  return { routes: routesList, scheduler, makeSyncEngine, lifecycle }
 }
 
 /* ------------------------------------------------------------------ apply */
@@ -4644,6 +4917,30 @@ export function apply(ctx: Context, config?: Config): void {
   // Phase 6：迁移历史审计目录（统一历史引擎；加入 RESERVED_INTERNAL_PREFIXES 防 F23 投毒链）
   const historyDir = join(dataDir, MIGRATION_HISTORY_DIR)
   mkdirSync(exportsDir, { recursive: true })
+  /**
+   * Phase 1 P0-5 崩溃归因：启动即写 boot-state（ok:false），待启动分类完成后翻 ok:true。
+   * 崩溃瞬间不写文件 —— 靠「下一次启动发现上次 ok!==true」归因。上次若有崩溃且尚无归因，
+   * 此处扫一次日志尾部并把 crashReason 持久化（日志会被滚动覆盖，错过就没了）。
+   * best-effort：任何失败都不得影响插件挂载。
+   */
+  const bootStateDir = join(dataDir, 'config-snapshots')
+  const bootBegin = async (): Promise<void> => {
+    try {
+      const prev = await readBootState(bootStateDir)
+      const next = beginBoot(process.pid, prev)
+      if (prev !== null && prev.ok !== true && next.crashReason === null) {
+        try {
+          const alert = computeBootAlert(prev, await readCrashLogTail(await listCandidateLogs(homeDir)))
+          if (alert.crashReason !== null) next.crashReason = alert.crashReason
+        } catch { /* 归因失败不影响启动 */ }
+      }
+      await writeBootState(bootStateDir, next)
+    } catch (error) {
+      host.log.warn('boot-state 写入失败（不影响挂载）', { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  // 灾备总开关关闭时不写 boot-state（崩溃归因整体下线，也不留观测残留）。
+  if (LIFECYCLE_ENABLED) void bootBegin()
   mkdirSync(tmpDir, { recursive: true })
   mkdirSync(snapshotsDir, { recursive: true })
   mkdirSync(syncDir, { recursive: true })
@@ -4732,10 +5029,25 @@ export function apply(ctx: Context, config?: Config): void {
       } else if (shouldStartSchedulers && schedulerGate.start !== null) {
         schedulerGate.start()
       }
+      // Phase 1 P0-5：启动分类已得出结论 → 本次启动判定为成功（推进 lastGoodAt）。
+      // 灾备总开关关闭时不写 boot-state。
+      if (LIFECYCLE_ENABLED) {
+        try {
+          await writeBootState(bootStateDir, markBootOk((await readBootState(bootStateDir)) ?? beginBoot(process.pid, null)))
+        } catch (error) {
+          host.log.warn('boot-state 标记成功失败', { error: error instanceof Error ? error.message : String(error) })
+        }
+      }
     } catch (err) {
       // fail-closed：inspectStartup 抛错不默认 NORMAL → 不启动调度器（read-only host 存活）
       startupStateResolved = true
       shouldStartSchedulers = false
+      // fail-closed 也是「本次启动成功了」：host 存活（read-only），不该被判为崩溃。
+      if (LIFECYCLE_ENABLED) {
+        try {
+          await writeBootState(bootStateDir, markBootOk((await readBootState(bootStateDir)) ?? beginBoot(process.pid, null)))
+        } catch { /* best-effort */ }
+      }
       host.log.warn('Phase 3 启动 reconcile 失败（fail-closed：destructive 调度器不启动）', {
         error: err instanceof Error ? err.message : String(err),
       })
@@ -4835,7 +5147,7 @@ export function apply(ctx: Context, config?: Config): void {
   })
   // Phase 6：迁移历史引擎（统一审计史；per-file append-only 存储于 <dataDir>/migration-history）
   const historyStore = new MigrationStore({ dir: historyDir })
-  const { routes, scheduler, makeSyncEngine } = makeRoutes({
+  const { routes, scheduler, makeSyncEngine, lifecycle } = makeRoutes({
     host,
     adapters,
     exportsDir,
@@ -4870,13 +5182,21 @@ export function apply(ctx: Context, config?: Config): void {
     scanner: secretScanner,
   })
   // P1-B：backupScheduler 不再同步 start —— 由启动 recovery 分类完成后（仅 NORMAL）启动。
-  schedulerGate.start = () => { scheduler.start(); backupScheduler.start(); }
+  schedulerGate.start = () => {
+    scheduler.start();
+    backupScheduler.start();
+    // Phase 1 P0-1：配置变更自动快照。放在同一闸门内，确保恢复/事务进行中不开拍。
+    // 灾备总开关关闭时不启动监听（否则后台持续采集全部分区并刷「超出上限」告警）。
+    if (LIFECYCLE_ENABLED) lifecycle.startAutoSnapshot();
+  }
   // 若启动分类已在此构造完成前解析为 NORMAL（罕见竞态），立即补启动。
   if (startupStateResolved && shouldStartSchedulers && schedulerGate.start !== null) { schedulerGate.start(); }
   ctx.effect(() => () => backupScheduler.stop(), 'config-manager: backup scheduler')
   // 自动同步调度器随插件生命周期停止：插件重载/卸载时清理定时器，
   // 避免旧调度器残留导致重复后台同步。
   ctx.effect(() => () => scheduler.stop(), 'config-manager: autosync scheduler')
+  // Phase 1 P0-1：停止配置变更监听（dispose 后不再产生自动快照）。
+  ctx.effect(() => () => lifecycle.dispose(), 'config-manager: config lifecycle watcher')
   const webServer = readService<WebServer>(ctx, 'webServer')
   if (webServer === undefined) {
     host.log.warn('webServer 服务不可用：跳过 /api/dsh-config-manager 路由注册（引擎能力仍可用）')

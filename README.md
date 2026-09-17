@@ -395,14 +395,15 @@ Symptoms and the fix:
 | Symptom | Meaning | Fix |
 |---|---|---|
 | 「另一个任务正在运行，请稍后重试。」 / "Another task is running, please retry." | A live operation holds the lock | Just wait — it clears itself |
-| 「检测到上次异常退出残留的配置锁…重试或重启 DSH 均无效」 / relayed in the log as `自动同步已跳过` | The owner process is **proven dead** (leftover lock) | Run the command below, or use GUI **Recovery → 事故恢复** |
+| 「检测到上次异常退出残留的配置锁…重试或重启 DSH 均无效」 / relayed in the log as `自动同步已跳过` | The owner process is **proven dead** (leftover lock) | Run the command below, or use GUI **Recovery → 事故恢复 → 回收残留锁** |
+| Same message, but the owner PID was **reused** by an unrelated process (common on Windows) | The heartbeat has been stale for a very long time, so the lock is still classified as a leftover one | Same fix — a heartbeat that has not been refreshed for far longer than the stale window is now reclaimable |
 
 ```bash
 # safe: it inspects first and refuses unless the owner is proven dead (a live lock is never touched)
 dsh-config-manager recover-stale-lock
 ```
 
-**Plugins installed but the backup doesn't see them?** Check **Settings → DSH Config Manager → About**: it now shows which directory / profile the plugin list was read from, and how many plugins were detected. The list comes from `$DSH_HOME/profiles/<profile>/package.json` → `dependencies`, where `<profile>` is resolved as `config.profile` → `--profile` → `web`. If the shown path is not the profile you installed into (Desktop builds may use a different profile or a different `DSH_HOME`), that is the cause — align `--profile` / `DSH_HOME` with it.
+**Plugins installed but the backup doesn't see them?** Check **Settings → DSH Config Manager → About**: it now shows which directory / profile the plugin list was read from, and how many plugins were detected. The list comes from `$DSH_HOME/profiles/<profile>/package.json` → `dependencies` (plus anything declared in `dsh.profile.bundles` that is not a dependency), where `<profile>` is resolved as `config.profile` → `--profile` → `web`. If the shown path is not the profile you installed into (Desktop builds may use a different profile or a different `DSH_HOME`), that is the cause — align `--profile` / `DSH_HOME` with it.
 
 ### 🌐 Behind a proxy? (GitHub login / sync)
 

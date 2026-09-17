@@ -109,6 +109,9 @@ export interface JournalStep {
   afterFp: string | null;
   status: StepStatus;
   appliedAt: string | null;
+  /** 该项的结论文案（issue #35：安装失败曾被记成 `skipped` 且无 message，
+   *  事后审计只能看到「用户跳过了这些插件」的错误结论）。可选，历史 journal 无此字段。 */
+  message?: string | null;
 }
 
 export interface JournalCommit { at: string | null; validated: boolean; validationWarnings: string[]; }

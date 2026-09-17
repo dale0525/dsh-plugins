@@ -27,6 +27,29 @@ test('toRecoveryView：无 incident → NORMAL + recoveryRequired=false', () => 
   assert.equal(v.state, 'NORMAL');
   assert.equal(v.recoveryRequired, false);
   assert.deepEqual(v.incidents, []);
+  assert.equal(v.lock, null);
+});
+
+// ---------- issue #31：残留锁（非 journal）必须可见且可执行 ----------
+
+test('toRecoveryView：纯残留锁（无 incident）→ lock 非空 + recoveryRequired=true', () => {
+  const v = toRecoveryView(mkStatus({ lock: { state: 'STALE_LOCK_DETECTED', attention: true } }));
+  assert.deepEqual(v.lock, { state: 'STALE_LOCK_DETECTED' });
+  // 残留锁同样阻断所有 mutation（423）→ 必须算「需要处理」，否则横幅/总览入口都不出现
+  assert.equal(v.recoveryRequired, true);
+  assert.deepEqual(v.incidents, [], 'incidents 仍为空（锁不是 journal）');
+});
+
+test('toRecoveryView：LOCKED 活锁（attention=false）→ 不催用户回收', () => {
+  const v = toRecoveryView(mkStatus({ lock: { state: 'LOCKED', attention: false } }));
+  assert.equal(v.lock, null, '活跃持有的锁会自行释放，不渲染回收区块');
+  assert.equal(v.recoveryRequired, false);
+});
+
+test('toRecoveryView：旧宿主不返回 lock 字段 → 视为无锁事项（不误报）', () => {
+  const v = toRecoveryView({ incidents: [], running: [] });
+  assert.equal(v.lock, null);
+  assert.equal(v.recoveryRequired, false);
 });
 
 test('toRecoveryView：rollback-recommended incident → ROLLBACK_RECOMMENDED + actionable', () => {

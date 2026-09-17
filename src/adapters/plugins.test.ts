@@ -8,6 +8,135 @@ import { PluginsAdapter, USER_PATCH_FILE } from './plugins.ts';
 import { makeContext, makeImportContext } from './test-helpers.ts';
 import type { PlanItem } from '../core/types.ts';
 
+test('issue #35：patch 文件随分区迁移；目标缺失的 patchedDependencies 声明导入时剔除', async () => {
+  const ws = [
+    'allowBuilds:',
+    '  ssh2: true',
+    'patchedDependencies:',
+    '  dsh-approval-gate: patches/dsh-approval-gate.patch',
+    '  dsh-whale-galgame: patches/dsh-whale-galgame.patch',
+    '',
+  ].join('\n');
+  const src = makeContext('win32', 'C:\\Users\\alice', 'web');
+  await src.fs.writeFile('profiles/web/pnpm-workspace.yaml', new TextEncoder().encode(ws));
+  await src.fs.writeFile('profiles/web/patches/dsh-approval-gate.patch', new TextEncoder().encode('diff --git a/x b/x\n'));
+  // 源机缺第二个 patch 文件 → 导出必须告警（此前静默只搬声明）
+
+  const adapter = new PluginsAdapter();
+  const out = await adapter.export(src, { includeSecrets: false });
+  assert.deepEqual(out.data.patchFiles?.map((p) => p.relativePath), ['patches/dsh-approval-gate.patch']);
+  assert.ok(out.warnings.some((w) => w.includes('dsh-whale-galgame')), `源机缺 patch 文件必须告警: ${out.warnings.join(' | ')}`);
+
+  // 目标机全新：只有携带了文件的那条声明能被满足
+  const dst = makeContext('linux', '/home/bob', 'web');
+  const items = await adapter.analyzeImport(out.data, makeImportContext(dst, new Map([['plugins', out.data]])));
+  const wsItem = items.find((i) => i.id === 'plugins:pnpm-workspace');
+  assert.equal(wsItem?.kind, 'Create');
+  assert.ok(wsItem?.detail?.includes('dsh-whale-galgame'), '剔除必须在计划项里说清');
+  assert.ok(
+    items.some((i) => i.id === 'plugins:pnpm-workspace-dropped' && i.kind === 'Warning'),
+    '剔除必须是可见的信息项（不静默改配置语义）',
+  );
+
+  // patch 文件必须成为计划项（进导入前快照 → 可回滚；且用户可见）
+  const patchItems = items.filter((i) => i.id.startsWith('plugins:patch:'));
+  assert.equal(patchItems.length, 1, `每个携带的 patch 文件都应有计划项: ${items.map((i) => i.id).join(',')}`);
+  assert.equal(patchItems[0]?.id, 'plugins:patch:patches/dsh-approval-gate.patch');
+  assert.equal(patchItems[0]?.kind, 'Create');
+  assert.deepEqual(patchItems[0]?.target, { adapter: 'plugins', ref: 'patchFile:patches/dsh-approval-gate.patch' });
+  // 顺序不变量：patch 文件必须先于 pnpm-workspace.yaml（否则会留下「声明在、文件未到」的窗口，
+  // 中途中断后目标机 pnpm 从此拒绝一切 add），两者都必须先于插件安装项。
+  const order = items.map((i) => i.id);
+  assert.ok(
+    order.indexOf(patchItems[0]!.id) < order.indexOf('plugins:pnpm-workspace'),
+    `patch 文件项必须先于 pnpm-workspace 项: ${order.join(' → ')}`,
+  );
+  const firstInstall = order.findIndex((id) => id.startsWith('plugin:'));
+  if (firstInstall >= 0) {
+    assert.ok(
+      order.indexOf('plugins:pnpm-workspace') < firstInstall,
+      `pnpm-workspace 项必须先于插件安装项: ${order.join(' → ')}`,
+    );
+  }
+
+  // 按计划顺序执行：先 patch 文件项，再 pnpm-workspace 项
+  const patchApply = await adapter.applyItem(patchItems[0]!, makeImportContext(dst, new Map([['plugins', out.data]])));
+  assert.equal(patchApply.ok, true);
+  assert.equal(
+    new TextDecoder().decode(dst.fs.files.get('/home/bob/profiles/web/patches/dsh-approval-gate.patch')!),
+    'diff --git a/x b/x\n',
+    'patch 文件必须与声明同进同出（落到 profile 的 patches/ 目录）',
+  );
+  const r = await adapter.applyItem(wsItem!, makeImportContext(dst, new Map([['plugins', out.data]])));
+  assert.equal(r.ok, true);
+  const writtenWs = new TextDecoder().decode(dst.fs.files.get('/home/bob/profiles/web/pnpm-workspace.yaml')!);
+  assert.ok(writtenWs.includes('dsh-approval-gate: patches/dsh-approval-gate.patch'), '可满足的声明必须保留');
+  assert.ok(!writtenWs.includes('dsh-whale-galgame'), '不可满足的声明绝不能写入（否则目标机 pnpm 拒绝一切安装）');
+  assert.ok(writtenWs.includes('allowBuilds:'), '其余配置不受影响');
+
+  // 内容一致 → Skip（幂等，不重复写）
+  const again = await adapter.analyzeImport(out.data, makeImportContext(dst, new Map([['plugins', out.data]])));
+  assert.equal(again.find((i) => i.id.startsWith('plugins:patch:'))?.kind, 'Skip');
+  // 内容不同 → Conflict（不静默覆盖目标机已有的 patch）
+  await dst.fs.writeFile('profiles/web/patches/dsh-approval-gate.patch', new TextEncoder().encode('different\n'));
+  const conflicted = await adapter.analyzeImport(out.data, makeImportContext(dst, new Map([['plugins', out.data]])));
+  assert.equal(conflicted.find((i) => i.id.startsWith('plugins:patch:'))?.kind, 'Conflict');
+
+  // 目标机本来就有该 patch 文件 → 声明保留（不误删用户环境里已就位的补丁）
+  const dst2 = makeContext('linux', '/home/bob2', 'web');
+  await dst2.fs.writeFile('profiles/web/patches/dsh-whale-galgame.patch', new TextEncoder().encode('existing\n'));
+  const items2 = await adapter.analyzeImport(out.data, makeImportContext(dst2, new Map([['plugins', out.data]])));
+  assert.equal(items2.some((i) => i.id === 'plugins:pnpm-workspace-dropped'), false, '文件已存在 → 无需剔除');
+  const wsItem2 = items2.find((i) => i.id === 'plugins:pnpm-workspace');
+  const r2 = await adapter.applyItem(wsItem2!, makeImportContext(dst2, new Map([['plugins', out.data]])));
+  assert.equal(r2.ok, true);
+  const written2 = new TextDecoder().decode(dst2.fs.files.get('/home/bob2/profiles/web/pnpm-workspace.yaml')!);
+  assert.ok(written2.includes('dsh-whale-galgame: patches/dsh-whale-galgame.patch'), '已存在的 patch 文件对应声明必须保留');
+});
+
+test('issue #35：用户否决 patch 覆盖时，pnpm-workspace 项不得越权替它落盘（也不得留下悬空声明）', async () => {
+  const ws = [
+    'patchedDependencies:',
+    '  mine: patches/mine.patch',
+    '',
+  ].join('\n');
+  const src = makeContext('win32', 'C:\\Users\\alice', 'web');
+  await src.fs.writeFile('profiles/web/pnpm-workspace.yaml', new TextEncoder().encode(ws));
+  await src.fs.writeFile('profiles/web/patches/mine.patch', new TextEncoder().encode('BACKUP VERSION\n'));
+  const adapter = new PluginsAdapter();
+  const out = await adapter.export(src, { includeSecrets: false });
+
+  // 场景 A：目标机已有**不同**的 patch 文件 → 计划项是 Conflict；
+  // 用户 keepCurrent（不应用该项）→ 文件必须保持原样，且声明仍然成立（文件在，pnpm 能读）。
+  const dst = makeContext('linux', '/home/bob', 'web');
+  await dst.fs.writeFile('profiles/web/patches/mine.patch', new TextEncoder().encode('LOCAL VERSION\n'));
+  const items = await adapter.analyzeImport(out.data, makeImportContext(dst, new Map([['plugins', out.data]])));
+  const patchItem = items.find((i) => i.id.startsWith('plugins:patch:'));
+  assert.equal(patchItem?.kind, 'Conflict');
+  const wsItem = items.find((i) => i.id === 'plugins:pnpm-workspace');
+  assert.ok(wsItem !== undefined, '配置内容不同 → 仍应有 pnpm-workspace 项');
+  const r = await adapter.applyItem(wsItem!, makeImportContext(dst, new Map([['plugins', out.data]])));
+  assert.equal(r.ok, true);
+  assert.equal(
+    new TextDecoder().decode(dst.fs.files.get('/home/bob/profiles/web/patches/mine.patch')!),
+    'LOCAL VERSION\n',
+    '配置项绝不能覆盖用户已否决（keepCurrent）的 patch 文件',
+  );
+  const written = new TextDecoder().decode(dst.fs.files.get('/home/bob/profiles/web/pnpm-workspace.yaml')!);
+  assert.ok(written.includes('mine: patches/mine.patch'), '文件仍在 → 声明必须保留（否则白丢用户的补丁配置）');
+
+  // 场景 B：目标机没有该文件、且 patch 项未被应用（用户跳过 / 被墓碑过滤）→
+  // 声明必须被剔除，绝不留下「声明在、文件不在」的致命组合。
+  const dst2 = makeContext('linux', '/home/bob2', 'web');
+  const items2 = await adapter.analyzeImport(out.data, makeImportContext(dst2, new Map([['plugins', out.data]])));
+  const wsItem2 = items2.find((i) => i.id === 'plugins:pnpm-workspace');
+  const r2 = await adapter.applyItem(wsItem2!, makeImportContext(dst2, new Map([['plugins', out.data]])));
+  assert.equal(r2.ok, true);
+  const written2 = new TextDecoder().decode(dst2.fs.files.get('/home/bob2/profiles/web/pnpm-workspace.yaml')!);
+  assert.ok(!written2.includes('patchedDependencies'), `悬空声明必须剔除: ${JSON.stringify(written2)}`);
+  assert.equal(dst2.fs.files.has('/home/bob2/profiles/web/patches/mine.patch'), false, '配置项不得越权写 patch 文件');
+});
+
 test('plugins: 导出剔除插件自身（默认 dsh-config-manager，可配置）', async () => {
   const ctx = makeContext('win32', 'C:\\Users\\alice');
   ctx.plugins.installed.set('dsh-config-manager', { name: 'dsh-config-manager', version: '0.1.28', enabled: true });

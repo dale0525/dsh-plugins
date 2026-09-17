@@ -46,6 +46,25 @@ test('skills: 导出收集文件 + 导入往返（hash 幂等）', async () => {
   assert.ok(items.some((i) => i.kind === 'Conflict'));
 });
 
+test('issue #37: skills 导出把「跟随/跳过的链接」写进 warnings（不再静默缺失）', async () => {
+  const src = makeContext('win32', 'C:\\Users\\alice');
+  await src.fs.writeFile('skills/coding.md', Buffer.from('# Coding\n', 'utf8'));
+  // 链接目录下的真实内容（链接已跟随 → 内容确实可读）
+  await src.fs.writeFile('skills/shared/inner.md', Buffer.from('# Shared\n', 'utf8'));
+  // 宿主实现 listRecursiveDetailed（真实 FileSystemFacade 的形态）：链接内容已收集，且带诊断
+  src.fs.listRecursiveDetailed = async () => ({
+    paths: ['skills/coding.md', 'skills/shared/inner.md'],
+    skippedLinks: [{ path: 'skills/broken', reason: 'broken' }],
+    followedLinks: 1,
+    unreadableDirs: [],
+  });
+  const out = await new SkillsAdapter().export(src, { includeSecrets: false });
+  assert.deepEqual(out.data.files.map((f) => f.relativePath).sort(), ['coding.md', 'shared/inner.md']);
+  assert.equal(out.warnings.some((w) => w.includes('链接目录')), true, `缺「已跟随链接」告警: ${out.warnings.join(' | ')}`);
+  assert.equal(out.warnings.some((w) => w.includes('未进备份')), true, `缺「跳过链接」告警: ${out.warnings.join(' | ')}`);
+  assert.equal(out.warnings.some((w) => w.includes('skills/broken')), true, '必须点名被跳过的链接');
+});
+
 test('agentPresets: 目录 bundle 文件收集与写入（.agent-presets 基准目录）', async () => {
   const src = makeContext('win32', 'C:\\Users\\alice');
   await src.fs.writeFile('.agent-presets/work/agent.cordis.yml', Buffer.from('services:\n  - name: work\n', 'utf8'));

@@ -12,6 +12,8 @@ import { sha256Hex } from '../utils/hashing.ts';
 import { isReservedInternalRel, normalizePath } from '../utils/paths.ts';
 import { msgOf, zhMsg } from '../core/messages.ts';
 import type { MsgFunc } from '../core/messages.ts';
+import { linkWarnings, listFilesDetailed } from './link-report.ts';
+import type { RecursiveListing } from '../utils/recursive-walk.ts';
 import type { FilesSection, SectionId } from '../schema/types.ts';
 import type {
   ApplyResult, ConfigAdapter, ExportOptions, ExportSection, HostContext,
@@ -29,18 +31,22 @@ export abstract class FileCollectionAdapter implements ConfigAdapter<FilesSectio
   async export(ctx: HostContext, _options: ExportOptions): Promise<ExportSection<FilesSection>> {
     const files: FilesSection['files'] = [];
     const warnings: string[] = [];
-    let rels: string[] = [];
+    // issue #37：用「跟随 junction/符号链接」的遍历，并把跟随/跳过的链接写进告警——
+    // 此前链接目录及其全部内容被静默排除，备份仍报成功。
+    let listing: RecursiveListing = { paths: [], skippedLinks: [], followedLinks: 0, unreadableDirs: [] };
     try {
-      rels = await ctx.fs.listRecursive(this.baseDir);
+      listing = await listFilesDetailed(ctx.fs, this.baseDir);
     } catch {
       // 目录不存在视为空
     }
+    const rels = listing.paths;
     for (const rel of rels) {
       const data = await ctx.fs.readFile(rel);
       const relPath = this.baseDir === '' ? rel : rel.replace(new RegExp(`^${escapeRegExp(this.baseDir)}[\\/]`), '');
       files.push({ relativePath: relPath, data, contentHash: sha256Hex(data) });
     }
     if (rels.length === 0) warnings.push(msgOf(ctx)('adapter.dirEmpty', { type: this.displayName }));
+    warnings.push(...linkWarnings(msgOf(ctx), this.displayName, listing));
     return {
       sectionId: this.id,
       data: { version: 1, files },

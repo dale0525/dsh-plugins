@@ -58,6 +58,16 @@ test('describeSkipReason：已知原因映射，未知回退原串', () => {
   assert.equal(describeSkipReason(undefined), '未知');
 });
 
+// issue #31：宿主统一以 'mutation-locked' 落历史（不细分 LOCKED/STALE）→ 界面不得透出裸 token。
+test('describeSkipReason：mutation-locked 必须有可读中文且不再回退原串', () => {
+  const text = describeSkipReason('mutation-locked');
+  assert.notEqual(text, 'mutation-locked', '绝不透出裸机器 token');
+  assert.match(text, /环境锁/);
+  // 客户端拿不到细分 reason（活锁 vs 残留锁）→ 文案须同时覆盖两种可能并指向处理方向
+  assert.match(text, /残留锁/);
+  assert.match(text, /另一项任务/);
+});
+
 test('projectAutosyncEntry：摘要行 + 可展开明细（冲突分区 / 应用分区 / 错误）', () => {
   const row = projectAutosyncEntry(autosyncEntry({}));
   assert.equal(row.direction, '双向');

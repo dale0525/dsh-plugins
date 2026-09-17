@@ -548,6 +548,59 @@ test('§11.1-c11 stale 判定状态表（可注入 probe）', async (t) => {
   }
 });
 
+test('§11.1-c11b issue #36：心跳**长过期** + pid 存活 + 身份不可验证 → 判为可显式回收的残留锁', async (t) => {
+  const locksDir = tmp(t);
+  // Windows 场景复刻（issue #36 实测）：记录侧 osProcessStartIdentity=null、探测侧也拿不到身份
+  // （win32 canGetOsIdentity()=false），pid 因复用而"存活"，心跳却已停更 9 天。
+  const clk = makeClock();
+  const nineDaysAgo = clk.clock() - 9 * 86_400_000;
+  await seedOwnership(locksDir, { instanceId: 'win36', pid: 24140, osIdentity: null });
+  await seedHeartbeat(locksDir, 'win36', nineDaysAgo);
+  const p = makeProbe(); p.canOs(false); p.respond(() => ({ alive: true, osProcessStartIdentity: null }));
+
+  // ① 默认阈值（max(30×staleAfterMs, 30min)）下应判 STALE —— 这正是此前永远卡在 UNKNOWN_STATE 的用例
+  const m = new EnvironmentLockManager({ locksDir, now: clk.clock, probe: p.probe, staleAfterMs: 10_000 });
+  const s = await m.inspectLockState();
+  assert.equal(s.state, 'STALE_LOCK_DETECTED', `长过期残留锁必须可识别（此前恒 UNKNOWN_STATE）: ${s.detail}`);
+  assert.match(s.detail ?? '', /残留锁/, '诊断必须说清「可显式回收」');
+  // ② acquire 侧仍然**不自动摘锁**（只分类，不 unlink）
+  const res = await m.acquire({ op: 'issue36' });
+  assert.equal(res.state, 'STALE_LOCK_DETECTED', 'acquire 只报告，不得自动接管');
+  assert.ok(fssync.existsSync(path.join(locksDir, OWNERSHIP_FILE)), 'STALE 判定绝不自动 unlink');
+  // ③ 显式回收必须真的成功（此前 recover-stale-lock 拒绝 → 用户只能手工删锁文件）
+  const r = await m.recoverStaleLock();
+  assert.equal(r.ok, true, `显式回收必须成功: ${r.detail}`);
+  assert.equal(r.removed, true);
+  assert.equal(fssync.existsSync(path.join(locksDir, OWNERSHIP_FILE)), false, '回收后 ownership 必须消失');
+  assert.deepEqual(fssync.readdirSync(locksDir), [], 'heartbeat sidecar 一并清理，无 recovering 残留');
+});
+
+test('§11.1-c11c issue #36 边界：未达长过期阈值仍保守 UNKNOWN_STATE；heartbeat 缺失也不放宽', async (t) => {
+  const locksDir = tmp(t);
+  const clk = makeClock();
+  const p = makeProbe(); p.canOs(false); p.respond(() => ({ alive: true, osProcessStartIdentity: null }));
+
+  // ① 只过期 2s（阈值 60s）→ 仍 UNKNOWN_STATE：活着的 owner 只是心跳降级，绝不放宽
+  await seedOwnership(locksDir, { instanceId: 'short', pid: 7001, osIdentity: null });
+  await seedHeartbeat(locksDir, 'short', clk.clock() - 2_000);
+  const m1 = new EnvironmentLockManager({ locksDir, now: clk.clock, probe: p.probe, staleAfterMs: 1000, longExpiredAfterMs: 60_000 });
+  assert.equal((await m1.inspectLockState()).state, 'UNKNOWN_STATE', '短过期不得判 stale');
+  assert.equal((await m1.recoverStaleLock()).ok, false, '短过期不得被显式回收');
+
+  // ② heartbeat sidecar 完全缺失（不是"读过且很旧"）→ 无从判断过期时长 → 保守 UNKNOWN_STATE
+  await seedOwnership(locksDir, { instanceId: 'nohb', pid: 7002, osIdentity: null });
+  await fs.rm(path.join(locksDir, heartbeatFile('nohb')), { force: true });
+  const m2 = new EnvironmentLockManager({ locksDir, now: clk.clock, probe: p.probe, staleAfterMs: 1000, longExpiredAfterMs: 60_000 });
+  assert.equal((await m2.inspectLockState()).state, 'UNKNOWN_STATE', 'sidecar 缺失不得当作"长过期"');
+
+  // ③ 阈值注入可调：过期 61s > 阈值 60s → STALE（证明阈值真的参与判定，而非硬编码天数）
+  //    （② 已把 ownership 换成 nohb，这里要连 ownership 一起换回 short）
+  await seedOwnership(locksDir, { instanceId: 'short', pid: 7001, osIdentity: null });
+  await seedHeartbeat(locksDir, 'short', clk.clock() - 61_000);
+  const m3 = new EnvironmentLockManager({ locksDir, now: clk.clock, probe: p.probe, staleAfterMs: 1000, longExpiredAfterMs: 60_000 });
+  assert.equal((await m3.inspectLockState()).state, 'STALE_LOCK_DETECTED', '越过阈值即判 stale');
+});
+
 test('§11.1-c12 definitely stale → acquire 返回 STALE_LOCK_DETECTED（不自动删除）', async (t) => {
   const locksDir = tmp(t);
   await seedOwnership(locksDir, { instanceId: 'dead2', pid: 8888 });

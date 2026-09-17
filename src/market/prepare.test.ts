@@ -134,6 +134,53 @@ const SAMPLE_TARBALL = {
   base64: 'H4sIAAAAAAAA',
 }
 
+/* ---------------- issue #35：pnpm patch 文件的供应链防线 ---------------- */
+
+/** 造一个 plugins 分区为 JSON 的 zip（含或不含 patchFiles） */
+function makePluginsZipWithPatches(patchFiles: unknown[] | undefined): Uint8Array {
+  const pluginsJson = JSON.stringify({
+    version: 1,
+    plugins: [{ name: 'p', version: '1.0.0', isBundle: false, inBundles: [], enabled: true }],
+    patch: [],
+    pnpmWorkspace: 'patchedDependencies:\n  p: patches/p.patch\n',
+    ...(patchFiles !== undefined ? { patchFiles } : {}),
+  }, null, 2)
+  const entries: ZipWriteEntry[] = [
+    { name: 'plugins/plugins.json', data: Buffer.from(pluginsJson) },
+  ]
+  const checksums = { 'plugins/plugins.json': sha256Hex(Buffer.from(pluginsJson)) }
+  entries.push({ name: 'integrity/checksums.json', data: Buffer.from(JSON.stringify(checksums)) })
+  const manifest = {
+    schemaVersion: 1,
+    exporter: { name: 'DSH Config Manager', version: 'test' },
+    source: { dshVersion: '1.0.0', platform: 'linux', arch: 'x64' },
+    exportedAt: new Date().toISOString(),
+    sections: { plugins: true },
+    security: { containsSecrets: false, encrypted: false, encryption: null },
+  }
+  entries.push({ name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest)) })
+  return Buffer.from(zipToBuffer(entries))
+}
+
+const SAMPLE_PATCH = { relativePath: 'patches/p.patch', base64: 'ZGlmZiAtLWdpdCBhL3ggYi94Cg==' }
+
+test('issue #35 prepare：plugins 分区携带 patchFiles → 拒绝发布到市场（与 localTarballs 同级）', () => {
+  assert.throws(
+    () => prepareMarketItem({
+      itemId: 'with-patch', name: 'WithPatch',
+      zipBytes: makePluginsZipWithPatches([SAMPLE_PATCH]),
+    }),
+    (err: unknown) => err instanceof MarketPrepareError && /patchFiles|patch/.test(err.message),
+  )
+})
+
+test('issue #35 prepare：patchFiles 为空数组 / 未携带 → 放行（只拒真正携带 patch 的条目）', () => {
+  const empty = prepareMarketItem({ itemId: 'empty-patch', name: 'EmptyPatch', zipBytes: makePluginsZipWithPatches([]) })
+  assert.ok(empty.manifestText.includes('empty-patch'))
+  const none = prepareMarketItem({ itemId: 'no-patch', name: 'NoPatch', zipBytes: makePluginsZipWithPatches(undefined) })
+  assert.ok(none.manifestText.includes('no-patch'))
+})
+
 test('T1 prepare：plugins 分区携带 localTarballs → 拒绝发布到市场（供应链防线）', () => {
   assert.throws(
     () => prepareMarketItem({

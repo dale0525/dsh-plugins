@@ -571,23 +571,39 @@ export function githubPollMessage(poll: GithubPollResponse, t: UiT = zhUiT): str
  * 不逐项展示、无需手动选择（product requirement）。 */
 const CONFIRM_REVIEW_KINDS: ReadonlySet<PlanItemKind> = new Set([
   'Conflict', 'MissingSecret', 'MissingDependency', 'Error', 'PathMapping',
+  // issue #35：Warning 也进确认列表 —— 它承载「本次同步会剔除哪些无法满足的
+  // patchedDependencies 声明」这类改变配置语义的信息，不能默默自动采用。
+  // 与宿主 REVIEW_KINDS 必须保持一致（两处同源，勿单改一处）。
+  'Warning',
 ]);
 
 /**
  * 是否需要人工决策（是否进入差异确认列表）。
- * 非决策项（Create / Update / Skip / Warning 等）默认自动采用（defaultAdopt=true），
- * 不逐项展示但 apply-items 时照常导入。
+ * 非决策项（Create / Update / Skip 等）默认自动采用（defaultAdopt=true），
+ * 不逐项展示但 apply-items 时照常导入；Warning 例外 —— 见 CONFIRM_REVIEW_KINDS。
  */
 export function isReviewItem(kind: PlanItemKind): boolean {
   return CONFIRM_REVIEW_KINDS.has(kind);
 }
 
 /**
+ * issue #35：会**改变工具链行为**的项 —— pnpm-workspace.yaml 本次移除了无法满足的
+ * patchedDependencies 声明时（宿主会带上 detail）。这类项此前默认自动采用且不展示，
+ * 用户即使已知风险也无法否决；现在进确认列表（可取消），默认仍采用（sanitize 结果更安全，
+ * 默认不采用会静默丢掉 allowBuilds / 冷静期配置）。
+ * 注意：与宿主 src/index.ts 的同名判定必须保持一致（两侧刻意重复，避免跨端 import）。
+ */
+export function isToolchainChangeItem(item: { itemId: string; detail?: string | undefined }): boolean {
+  return item.itemId === 'plugins:pnpm-workspace' && item.detail !== undefined && item.detail !== '';
+}
+
+/**
  * 仅保留需人工决策的项（差异确认列表只渲染这些）。
  * 统计（summarizeConfirmItems）仍基于全量 items，不受影响。
+ * issue #35：除 kind 命中外，**改变工具链行为**的项（pnpm-workspace 剔除声明）也进列表。
  */
 export function reviewItems(items: readonly SyncConfirmItem[]): SyncConfirmItem[] {
-  return items.filter((it) => CONFIRM_REVIEW_KINDS.has(it.kind));
+  return items.filter((it) => CONFIRM_REVIEW_KINDS.has(it.kind) || isToolchainChangeItem(it));
 }
 
 /** 冲突解决方式：与导入恢复向导（ConflictList）完全一致的两项（保留当前 / 使用导入）。

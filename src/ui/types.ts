@@ -227,6 +227,28 @@ export interface RecoveryIncident {
 export interface RecoveryStatus {
   incidents: RecoveryIncident[];
   running: { runId: string; status: string }[];
+  /**
+   * 环境锁状态摘要（issue #31）。纯残留锁**不是** journal：进程在 op 期间被杀时
+   * `journalId: null`、`transactions/active/` 为空，incidents 恒为 []，而 423 文案却
+   * 让用户去「事故恢复」处理 → 面板恒空、GUI 无出路。本字段让面板能显示可执行的锁事项。
+   * 旧宿主不返回 → undefined（面板按「无锁事项」处理，不误报）。
+   */
+  lock?: RecoveryLockStatus;
+}
+
+/** 环境锁状态摘要：**只暴露分类**（owner pid/op/hostname 属内部诊断，不进 UI/响应体）。 */
+export interface RecoveryLockStatus {
+  /** LockState：STALE_LOCK_DETECTED / UNKNOWN_STATE / LOCKED / FREE / LOCK_IO_ERROR / PERMISSION_ERROR */
+  state: string;
+  /** 是否需用户显式处理（残留锁/无法判定）。LOCKED 活锁为 false —— 它会自行释放，不该催用户回收。 */
+  attention: boolean;
+}
+
+/** POST /recovery/lock/recover 响应（显式回收 stale 残留锁；拒绝时 ok=false）。 */
+export interface RecoveryLockRecoverResult {
+  ok: boolean;
+  removed: boolean;
+  state: string;
 }
 
 /** GET /recovery/:operationId/preview 响应（只读，零写入）。 */
@@ -294,4 +316,10 @@ export interface RecoveryPort {
   verify(operationId: string): Promise<RecoveryVerifyResult>;
   retry(operationId: string, userConfirmed: boolean): Promise<RecoveryExecuteResult>;
   dismiss(operationId: string, userConfirmed: boolean): Promise<RecoveryDismissResult>;
+  /**
+   * POST /recovery/lock/recover（issue #31）：显式回收 stale 残留配置锁。
+   * 不带 operationId（残留锁没有 journal）；宿主侧会重新证明确属 stale 才回收，
+   * 无法证明（活锁/判定不确定/二次验证失败）→ 返回 ok=false 且不做任何改动。
+   */
+  recoverStaleLock(userConfirmed: boolean): Promise<RecoveryLockRecoverResult>;
 }

@@ -139,6 +139,18 @@ export interface LocalPluginTarball {
   base64: string;
 }
 
+/**
+ * profile 的 `patches/**` 文件（issue #35）：pnpm-workspace.yaml 的 `patchedDependencies`
+ * 引用的补丁文件本身。声明与文件必须同进同出——只搬声明会让目标机的 pnpm 拒绝一切 `add`
+ * （`Failed to read patch file ... os error 2`）。
+ */
+export interface PnpmPatchFile {
+  /** 相对 **profile 目录** 的路径（如 `patches/dsh-approval-gate.patch`，恒正斜杠） */
+  relativePath: string;
+  /** 文件字节的 base64（patch 是纯文本、非秘密；仅为传输编码） */
+  base64: string;
+}
+
 export interface PluginsSection {
   version: 1;
   plugins: PluginEntry[];
@@ -154,6 +166,11 @@ export interface PluginsSection {
    * 导出时由宿主注入的打包钩子填充；导入时据此把 spec 重写为 `file:<解包后的绝对路径>`。
    */
   localTarballs?: LocalPluginTarball[];
+  /**
+   * `patchedDependencies` 引用的 patch 文件（issue #35）。缺省 = 无声明或无文件可收集。
+   * 导入端先落文件、再写（已剔除不可满足声明的）pnpm-workspace.yaml。
+   */
+  patchFiles?: PnpmPatchFile[];
 }
 
 

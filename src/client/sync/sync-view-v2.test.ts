@@ -8,7 +8,8 @@ import assert from 'node:assert/strict'
 import type { ApplyItemsResponse, AutosyncStatusResponse, SyncConfirmItem } from './sync-api.ts'
 import {
   applyItemsReportView, autosyncIntervalMs, autosyncStatusText, buildAdoptions,
-  computeAutosyncCountdown, isReviewItem, keepLocalAll, reviewItems, summarizeConfirmItems, useRemoteAll,
+  computeAutosyncCountdown, isReviewItem, isToolchainChangeItem, keepLocalAll, reviewItems,
+  summarizeConfirmItems, useRemoteAll,
 } from './sync-view.ts'
 
 /* ---------------------------------------------------------------- 一键同步差异确认 */
@@ -45,6 +46,21 @@ test('sync-view: summarizeConfirmItems 空数组 → 全零 + 不需决策', () 
 
 /* ---------------------------------------------------------------- 精简显示 + 批量决策 */
 
+test('issue #35: 改变工具链行为的 pnpm-workspace 项进确认列表（可见、可取消），普通内容变更不打扰用户', () => {
+  const withDropped = confirmItem({
+    itemId: 'plugins:pnpm-workspace', kind: 'Update',
+    detail: '导入时会移除 1 条无法满足的 patchedDependencies 声明: x',
+  })
+  assert.deepEqual(reviewItems([withDropped]).map((i) => i.itemId), ['plugins:pnpm-workspace'])
+  assert.equal(isToolchainChangeItem(withDropped), true)
+  // 普通内容变更（无剔除 detail）→ 不进列表（不制造噪音）
+  const plain = confirmItem({ itemId: 'plugins:pnpm-workspace', kind: 'Update' })
+  assert.equal(isToolchainChangeItem(plain), false)
+  assert.deepEqual(reviewItems([plain]), [])
+  // 同 id 的其它形态（如 Warning 项）走 kind 判定，不受影响
+  assert.equal(isToolchainChangeItem(confirmItem({ itemId: 'plugins:pnpm-workspace-dropped', kind: 'Warning' })), false)
+})
+
 test('sync-view: isReviewItem 仅需人工决策的类型返回 true', () => {
   assert.equal(isReviewItem('Conflict'), true)
   assert.equal(isReviewItem('MissingSecret'), true)
@@ -56,7 +72,19 @@ test('sync-view: isReviewItem 仅需人工决策的类型返回 true', () => {
   assert.equal(isReviewItem('Create'), false)
   assert.equal(isReviewItem('Update'), false)
   assert.equal(isReviewItem('Skip'), false)
-  assert.equal(isReviewItem('Warning'), false)
+  // issue #35：Warning 必须可见（承载「本次同步会剔除哪些无法满足的声明」这类语义变更）
+  assert.equal(isReviewItem('Warning'), true)
+})
+
+test('issue #35: Warning 项进入确认列表（不再静默自动采用）', () => {
+  const items: SyncConfirmItem[] = [
+    confirmItem({ itemId: 'plugins:pnpm-workspace', kind: 'Update' }),
+    confirmItem({
+      itemId: 'plugins:pnpm-workspace-dropped', kind: 'Warning', severity: 'warning',
+      description: '已移除 1 条 patchedDependencies 声明',
+    }),
+  ]
+  assert.deepEqual(reviewItems(items).map((i) => i.itemId), ['plugins:pnpm-workspace-dropped'])
 })
 
 test('sync-view: reviewItems 只保留需人工决策项（统计仍基于全量）', () => {

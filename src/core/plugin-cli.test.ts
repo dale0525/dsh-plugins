@@ -55,6 +55,17 @@ test('classify: git 构建脚本 allowBuilds 拦截（pnpm 10 句子 / pnpm 11 �
   assert.match(a!.message, /allowBuilds/);
 });
 
+test('classify: patchedDependencies 的 patch 文件缺失 → patch-file-missing（可操作）', () => {
+  const zhOut = 'Error: × adding a new package\n╰─▶ Failed to read patch file C:\\Users\\x\\.dsh\\profiles\\web\\patches/dsh-approval-gate.patch:\n    系统找不到指定的文件。 (os error 2)';
+  const f = classifyDshPluginFailure(zhOut);
+  assert.equal(f?.code, 'patch-file-missing');
+  assert.equal(f?.recoverable, false, '需要人工把 patch 文件放回或删掉声明，重试不会自愈');
+  assert.match(f!.message, /patches\/dsh-approval-gate\.patch/, '必须点名缺失的 patch 文件');
+  assert.match(f!.message, /patchedDependencies/);
+  // 英文形态同样识别
+  assert.equal(classifyDshPluginFailure('Failed to read patch file /home/u/.dsh/profiles/web/patches/a.patch: ENOENT')?.code, 'patch-file-missing');
+});
+
 test('classify: ERR_PNPM_FETCH_404 → fetch-404（含包名提取）', () => {
   const out = 'ERR_PNPM_FETCH_404 GET https://registry.npmjs.org/some-ghost-pkg: Not Found - 404';
   const f = classifyDshPluginFailure(out);

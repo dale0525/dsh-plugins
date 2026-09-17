@@ -52,15 +52,27 @@ export interface RecoveryIncidentView {
   isContinue: boolean;
 }
 
+/** 渲染模型：残留锁事项（issue #31，非 journal）。null = 无需展示锁区块。 */
+export interface RecoveryLockView {
+  /** LockState 分类（用于选择文案；不展示原始值）。 */
+  state: string;
+}
+
 /** 恢复面板渲染模型（RecoveryPanel 直接绑定）。 */
 export interface RecoveryView {
   /** 顶层状态分类。 */
   state: RecoveryUiState;
-  /** 是否有未解决 incident（SAFE MODE）。 */
+  /**
+   * 是否有未解决事项（SAFE MODE / 残留锁阻断）。
+   * issue #31：残留锁同样阻断所有会修改配置的操作（423），因此也算「需要处理」——
+   * 否则纯锁残留场景下顶部横幅与总览入口都不出现，用户看不到任何可操作指引。
+   */
   recoveryRequired: boolean;
   incidents: RecoveryIncidentView[];
   /** 进行中的 recovery run（runId + status）。 */
   running: { runId: string; status: string }[];
+  /** 需用户显式处理的残留锁（attention=true 时才非 null）。 */
+  lock: RecoveryLockView | null;
 }
 
 /** 把 GET /recovery/status 映射为渲染模型。 */
@@ -76,7 +88,11 @@ export function toRecoveryView(status: RecoveryStatus): RecoveryView {
     actionable: i.decision !== 'needs-attention' && i.snapshotId !== null && i.snapshotId !== '',
     isContinue: i.decision === 'rollback-continue',
   }));
-  const recoveryRequired = incidents.length > 0;
+  // 旧宿主不返回 lock（undefined）→ 视为无锁事项，绝不误报可回收
+  const lock: RecoveryLockView | null = status.lock !== undefined && status.lock.attention
+    ? { state: status.lock.state }
+    : null;
+  const recoveryRequired = incidents.length > 0 || lock !== null;
   let state: RecoveryUiState = 'NORMAL';
   if (recoveryRequired) {
     if (incidents.some((i) => i.state === 'RECOVERING')) state = 'RECOVERING';
@@ -84,7 +100,7 @@ export function toRecoveryView(status: RecoveryStatus): RecoveryView {
     else if (incidents.some((i) => i.decision === 'rollback-recommended')) state = 'ROLLBACK_RECOMMENDED';
     else state = 'NEEDS_ATTENTION';
   }
-  return { state, recoveryRequired, incidents, running: status.running };
+  return { state, recoveryRequired, incidents, running: status.running, lock };
 }
 
 /** 单个 preview 的渲染模型。 */

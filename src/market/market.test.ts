@@ -320,6 +320,50 @@ test('校验：self 分区拒绝（本地环境专属，禁止进入市场）', 
   assert.match(res.errors.join(), /self/);
 });
 
+/* ---------------- issue #35：patchFiles 供应链防线（导入侧） ---------------- */
+
+/** 造一个 plugins 分区为 JSON 的 market zip（含或不含 patchFiles）。 */
+function makePluginsMarketZip(patchFiles: unknown[] | undefined): Uint8Array {
+  const pluginsJson = JSON.stringify({
+    version: 1,
+    plugins: [{ name: 'p', version: '1.0.0', isBundle: false, inBundles: [], enabled: true }],
+    patch: [],
+    pnpmWorkspace: 'patchedDependencies:\n  p: patches/p.patch\n',
+    ...(patchFiles !== undefined ? { patchFiles } : {}),
+  }, null, 2);
+  const entries: ZipWriteEntry[] = [{ name: 'plugins/plugins.json', data: Buffer.from(pluginsJson) }];
+  entries.push({ name: 'integrity/checksums.json', data: Buffer.from(JSON.stringify({ 'plugins/plugins.json': sha256Hex(Buffer.from(pluginsJson)) })) });
+  const manifest = {
+    schemaVersion: 1, exporter: { name: 'X', version: '1' },
+    source: { dshVersion: '1', platform: 'linux', arch: 'x64' },
+    exportedAt: new Date().toISOString(), sections: { plugins: true },
+    security: { containsSecrets: false, encrypted: false, encryption: null },
+  };
+  entries.push({ name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest)) });
+  return Buffer.from(zipToBuffer(entries));
+}
+
+test('issue #35 校验：plugins 分区携带 patchFiles → 市场条目拒收（与 localTarballs 同级）', () => {
+  const zip = makePluginsMarketZip([{ relativePath: 'patches/p.patch', base64: 'ZGlmZg==' }]);
+  const res = validateMarketItem('foo', makeItemManifest('foo', zip, ['plugins']), zip);
+  assert.equal(res.status, 'invalid');
+  assert.match(res.errors.join(), /patchFiles|patch/);
+});
+
+test('issue #35 校验：patchFiles 为空数组 / 未携带 → 放行（不误伤普通插件清单）', () => {
+  const empty = makePluginsMarketZip([]);
+  assert.equal(validateMarketItem('foo', makeItemManifest('foo', empty, ['plugins']), empty).status, 'valid');
+  const none = makePluginsMarketZip(undefined);
+  assert.equal(validateMarketItem('foo', makeItemManifest('foo', none, ['plugins']), none).status, 'valid');
+});
+
+test('issue #35 校验：patchFiles 路径穿越（绝对路径/..）→ 结构校验直接拒绝', () => {
+  const zip = makePluginsMarketZip([{ relativePath: '../../evil.patch', base64: 'ZGlmZg==' }]);
+  const res = validateMarketItem('foo', makeItemManifest('foo', zip, ['plugins']), zip);
+  assert.equal(res.status, 'invalid');
+  assert.match(res.errors.join(), /patchFiles|相对路径/);
+});
+
 /* ---------------- reader（只读 git） ---------------- */
 
 async function tmpDir(prefix: string): Promise<string> {

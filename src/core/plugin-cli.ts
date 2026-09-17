@@ -220,6 +220,24 @@ export function listInstalledPlugins(homeDir: string, profile: string): PluginIn
       spec: installed[name],
     })
   }
+  // issue #28：仅通过 `dsh.profile.bundles` 声明的层（不在 dependencies 里）此前**完全不可见**，
+  // 于是「明明装了、备份里却是空的」。reconcileBundles 对这类条目是**保留**的（它的移除条件
+  // 要求该名字曾是依赖），所以它们确实会被 DSH 挂载，清单来源必须与之一致。
+  const manifest = readProfileManifest(dir)
+  const declaredBundles = manifest?.dsh?.profile?.bundles
+  for (const name of Array.isArray(declaredBundles) ? declaredBundles : []) {
+    if (INBOX_BUNDLES.has(name)) continue
+    if (Object.prototype.hasOwnProperty.call(installed, name)) continue // 已在依赖清单里
+    out.push({
+      name,
+      version: readInstalledVersion(dir, name) ?? '',
+      enabled: true,
+      isBundle: true,
+      // 直接声明的层自己就是 profile 层
+      inBundles: [name],
+      // 无依赖声明 → 无 spec：导入时按裸包名安装（与 registry 依赖同语义）
+    })
+  }
   return out
 }
 
@@ -424,6 +442,7 @@ export type DshPluginFailureCode =
   | 'fetch-404'               // 依赖在 registry 不存在（幽灵依赖 / 私有包）
   | 'transient-network'       // 瞬时网络故障（直接重试通常即可）
   | 'pnpm-missing'            // pnpm 不在 PATH（dsh 转发层报错）
+  | 'patch-file-missing'      // patchedDependencies 指向的 patch 文件不存在（issue #35）
 
 export interface DshPluginFailure {
   code: DshPluginFailureCode
@@ -480,6 +499,21 @@ export function classifyDshPluginFailure(output: string): DshPluginFailure | nul
       code: 'git-build-blocked',
       recoverable: false,
       message: '该 git 插件需要在安装时执行构建脚本，被 pnpm 的 allowBuilds 白名单拦截；把 pnpm 提示的包名加入 profile 的 pnpm-workspace.yaml 的 allowBuilds 后重试 / this git-hosted plugin needs to run its build script at install time, which pnpm blocks until allowed — add the exact package pnpm printed to allowBuilds in the profile\'s pnpm-workspace.yaml, then re-run',
+    }
+  }
+  // issue #35：pnpm-workspace.yaml 的 patchedDependencies 指向不存在的 patch 文件时，
+  // pnpm 会在**任何** add 上失败（含与补丁无关的插件）。此时逐条报「插件装不上」是误导——
+  // 真正要修的是缺失的 patch 文件或那条声明。
+  if (/Failed to read patch file|patch file .*does not exist/i.test(output)) {
+    // 路径可能含盘符冒号（C:\...），故按整行取、再切掉尾随的 ':' 或 ': <错误文本>'
+    const raw = /Failed to read patch file\s+([^\r\n]+)/i.exec(output)?.[1]?.trim()
+    const file = raw === undefined ? undefined : raw.split(/:\s/)[0]?.replace(/:\s*$/, '').trim()
+    const zh = file === undefined ? '' : `（${file}）`
+    const en = file === undefined ? '' : ` (${file})`
+    return {
+      code: 'patch-file-missing',
+      recoverable: false,
+      message: `profile 的 pnpm-workspace.yaml 声明了 patchedDependencies，但对应的 patch 文件不存在${zh}；pnpm 因此拒绝任何安装（含与补丁无关的插件）。把缺失的 patch 文件放回 profile 的 patches/ 目录，或从 pnpm-workspace.yaml 删除该条目后重试 / the profile's pnpm-workspace.yaml declares patchedDependencies but the patch file is missing${en}; pnpm then refuses every install (even unrelated plugins). Put the patch file back under the profile's patches/ directory, or remove that entry from pnpm-workspace.yaml and retry`,
     }
   }
   if (output.includes('ERR_PNPM_FETCH_404')) {

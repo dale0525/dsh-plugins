@@ -350,7 +350,48 @@ test('T2-P2 pluginFiles 默认不收；显式选中才收且带风险提示', as
   });
 });
 
-test('T2-P3 symlink 不被跟随（备份绝不读链接目标）', async (t) => {
+test('issue #37（CLI 路径）：home 内的链接目录被跟随；home 外的链接跳过并写进 warnings', async (t) => {
+  await withTmp(async (dir) => {
+    const home = path.join(dir, 'home');
+    await seedHome(home);
+    // home 内：技能共享目录（issue #37 的真实场景：4 个技能的 shared/ scripts/ 全是链接）
+    await fs.mkdir(path.join(home, 'skills', 'shared'), { recursive: true });
+    await fs.writeFile(path.join(home, 'skills', 'shared', 'common.md'), '# shared', 'utf8');
+    // home 外：链接目标不得被读入
+    const outsideDir = path.join(dir, 'outside');
+    await fs.mkdir(outsideDir, { recursive: true });
+    await fs.writeFile(path.join(outsideDir, 'secret.md'), 'OUTSIDE SECRET\n', 'utf8');
+    try {
+      await fs.symlink(
+        path.join(home, 'skills', 'shared'),
+        path.join(home, 'skills', 'linkdir'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      await fs.symlink(outsideDir, path.join(home, 'skills', 'outlink'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch {
+      t.skip('当前环境不允许创建链接');
+      return;
+    }
+
+    const col = await collectBackupEntries(home);
+    const names = col.entries.map((e) => e.name);
+    // 跟随：链接目录下的真实内容进备份（此前整块静默丢失）
+    assert.ok(names.includes('custom/skills/shared/common.md'), `真实目录内容必须进备份: ${names.join(',')}`);
+    assert.ok(names.includes('custom/skills/linkdir/common.md'), `链接目录内容必须进备份（issue #37 根因）: ${names.join(',')}`);
+    // home 外：既不收内容，也不静默——必须有 warning 点名
+    const text = col.entries.map((e) => Buffer.from(e.data).toString('utf8')).join('\n');
+    assert.ok(!text.includes('OUTSIDE SECRET'), 'home 之外的链接目标内容不得被读入备份');
+    assert.ok(
+      col.warnings.some((w) => w.includes('outlink')),
+      `被跳过的链接必须出现在 warnings 里（用户须能察觉内容不全）: ${col.warnings.join(' | ')}`,
+    );
+    assert.ok(col.warnings.some((w) => w.includes('跟随')), `应报告跟随了多少链接: ${col.warnings.join(' | ')}`);
+  });
+});
+
+test('T2-P3 home 之外的链接目标绝不被读入备份（含「文件链接」这一形态）', async (t) => {
+  // issue #37 后语义精确化为「按目标位置判定」：home 内的链接被跟随（见上一条），
+  // home 外的链接（目录或文件）一律跳过且必须出现在 warnings 里。
   await withTmp(async (dir) => {
     const home = path.join(dir, 'home');
     await seedHome(home);

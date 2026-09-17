@@ -469,7 +469,7 @@ win32 | darwin | linux | freebsd | openbsd | aix | sunos | android | cygwin | ha
 | 1 | `settings` | JSON | `config/settings.json` | `{version:1, namespaces}` | 1 | true | portable |
 | 2 | `ui` | JSON | `config/ui.json` | `{version:1, namespaces, uiMigrationNotes}` | 1 | true | portable |
 | 3 | `providers` | JSON | `ai/providers.json` | `{version:1, providers}` | 1 | true | portable |
-| 4 | `plugins` | JSON | `plugins/plugins.json` | `{version:1, plugins, patch, pnpmWorkspace?, localTarballs?}` | 1 | true | portable |
+| 4 | `plugins` | JSON | `plugins/plugins.json` | `{version:1, plugins, patch, pnpmWorkspace?, localTarballs?, patchFiles?}` | 1 | true | portable |
 | 5 | `mcp` | JSON | `mcp/servers.json` | `{version:1, servers}` | 1 | true | platformSpecific |
 | 6 | `prompts` | JSON | `custom/prompts.json` | `{version:1, prompts}` | 1 | true | portable |
 | 7 | `skills` | 文件 | `custom/skills/` | 递归真实文件 | 1（内存） | true | portable |
@@ -648,6 +648,7 @@ THROW 备份 schema v2（高于当前 1，需升级插件），无法导入（�
 | `plugins.patch[]` | `file`/`lineId`/`raw` | 必需 | patch 行；**`raw` 原样写回目标**（未知子字段在此被保留） | `src/schema/types.ts:111`、`src/adapters/plugins.ts:387-389` |
 | `plugins.pnpmWorkspace` | `string \| null` | 可选 | `pnpm-workspace.yaml` 原文 | `src/schema/types.ts:151` |
 | `plugins.localTarballs` | `LocalPluginTarball[]` | 可选 | 本地源插件 tarball（base64）。**市场通道两端拒绝**；仅本地备份合法 | `src/schema/types.ts:131-157`、`src/market/security.ts:175-184` |
+| `plugins.patchFiles` | `{relativePath: string, base64: string}[]` | 可选 | `pnpmWorkspace.patchedDependencies` 引用的 `patches/**` 文件，`relativePath` 相对 **profile 目录**。**市场通道两端拒绝**；仅本地备份合法 | `src/schema/types.ts:158-171`、`src/market/security.ts:185-196`、`src/market/prepare.ts:178-186` |
 | `mcp.servers[]` | `serverName`/`type` | 必需 | `type ∈ {stdio, streamable-http}` | `src/schema/types.ts:162-171` |
 | | `command`/`args`/`env`/`cwd`（stdio）或 `url`/`headers`（http） | 可选 | 写回时按白名单重建 patch 行 → **条目内未知字段会丢失** | `src/adapters/mcp.ts:69-81` |
 | `prompts.prompts[]` | `id`/`name`/`kind`/`text` | 必需 | `kind ∈ {systemPrompt, planMode}` | `src/schema/types.ts:177-183` |
@@ -665,6 +666,10 @@ THROW 备份 schema v2（高于当前 1，需升级插件），无法导入（�
 | `self` | 本地环境专属（同步通道 URL / WebDAV 地址 / 市场配置 / UI 偏好） | 同上 |
 
 另有两条同级硬约束：`security.containsSecrets === true` 的 bundle 市场拒收（`src/market/security.ts:105-107`）；`plugins.localTarballs` 非空市场拒收（`src/market/security.ts:175-184`）。
+
+`plugins.patchFiles` 非空同样**发布侧与导入侧双端拒收**（issue #35）：patch 会在 `pnpm install` 时改写依赖代码，与内嵌 tarball 同属「未经公开仓库审阅即执行」的内容，不得经公共市场分发（`src/market/prepare.ts:178-186`、`src/market/security.ts:185-196`）。本地备份/迁移通道不受此限制。
+
+**实现者注意（issue #35）**：`pnpmWorkspace` 与 `patchFiles` 必须**同进同出**。若只搬运 `pnpmWorkspace` 文本而目标机没有对应 patch 文件，目标机 pnpm 会拒绝**一切** `add`（`Failed to read patch file ... (os error 2)`）。本实现的导入端在写入 `pnpmWorkspace` 前，会剔除目标机无法满足的 `patchedDependencies` 条目（并在计划里给出 Warning 项），再写配置。
 
 > 这属于**市场通道的产品决策**，不是 bundle 格式本身的限制。第三方 exporter 若目标是市场分发，必须遵守；若只做本地备份/迁移，不需要。
 
@@ -1259,7 +1264,7 @@ errors   = []
 | 15 | 凭据值：`credentialsStatus` 分区**永不含值**；补录值只经凭据写入通道，绝不落盘/落日志 | `src/schema/types.ts:202-208`、`src/core/analyzer.ts:803-811` |
 | 16 | 导出报告里的 `redactedHits` **不参与** bundle 读写：第三方 importer **不需要**从 bundle 读取它，也**不能**反推它（§5.3.3） | bundle 内不存在该字段的任何载体 |
 
-**只读 importer 可以跳过**：加密导出（§4.1 内层生成）、checksums 生成、`localTarballs` 解包、市场通道约束（§3.5）、插件安装副作用。
+**只读 importer 可以跳过**：加密导出（§4.1 内层生成）、checksums 生成、`localTarballs` 解包、`patchFiles` 落盘（`profiles/<profile>/<relativePath>`）、市场通道约束（§3.5）、插件安装副作用。
 
 ---
 

@@ -11,12 +11,16 @@
  * **不新增分区 id**）；导入时把 spec 重写为 `file:<解包后的绝对路径>` 再交给官方安装通道。
  */
 import { isDeepStrictEqual } from 'node:util';
+import { sha256Hex } from '../utils/hashing.ts';
 import { installSpecFor, resolveProfileNameFromArgv } from '../core/plugin-cli.ts';
 import { isLocalPluginSpec, isPackedLocalSpec, LOCAL_PLUGIN_DIR } from '../core/local-plugin-pack.ts';
 import type { PackLocalPluginsResult } from '../core/local-plugin-pack.ts';
 import { msgOf, zhMsg } from '../core/messages.ts';
 import type { MsgFunc } from '../core/messages.ts';
-import type { LocalPluginTarball, PatchLine, PluginEntry, PluginsSection } from '../schema/types.ts';
+import { isPathSafe, normalizePath } from '../utils/paths.ts';
+import { PLUGIN_PATCH_REF_PREFIX } from '../core/backup.ts';
+import { parsePnpmPatchedDependencies, sanitizePnpmWorkspacePatches } from './pnpm-workspace.ts';
+import type { LocalPluginTarball, PatchLine, PluginEntry, PluginsSection, PnpmPatchFile } from '../schema/types.ts';
 import type {
   ApplyResult, ConfigAdapter, ExportOptions, ExportSection, HostContext,
   ImportContext, PlanItem, ValidationResult,
@@ -90,9 +94,16 @@ async function writeLocalTarball(
 
 
 
+/** profile 目录相对 $DSH_HOME 的路径（patches/ 与 pnpm-workspace.yaml 都挂在这里）。 */
+export const PNPM_PROFILE_DIR = (profile: string | undefined): string =>
+  `profiles/${profile !== undefined && profile !== '' ? profile : 'web'}`;
+
 /** pnpm-workspace.yaml 相对 $DSH_HOME 的路径（plugins 分区内按「插件安装配置」管理）。 */
 export const PNPM_WORKSPACE_REL = (profile: string | undefined): string =>
-  `profiles/${profile !== undefined && profile !== '' ? profile : 'web'}/pnpm-workspace.yaml`;
+  `${PNPM_PROFILE_DIR(profile)}/pnpm-workspace.yaml`;
+
+/** 单个 patch 文件随备份迁移的体积上限（issue #35；patch 是纯文本，超过说明放错了东西）。 */
+export const MAX_PATCH_FILE_BYTES = 2 * 1024 * 1024;
 
 /** patch 行 raw 是否由其他 adapter 管理（mcp-client 行 / systemPrompt / planMode 行）。
  * 这些行的导入归 mcp.ts / prompts.ts，plugins 分区只负责普通用户行（启用/禁用/插入插件等）。 */
@@ -178,6 +189,45 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
       warnings.push(msgOf(ctx)('adapter.pnpmReadFailed', { reason: err instanceof Error ? err.message : String(err) }));
     }
 
+    // issue #35：`patchedDependencies` 引用的 patches/** 必须与声明同进同出。
+    // 只搬 pnpm-workspace.yaml 文本会让目标机拿到「声明在、文件不在」的组合，
+    // 此后 pnpm 拒绝**一切** add（含插件安装）——实测 13/13 插件安装全灭。
+    let patchFiles: PnpmPatchFile[] | undefined;
+    if (pnpmWorkspace !== null && pnpmWorkspace !== '') {
+      const parsed = parsePnpmPatchedDependencies(pnpmWorkspace);
+      if (parsed.unsupported !== null) {
+        warnings.push(msgOf(ctx)('adapter.pwPatchesUnsupported', { line: parsed.unsupported }));
+      }
+      const collected: PnpmPatchFile[] = [];
+      for (const decl of parsed.declared) {
+        const rel = normalizePath(decl.path);
+        if (rel === '' || !isPathSafe(rel)) {
+          warnings.push(msgOf(ctx)('adapter.patchFileUnsafe', { name: decl.name, path: decl.path }));
+          continue;
+        }
+        const homeRel = `${PNPM_PROFILE_DIR(ctx.profile)}/${rel}`;
+        try {
+          if (!(await ctx.fs.exists(homeRel))) {
+            warnings.push(msgOf(ctx)('adapter.patchFileMissing', { name: decl.name, path: rel }));
+            continue;
+          }
+          const data = await ctx.fs.readFile(homeRel);
+          if (data.byteLength > MAX_PATCH_FILE_BYTES) {
+            warnings.push(msgOf(ctx)('adapter.patchFileTooLarge', {
+              name: decl.name, path: rel, limit: `${Math.floor(MAX_PATCH_FILE_BYTES / 1024)} KiB`,
+            }));
+            continue;
+          }
+          collected.push({ relativePath: rel, base64: bytesToBase64(data) });
+        } catch (err) {
+          warnings.push(msgOf(ctx)('adapter.patchFileReadFailed', {
+            name: decl.name, path: rel, reason: err instanceof Error ? err.message : String(err),
+          }));
+        }
+      }
+      if (collected.length > 0) patchFiles = collected;
+    }
+
     // T1：本地源（link:/file:）插件打包。这些 spec 指向本机路径，换机后必然不可达
     // （曾导致插件被静默丢失）。钩子由宿主注入；未注入 / 无本地源 / 单个失败一律不中断导出。
     let localTarballs: LocalPluginTarball[] | undefined;
@@ -213,14 +263,38 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
         patch,
         pnpmWorkspace,
         ...(localTarballs !== undefined ? { localTarballs } : {}),
+        ...(patchFiles !== undefined ? { patchFiles } : {}),
       },
       counts: {
         plugins: effectivePlugins.length,
         patchLines: patch.length,
         ...(localTarballs !== undefined ? { localTarballs: localTarballs.length } : {}),
+        ...(patchFiles !== undefined ? { patchFiles: patchFiles.length } : {}),
       },
       warnings,
     };
+  }
+
+  /**
+   * 导入后目标机**可能**存在的 patch 文件集合（相对 profile 目录）——issue #35。
+   * = 备份携带的 patchFiles ∪ 目标机本来就有的文件。只用于判定「声明能否被满足」，
+   * 不做任何写入（写入在 applyItem 内、且先于 pnpm-workspace.yaml）。
+   */
+  private async patchAvailability(data: PluginsSection, ctx: ImportContext): Promise<Set<string>> {
+    const set = new Set<string>();
+    for (const pf of data.patchFiles ?? []) {
+      const rel = normalizePath(pf.relativePath);
+      if (rel !== '' && isPathSafe(rel)) set.add(rel);
+    }
+    const profileDir = PNPM_PROFILE_DIR(ctx.target.profile);
+    for (const decl of parsePnpmPatchedDependencies(data.pnpmWorkspace ?? '').declared) {
+      const rel = normalizePath(decl.path);
+      if (rel === '' || !isPathSafe(rel) || set.has(rel)) continue;
+      try {
+        if (await ctx.target.fs.exists(`${profileDir}/${rel}`)) set.add(rel);
+      } catch { /* 读不到 = 视为不存在 */ }
+    }
+    return set;
   }
 
   async analyzeImport(data: PluginsSection, ctx: ImportContext): Promise<PlanItem[]> {
@@ -230,6 +304,43 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
     // pnpm-workspace.yaml：先于插件安装写入（allowBuilds / minimumReleaseAgeExclude 需在
     // pnpm add 时生效）。与目标不同 → Create/Update；无文件/内容一致 → Skip。
     if (data.pnpmWorkspace !== undefined && data.pnpmWorkspace !== null && data.pnpmWorkspace !== '') {
+      // issue #35：patch 文件项必须**先于** pnpm-workspace.yaml。
+      // 原因有二：① 配置里的 patchedDependencies 只有文件已就位才可用，先写配置会留下
+      // 「声明在、文件未到」的窗口（中途中断 → 目标机 pnpm 从此拒绝一切 add）；
+      // ② 它们是独立计划项（可被用户 keepCurrent 否决），配置项的写入不得越权替它们落盘。
+      // 作为计划项还有第三个作用：进入导入前快照（回滚可还原被覆盖的原文件）。
+      for (const pf of data.patchFiles ?? []) {
+        const rel = normalizePath(pf.relativePath);
+        if (rel === '' || !isPathSafe(rel)) continue;
+        const id = `plugins:patch:${rel}`;
+        const abs = `${PNPM_PROFILE_DIR(ctx.target.profile)}/${rel}`;
+        let current: Uint8Array | null = null;
+        try {
+          current = await ctx.target.fs.exists(abs) ? await ctx.target.fs.readFile(abs) : null;
+        } catch {
+          current = null;
+        }
+        const target = { adapter: 'plugins' as const, ref: `${PLUGIN_PATCH_REF_PREFIX}${rel}` };
+        if (current === null) {
+          items.push({
+            id, kind: 'Create', adapter: 'plugins',
+            description: msg('adapter.patchFileCreate', { path: rel }), severity: 'info', target,
+          });
+        } else if (sha256Hex(current) === sha256Hex(base64ToBytes(pf.base64))) {
+          items.push({ id, kind: 'Skip', adapter: 'plugins', description: msg('adapter.fileSame', { path: rel }), severity: 'info' });
+        } else {
+          items.push({
+            id, kind: 'Conflict', adapter: 'plugins',
+            description: msg('adapter.fileDiff', { path: rel }), severity: 'warning', target,
+          });
+        }
+      }
+
+      // issue #35：目标机满足不了的 patchedDependencies 声明必须剔除——否则写进去之后，
+      // 目标机 pnpm 会因为「patch 文件读不到」拒绝**一切** add（含本次要装的插件）。
+      const available = await this.patchAvailability(data, ctx);
+      const clean = sanitizePnpmWorkspacePatches(data.pnpmWorkspace, (rel) => available.has(rel));
+      const droppedNames = clean.dropped.map((d) => d.name).join(', ');
       let current: string | null = null;
       try {
         const rel = PNPM_WORKSPACE_REL(ctx.target.profile);
@@ -239,14 +350,37 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
       } catch {
         current = null;
       }
-      if (current !== data.pnpmWorkspace) {
+      if (current !== clean.text) {
         items.push({
           id: 'plugins:pnpm-workspace',
           kind: current === null ? 'Create' : 'Update',
           adapter: 'plugins',
           description: current === null ? msg('adapter.pwCreate') : msg('adapter.pwUpdate'),
+          ...(clean.dropped.length > 0
+            ? { detail: msg('adapter.pwPatchesDroppedDetail', { count: String(clean.dropped.length), names: droppedNames }) }
+            : {}),
           severity: 'info',
           target: { adapter: 'plugins', ref: 'pnpm-workspace.yaml' },
+        });
+      }
+
+      // 剔除是**可见**的信息项（不静默改变用户配置语义）
+      if (clean.dropped.length > 0) {
+        items.push({
+          id: 'plugins:pnpm-workspace-dropped',
+          kind: 'Warning',
+          adapter: 'plugins',
+          description: msg('adapter.pwPatchesDropped', { count: String(clean.dropped.length), names: droppedNames }),
+          severity: 'warning',
+        });
+      }
+      if (clean.unsupported !== null) {
+        items.push({
+          id: 'plugins:pnpm-workspace-flow',
+          kind: 'Warning',
+          adapter: 'plugins',
+          description: msg('adapter.pwPatchesUnsupported', { line: clean.unsupported }),
+          severity: 'warning',
         });
       }
     }
@@ -308,15 +442,61 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
     const msg = ctx.msg;
     // pnpm-workspace.yaml：插件安装的 pnpm 配置（allowBuilds / minimumReleaseAgeExclude），
     // 必须先于任何插件安装写入，pnpm add 时才能生效。失败为非致命 warning。
+    // issue #35：patch 文件项（写入 profile 的 patches/ 目录；同时进入导入前快照，可回滚）
+    if (item.id.startsWith('plugins:patch:')) {
+      const ref = item.target?.ref;
+      if (ref === undefined || !ref.startsWith(PLUGIN_PATCH_REF_PREFIX)) {
+        return { ok: false, message: msg('adapter.missingTargetRef') };
+      }
+      const rel = normalizePath(ref.slice(PLUGIN_PATCH_REF_PREFIX.length));
+      if (rel === '' || !isPathSafe(rel)) {
+        return { ok: false, message: msg('adapter.patchFileUnsafe', { name: item.id, path: rel }) };
+      }
+      const data = ctx.sections.get('plugins') as PluginsSection | undefined;
+      const pf = data?.patchFiles?.find((p) => normalizePath(p.relativePath) === rel);
+      if (pf === undefined) return { ok: false, message: msg('adapter.dataMissingFile', { ref: rel }) };
+      try {
+        await ctx.target.fs.writeFile(`${PNPM_PROFILE_DIR(ctx.target.profile)}/${rel}`, base64ToBytes(pf.base64));
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          warning: true,
+          message: msg('adapter.patchFileWriteFailed', { path: rel, reason: err instanceof Error ? err.message : String(err) }),
+        };
+      }
+    }
+
     if (item.id === 'plugins:pnpm-workspace') {
       const data = ctx.sections.get('plugins') as PluginsSection | undefined;
       const text = data?.pnpmWorkspace;
       if (text === undefined || text === null || text === '') {
         return { ok: false, message: msg('adapter.pwMissing') };
       }
+      // issue #35：判定「声明能否被满足」只看**此刻磁盘上的真实状态**——patch 文件项
+      // （`plugins:patch:*`）在计划里排在本项之前，已按用户决策落盘或保留原样。
+      // 这里**绝不**替它们写文件：那样会绕过用户在冲突项上的 keepCurrent 选择，
+      // 正是 issue #35 要消除的「静默覆盖」。
+      const profileDir = PNPM_PROFILE_DIR(ctx.target.profile);
+      const available = new Set<string>();
+      for (const decl of parsePnpmPatchedDependencies(text).declared) {
+        const rel = normalizePath(decl.path);
+        if (rel === '' || !isPathSafe(rel) || available.has(rel)) continue;
+        try {
+          if (await ctx.target.fs.exists(`${profileDir}/${rel}`)) available.add(rel);
+        } catch { /* 读不到 = 视为不存在 */ }
+      }
+      const clean = sanitizePnpmWorkspacePatches(text, (rel) => available.has(rel));
       try {
-        await ctx.target.fs.writeFile(PNPM_WORKSPACE_REL(ctx.target.profile), new TextEncoder().encode(text));
-        return { ok: true, needsRestart: true, message: msg('adapter.pwWritten') };
+        await ctx.target.fs.writeFile(PNPM_WORKSPACE_REL(ctx.target.profile), new TextEncoder().encode(clean.text));
+        const notes: string[] = [msg('adapter.pwWritten')];
+        if (clean.dropped.length > 0) {
+          notes.push(msg('adapter.pwWrittenPatchesDropped', {
+            count: String(clean.dropped.length),
+            names: clean.dropped.map((d) => d.name).join(', '),
+          }));
+        }
+        return { ok: true, needsRestart: true, message: notes.join('；') };
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         return {

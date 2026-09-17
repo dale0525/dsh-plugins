@@ -7,7 +7,9 @@
  * 导入时按同一相对路径写回原位置。默认关闭（defaultIncluded=false，用户显式勾选才导出）。
  */
 import { sha256Hex } from '../utils/hashing.ts';
-import { zhMsg } from '../core/messages.ts';
+import { msgOf, zhMsg } from '../core/messages.ts';
+import { linkWarnings, listFilesDetailed } from './link-report.ts';
+import type { RecursiveListing } from '../utils/recursive-walk.ts';
 import { isPathSafe, isReservedInternalRel } from '../utils/paths.ts';
 import type { MsgFunc } from '../core/messages.ts';
 import type { FilesSection } from '../schema/types.ts';
@@ -49,13 +51,15 @@ export class PluginFilesAdapter implements ConfigAdapter<FilesSection> {
       }
     }
     // 2) 约定配置目录递归收集（相对 ~/.dsh 根的完整路径；与白名单文件去重）
+    // issue #37：与 skills 等同一条遍历（跟随 junction/符号链接 + 跳过留痕）
+    let listing: RecursiveListing = { paths: [], skippedLinks: [], followedLinks: 0, unreadableDirs: [] };
     if (this.collectDir !== undefined) {
-      let rels: string[] = [];
       try {
-        rels = await ctx.fs.listRecursive(this.collectDir);
+        listing = await listFilesDetailed(ctx.fs, this.collectDir);
       } catch {
         // 目录不存在视为空
       }
+      const rels = listing.paths;
       for (const rel of rels) {
         if (seen.has(rel)) continue;
         try {
@@ -70,7 +74,7 @@ export class PluginFilesAdapter implements ConfigAdapter<FilesSection> {
       sectionId: 'pluginFiles',
       data: { version: 1, files },
       counts: { files: files.length },
-      warnings: [],
+      warnings: linkWarnings(msgOf(ctx), this.displayName, listing),
     };
   }
 

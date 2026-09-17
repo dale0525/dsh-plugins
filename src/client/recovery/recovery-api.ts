@@ -24,7 +24,7 @@
  */
 import type {
   RecoveryConfirmResult, RecoveryDismissResult, RecoveryExecuteResult,
-  RecoveryPort, RecoveryPreview, RecoveryStatus, RecoveryVerifyResult,
+  RecoveryLockRecoverResult, RecoveryPort, RecoveryPreview, RecoveryStatus, RecoveryVerifyResult,
 } from '../../ui/types.ts';
 import { ConfigManagerApiError } from '../api.ts';
 import { zhUiT, type UiT } from '../../ui/i18n.ts';
@@ -33,6 +33,8 @@ import { zhUiT, type UiT } from '../../ui/i18n.ts';
 export const RECOVERY_API = {
   base: '/api/dsh-config-manager/recovery',
   status: '/api/dsh-config-manager/recovery/status',
+  /** issue #31：残留锁显式回收（非 operationId 路径；'lock' 不是 UUID）。 */
+  lockRecover: '/api/dsh-config-manager/recovery/lock/recover',
 } as const;
 
 /** recovery 请求超时（ms）：与 Host 半 ROUTE_TIMEOUT_MS 对齐（restore/rollback 可能较慢）。 */
@@ -136,5 +138,14 @@ export class RecoveryApi implements RecoveryPort {
   /** POST /recovery/:operationId/dismiss：放弃恢复（quarantine，不销毁证据）。 */
   async dismiss(operationId: string, userConfirmed: boolean): Promise<RecoveryDismissResult> {
     return postJson<RecoveryDismissResult>(operationPath(operationId, 'dismiss'), { userConfirmed }, this.t);
+  }
+
+  /**
+   * POST /recovery/lock/recover（issue #31）：显式回收 stale 残留配置锁。
+   * 无 operationId（残留锁没有 journal）；userConfirmed 与其它危险动作同规，
+   * 调用方必须先经过显式确认弹窗。
+   */
+  async recoverStaleLock(userConfirmed: boolean): Promise<RecoveryLockRecoverResult> {
+    return postJson<RecoveryLockRecoverResult>(RECOVERY_API.lockRecover, { userConfirmed }, this.t);
   }
 }

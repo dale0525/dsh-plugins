@@ -168,6 +168,9 @@ export function RecoveryPanel({ recoveryApi, t }: RecoveryPanelProps) {
   const [dismissOpen, setDismissOpen] = useState(false)
   /** 重试确认弹窗开关 */
   const [retryOpen, setRetryOpen] = useState(false)
+  /** issue #31：残留锁回收确认弹窗开关 + 进行中标志（与 incident 流程独立的瞬态） */
+  const [lockConfirmOpen, setLockConfirmOpen] = useState(false)
+  const [lockBusy, setLockBusy] = useState(false)
 
   /** 统一提交入口：更新 stateRef → 挂载时 setState → **总是**镜像进 runStore。 */
   const commit = (next: PanelState): void => {
@@ -293,6 +296,26 @@ export function RecoveryPanel({ recoveryApi, t }: RecoveryPanelProps) {
     )
   }
 
+  /** issue #31：显式回收 stale 残留锁（确认弹窗后）。成功/拒绝都靠 status 重拉刷新锁态——
+   *  拒绝时保留卡片并给出原因（绝不假装成功）。 */
+  const recoverLock = (): void => {
+    if (lockBusy) return
+    setLockConfirmOpen(false)
+    setLockBusy(true)
+    recoveryApi.recoverStaleLock(true).then(
+      (res) => {
+        setLockBusy(false)
+        if (res.ok) toast.ok(t('recovery.lock.done'))
+        else toast.error(t('recovery.lock.refused'))
+        load()
+      },
+      (err) => {
+        setLockBusy(false)
+        toast.error(err instanceof Error ? err.message : String(err))
+      },
+    )
+  }
+
   const view = state.recovery !== null ? toRecoveryView(state.recovery) : null
   const selected = state.selectedOperationId !== null && state.recovery !== null
     ? state.recovery.incidents.find((i) => i.operationId === state.selectedOperationId)
@@ -318,8 +341,24 @@ export function RecoveryPanel({ recoveryApi, t }: RecoveryPanelProps) {
         </Banner>
       )}
 
-      {state.status === 'ready' && (view?.incidents.length ?? 0) === 0 && (
+      {state.status === 'ready' && (view?.incidents.length ?? 0) === 0 && view?.lock == null && (
         <Empty>{t('recovery.empty')}</Empty>
+      )}
+
+      {/* issue #31：残留配置锁（非 journal 事项）——纯锁残留时 incidents 恒为空，
+          这里必须给出**可执行**的回收入口，否则 423 文案指的入口永远是空面板。 */}
+      {state.status === 'ready' && view?.lock != null && (
+        <Card className={css.card}>
+          <div className={css.groupLabel}>{t('recovery.lock.title')}</div>
+          <div className={css.hint}>
+            {view.lock.state === 'STALE_LOCK_DETECTED' ? t('recovery.lock.detailStale') : t('recovery.lock.detailUnknown')}
+          </div>
+          <div className={css.actionRow}>
+            <Button variant="danger" disabled={lockBusy} onClick={() => { setLockConfirmOpen(true) }}>
+              {lockBusy ? t('recovery.lock.busy') : t('recovery.lock.action')}
+            </Button>
+          </div>
+        </Card>
       )}
 
       {state.status === 'ready' && (view?.incidents.length ?? 0) > 0 && (
@@ -531,6 +570,19 @@ export function RecoveryPanel({ recoveryApi, t }: RecoveryPanelProps) {
         busy={state.running}
         onConfirm={dismiss}
         onCancel={() => { setDismissOpen(false) }}
+      />
+
+      {/* issue #31：残留锁回收二次确认（危险：改动控制面锁文件） */}
+      <ConfirmDialog
+        open={lockConfirmOpen}
+        title={t('recovery.lock.confirmTitle')}
+        message={t('recovery.lock.confirmMessage')}
+        confirmLabel={t('recovery.lock.action')}
+        cancelLabel={t('common.cancel')}
+        danger
+        busy={lockBusy}
+        onConfirm={recoverLock}
+        onCancel={() => { setLockConfirmOpen(false) }}
       />
     </div>
   )

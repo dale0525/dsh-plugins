@@ -60,6 +60,19 @@ export interface RecoveryOrchestratorDeps {
    * 仅当 recovery 成功且无其他未解决 incident 时调用（见 maybeClearSafeMode）。
    */
   clearSafeMode: () => Promise<void>;
+  /**
+   * 只读环境锁状态（issue #31）。**由宿主注入而非本模块 import**：本模块不依赖 env-lock，
+   * 无锁环境（测试 mock 端口）可返回保守的 UNKNOWN_STATE。
+   * detail 含 owner pid/op 等内部诊断 → 只用于日志，绝不进响应体。
+   */
+  inspectLockState: () => Promise<{ state: string; detail?: string }>;
+  /**
+   * 显式回收 stale 残留锁（EnvironmentLockManager.recoverStaleLock）。
+   * **调用方不得先 acquire 锁**：要回收的正是挡住 acquire 的那把锁，先取锁必然失败。
+   * 该方法自身保证 inspect → 证明确证死亡 → 原子 rename 捕获 → 二次验证 → unlink，
+   * 任一步不确定即拒绝（活锁绝不删）。
+   */
+  recoverStaleLock: () => Promise<{ ok: boolean; removed: boolean; state: string; detail?: string }>;
 }
 
 /** 编排结果（路由映射为 HTTP 响应）。 */
@@ -78,10 +91,12 @@ export interface RecoveryOrchestrator {
   verify(operationId: string): Promise<RecoveryResult>;
   retry(operationId: string, userConfirmed: boolean, makeExecutors: (runId: string) => RecoveryExecutorFns): Promise<RecoveryResult>;
   dismiss(operationId: string, userConfirmed: boolean): Promise<RecoveryResult>;
+  /** issue #31：显式回收 stale 残留锁（无 operationId；非 journal 事项）。 */
+  recoverStaleLock(userConfirmed: boolean): Promise<RecoveryResult>;
 }
 
 export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): RecoveryOrchestrator {
-  const { store, runs, snapshotsDir, host, msg, snapshotExists, getEnvironmentFingerprint, clearSafeMode } = deps;
+  const { store, runs, snapshotsDir, host, msg, snapshotExists, getEnvironmentFingerprint, clearSafeMode, inspectLockState, recoverStaleLock } = deps;
 
   /**
    * 只读 recovery decision（不修改 journal）。**不用 reconcileActive**：其 §6.5 硬门控会把
@@ -184,7 +199,21 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
         });
       }
       const running = runs.listActive().filter((r) => r.kind === 'recovery').map((r) => ({ runId: r.runId, status: r.status }));
-      return { status: 200, body: { incidents, running } };
+      // issue #31：附带环境锁分类。**只暴露分类，不暴露 owner pid/op/hostname**（内部诊断）。
+      // attention 只对「需用户显式处理」的状态为 true：STALE_LOCK_DETECTED（残留锁，重试不会自愈）
+      // 与 UNKNOWN_STATE（无法判定）→ 引导用户回收；LOCKED（另一任务活跃持有）会自行释放，
+      // 不该催用户去「回收」，否则又是一个误导。探测失败 → 保守 UNKNOWN_STATE + attention。
+      let lock: { state: string; attention: boolean } | undefined;
+      try {
+        const insp = await inspectLockState();
+        lock = {
+          state: insp.state,
+          attention: insp.state === 'STALE_LOCK_DETECTED' || insp.state === 'UNKNOWN_STATE',
+        };
+      } catch {
+        lock = { state: 'UNKNOWN_STATE', attention: true };
+      }
+      return { status: 200, body: { incidents, running, lock } };
     },
 
     async preview(operationId) {
@@ -303,6 +332,35 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
       const result = await executeRecovery(store, { operationId, action: 'dismiss', snapshotId: j.snapshotId }, true);
       if (result === 'failed') return { status: 400, body: { error: 'dismiss 失败' } };
       return { status: 200, body: { ok: true, operationId, dismissed: true } };
+    },
+
+    /**
+     * issue #31：显式回收 stale 残留锁。**无 operationId**——残留锁没有 journal（这正是
+     * 「事故恢复」面板过去恒空的原因），因此不复用 confirm/execute 那套 journal 状态机。
+     *
+     * 正确性边界（不放松「绝不自动摘锁」）：
+     *  - **不 acquire 锁**：要回收的正是挡住 acquire 的那把锁，先取锁必然失败；
+     *  - 是否真的 stale 由 recoverStaleLock 内部重做判定（inspect + 二次验证），
+     *    本层拿到的 state/detail 只用于日志，绝不作为删除依据；
+     *  - 活锁/判定不确定 → 内部拒绝，ok=false，不做任何改动（不误删别人的锁）。
+     */
+    async recoverStaleLock(userConfirmed) {
+      if (userConfirmed !== true) return { status: 400, body: { error: 'userConfirmed required' } };
+      try {
+        const res = await recoverStaleLock();
+        if (res.detail !== undefined) {
+          // 内部诊断（op/pid/路径）只进日志
+          host.log[res.ok ? 'info' : 'warn'](`stale lock recovery: ok=${res.ok} state=${res.state} detail=${res.detail}`);
+        }
+        if (!res.ok) {
+          // 拒绝是正常结果（活锁/无法证明 stale/二次验证失败），不是 500
+          return { status: 200, body: { ok: false, removed: false, state: res.state, reason: res.detail ?? '未判定为 stale，已拒绝回收' } };
+        }
+        // 回收成功后 stale 分类已消失；锁态交由客户端重新拉取 status 刷新
+        return { status: 200, body: { ok: true, removed: res.removed, state: res.state } };
+      } catch (error) {
+        return { status: 500, body: { error: error instanceof Error ? error.message : String(error) } };
+      }
     },
   };
 }

@@ -34,6 +34,7 @@ import { AboutPanel } from './about/AboutPanel.tsx'
 import { ProfilesPanel } from './profiles/ProfilesPanel.tsx'
 import { RecoveryPanel } from './recovery/RecoveryPanel.tsx'
 import { HistoryPanel } from './history/HistoryPanel.tsx'
+import { LifecyclePanel } from './lifecycle/LifecyclePanel.tsx'
 import { toRecoveryView } from './recovery/recovery-view.ts'
 import { ConfirmDialog } from './common/ConfirmDialog.tsx'
 import { MODAL_ROOT_ID } from './common/Modal.tsx'
@@ -56,10 +57,23 @@ interface NavItem {
   label: string
 }
 
+/**
+ * 灾备页（Phase 1 灾备基线，`panel='lifecycle'`）导航入口开关。
+ *
+ * 暂时置 `false` **隐藏入口**（待相关 bug 修复后再放出）。只隐藏导航入口：
+ * `case 'lifecycle'` 渲染分支、`LifecyclePanel` 组件与宿主 `/lifecycle|/crash|/rescue`
+ * 路由均保持原样，改回 `true` 即可恢复入口。
+ */
+const SHOW_LIFECYCLE_NAV = false
+
+/** 灾备页导航项（仅当 `SHOW_LIFECYCLE_NAV` 为真时挂上导航条）。 */
+const LIFECYCLE_NAV_ITEM: NavItem = { id: 'lifecycle', label: 'nav.recovery' }
+
 /** 一级导航（Workbench IA：7 页签；export/import 为独立页面）。 */
 const NAV_ITEMS: NavItem[] = [
   { id: 'overview', label: 'nav.overview' },
   { id: 'snapshots', label: 'nav.backups' },
+  ...(SHOW_LIFECYCLE_NAV ? [LIFECYCLE_NAV_ITEM] : []),
   { id: 'export', label: 'nav.export' },
   { id: 'import', label: 'nav.import' },
   { id: 'sync', label: 'nav.sync' },
@@ -70,9 +84,17 @@ const NAV_ITEMS: NavItem[] = [
 /**
  * Workbench Shell：导航条 + 页面内容 + 状态栏 + 活动抽屉。
  */
-export function ConfigManagerSection({ api, syncApi, syncT, marketApi, myConfigsApi, marketT, recoveryApi, recoveryT, historyApi, historyT, t }: ConfigManagerSectionProps) {
+export function ConfigManagerSection({ api, syncApi, syncT, marketApi, myConfigsApi, marketT, recoveryApi, recoveryT, historyApi, historyT, lifecycleApi, t }: ConfigManagerSectionProps) {
   const state = useSyncExternalStore(runStore.subscribe, runStore.getSnapshot)
-  const panel = state.panel
+  // 入口隐藏期间，把持久化（sessionStorage）里的 panel='lifecycle' 回落到「备份」页：
+  // 否则此前切到过灾备页的会话刷新后会停在一个已无导航入口的页面上。
+  // 渲染期即回落（不闪一帧），effect 再把 store 自身归一化，避免反复回落。
+  const panel: PanelId = !SHOW_LIFECYCLE_NAV && state.panel === 'lifecycle' ? 'snapshots' : state.panel
+  useEffect(() => {
+    if (!SHOW_LIFECYCLE_NAV && runStore.getSnapshot().panel === 'lifecycle') {
+      runStore.patch({ panel: 'snapshots' })
+    }
+  }, [panel])
 
   /* ---------------- 活动与关于抽屉（drawerOpen 本地瞬态；子视图 moreSub 持久化） ---------------- */
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -280,6 +302,19 @@ export function ConfigManagerSection({ api, syncApi, syncT, marketApi, myConfigs
       break
     case 'profiles':
       page = <ProfilesPanel api={api} t={t} />
+      break
+    case 'lifecycle':
+      // 交叉指引：跳转到「备份」页的恢复子 tab（Phase-5 引导式恢复工作流）。
+      // 与全局 SAFE MODE 横幅用的是同一个导航写法，保证行为一致。
+      page = (
+        <LifecyclePanel
+          lifecycleApi={lifecycleApi}
+          t={t}
+          openRecoveryWizard={() => {
+            runStore.patch({ panel: 'snapshots', snapshots: { subTab: 'recovery' } })
+          }}
+        />
+      )
       break
   }
 

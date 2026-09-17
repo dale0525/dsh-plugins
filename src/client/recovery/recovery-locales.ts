@@ -121,6 +121,16 @@ export const zh = {
   // 运行中
   'recovery.running': '恢复任务进行中',
   'recovery.runningHint': '恢复/回滚正在执行，请勿关闭页面。',
+  // issue #31：残留配置锁（非 journal 事项，独立区块）
+  'recovery.lock.title': '残留配置锁',
+  'recovery.lock.detailStale': '检测到上次异常退出的配置锁（其持有进程已不存在）。该锁不会自动清除：重试或重启 DSH 都不会恢复，必须在此显式回收，回收后所有操作立即恢复。',
+  'recovery.lock.detailUnknown': '配置锁状态无法可靠判定（可能是崩溃残留）。回收前会再次确认其持有进程确已不存在；无法确认时不会删除任何内容。',
+  'recovery.lock.action': '回收残留锁',
+  'recovery.lock.busy': '正在回收…',
+  'recovery.lock.done': '已回收残留配置锁，操作已恢复',
+  'recovery.lock.refused': '未判定为残留锁，已拒绝回收（未做任何改动）',
+  'recovery.lock.confirmTitle': '回收残留配置锁',
+  'recovery.lock.confirmMessage': '将再次确认该锁的持有进程确已不存在，然后原子移除这把锁。若无法确认（例如锁仍被活跃进程持有），操作会被拒绝且不做任何改动。',
 } as const;
 
 export const en: Record<keyof typeof zh, string> = {
@@ -219,6 +229,15 @@ export const en: Record<keyof typeof zh, string> = {
   'recovery.actionError': 'Operation failed',
   'recovery.running': 'Recovery task in progress',
   'recovery.runningHint': 'Recovery / rollback is running; keep this page open.',
+  'recovery.lock.title': 'Stale config lock',
+  'recovery.lock.detailStale': 'A config lock left behind by an earlier abnormal exit was detected (its owning process no longer exists). It is never cleared automatically: retrying or restarting DSH will not help — recover it here explicitly, and every operation resumes immediately afterwards.',
+  'recovery.lock.detailUnknown': 'The config lock state cannot be determined reliably (possibly a crash remnant). Before recovering, the owner process is re-verified as definitely gone; if that cannot be proven, nothing is deleted.',
+  'recovery.lock.action': 'Recover stale lock',
+  'recovery.lock.busy': 'Recovering…',
+  'recovery.lock.done': 'Stale config lock recovered; operations restored',
+  'recovery.lock.refused': 'Not confirmed as a stale lock — recovery refused (nothing was changed)',
+  'recovery.lock.confirmTitle': 'Recover stale config lock',
+  'recovery.lock.confirmMessage': 'The owning process will be re-verified as definitely gone, then the lock is removed atomically. If that cannot be confirmed (for example the lock is still held by a live process), the action is refused and nothing is changed.',
 };
 
 /** 字典键联合（注册处 compile-time 校验）。 */

@@ -35,6 +35,9 @@ import type { BackupInspectResult } from '../api.ts'
 import { inspectGroupedChanges, inspectSections, inspectSummary } from '../../ui/backup-inspect.ts'
 import type { InspectGroupKey } from '../../ui/backup-inspect.ts'
 import { formatBytes } from '../../ui/report.ts'
+// issue #31：宿主回传的 skipReason 是机器 token（如 'mutation-locked'），必须经统一映射
+// 再展示——否则备份卡「上次运行」直接显示英文裸 token。
+import { describeSkipReason } from '../sync/history-model.ts'
 import {
   BACKUP_INTERVAL_OPTIONS,
   DEFAULT_RETENTION_POLICY,
@@ -781,7 +784,7 @@ function BackupScheduleCard({ api, t, onBackupDone }: {
           setLastRun(res.run.status)
           setLastRunDetail(res.run.zip !== undefined && res.run.zip !== ''
             ? res.run.zip
-            : (res.run.skipReason !== undefined ? res.run.skipReason : formatRunTime(res.schedule.lastRunAt)))
+            : (res.run.skipReason !== undefined ? describeSkipReason(res.run.skipReason) : formatRunTime(res.schedule.lastRunAt)))
           setRunning(false)
         }
         // 无论面板是否仍挂载都通知父组件刷新备份文件列表（新 ZIP 已落盘）

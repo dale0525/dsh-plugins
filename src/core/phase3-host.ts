@@ -303,6 +303,7 @@ export class Phase3Recovery {
           afterFp: rec.afterFp ?? null,
           status: rec.status ?? (rec.external === true ? 'attention' : 'planned'),
           appliedAt: new Date().toISOString(),
+          message: rec.message ?? null,
         };
         await this.store.update(opId, (j) => {
           const plannedSteps = j.plannedSteps.includes(rec.id)

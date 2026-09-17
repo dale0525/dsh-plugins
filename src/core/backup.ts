@@ -87,12 +87,29 @@ const FILE_BASES: Partial<Record<SectionId, string>> = {
   self: 'dsh-config-manager',
 };
 
+/**
+ * plugins 分区中「profile 内文件」的 ref 前缀（issue #35）：`patchFile:<相对 profile 目录的路径>`。
+ * 前缀的存在是为了与 patch **行** id（同样落在 plugins 分区的 ref 空间）区分开——
+ * 行 id 是任意字符串，无法靠形状判断它是不是一个路径。
+ */
+export const PLUGIN_PATCH_REF_PREFIX = 'patchFile:'
+
+/** profile 目录绝对路径（plugins 分区内文件类目标的基准） */
+function profileDirOf(ctx: HostContext): string {
+  const profile = ctx.profile !== undefined && ctx.profile !== '' ? ctx.profile : 'web';
+  return path.join(ctx.homeDir, 'profiles', profile);
+}
+
 /** 解析文件类目标的绝对路径（引擎通用快照与回滚共用） */
 export function resolveFileTarget(ctx: HostContext, adapter: SectionId, ref: string): string {
   // plugins 分区的 pnpm-workspace.yaml：位于 profiles/<profile>/ 下（非 FILE_BASES 静态基准）
   if (adapter === 'plugins' && ref === 'pnpm-workspace.yaml') {
-    const profile = ctx.profile !== undefined && ctx.profile !== '' ? ctx.profile : 'web';
-    return path.join(ctx.homeDir, 'profiles', profile, 'pnpm-workspace.yaml');
+    return path.join(profileDirOf(ctx), 'pnpm-workspace.yaml');
+  }
+  // issue #35：pnpm patch 文件同样位于 profiles/<profile>/ 下，必须能被快照与回滚覆盖，
+  // 否则「导入覆盖了目标机原有 patch 文件 → 回滚」会静默丢失原文件。
+  if (adapter === 'plugins' && ref.startsWith(PLUGIN_PATCH_REF_PREFIX)) {
+    return path.join(profileDirOf(ctx), ref.slice(PLUGIN_PATCH_REF_PREFIX.length));
   }
   const base = FILE_BASES[adapter] ?? '';
   return path.join(ctx.homeDir, base, ref);
@@ -101,9 +118,21 @@ export function resolveFileTarget(ctx: HostContext, adapter: SectionId, ref: str
 /**
  * 文件类目标的 home-relative 相对路径（P2-B，Phase 8）。
  * 供导入逐项指纹（analyzer 经 HostContext.fs.readFile(read rel) 读文件算 sha256）
- * 与 journal step.ref 的 posix 规范化。仅适用于 isFileSection adapter。
+ * 与 journal step.ref 的 posix 规范化。
+ *
+ * issue #35：`plugins` 分区的两个文件类 ref（`pnpm-workspace.yaml` 与
+ * `patchFile:<profile 相对路径>`）不落在 FILE_BASES 的静态基准上，必须显式给 profile ——
+ * 否则产出的是**不存在的** home 相对路径（如 `patchFile:patches/a.patch`），
+ * 指纹恒为 null，crash 后 reconcile 无法证明该项是否已应用（保守但可避免的精度损失）。
  */
-export function resolveFileTargetRel(adapter: SectionId, ref: string): string {
+export function resolveFileTargetRel(adapter: SectionId, ref: string, profile?: string): string {
+  if (adapter === 'plugins') {
+    const profileDir = `profiles/${profile !== undefined && profile !== '' ? profile : 'web'}`;
+    if (ref === 'pnpm-workspace.yaml') return normalizePath(`${profileDir}/pnpm-workspace.yaml`);
+    if (ref.startsWith(PLUGIN_PATCH_REF_PREFIX)) {
+      return normalizePath(`${profileDir}/${ref.slice(PLUGIN_PATCH_REF_PREFIX.length)}`);
+    }
+  }
   const base = FILE_BASES[adapter] ?? '';
   return normalizePath(path.join(base, ref));
 }
@@ -161,8 +190,8 @@ async function engineSnapshotEntry(ctx: HostContext, target: SnapshotTarget): Pr
     case 'mcp':
     case 'plugins':
     case 'prompts': {
-      // plugins 分区的 pnpm-workspace.yaml → 整文件快照（file 类，回滚可整文件还原）
-      if (target.adapter === 'plugins' && target.ref === 'pnpm-workspace.yaml') {
+      // plugins 分区的 pnpm-workspace.yaml / patch 文件 → 整文件快照（file 类，回滚可整文件还原）
+      if (target.adapter === 'plugins' && (target.ref === 'pnpm-workspace.yaml' || target.ref.startsWith(PLUGIN_PATCH_REF_PREFIX))) {
         const abs = resolveFileTarget(ctx, target.adapter, target.ref);
         if (!(await ctx.fs.exists(abs))) {
           return { kind: 'file', adapter: target.adapter, ref: target.ref, before: null, existed: false };

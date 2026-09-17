@@ -25,7 +25,8 @@ import type { MsgFunc } from '../core/messages.ts';
 import type { RunRegistry } from '../core/run-registry.ts';
 import type { ConfigAdapter, HostContext, SecretScanner } from '../core/types.ts';
 import type { MutationLockPort } from '../utils/env-lock.ts';
-import { runWithMutationLock, EnvironmentLockUnavailableError } from '../utils/env-lock.ts';
+import type { LockBlockReason } from '../utils/env-lock.ts';
+import { runWithMutationLock, EnvironmentLockUnavailableError, LOCK_BLOCK_MESSAGE, LOCK_BLOCK_BRIEF } from '../utils/env-lock.ts';
 import { Exporter } from '../core/exporter.ts';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
@@ -316,11 +317,20 @@ export class BackupScheduler {
       await this.appendHistory(result);
       return result;
     } catch (err) {
-      // 锁被占用（另一项 DSH 任务进行中）：不执行，记为 skipped（不增加连续失败计数）
+      // issue #31：被挡时按分类说真话——**残留锁（持有者已确证死亡）不是「另一项任务进行中」**，
+      // 且它重试/重启都不会自愈，必须显式回收。文案与 423 响应、autosync 日志同源
+      // （LOCK_BLOCK_MESSAGE），避免同一句指引在多条路径上再次漂移（#27 只接了 autosync，
+      // 本路径漏接 → 实测 9 天内 57 次静默跳过，用户无从知道要回收残留锁）。
       if (err instanceof EnvironmentLockUnavailableError) {
-        this.log.info('定时备份跳过：环境锁被占用（另一项 DSH 任务进行中）');
+        if (err.reason === 'stale') {
+          this.log.warn(`定时备份跳过：${LOCK_BLOCK_MESSAGE.stale}`);
+        } else {
+          this.log.info(`定时备份跳过：${LOCK_BLOCK_MESSAGE[err.reason]}`);
+        }
         const skipped: BackupRunResult = { status: 'skipped', skipReason: 'mutation-locked', consecutiveFailures: cfg.consecutiveFailures };
-        await this.appendHistory(skipped);
+        // skipReason 保持稳定的机器 token（客户端据此本地化）；历史摘要用同源**短**文案，
+        // 不留裸 token（issue #31 ②：中文前缀 + 英文 token 的历史行）。
+        await this.appendHistory(skipped, err.reason);
         return skipped;
       }
       const error = err instanceof Error ? err.message : String(err);
@@ -349,8 +359,10 @@ export class BackupScheduler {
     }
   }
 
-  /** Phase 6：定时备份迁移历史（best-effort；失败仅日志，不阻断）。 */
-  private async appendHistory(result: BackupRunResult): Promise<void> {
+  /** Phase 6：定时备份迁移历史（best-effort；失败仅日志，不阻断）。
+   *  lockReason：被环境锁挡下时的分类（issue #31）——摘要据此给同源短文案，
+   *  而不是把 'mutation-locked' 这个机器 token 原样写进用户可见的历史行。 */
+  private async appendHistory(result: BackupRunResult, lockReason?: LockBlockReason): Promise<void> {
     if (this.appendHistoryFn === undefined) return;
     try {
       await this.appendHistoryFn({
@@ -361,7 +373,7 @@ export class BackupScheduler {
         summary: result.status === 'success'
           ? `定时备份完成：${result.zip ?? ''}`
           : result.status === 'skipped'
-            ? `定时备份跳过：${result.skipReason ?? ''}`
+            ? `定时备份跳过：${lockReason !== undefined ? LOCK_BLOCK_BRIEF[lockReason] : (result.skipReason ?? '')}`
             : '定时备份失败',
         error: result.status === 'failed' ? (result.error ?? undefined) : undefined,
       });

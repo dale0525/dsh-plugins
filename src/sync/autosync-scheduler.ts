@@ -288,9 +288,21 @@ export class AutoSyncScheduler {
           this.running = false;
           // issue #27：被挡时按分类告知用户。stale 残留锁「重试不会自愈」，必须显式回收——
           // 这里把与 423 响应同文案的指引写进日志，否则自动同步只会静默跳过，用户无从下手。
+          // issue #31：与 backup-scheduler 对齐——非 stale 分类也留一行（不再只对 stale 说话）；
+          // 更重要的是**补写历史**：此前该分支 return 前不写 sync-history，用户看历史面板
+          // 只能发现「自动同步不再更新」，却看不到任何一条「为什么跳过」（实测 9 天 0 条记录）。
           if (lk.reason === 'stale') {
             this.host.log.warn(`自动同步已跳过（${channel}）：${LOCK_BLOCK_MESSAGE.stale}`);
+          } else if (lk.reason !== undefined) {
+            this.host.log.info(`自动同步已跳过（${channel}）：${LOCK_BLOCK_MESSAGE[lk.reason]}`);
           }
+          await this.appendHistory(channel, {
+            direction: 'both',
+            status: 'skipped',
+            skipReason: 'mutation-locked',
+            createdAt: nowIso,
+            failureCountAtRun: cfg.consecutiveFailures,
+          });
           return {
             status: 'skipped', direction: 'none', skipReason: 'mutation-locked', historyId,
             consecutiveFailures: cfg.consecutiveFailures,
@@ -299,7 +311,16 @@ export class AutoSyncScheduler {
         releaseLock = lk.release;
         this.lockCtxForJournal = lk.context;
       } catch {
+        // issue #31 D：acquire 本身抛错（锁目录 IO/权限）也是「被挡」，同样必须留历史 ——
+        // 否则用户在历史面板只会看到「自动同步不再更新」，而没有任何一条解释。
         this.running = false;
+        await this.appendHistory(channel, {
+          direction: 'both',
+          status: 'skipped',
+          skipReason: 'mutation-locked',
+          createdAt: nowIso,
+          failureCountAtRun: cfg.consecutiveFailures,
+        });
         return { status: 'skipped', direction: 'none', skipReason: 'mutation-locked', historyId, consecutiveFailures: cfg.consecutiveFailures };
       }
     }

@@ -16,7 +16,9 @@ import { BACKUP_SCHEDULE_SCHEMA_VERSION, backupIntervalToMs, defaultBackupSchedu
 import type { BackupScheduleConfig } from './backup-schedule-config.ts';
 import { shouldTriggerStartupRun } from './autosync-scheduler.ts';
 import { RunRegistry } from '../core/run-registry.ts';
-import { nullLogger } from '../utils/logger.ts';
+import { nullLogger, createLogger } from '../utils/logger.ts';
+import type { LogSink } from '../utils/logger.ts';
+import type { MutationLockPort, MutationLockToken } from '../utils/env-lock.ts';
 import { makeContext } from '../adapters/test-helpers.ts';
 import { createAdapters } from '../adapters/index.ts';
 import { zhMsg } from '../core/messages.ts';
@@ -494,6 +496,91 @@ test('M1 定时备份：未注入 scanner → 文件类分区零告警、零命�
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
+
+
+// ---------- issue #31：定时备份被残留锁挡下必须按分类说真话 ----------
+
+/** 注入一个把 acquire 判为 stale 的锁端口 + 捕获日志行。 */
+function staleLockScheduler(opts: { cfg: BackupScheduleConfig; tmp: string; logSink?: LogSink }) {
+  const runs = new RunRegistry();
+  let config = opts.cfg;
+  const ctx = makeContext('win32', path.join(opts.tmp, 'home'));
+  seedSettings(ctx);
+  const adapters = createAdapters({ namespaces: NS });
+  const scheduler = new BackupScheduler({
+    syncDir: path.join(opts.tmp, 'sync'),
+    exportsDir: path.join(opts.tmp, 'exports'),
+    host: ctx,
+    adapters,
+    runs,
+    msg: zhMsg,
+    exporterVersion: '0.1.59',
+    now: () => new Date(1_000_000_000_000),
+    readConfig: async () => config,
+    writeConfig: async (c) => { config = c; },
+    // 关键：logger 实例在宿主上直接替换（MockHostContext 是类实例，展开会丢原型方法）
+    log: opts.logSink !== undefined ? createLogger({ level: 'debug', sink: opts.logSink }) : nullLogger(),
+    mutationLock: staleLockPort(),
+  });
+  return { scheduler, ctx, getConfig: () => config };
+}
+
+/** 锁端口：acquire 判为 stale（真实 manager 在残留锁下返回同一状态）。 */
+function staleLockPort(): MutationLockPort {
+  return {
+    acquire: async () => ({ state: 'STALE_LOCK_DETECTED', token: null, detail: 'owner pid=24140 确证不存在 (heartbeat expired)' }),
+    validate: (tok: unknown): tok is MutationLockToken => false,
+    release: async () => undefined,
+  };
+}
+
+test('issue #31：残留锁挡住定时备份 → 日志按分类给出 stale 指引（不再谎称「另一项任务进行中」）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-backup-stale-'));
+  try {
+    const lines: Array<{ level: string; message: string }> = [];
+    const cfg: BackupScheduleConfig = { enabled: true, interval: '24h', startupMinIntervalMs: 3600000, consecutiveFailures: 0 };
+    const { scheduler } = staleLockScheduler({ cfg, tmp, logSink: (level, message) => { lines.push({ level, message }); } });
+    const result = await scheduler.runOnce();
+    assert.equal(result.status, 'skipped');
+    assert.equal(result.skipReason, 'mutation-locked');
+    assert.equal(result.consecutiveFailures, 0, '被锁挡下不计入连续失败');
+    const staleLine = lines.find((l) => l.message.includes('定时备份跳过'));
+    assert.ok(staleLine !== undefined, `应有跳过日志: ${JSON.stringify(lines)}`);
+    // ① 指引与 423/autosync 同源：必须点出「残留」+ 可执行回收方式
+    assert.match(staleLine!.message, /残留/);
+    assert.match(staleLine!.message, /recover-stale-lock/);
+    assert.match(staleLine!.message, /事故恢复/, 'GUI 入口必须真实可达（#31 已接线）');
+    // ② 绝不把残留锁误报成「另一项任务进行中」（#27 要消除的误导）
+    assert.equal(staleLine!.message.includes('另一项 DSH 任务进行中'), false);
+    // ③ owner pid 属内部诊断，只进日志 meta 而非用户可见文案
+    assert.equal(staleLine!.message.includes('24140'), false);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('issue #31：活锁占用定时备份 → 日志仍是「另一项任务进行中」语义（不误报残留）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-backup-locked-'));
+  try {
+    const lines: Array<{ level: string; message: string }> = [];
+    const cfg: BackupScheduleConfig = { enabled: true, interval: '24h', startupMinIntervalMs: 3600000, consecutiveFailures: 0 };
+    const { scheduler } = staleLockScheduler({ cfg, tmp, logSink: (level, message) => { lines.push({ level, message }); } });
+    // 换成活锁端口（只替换锁实现，日志 sink 保留）
+    (scheduler as unknown as { mutationLock: MutationLockPort }).mutationLock = {
+      acquire: async () => ({ state: 'LOCKED', token: null, detail: 'op=import' }),
+      validate: (tok: unknown): tok is MutationLockToken => false,
+      release: async () => undefined,
+    };
+    await scheduler.runOnce();
+    const line = lines.find((l) => l.message.includes('定时备份跳过'));
+    assert.ok(line !== undefined, `应有跳过日志: ${JSON.stringify(lines)}`);
+    assert.match(line!.message, /另一个任务正在运行/);
+    assert.equal(line!.message.includes('残留'), false, '活锁不得被误报为残留');
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 
 /** M1 源码守卫：index.ts 把**同一个** scanner 实例注入三条导出路径，且只构造一次（防档位漂移） */
 test('M1 源码守卫：index.ts 给 BackupScheduler 注入与 makeRoutes/registerModelTools 同一个 scanner 实例', async () => {

@@ -45,6 +45,11 @@ export const DEFAULT_HEARTBEAT_INTERVAL_MS = 1000
 export const DEFAULT_STALE_AFTER_MS = 10_000
 /** 默认 acquire 等待超时（等待活跃锁释放）ms；0 = 不等待直接返回 */
 export const DEFAULT_ACQUIRE_TIMEOUT_MS = 0
+/** 「心跳长过期」下限 ms（issue #36）。实际阈值 = max(30 × staleAfterMs, 本值)。
+ *  用途：Windows/macOS 默认拿不到 OS process identity，Windows 又会复用 PID，于是
+ *  「心跳过期 + pid 存活」永远停在 UNKNOWN_STATE，用户只能手工删锁文件（issue #36 实测）。
+ *  心跳长过期说明写方早已停摆 → 允许**显式**回收判为残留锁；acquire 侧仍绝不自动摘锁。 */
+export const DEFAULT_LONG_EXPIRED_AFTER_MS = 30 * 60_000
 
 // ---------- 类型 ----------
 
@@ -291,6 +296,9 @@ export interface EnvLockManagerOptions {
   staleAfterMs?: number
   /** acquire 等待活跃锁释放的超时 ms（缺省 0=不等待） */
   acquireTimeoutMs?: number
+  /** 「心跳长过期」阈值 ms（issue #36；缺省 max(30 × staleAfterMs, 30 分钟)）。
+   *  只影响「pid 存活但进程身份不可验证」这一类锁的**显式**回收与状态分类，不放松自动侧。 */
+  longExpiredAfterMs?: number
   /** 诊断用的当前 operation 描述（写入 ownership.op） */
   op?: string
   /** 诊断用的 target 描述 */
@@ -417,6 +425,7 @@ export class EnvironmentLockManager {
   private readonly now: () => number
   private readonly heartbeatIntervalMs: number
   private readonly staleAfterMs: number
+  private readonly longExpiredAfterMs: number
   private readonly acquireTimeoutMs: number
   private readonly lockVersion: string
   private readonly onHeartbeatWriteFailure: (err: unknown) => void
@@ -458,6 +467,9 @@ export class EnvironmentLockManager {
     this.now = opts.now ?? (() => Date.now())
     this.heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
     this.staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS
+    // issue #36：阈值取「30 倍 stale 窗口」与「30 分钟」的较大者——活着的 owner 连续 30 分钟
+    // 一次心跳都写不进去只可能是 ACL/磁盘级别的异常；而残留锁的用户等 9 天都等不到自愈。
+    this.longExpiredAfterMs = opts.longExpiredAfterMs ?? Math.max(this.staleAfterMs * 30, DEFAULT_LONG_EXPIRED_AFTER_MS)
     this.acquireTimeoutMs = opts.acquireTimeoutMs ?? DEFAULT_ACQUIRE_TIMEOUT_MS
     this.lockVersion = opts.lockVersion ?? '0.1.0'
     this.onHeartbeatWriteFailure = opts.onHeartbeatWriteFailure ?? (() => {})
@@ -823,6 +835,17 @@ export class EnvironmentLockManager {
     // PID 存活：需 OS identity 区分「reuse」与「同一进程 alive（heartbeat degraded）」
     // —— capability/值缺失 → 无法可靠确定 → UNKNOWN_STATE（保守拒删）
     if (!this.probe.canGetOsIdentity() || rec.owner.osProcessStartIdentity === null || ident.osProcessStartIdentity === null) {
+      // issue #36：Windows 默认无 OS identity 能力 + PID 会被复用 → 该分支此前永远停在
+      // UNKNOWN_STATE（连官方 recover-stale-lock 都拒绝），用户只能手工删锁文件。
+      // 心跳**长过期**（远超窗口，见 longExpiredAfterMs）说明写方早已停摆，判定为残留锁：
+      // 只影响显式回收与状态分类，acquire 侧依旧不自动摘锁。
+      const longExpired = this.longExpiredReason(heartbeat, now)
+      if (longExpired !== null) {
+        return {
+          state: 'STALE_LOCK_DETECTED',
+          detail: `owner pid=${rec.owner.pid} 存活但无法验证进程身份（可能是 PID 复用），且 heartbeat ${longExpired} → 判定为残留锁，可显式回收`,
+        }
+      }
       return {
         state: 'UNKNOWN_STATE',
         detail: `heartbeat 过期且 pid=${rec.owner.pid} 存活，但无法可靠取得 OS process identity，保守拒绝删除`,
@@ -921,11 +944,26 @@ export class EnvironmentLockManager {
     // 确证死亡（ESRCH，alive:false 仅此语义）→ stale 成立
     if (!ident.alive) return true
     // 存活：需 identity 判断 reuse；无法可靠取得 → 保守失败
-    if (!this.probe.canGetOsIdentity() || rec.owner.osProcessStartIdentity === null || ident.osProcessStartIdentity === null) return false
+    if (!this.probe.canGetOsIdentity() || rec.owner.osProcessStartIdentity === null || ident.osProcessStartIdentity === null) {
+      // issue #36：必须与 inspectLockState 用**同一**判据。否则首次判定「可回收」、二次验证却
+      // 判「非 stale」→ quarantine，用户拿到的仍是「二次验证失败」，等于没修。
+      const hb = await this.readHeartbeat(rec.owner.instanceId).catch(() => null)
+      return this.longExpiredReason(hb, this.now()) !== null
+    }
     // recorded identity 与探测不同 → PID reuse → 原 owner 已死 → stale 成立
     if (rec.owner.osProcessStartIdentity !== ident.osProcessStartIdentity) return true
     // 同一进程仍存活 → 非 stale
     return false
+  }
+
+  /** 心跳「长过期」判据（issue #36）：达到阈值 → 返回可读原因，否则 null。
+   *  heartbeat sidecar 缺失时返回 null（无从判断过期时长）——只对「确实读过 heartbeat
+   *  且它早已停更」的锁放宽，避免把「sidecar 被清掉」误判成残留。 */
+  private longExpiredReason(heartbeat: HeartbeatRecord | null, now: number): string | null {
+    if (heartbeat === null) return null
+    const age = now - heartbeat.heartbeatAt
+    if (!(age >= this.longExpiredAfterMs)) return null // NaN / 负值（时钟回拨）→ 保守
+    return `已过期 ${formatDuration(age)}（阈值 ${formatDuration(this.longExpiredAfterMs)}）`
   }
 
   /* ------------------------------------------------------------ diag */
@@ -943,6 +981,14 @@ export class EnvironmentLockManager {
 
 function encode(v: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(v))
+}
+
+/** 毫秒 → 可读时长（诊断文案用；不追求精确，只求用户能一眼判断「多久没心跳了」） */
+function formatDuration(ms: number): string {
+  if (ms >= 86_400_000) return `${(ms / 86_400_000).toFixed(1)} 天`
+  if (ms >= 3_600_000) return `${(ms / 3_600_000).toFixed(1)} 小时`
+  if (ms >= 60_000) return `${Math.round(ms / 60_000)} 分钟`
+  return `${Math.round(ms / 1000)} 秒`
 }
 
 function sleep(ms: number): Promise<void> {
@@ -997,9 +1043,22 @@ export const LOCK_BLOCK_MESSAGE: Record<LockBlockReason, string> = {
   blocked: '配置修改已被保护，请先处理恢复事项后再继续。',
   unavailable: '操作暂时无法执行，请稍后重试；若持续失败请查看日志。',
   // 必须说清「重试/重启都不会好」并给出可操作路径：否则用户只会一遍遍重试（issue #27 实测如此）。
+  // issue #31：文案承诺的「事故恢复」入口必须真的能回收残留锁——GUI 已接线
+  // （GET /recovery/status 的 lock 字段 + POST /recovery/lock/recover），两处入口都真实可达。
   stale: '检测到上次异常退出残留的配置锁（其持有进程已不存在），操作已被阻止。'
-    + '该锁不会自动清除，重试或重启 DSH 均无效：请在「事故恢复」中执行一次恢复，'
+    + '该锁不会自动清除，重试或重启 DSH 均无效：请在「事故恢复」中点击「回收残留锁」，'
     + '或运行 dsh-config-manager recover-stale-lock 回收后再重试。',
+}
+
+/** 分类的**简短**文案（单行、可用于表格单元格/迁移历史摘要/日志前缀）。
+ *  与 LOCK_BLOCK_MESSAGE 同源同分类：长文案给「需要完整指引」的场景（423 响应/告警日志），
+ *  短文案给「一行放不下长句」的场景。分开定义避免任一处再自造文案（issue #31 的漂移根因）。 */
+export const LOCK_BLOCK_BRIEF: Record<LockBlockReason, string> = {
+  locked: '环境锁被另一项任务占用',
+  blocked: '配置修改已被保护，需先处理恢复事项',
+  unavailable: '环境锁暂时不可用',
+  // stale 必须点出「残留」——否则用户会像 issue #31 那样等 9 天（57 次静默跳过）。
+  stale: '残留配置锁（持有进程已不存在），需先回收',
 }
 
 /** destructive 必须成功获取 Environment Lock；否则抛此错（被另一进程/操作持有，或锁不可用）。

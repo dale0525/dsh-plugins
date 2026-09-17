@@ -167,12 +167,19 @@ export function prepareMarketItem(input: MarketPrepareInput): MarketPrepareResul
   //      BANNED 分区与逐分区批准的既有供应链防线。本地插件迁移只应发生在自己的备份里。
   if (sections.includes('plugins')) {
     const pluginsJson = archive.has(SECTION_JSON_PATHS.plugins!)
-      ? (archive.readEntryJson(SECTION_JSON_PATHS.plugins!) as { localTarballs?: unknown })
+      ? (archive.readEntryJson(SECTION_JSON_PATHS.plugins!) as { localTarballs?: unknown; patchFiles?: unknown })
       : null
     const tb = pluginsJson?.localTarballs
     if (Array.isArray(tb) && tb.length > 0) {
       throw new MarketPrepareError(
         `zip 的 plugins 分区携带 ${tb.length} 个本地插件 tarball（localTarballs），禁止发布到市场（内嵌插件代码不可经公开仓库审阅；本地插件迁移请用自己的备份）`,
+      )
+    }
+    // issue #35：patchFiles 同类拒绝（patch 在安装时改写依赖代码，同样不可经公开仓库审阅）
+    const pfs = pluginsJson?.patchFiles
+    if (Array.isArray(pfs) && pfs.length > 0) {
+      throw new MarketPrepareError(
+        `zip 的 plugins 分区携带 ${pfs.length} 个 pnpm patch 文件（patchFiles），禁止发布到市场（会在安装时改写依赖代码；请用自己的备份迁移）`,
       )
     }
   }

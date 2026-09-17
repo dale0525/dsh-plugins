@@ -126,6 +126,37 @@ test('listInstalledPlugins: 声明了依赖但未实际安装 → version 空串
   }
 });
 
+test('issue #28: 仅由 dsh.profile.bundles 声明的层必须出现在已装清单里（此前完全不可见）', () => {
+  // 场景：用户手动把社区 bundle 写进 dsh.profile.bundles（或某个安装路径只写了 bundles 而没写
+  // dependencies）。reconcileBundles 对这类条目是**保留**的（移除条件要求曾是依赖），
+  // 所以 DSH 启动时确实会挂载它 —— 但旧清单只遍历 dependencies，于是「装了却识别不到」。
+  const { homeDir, profileDir, cleanup } = makeTempProfile(
+    { 'pkg-a': '1.0.0', '@deepseek-ai/dsh-base': '0.1.0-rc.6' },
+    ['@linxin666/dsh-web-ui-all', 'stale-pkg', '@deepseek-ai/dsh-base'],
+  );
+  try {
+    writeInstalledPkg(profileDir, 'pkg-a', '1.0.0');
+    writeInstalledPkg(profileDir, '@linxin666/dsh-web-ui-all', '0.3.1', 'patch.yml');
+    writeInstalledPkg(profileDir, '@deepseek-ai/dsh-base', '0.1.0-rc.6');
+
+    const list = listInstalledPlugins(homeDir, 'web');
+    const bundleOnly = list.find((p) => p.name === '@linxin666/dsh-web-ui-all');
+    assert.ok(bundleOnly !== undefined, '仅 bundles 声明的层必须出现在清单里');
+    assert.equal(bundleOnly?.version, '0.3.1', '版本取 node_modules 落盘版本');
+    assert.equal(bundleOnly?.isBundle, true);
+    assert.deepEqual(bundleOnly?.inBundles, ['@linxin666/dsh-web-ui-all']);
+    assert.equal(bundleOnly?.spec, undefined, '无依赖声明 → 无 spec（导入按裸包名装最新版）');
+    // 从未落盘的 bundles 条目：仍列出（它确实是启动时会挂载的层），版本空串不抛
+    assert.equal(list.find((p) => p.name === 'stale-pkg')?.version, '');
+    // in-box bundle 依然不出现（无论来自 dependencies 还是 bundles）
+    assert.equal(list.some((p) => p.name === '@deepseek-ai/dsh-base'), false);
+    // 依赖里的普通插件不受影响
+    assert.equal(list.find((p) => p.name === 'pkg-a')?.spec, '1.0.0');
+  } finally {
+    cleanup();
+  }
+});
+
 test('reconcileBundles: 当前依赖但非 bundle 的条目移出；从未是依赖的手动条目保留；无变化不写回', () => {
   // 语义对齐官方 dsh reconcilePlugins（plugin-9h8shc4d.js）：移除条件 =
   // 「(之前或当前)是依赖 且 不再声明 bundle patch」——从未是依赖的 bundles 条目

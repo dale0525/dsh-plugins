@@ -181,6 +181,16 @@ export function validateMarketItem(
           warnings, manifest, internalManifest, sections: [], checksumsOk: true,
         };
       }
+      // issue #35：patchFiles 与 localTarballs 同类 —— patch 会在安装时改写目标机的包代码，
+      // 属于「不可经公开仓库审阅即执行」的内容。市场条目一律拒收（本地备份不受影响）。
+      const patchFiles = (data as { patchFiles?: unknown }).patchFiles;
+      if (Array.isArray(patchFiles) && patchFiles.length > 0) {
+        return {
+          status: 'invalid',
+          errors: [`config.zip 的 plugins 分区携带 ${patchFiles.length} 个 pnpm patch 文件（patchFiles），市场条目禁止携带会在安装时改写依赖代码的内容（供应链防线；请用自己的备份迁移）`],
+          warnings, manifest, internalManifest, sections: [], checksumsOk: true,
+        };
+      }
     }
   }
 

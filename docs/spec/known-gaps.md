@@ -46,6 +46,9 @@
 | **L2** | `exports["./schema"]` 指向纯类型产物（运行时 0 导出） | ✅ 已修复（13 个运行时导出） |
 | **L3** | `env-lock` heartbeat 在途写残留 `.tmp` → `rmSync` ENOTEMPTY | ✅ 已修复（写串行化 + release 前 drain） |
 | **L4** | `run-store` 测试固定 `sleep` 竞态（全量并发时偶发） | ✅ 已修复（改 `waitFor` 条件等待） |
+| G-14 | 同步只搬 `pnpmWorkspace` 声明、不搬 `patches/**` → 目标机 pnpm 拒绝一切安装（issue #35） | ✅ 已修复（`patchFiles` 同进同出 + 导入端剔除不可满足声明 + 市场双端拒收 + journal 状态可辨 + 计划项可回滚 + 工具链变更可见可取消） |
+| G-15 | Windows 无 OS process identity → 阈值内的 PID 复用残留锁仍判 UNKNOWN_STATE（issue #36） | ⚠️ **部分修复**（长过期可显式回收；精确区分 PID 复用仍未实现，见 §3） |
+| G-16 | 文件类分区静默跳过 junction/符号链接（issue #37） | ✅ 已修复（GUI 与 CLI 同一跟随内核 + 跳过/不可读均留痕；home 外目标仍拒绝且留痕） |
 
 ---
 
@@ -150,6 +153,27 @@
 | 问题 | `sections.secrets` 永远是 `false`（无 adapter）；加密事实由 `security.encrypted` 承载。第三方若按「`sections.secrets === true` 表示含凭据」实现，会判断错误。 |
 | 收口方式（**规格侧，实现刻意未变**） | `buildSectionFlags` 里 `flags['secrets'] = false` 仍在（当前工作区 `src/core/exporter.ts:404`）——这不是实现缺陷，而是「键集合恒全量」的**语义设计**。规格 §2.5 已加显式警告块；§9 步骤 4 的验收判据明确「判断『含秘密/需密码』只看 `security.containsSecrets` / `security.encrypted`，不看 `sections.secrets`」。 |
 | 验证方式 | 规格 §2.5 / §9 步骤 4 的判据本身（文档级修复）；`FC-*` 系列未覆盖此语义，故不声称有测试护栏。 |
+
+### G-14 同步/备份只搬运 `pnpmWorkspace` 声明，不搬 `patches/**` 文件（issue #35）
+
+| 项 | 内容 |
+|---|---|
+| 基线问题（0.1.59） | plugins 分区导出时整段读取 `profiles/<profile>/pnpm-workspace.yaml`（含 `patchedDependencies`），但 patch 文件本身不在任何被同步的分区里；全仓对 `patchedDependencies` 零解析、零校验。 |
+| 后果 | 目标机拿到「声明存在、文件不存在」的组合后，**任何** `pnpm add`（含 `dsh plugin add`）都失败于 `Failed to read patch file ... (os error 2)`——实测一次「一键同步 → 确认导入」13/13 插件安装全灭，而同步仍报成功。 |
+| 修复位置 | ① 导出：`src/adapters/plugins.ts` 解析 `patchedDependencies`，把 `patches/**` 作为 `plugins.patchFiles`（base64）随分区携带（源机缺文件 → 显式告警）；② 导入：`src/adapters/plugins.ts` 先落 patch 文件，再写**剔除不可满足声明**后的 `pnpm-workspace.yaml`（剔除在 `analyzeImport` 以 Warning 计划项显式可见）；③ 纯函数内核 `src/adapters/pnpm-workspace.ts`（按行改写，保留注释/CRLF，不整文件重写）；④ 供应链：`patchFiles` 非空在**发布侧与导入侧**双端拒收（与 `localTarballs` 同级）；⑤ 安装失败分类 `patch-file-missing`（`src/core/plugin-cli.ts`），给出可操作修复路径而不是 13 条「插件装不上」。 |
+| 关联缺陷（同轮修复） | journal step 把 `warning`（如安装失败但非致命）记为 `skipped` 且不落 message → 事后审计误判为「用户跳过了这些插件、同步成功」。现在 `warning` → `attention`、`skipped` 只留给真正的跳过，并持久化 `message`（`src/core/analyzer.ts`、`src/core/journal.ts`）。 |
+| 验证方式 | `src/adapters/pnpm-workspace.test.ts`（8 例：逐字节不变 / 只删缺失条目 / 全删连键删 / 越界路径 / flow 形态不改写 / CRLF / 无声明零改动）；`src/adapters/plugins.test.ts` → 「issue #35：patch 文件随分区迁移；目标缺失的 patchedDependencies 声明导入时剔除」；`tests/core/import-journal-status.test.ts`（四种结局的 journal 状态）；`src/market/{prepare,market}.test.ts`（双端拒收 + 路径穿越拒绝）。 |
+| 规格同步 | `docs/spec/bundle-format-v1.md` §3.2 / §3.4 / §3.5 / §10（`patchFiles` 字段与「声明与文件必须同进同出」的实现者注意）。 |
+
+### G-15 Windows 仍无 OS process identity（#36 的残余边界，**部分修复**）
+
+| 项 | 内容 |
+|---|---|
+| 现状 | `canGetOsIdentity()` 仍只在 Linux 为 true（`src/utils/env-lock.ts` 的 `defaultProbe`）。Windows 上 Node 无原生 API 读**其它进程**的创建时间；实现需 spawn `Get-Process`/WMI，而锁探测在每次 acquire 上都会跑，代价不可接受。 |
+| 已缓解 | 心跳**长过期**（阈值 `max(30 × staleAfterMs, 30 分钟)`，可注入 `longExpiredAfterMs`）时，把「心跳过期 + pid 存活 + 身份不可验证」判为 `STALE_LOCK_DETECTED`，使 `recover-stale-lock` 与 GUI「回收残留锁」可成功回收（issue #36 的期望行为）。 |
+| 未解决 | ① 阈值内（< 30 分钟无心跳）的 PID 复用残留锁仍判 `UNKNOWN_STATE`，只能等待阈值过去；② 无法把「PID 复用」与「owner 真存活但心跳降级」精确区分——两者都靠「心跳长过期」这一代理判据，属**启发式**而非确证。 |
+| 为什么不更激进 | 缩短阈值会提高「误回收活锁」的风险（活着的 owner 在 ACL/磁盘异常下可能长时间写不进心跳）。当前取值是「用户实测等 9 天」与「误删活锁」之间的折中；要真正解决需注入平台级 identity 探测（`ProcessIdentityProbe` 已是可注入接口，宿主可自行实现）。 |
+| 验证方式 | `src/utils/env-lock.test.ts` 的 `§11.1-c11b`（9 天长过期 → 可识别 + 可显式回收 + acquire 仍不自动摘锁）与 `§11.1-c11c`（未达阈值仍保守 `UNKNOWN_STATE`；heartbeat 缺失不放宽；阈值可注入）。 |
 
 ### P-1 peerDependencies 体积：headless 消费者为浏览器半付费
 
