@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  AutoSyncScheduler, intervalToMs, shouldTriggerStartupRun, buildAutoApplyPlan,
+  AutoSyncScheduler, intervalToMs, shouldTriggerStartupRun,
 } from './autosync-scheduler.ts';
 import { RunRegistry } from '../core/run-registry.ts';
 import { nullLogger, createLogger } from '../utils/logger.ts';
@@ -20,7 +20,7 @@ import type { LogSink } from '../utils/logger.ts';
 import type { MutationLockPort, MutationLockToken } from '../utils/env-lock.ts';
 import type { AutosyncConfig } from './autosync-config.ts';
 import type { AutosyncHistoryEntry } from './sync-history.ts';
-import type { MergePlan, MergeSectionResult } from './merge.ts';
+import type { SyncPullReport, ApplyItemsReport } from './sync-engine.ts';
 import type { SectionId } from '../schema/types.ts';
 import type { SyncEngine } from './sync-engine.ts';
 import type { SyncConfig, SyncTransportType } from './sync-config.ts';
@@ -88,12 +88,34 @@ function staleLockPort(detail = 'owner pid=24140 确证不存在 (heartbeat expi
   };
 }
 
-function mergeResult(id: string, decision: MergeSectionResult['decision']): MergeSectionResult {
-  return { id: id as never, decision, conflicts: [], merged: {} as never };
+/** 构造 pull 报告：changes 决定 needsReview（Conflict 等需人工决策项）。 */
+function pullReport(entries: Array<{ adapter: SectionId; kind?: string }>): SyncPullReport {
+  const changes = entries.map((e, i) => ({
+    id: e.adapter + ':' + i,
+    adapter: e.adapter,
+    kind: (e.kind ?? 'Update') as never,
+    description: 'test',
+    severity: 'info' as never,
+  }));
+  return {
+    ok: true,
+    snapshotId: 'remote-1',
+    changes,
+    needsReview: changes.some((c) => ['Conflict', 'MissingSecret', 'MissingDependency', 'Error'].includes(c.kind)),
+  };
 }
 
-function makeMergePlan(ids: Array<[string, MergeSectionResult['decision']]>): MergePlan {
-  return { sections: ids.map(([id, decision]) => mergeResult(id, decision)) };
+/** 构造 applyItems 报告（默认成功、applied = 给定分区）。 */
+function applyReport(applied: string[], ok = true): ApplyItemsReport {
+  return {
+    ok, applied: ok ? applied : [], restoreId: 'r1', rolledBack: !ok,
+    warnings: [], failed: [], result: null,
+  };
+}
+
+/** 构造 preview 结果（applyItems 的会话级输入）。 */
+function previewResult(): never {
+  return { ok: true, zipPath: '/tmp/session.zip', plan: { items: [] }, analysis: { valid: true }, snapshotId: 'remote-1' } as never;
 }
 
 test('runOnce: enabled=false → skipped(disabled)，不写历史', async () => {
@@ -196,16 +218,16 @@ test('runOnce: 未配置仓库 → skipped(unconfigured)，写历史但不计失
   assert.equal(result.consecutiveFailures, 0, '未配置不累计失败');
 });
 
-test('runOnce: webdav 已配置（webdav.url 非空）→ 不判 unconfigured，正常走 merge（按通道判定）', async () => {
+test('runOnce: webdav 已配置（webdav.url 非空）→ 不判 unconfigured，正常走 pull（按通道判定）', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
   const engine = {
-    merge: async (): Promise<MergePlan> => makeMergePlan([['settings', 'skip']]),
+    pull: async (): Promise<SyncPullReport> => pullReport([]),
     hasLocalChanges: async () => false,
   };
   const syncCfg: SyncConfig = { schemaVersion: 2, transport: 'webdav', webdav: { url: 'https://dav.example.com/remote.php/dav/files/u' } };
   const { scheduler } = makeScheduler({ cfg, engine, history: [], syncCfg });
   const result = await scheduler.runOnce('webdav');
-  assert.equal(result.status, 'success', 'webdav 已配置应进入合并流程');
+  assert.equal(result.status, 'success', 'webdav 已配置应进入同步流程');
   assert.equal(result.skipReason, 'unchanged', '空变更 → pull/unchanged');
 });
 
@@ -228,9 +250,9 @@ test('syncIsConfigured: git 看 git.repoUrl、webdav 看 webdav.url；null 未�
   assert.equal(syncIsConfigured(null), false);
 });
 
-test('runOnce: merge 抛错 → failed，连续失败计数 +1', async () => {
+test('runOnce: pull 抛错 → failed，连续失败计数 +1', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 2 };
-  const engine = { merge: async () => { throw new Error('network down'); } };
+  const engine = { pull: async () => { throw new Error('network down'); } };
   const { scheduler, getConfig, getEntries } = makeScheduler({ cfg, engine, history: [] });
   const result = await scheduler.runOnce('git');
   assert.equal(result.status, 'failed');
@@ -239,10 +261,10 @@ test('runOnce: merge 抛错 → failed，连续失败计数 +1', async () => {
   assert.ok(getEntries().some((e) => e.status === 'failed'), '写入失败历史');
 });
 
-test('runOnce: 有冲突 → skipped(conflict)，不写本地，不计失败', async () => {
+test('runOnce: 需人工决策项 → skipped(conflict)，不写本地，不计失败', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 1 };
   const engine = {
-    merge: async (): Promise<MergePlan> => makeMergePlan([['settings', 'conflict']]),
+    pull: async (): Promise<SyncPullReport> => pullReport([{ adapter: 'settings', kind: 'Conflict' }]),
   };
   const { scheduler, getConfig, getEntries } = makeScheduler({ cfg, engine, history: [] });
   const result = await scheduler.runOnce('git');
@@ -254,10 +276,10 @@ test('runOnce: 有冲突 → skipped(conflict)，不写本地，不计失败', a
   assert.ok(getEntries().some((e) => e.skipReason === 'conflict'), '写入冲突跳过历史');
 });
 
-test('runOnce: 无冲突且无变化 → success(pull,unchanged)，不上传（本地也无改动）', async () => {
+test('runOnce: 无变化 → success(pull,unchanged)，不上传（本地也无改动）', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
   const engine = {
-    merge: async (): Promise<MergePlan> => makeMergePlan([['settings', 'skip']]),
+    pull: async (): Promise<SyncPullReport> => pullReport([]),
     hasLocalChanges: async () => false,
   };
   const { scheduler } = makeScheduler({ cfg, engine, history: [] });
@@ -267,12 +289,13 @@ test('runOnce: 无冲突且无变化 → success(pull,unchanged)，不上传（�
   assert.equal(result.skipReason, 'unchanged');
 });
 
-test('runOnce: 完整双向 → 无冲突合并写本地 + push', async () => {
+test('runOnce: 完整双向 → 无冲突覆盖写本地 + push', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
   const applyCalls: string[] = [];
   const engine = {
-    merge: async (): Promise<MergePlan> => makeMergePlan([['settings', 'useRemote']]),
-    applyMergePlan: async () => { applyCalls.push('apply'); return { ok: true, applied: ['settings'], restoreId: 'r1', rolledBack: false, review: [], warnings: [] }; },
+    pull: async (): Promise<SyncPullReport> => pullReport([{ adapter: 'settings' }]),
+    preview: async () => previewResult(),
+    applyItems: async () => { applyCalls.push('apply'); return applyReport(['settings']); },
     push: async () => ({ ok: true, snapshotId: 'snap-push', sections: ['settings'] as never, warnings: [] }),
   };
   const { scheduler, getEntries } = makeScheduler({ cfg, engine, history: [] });
@@ -285,12 +308,13 @@ test('runOnce: 完整双向 → 无冲突合并写本地 + push', async () => {
   assert.ok(getEntries().some((e) => e.status === 'success' && e.direction === 'both'), '写入双向成功历史');
 });
 
-test('runOnce: startup 变体 → 只做 pull 合并，不上传', async () => {
+test('runOnce: startup 变体 → 只做 pull 覆盖，不上传', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
   const pushCalls: string[] = [];
   const engine = {
-    merge: async (): Promise<MergePlan> => makeMergePlan([['settings', 'useRemote']]),
-    applyMergePlan: async () => ({ ok: true, applied: ['settings'], restoreId: 'r1', rolledBack: false, review: [], warnings: [] }),
+    pull: async (): Promise<SyncPullReport> => pullReport([{ adapter: 'settings' }]),
+    preview: async () => previewResult(),
+    applyItems: async () => applyReport(['settings']),
     push: async () => { pushCalls.push('push'); return { ok: true, snapshotId: 'x', sections: [] as never, warnings: [] }; },
   };
   const { scheduler } = makeScheduler({ cfg, engine, history: [] });
@@ -302,8 +326,9 @@ test('runOnce: startup 变体 → 只做 pull 合并，不上传', async () => {
 test('runOnce: 连续两次执行不再 skip(conflict)（run 完成收尾）', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
   const engine = {
-    merge: async (): Promise<MergePlan> => makeMergePlan([['settings', 'useRemote']]),
-    applyMergePlan: async () => ({ ok: true, applied: ['settings'], restoreId: 'r1', rolledBack: false, review: [], warnings: [] }),
+    pull: async (): Promise<SyncPullReport> => pullReport([{ adapter: 'settings' }]),
+    preview: async () => previewResult(),
+    applyItems: async () => applyReport(['settings']),
     push: async () => ({ ok: true, snapshotId: 's1', sections: ['settings'] as never, warnings: [] }),
   };
   const { scheduler, runs } = makeScheduler({ cfg, engine, history: [] });
@@ -316,14 +341,14 @@ test('runOnce: 连续两次执行不再 skip(conflict)（run 完成收尾）', a
   assert.equal(runs.listActive().filter((r) => r.kind === 'autosync').length, 0);
 });
 
-test('runOnce: 远端无新快照且本地无改动 → success(upToDate)，不 merge 不 push', async () => {
+test('runOnce: 远端无新快照且本地无改动 → success(upToDate)，不 pull 不 push', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
   const mergeCalls: string[] = [];
   const pushCalls: string[] = [];
   const engine = {
     hasNewRemoteSnapshot: async () => false,
     hasLocalChanges: async () => false,
-    merge: async () => { mergeCalls.push('merge'); return makeMergePlan([]); },
+    pull: async () => { mergeCalls.push('pull'); return pullReport([]); },
     push: async () => { pushCalls.push('push'); return { ok: true, snapshotId: 's', sections: [] as never, warnings: [] }; },
   };
   const { scheduler, getEntries } = makeScheduler({ cfg, engine, history: [] });
@@ -342,7 +367,7 @@ test('runOnce: 远端无新快照但本地有改动 → 只 push 不拉取（dir
   const engine = {
     hasNewRemoteSnapshot: async () => false,
     hasLocalChanges: async () => true,
-    merge: async () => { mergeCalls.push('merge'); return makeMergePlan([]); },
+    pull: async () => { mergeCalls.push('pull'); return pullReport([]); },
     push: async () => ({ ok: true, snapshotId: 'snap-local', sections: ['settings'] as never, warnings: [] }),
   };
   const { scheduler, getEntries } = makeScheduler({ cfg, engine, history: [] });
@@ -350,24 +375,25 @@ test('runOnce: 远端无新快照但本地有改动 → 只 push 不拉取（dir
   assert.equal(result.status, 'success');
   assert.equal(result.direction, 'push', '远端无新生只上传本地改动');
   assert.equal(result.pushedSnapshotId, 'snap-local');
-  assert.equal(mergeCalls.length, 0, '远端无新生不执行 merge/拉取');
+  assert.equal(mergeCalls.length, 0, '远端无新生不执行拉取');
   assert.ok(getEntries().some((e) => e.status === 'success' && e.direction === 'push'), '写入 push 历史');
 });
 
-test('runOnce: 远端有新快照但本地无改动 → 只 pull 合并，不 push', async () => {
+test('runOnce: 远端有新快照但本地无改动 → 只 pull 覆盖，不 push', async () => {
   const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
   const pushCalls: string[] = [];
   const engine = {
     hasNewRemoteSnapshot: async () => true,
     hasLocalChanges: async () => false,
-    merge: async (): Promise<MergePlan> => makeMergePlan([['settings', 'useRemote']]),
-    applyMergePlan: async () => ({ ok: true, applied: ['settings'], restoreId: 'r1', rolledBack: false, review: [], warnings: [] }),
+    pull: async (): Promise<SyncPullReport> => pullReport([{ adapter: 'settings' }]),
+    preview: async () => previewResult(),
+    applyItems: async () => applyReport(['settings']),
     push: async () => { pushCalls.push('push'); return { ok: true, snapshotId: 'x', sections: [] as never, warnings: [] }; },
   };
   const { scheduler } = makeScheduler({ cfg, engine, history: [] });
   const result = await scheduler.runOnce('git');
   assert.equal(result.status, 'success');
-  assert.equal(result.direction, 'pull', '本地无改动不上传，只拉取合并');
+  assert.equal(result.direction, 'pull', '本地无改动不上传，只拉取覆盖');
   assert.deepEqual(result.appliedSections, ['settings']);
   assert.equal(pushCalls.length, 0, '本地无改动不 push');
 });
@@ -377,7 +403,8 @@ test('start(): 定时器触发后自动重排下一次（周期性后台同步�
   const pending: Array<() => void> = [];
   let timerSeq = 0;
   const engine = {
-    merge: async (): Promise<MergePlan> => makeMergePlan([]),
+    pull: async (): Promise<SyncPullReport> => pullReport([]),
+    hasLocalChanges: async () => false,
   };
   const scheduler = new AutoSyncScheduler({
     syncDir: '/tmp',
@@ -414,65 +441,6 @@ test('start(): 定时器触发后自动重排下一次（周期性后台同步�
   assert.equal(pending.length, countAfterStop, 'stop 后不再排期');
 });
 
-test('buildAutoApplyPlan: 把非 skip 非 conflict 项归入 autoApply', () => {
-  const plan = makeMergePlan([
-    ['settings', 'useRemote'],
-    ['providers', 'keepLocal'],
-    ['plugins', 'skip'],
-    ['mcp', 'conflict'],
-  ]);
-  const apply = buildAutoApplyPlan(plan);
-  assert.deepEqual(apply.autoApply.map((s) => s.id), ['settings', 'providers']);
-  assert.deepEqual(apply.review.map((s) => s.id), ['mcp']);
-  assert.deepEqual(apply.skipped.map((s) => s.id), ['plugins']);
-});
-
-test('runOnce: 远端最新快照为加密 → 跳过 + 历史 skipReason=encrypted（不 merge 不 push）', async () => {
-  const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
-  const mergeCalls: string[] = [];
-  const pushCalls: string[] = [];
-  const engine = {
-    listSnapshots: async () => [
-      {
-        id: 'remote-enc', createdAt: '2026-08-16T12:00:00.000Z', sections: {},
-        manifest: { schemaVersion: 1, dshVersion: '1.2.3', platform: 'win32', sectionIds: ['settings' as SectionId], containsSecrets: true, encrypted: true },
-      },
-    ],
-    hasNewRemoteSnapshot: async () => true,
-    hasLocalChanges: async () => true,
-    merge: async () => { mergeCalls.push('merge'); return makeMergePlan([]); },
-    push: async () => { pushCalls.push('push'); return { ok: true, snapshotId: 'x', sections: [] as never, warnings: [] }; },
-  };
-  const { scheduler, getEntries, getConfig } = makeScheduler({ cfg, engine, history: [] });
-  const result = await scheduler.runOnce('git');
-  assert.equal(result.status, 'skipped', '加密快照 → 跳过');
-  assert.equal(result.skipReason, 'encrypted');
-  assert.equal(mergeCalls.length, 0, '加密快照不拉取合并');
-  assert.equal(pushCalls.length, 0, '加密快照不上传');
-  assert.ok(getEntries().some((e) => e.skipReason === 'encrypted'), '写入 encrypted 跳过历史');
-  assert.equal(getConfig().lastRunStatus, 'skipped', 'autosync 状态记录为 skipped');
-});
-
-test('runOnce: 远端最新快照为普通 → 加密检测不触发（listSnapshots 正常路径不受影响）', async () => {
-  const cfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
-  const engine = {
-    listSnapshots: async () => [
-      {
-        id: 'remote-plain', createdAt: '2026-08-16T12:00:00.000Z', sections: {},
-        manifest: { schemaVersion: 1, dshVersion: '1.2.3', platform: 'win32', sectionIds: ['settings' as SectionId], containsSecrets: false },
-      },
-    ],
-    hasNewRemoteSnapshot: async () => false,
-    hasLocalChanges: async () => false,
-    merge: async (): Promise<MergePlan> => makeMergePlan([]),
-  };
-  const { scheduler, getEntries } = makeScheduler({ cfg, engine, history: [] });
-  const result = await scheduler.runOnce('git');
-  assert.equal(result.status, 'success', '普通快照照常执行');
-  assert.equal(result.skipReason, 'upToDate');
-  assert.ok(!getEntries().some((e) => e.skipReason === 'encrypted'), '普通快照不产生 encrypted 跳过历史');
-});
-
 test('双通道：git/webdav 同时 enabled → 各自独立排期；runOnce 写各自通道配置', async () => {
   const gitCfg: AutosyncConfig = { enabled: true, interval: '30m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
   const webdavCfg: AutosyncConfig = { enabled: true, interval: '5m', startupMinIntervalMs: 300000, consecutiveFailures: 0 };
@@ -482,7 +450,7 @@ test('双通道：git/webdav 同时 enabled → 各自独立排期；runOnce 写
   const engine = {
     hasNewRemoteSnapshot: async () => false,
     hasLocalChanges: async () => false,
-    merge: async (): Promise<MergePlan> => makeMergePlan([]),
+    pull: async (): Promise<SyncPullReport> => pullReport([]),
   };
   const scheduler = new AutoSyncScheduler({
     syncDir: '/tmp',

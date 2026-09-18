@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {
   deserializeSnapshot, sectionsFromJsonSafe, sectionsToJsonSafe, serializeSnapshot,
 } from './snapshot-json.ts';
-import { encryptSectionsPayload, decryptSectionsPayload } from './snapshot-crypto.ts';
+import { encryptSectionsPayload, decryptSectionsPayload } from './snapshot-crypto.fixture.ts';
 import type { SyncSnapshot } from './transport.ts';
 import { isEncryptedSections } from './transport.ts';
 import type { SectionId } from '../schema/types.ts';

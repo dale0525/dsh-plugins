@@ -1,10 +1,10 @@
 /**
  * m-sync-flow：SyncEngine push/pull 编排测试。
- * - push：收集 portable 分区 → 组装 SyncSnapshot → 更新 sync-state → 上传 transport
- * - push：secret 断言（凭据值/敏感字段永不进入快照；不含 credentials/secrets 分区）
- * - push：portable 过滤（deviceSpecific/platformSpecific 分区不参与同步）
+ * - push：收集勾选分区（真实值）→ 组装 SyncSnapshot → 更新 sync-state → 上传 transport
+ * - push：manifest.security.containsSecrets 按实际内容如实标注（含明文密钥即 true）
+ * - push：sections 范围过滤（显式勾选 / 构造注入 / 未知分区告警）
  * - pull：复用 Importer 预览流程（analyzeImport/createImportPlan），绝不直接写配置、绝不执行导入
- * - pull：无远端快照 / containsSecrets 拒绝 / 冲突 → needsReview
+ * - pull：无远端快照 / 旧版加密快照拒绝 / 冲突 → needsReview
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,13 +12,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { SyncEngine, MAX_REMOTE_SNAPSHOTS } from './sync-engine.ts';
-import type { SyncApplyPlan } from './risk.ts';
+import { SyncEngine, MAX_REMOTE_SNAPSHOTS, sectionsCarrySecrets } from './sync-engine.ts';
 import { hashSection, loadSyncState, SYNC_STATE_FILE } from './sync-state.ts';
-import { decryptSectionsPayload } from './snapshot-crypto.ts';
+import { encryptSectionsPayload } from './snapshot-crypto.fixture.ts';
 import { computeSnapshotMeta } from './transport.ts';
-import { isEncryptedSections } from './transport.ts';
-import type { EncryptedSections, SyncSnapshot, SyncSnapshotMeta, SyncTransport } from './transport.ts';
+import type { SyncSnapshot, SyncSnapshotMeta, SyncTransport } from './transport.ts';
 import { WebDavTransport } from './webdav/webdav-transport.ts';
 import type { WebDavRequestFn } from './webdav/webdav-transport.ts';
 import { createAdapters } from '../adapters/index.ts';
@@ -26,6 +24,25 @@ import { makeContext, MemSnapshotStore } from '../adapters/test-helpers.ts';
 import { Importer } from '../core/importer.ts';
 import type { SectionId } from '../schema/types.ts';
 import type { SectionData } from '../schema/types.ts';
+import type { ImportPlan } from '../core/types.ts';
+
+function makeImportPlan(seed: string): ImportPlan {
+  return {
+    items: [{
+      id: `settings:general-${seed}`,
+      kind: 'Update',
+      adapter: 'settings',
+      description: `Update settings.general (${seed})`,
+      severity: 'info',
+      target: { adapter: 'settings', ref: 'general' },
+    }],
+    globalStrategy: 'merge',
+    pathMappings: [],
+    missingSecrets: [],
+    needsRestart: false,
+    estimatedActions: { settings: 1 } as unknown as Record<SectionId, number>,
+  };
+}
 
 /** 测试辅助：取明文 sections（同步测试构造/上传的快照均为普通快照，非加密载荷）。 */
 function plainSections(s: SyncSnapshot['sections']): Partial<Record<SectionId, SectionData>> {
@@ -103,8 +120,10 @@ test('push: 收集 portable 分区 → 上传快照 → 更新 sync-state → �
     assert.equal(report.ok, true);
     assert.equal(report.snapshotId, 'sync-001');
     assert.ok(report.sections.includes('settings'), 'settings 进入同步');
-    assert.ok(report.sections.includes('skills'), 'skills（文件类 portable）进入同步');
-    assert.ok(!report.sections.includes('credentialsStatus'), 'credentials 不进入同步');
+    assert.ok(report.sections.includes('skills'), 'skills（文件类）进入同步');
+    // credentialsStatus 只导出 configured/source 标记（hasValue 恒 false，绝不导出值），可勾选同步
+    assert.ok(report.sections.includes('credentialsStatus'), 'credentialsStatus（仅状态标记）进入同步');
+    assert.ok(!report.sections.includes('secrets' as SectionId), 'secrets 不是 ConfigAdapter，不进同步');
 
     // 上传载荷：内容 + manifest 摘要
     const uploaded = transport.snapshots.get('sync-001')!;
@@ -136,7 +155,7 @@ test('push: 收集 portable 分区 → 上传快照 → 更新 sync-state → �
   }
 });
 
-test('push: secret 断言——敏感字段值被剥离、凭据分区绝不参与、快照序列化不含秘密值', async () => {
+test('push: 明文同步——勾选分区携带真实值，containsSecrets 如实标注为 true', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-secret-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -145,53 +164,65 @@ test('push: secret 断言——敏感字段值被剥离、凭据分区绝不参�
       revision: 3,
       secrets: [{ path: ['apiToken'], set: true }],
     });
-    // deviceSpecific 凭据分区即使有值也不得进入快照
-    ctx.credentials.values.set('DEEPSEEK_API_KEY', 'sk-credential-secret');
     const transport = new MemSyncTransport();
     const engine = makeEngine({ ctx, transport, stateDir: tmp });
 
     const report = await engine.push({ snapshotId: 'sync-sec' });
     assert.equal(report.ok, true);
     const uploaded = transport.snapshots.get('sync-sec')!;
-    const serialized = JSON.stringify(uploaded);
-    assert.ok(!serialized.includes('sk-super-secret-value'), '敏感字段值不得进入快照');
-    assert.ok(!serialized.includes('p@ss'), '密码值不得进入快照');
-    assert.ok(!serialized.includes('sk-credential-secret'), '凭据值不得进入快照');
-    for (const forbidden of ['credentials', 'credentialsStatus', 'secrets'] as SectionId[]) {
+    // 明文语义：值原样进入快照
+    const general = (plainSections(uploaded.sections)['settings'] as { namespaces: Record<string, unknown> }).namespaces['general'] as { value: Record<string, unknown> };
+    assert.equal(general.value['apiToken'], 'sk-super-secret-value', '真实凭据值进入明文快照');
+    // 标注与内容一致：含密钥即 true（不得硬编码 false）
+    assert.equal(uploaded.manifest.containsSecrets, true, 'manifest 如实标注 containsSecrets');
+    // 凭据分区本身不参与同步（它不是 ConfigAdapter）
+    for (const forbidden of ['credentials', 'secrets'] as SectionId[]) {
       assert.ok(!(forbidden in uploaded.sections), `分区 ${forbidden} 不得进入快照`);
     }
-    // 剥离后保留字段名与空值（供「需补录」提示）
-    const general = (plainSections(uploaded.sections)['settings'] as { namespaces: Record<string, unknown> }).namespaces['general'] as { value: Record<string, unknown> };
-    assert.equal(general.value['apiToken'], '');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('push: portable 过滤——deviceSpecific/platformSpecific 分区不参与同步', async () => {
+test('sectionsCarrySecrets: 无敏感字段 → false；含 apiKey/token/password → true', () => {
+  assert.equal(sectionsCarrySecrets({
+    settings: { version: 1, namespaces: { general: { value: { theme: 'dark' }, revision: 1, secrets: [] } } },
+  } as never), false, '普通值不误报');
+  assert.equal(sectionsCarrySecrets({
+    providers: { version: 1, providers: [{ name: 'x', apiKey: 'sk-1' }] },
+  } as never), true, 'apiKey 命中');
+  assert.equal(sectionsCarrySecrets({
+    settings: { version: 1, namespaces: { general: { value: { token: 't' }, revision: 1, secrets: [] } } },
+  } as never), true, 'token 命中');
+  assert.equal(sectionsCarrySecrets({
+    settings: { version: 1, namespaces: { general: { value: { apiKeyEnv: 'DEEPSEEK_API_KEY' }, revision: 1, secrets: [] } } },
+  } as never), false, '仅环境变量引用名不算秘密');
+});
+
+test('push: 默认范围含全部分区（原 platformSpecific/deviceSpecific 分区也可同步）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-portable-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
     seedSource(ctx);
     ctx.workspace.records.set('w1', { id: 'w1', path: 'C:\\work', title: 'work', sessionIds: [] });
-    ctx.credentials.values.set('DEEPSEEK_API_KEY', 'sk-x');
     await ctx.fs.writeFile('dsh-ssh.json', Buffer.from('{"hosts":{}}', 'utf8')); // pluginFiles 白名单
     const transport = new MemSyncTransport();
     const engine = makeEngine({ ctx, transport, stateDir: tmp });
 
     await engine.push({ snapshotId: 'sync-p' });
     const uploaded = transport.snapshots.get('sync-p')!;
-    for (const forbidden of ['workspaces', 'mcp', 'credentialsStatus', 'credentials', 'pluginFiles', 'sessions'] as SectionId[]) {
-      assert.ok(!(forbidden in uploaded.sections), `非 portable 分区 ${forbidden} 不得进入快照`);
-    }
-    assert.ok(!uploaded.manifest.sectionIds.includes('workspaces' as SectionId));
     assert.ok(uploaded.manifest.sectionIds.includes('settings'));
+    assert.ok(uploaded.manifest.sectionIds.includes('workspaces' as SectionId), 'workspaces 现可勾选同步');
+    assert.ok(uploaded.manifest.sectionIds.includes('mcp' as SectionId), 'mcp 现可勾选同步');
+    // credentialsStatus / secrets 不是 ConfigAdapter，结构上不可能进入快照
+    assert.ok(!('credentials' in uploaded.sections));
+    assert.ok(!('secrets' in uploaded.sections));
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('push: 显式 sections（高级/自定义导出）→ 只同步指定 portable 分区', async () => {
+test('push: 显式 sections（自定义同步）→ 只同步指定分区', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-sections-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -215,7 +246,7 @@ test('push: 显式 sections（高级/自定义导出）→ 只同步指定 porta
   }
 });
 
-test('push: sections 含非 portable / 未知分区 → 警告跳过，其余照常同步', async () => {
+test('push: sections 含未知分区 → 警告跳过，其余照常同步', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-sections-skip-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -226,17 +257,16 @@ test('push: sections 含非 portable / 未知分区 → 警告跳过，其余照
     const report = await engine.push({ snapshotId: 'sync-mix', sections: ['settings', 'mcp' as SectionId, 'nope' as SectionId] });
     assert.equal(report.ok, true);
     const uploaded = transport.snapshots.get('sync-mix')!;
-    assert.deepEqual(uploaded.manifest.sectionIds, ['settings'], '只同步 portable 且已知的分区');
-    // 非法/非 portable 分区给出明确告警（不静默）
+    assert.deepEqual(uploaded.manifest.sectionIds.sort(), ['mcp', 'settings'], '同步已知分区');
+    // 未知分区给出明确告警（不静默）
     const warnText = report.warnings.join('\n');
-    assert.ok(/mcp/.test(warnText), `告警应点名 mcp：${warnText}`);
     assert.ok(/nope/.test(warnText), `告警应点名 nope：${warnText}`);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('push: sections 全为无效/非 portable → ok=false + 明确 message', async () => {
+test('push: sections 全为未知分区 → ok=false + 明确 message', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-sections-none-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -244,16 +274,16 @@ test('push: sections 全为无效/非 portable → ok=false + 明确 message', a
     const transport = new MemSyncTransport();
     const engine = makeEngine({ ctx, transport, stateDir: tmp });
 
-    const report = await engine.push({ snapshotId: 'sync-empty', sections: ['credentialsStatus'] });
+    const report = await engine.push({ snapshotId: 'sync-empty', sections: ['nope' as SectionId] });
     assert.equal(report.ok, false);
-    assert.equal(transport.snapshots.has('sync-empty'), false, '无有效 portable 分区时不上传快照');
+    assert.equal(transport.snapshots.has('sync-empty'), false, '无有效分区时不上传快照');
     assert.ok(report.message && report.message.includes('没有可同步'), `message：${report.message}`);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('push: sections 缺省/空数组 → 全部 portable 推荐分区（默认/快速导出模式）', async () => {
+test('push: sections 缺省/空数组 → 全部分区（默认模式）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-sections-default-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -264,10 +294,10 @@ test('push: sections 缺省/空数组 → 全部 portable 推荐分区（默认/
     const report = await engine.push({ snapshotId: 'sync-def', sections: [] });
     assert.equal(report.ok, true);
     const uploaded = transport.snapshots.get('sync-def')!;
-    // 空数组 = 全量（默认模式）；应含 settings/providers 等多个 portable
+    // 空数组 = 全量（默认模式）；应含 settings/providers 等多个分区
     assert.ok('settings' in uploaded.sections);
     assert.ok('providers' in uploaded.sections);
-    assert.ok(uploaded.manifest.sectionIds.length >= 4, `应同步全部 portable 分区，实际 ${uploaded.manifest.sectionIds.length}`);
+    assert.ok(uploaded.manifest.sectionIds.length >= 4, `应同步全部推荐分区，实际 ${uploaded.manifest.sectionIds.length}`);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -290,127 +320,36 @@ test('push: 构造注入 sections（自动同步持久化配置）→ 未显式�
     assert.equal(report.ok, true);
     const uploaded = transport.snapshots.get('sync-auto')!;
     assert.deepEqual(uploaded.manifest.sectionIds.sort(), ['settings', 'skills']);
-    assert.ok(!('providers' in uploaded.sections), '注入范围外的 portable 分区不进入');
+    assert.ok(!('providers' in uploaded.sections), '注入范围外的分区不进入');
     assert.ok(!('plugins' in uploaded.sections));
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-/* ---------------- 加密快照（push 加密 + 密钥导出；pull 解密） ---------------- */
+/* ---------------- 旧版加密快照：明确拒绝 ---------------- */
 
-test('push: encrypt+password → 上传加密快照（manifest.encrypted=true，sections 为密文，远端无明文）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-encrypt-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-
-    const report = await engine.push({ snapshotId: 'sync-enc', encrypt: true, password: 'pw-12345678' });
-    assert.equal(report.ok, true);
-    const uploaded = transport.snapshots.get('sync-enc')!;
-    assert.equal(uploaded.manifest.encrypted, true, 'manifest 标记加密');
-    assert.equal(uploaded.manifest.containsSecrets, false, '未导出密钥时 containsSecrets=false');
-    assert.ok(isEncryptedSections(uploaded.sections), 'sections 为密文载荷');
-    const serialized = JSON.stringify(uploaded);
-    assert.ok(!serialized.includes('dark'), '明文内容不得出现在加密快照（远端/序列化）');
-    // 解密后还原
-    const decrypted = await decryptSectionsPayload(uploaded.sections.encrypted, 'pw-12345678');
-    assert.ok('settings' in decrypted, '解密后分区还原');
-    // 本地不写明文祖先/散文件副本（密钥不落盘）
-    const state = await loadSyncState(tmp);
-    assert.equal(state.lastSnapshotId, 'sync-enc');
-    assert.ok(state.sections['settings'] !== undefined, '基线 hash 已记录（明文 hash，可比较）');
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('push: encrypt + includeSecrets → 凭据值进入加密快照（解密后可恢复），未加密快照仍不含', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-secrets-enc-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    ctx.settings.ns.set('general', {
-      value: { theme: 'dark', apiToken: 'sk-cred-123', password: 'p@ss' },
-      revision: 3,
-      secrets: [{ path: ['apiToken'], set: true }],
-    });
-    const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-
-    // 加密 + 导出密钥：凭据值进入密文载荷
-    const report = await engine.push({ snapshotId: 'sync-sec-enc', encrypt: true, password: 'pw-12345678', includeSecrets: true });
-    assert.equal(report.ok, true);
-    const uploaded = transport.snapshots.get('sync-sec-enc')!;
-    assert.equal(uploaded.manifest.encrypted, true);
-    assert.equal(uploaded.manifest.containsSecrets, true, '加密快照声明含秘密');
-    const serialized = JSON.stringify(uploaded);
-    assert.ok(!serialized.includes('sk-cred-123'), '密文载荷不得含明文凭据值');
-    // 解密后凭据值可恢复
-    const encSections = uploaded.sections as EncryptedSections;
-    const decrypted = await decryptSectionsPayload(encSections.encrypted, 'pw-12345678');
-    const general = (decrypted['settings'] as { namespaces: Record<string, { value: Record<string, unknown> }> }).namespaces['general'];
-    assert.equal(general!.value['apiToken'], 'sk-cred-123', '解密后凭据值恢复');
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('push: includeSecrets 但未加密 → 拒绝（密钥绝不明文进同步通道）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-secrets-nocrypt-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-    await assert.rejects(
-      () => engine.push({ snapshotId: 'x', includeSecrets: true }),
-      /导出密钥必须同时加密快照/,
-    );
-    assert.equal(transport.snapshots.size, 0, '拒绝时不上传任何快照');
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('push: encrypt 但无密码 → 拒绝（密码绝不落盘，必须本次提供）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-enc-nopw-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-    await assert.rejects(() => engine.push({ snapshotId: 'x', encrypt: true }), /加密快照必须提供密码/);
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('pull: 远端加密快照无密码 → 明确报错；提供密码 → 解密成功并产出差异', async () => {
+test('pull: 远端为旧版加密快照 → 明确拒绝（同步通道不再产生/读取加密快照）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-pull-enc-'));
   try {
-    // 先加密推送一个快照（含凭据值），模拟远端加密快照
-    const srcCtx = makeContext('win32', 'C:\\Users\\alice');
-    srcCtx.settings.ns.set('general', {
-      value: { theme: 'dark', apiToken: 'sk-cred-123' },
-      revision: 5,
-      secrets: [{ path: ['apiToken'], set: true }],
-    });
+    const plain: SyncSnapshot = {
+      id: 'remote-enc',
+      createdAt: '2026-08-16T12:00:00.000Z',
+      manifest: { schemaVersion: 1, dshVersion: '1.2.3', platform: 'win32', sectionIds: ['settings'], containsSecrets: false },
+      sections: { settings: { version: 1, namespaces: {} } },
+    };
+    const enc = await encryptSectionsPayload(plain.sections as Partial<Record<SectionId, SectionData>>, 'pw-12345678');
+    const remote: SyncSnapshot = {
+      ...plain,
+      manifest: { ...plain.manifest, encrypted: true },
+      sections: enc,
+    };
     const transport = new MemSyncTransport();
-    const pushEngine = makeEngine({ ctx: srcCtx, transport, stateDir: tmp });
-    await pushEngine.push({ snapshotId: 'remote-enc', encrypt: true, password: 'pw-12345678', includeSecrets: true });
-
-    // 目标侧：无密码 pull → 报错提示需密码
-    const dstCtx = makeContext('win32', 'C:\\Users\\alice');
-    for (const n of NS) dstCtx.settings.registered.add(n);
-    const dstEngine = makeEngine({ ctx: dstCtx, transport, stateDir: tmp });
-    await assert.rejects(() => dstEngine.pull(), /已加密，需要解密密码/);
-
-    // 提供密码 → 解密成功，差异报告含凭据值条目
-    const report = await dstEngine.pull({ password: 'pw-12345678' });
-    assert.equal(report.ok, true);
-    assert.ok(report.changes.length > 0, '解密后产出差异');
+    transport.snapshots.set('remote-enc', remote);
+    transport.metas.push(computeSnapshotMeta(remote));
+    const ctx = makeContext('win32', 'C:\\Users\\alice');
+    const engine = makeEngine({ ctx, transport, stateDir: tmp });
+    await assert.rejects(() => engine.pull(), /旧版加密快照/);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -453,7 +392,7 @@ test('pull: 复用 Importer 预览流程，绝不直接写配置，产出差异�
   }
 });
 
-test('pull: 冲突项 → needsReview=true，仍零写入', async () => {
+test('pull: 双侧都改 → replace 覆盖，仍零写入（pull 只预览）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-conflict-'));
   try {
     const remote: SyncSnapshot = {
@@ -475,9 +414,9 @@ test('pull: 冲突项 → needsReview=true，仍零写入', async () => {
 
     const report = await engine.pull();
     assert.equal(report.ok, true);
-    assert.ok(report.changes.some((c) => c.kind === 'Conflict'), '本地与远端不同 → Conflict');
-    assert.equal(report.needsReview, true, '冲突需人工决策');
-    assert.deepEqual(ctx.settings.ns.get('general')?.value, { theme: 'light' }, '目标未被覆盖');
+    assert.ok(report.changes.some((c) => c.kind === 'Update'), '本地与远端不同 → Update（replace 策略）');
+    assert.equal(report.needsReview, false, 'replace 策略无待决策项');
+    assert.deepEqual(ctx.settings.ns.get('general')?.value, { theme: 'light' }, 'pull 只预览，不写本地');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -499,27 +438,30 @@ test('pull: 远端无快照 → 空报告（不报错）', async () => {
   }
 });
 
-test('pull: 远端快照声明 containsSecrets=true → 拒绝（同步通道永不携带秘密）', async () => {
+test('pull: 远端快照声明 containsSecrets=true → 正常拉取（明文同步为预期行为）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-leak-'));
   try {
     const remote: SyncSnapshot = {
-      id: 'remote-bad',
+      id: 'remote-secrets',
       createdAt: '2026-08-16T12:00:00.000Z',
       manifest: { schemaVersion: 1, dshVersion: '1.2.3', platform: 'win32', sectionIds: ['settings'], containsSecrets: true },
-      sections: { settings: { version: 1, namespaces: {} } },
+      sections: { settings: { version: 1, namespaces: { general: { value: { theme: 'dark' }, revision: 5, secrets: [] } } } },
     };
     const transport = new MemSyncTransport();
-    transport.snapshots.set('remote-bad', remote);
+    transport.snapshots.set('remote-secrets', remote);
     transport.metas.push(computeSnapshotMeta(remote));
     const ctx = makeContext('win32', 'C:\\Users\\alice');
+    for (const n of NS) ctx.settings.registered.add(n);
     const engine = makeEngine({ ctx, transport, stateDir: tmp });
-    await assert.rejects(() => engine.pull(), /秘密|containsSecrets/);
+    const report = await engine.pull();
+    assert.equal(report.ok, true, '含秘密的明文快照可正常拉取');
+    assert.ok(report.changes.length > 0);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('push: 全部 portable 分区导出失败 → ok=false + 明确 message', async () => {
+test('push: 空配置 → 空分区快照仍上传（不视为失败）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-fail-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice'); // 无任何 namespace/文件/插件
@@ -534,7 +476,7 @@ test('push: 全部 portable 分区导出失败 → ok=false + 明确 message', a
   }
 });
 
-// ─── P2c M2：applyMergePlan 单元测试 ──────────────────────────────────────────────
+// ─── P2c M2：applyItems 兜底快照 / 回滚单元测试 ──────────────────────────────────────
 
 /** 测试用 mock Importer：注入 analyzeImport / createImportPlan / executeImportPlan 的可控行为。 */
 class MockImporter {
@@ -582,7 +524,7 @@ function makeEngineWithMockImporter(opts: {
   });
 }
 
-test('applyMergePlan: 成功路径 → ApplyReport{ok:true, applied, restoreId, rolledBack:false}', async () => {
+test('applyItems: 成功路径写祖先副本 + 更新 sync-state', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-apply-ok-'));
   const localDir = path.join(tmp, 'snapshots');
   try {
@@ -594,36 +536,26 @@ test('applyMergePlan: 成功路径 → ApplyReport{ok:true, applied, restoreId, 
     const engine = makeEngineWithMockImporter({
       ctx, transport, stateDir: tmp, localSnapshotsDir: localDir, mockImporter: mock,
     });
-    const apply: SyncApplyPlan = {
-      autoApply: [{
-        id: 'settings',
-        decision: 'useRemote',
-        conflicts: [],
-        merged: { version: 1, namespaces: { general: { value: { theme: 'light' }, revision: 5, secrets: [] } } },
-      }],
-      review: [],
-      skipped: [],
-    };
-    const report = await engine.applyMergePlan(apply);
+    const zipPath = path.join(tmp, 'session.zip');
+    await fs.writeFile(zipPath, 'mock-zip-content');
+    const report = await engine.applyItems(zipPath, makeImportPlan('ok'));
     assert.equal(report.ok, true, 'success path → ok:true');
     assert.deepEqual(report.applied, ['settings']);
     assert.notEqual(report.restoreId, '', 'restoreId 应非空');
     assert.equal(report.rolledBack, false);
-    assert.equal(report.review.length, 0);
     assert.equal(report.warnings.length, 0);
     assert.equal(mock.executeCalls, 1, 'Importer.executeImportPlan 应被调用一次');
-    // 祖先基线应被更新：sync-state.lastSnapshotId 非空 + 落 ancestor 副本
+    // 基线应被更新：sync-state.lastSnapshotId 非空 + 落本地副本
     const state = await loadSyncState(tmp);
-    assert.notEqual(state.lastSnapshotId, '', 'push 后 lastSnapshotId 已被 recordBaseline 更新');
-    // localSnapshotsDir 下应有写出的祖先目录
+    assert.notEqual(state.lastSnapshotId, '', 'applyItems 后 lastSnapshotId 已被 recordBaseline 更新');
     const dirs = await fs.readdir(localDir);
-    assert.ok(dirs.length > 0, '祖先副本已写入');
+    assert.ok(dirs.length > 0, '本地快照副本已写入');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('applyMergePlan: 失败路径 → 整体回滚 + enqueueItems + ApplyReport{ok:false,rolledBack:true,review}', async () => {
+test('applyItems: 失败路径 → 整体回滚 + ok:false（不写基线）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-apply-fail-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -634,27 +566,14 @@ test('applyMergePlan: 失败路径 → 整体回滚 + enqueueItems + ApplyReport
     const engine = makeEngineWithMockImporter({
       ctx, transport, stateDir: tmp, mockImporter: mock,
     });
-    const apply: SyncApplyPlan = {
-      autoApply: [{
-        id: 'settings',
-        decision: 'useRemote',
-        conflicts: [],
-        merged: { version: 1, namespaces: { general: { value: { theme: 'light' }, revision: 5, secrets: [] } } },
-      }],
-      review: [],
-      skipped: [],
-    };
-    const report = await engine.applyMergePlan(apply);
+    const zipPath = path.join(tmp, 'session.zip');
+    await fs.writeFile(zipPath, 'mock-zip-content');
+    const report = await engine.applyItems(zipPath, makeImportPlan('fail'));
     assert.equal(report.ok, false, 'failure path → ok:false');
     assert.equal(report.rolledBack, true);
     assert.equal(report.applied.length, 0);
     assert.notEqual(report.restoreId, '', 'restoreId 应透传以便排查');
-    assert.deepEqual(report.review, [], '不再写 review-queue（§7.4）');
-    // sync-review-queue.json 不应被写入
-    const rqPath = path.join(tmp, 'sync-review-queue.json');
-    const rqExists = await fs.stat(rqPath).then(() => true).catch(() => false);
-    assert.equal(rqExists, false, 'review-queue.json 不应再被写入');
-    // recordBaseline 不应在失败路径调用：sync-state.lastSnapshotId 应仍为空
+    // recordBaseline 不应在失败路径调用
     const state = await loadSyncState(tmp);
     assert.equal(state.lastSnapshotId, '', '失败时不应 recordBaseline');
   } finally {
@@ -662,27 +581,7 @@ test('applyMergePlan: 失败路径 → 整体回滚 + enqueueItems + ApplyReport
   }
 });
 
-test('applyMergePlan: 空 autoApply → 直接返回 ok:true 空报告（无 Importer 调用）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-apply-empty-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    const transport = new MemSyncTransport();
-    const mock = new MockImporter();
-    const engine = makeEngineWithMockImporter({
-      ctx, transport, stateDir: tmp, mockImporter: mock,
-    });
-    const apply: SyncApplyPlan = { autoApply: [], review: [], skipped: [] };
-    const report = await engine.applyMergePlan(apply);
-    assert.equal(report.ok, true);
-    assert.equal(report.applied.length, 0);
-    assert.equal(mock.executeCalls, 0, '空 autoApply 不应触发 Importer');
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('applyMergePlan: Importer 缺失 → 抛错（构造期校验）', async () => {
+test('applyItems: Importer 缺失 → 抛错', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-apply-noimporter-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -692,19 +591,17 @@ test('applyMergePlan: Importer 缺失 → 抛错（构造期校验）', async ()
     const engine = new SyncEngine({
       ctx, transport, stateDir: tmp, adapters: createAdapters({ namespaces: NS }),
       now: () => new Date('2026-08-16T12:00:00.000Z'),
-      // 注意：未传 importer
     });
-    const apply: SyncApplyPlan = {
-      autoApply: [{ id: 'settings', decision: 'useRemote', conflicts: [], merged: { version: 1, namespaces: {} } }],
-      review: [], skipped: [],
-    };
-    await assert.rejects(() => engine.applyMergePlan(apply), /缺少 importer/);
+    await assert.rejects(
+      () => engine.applyItems(path.join(tmp, 'x.zip'), makeImportPlan('no-imp')),
+      /缺少 importer/,
+    );
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-// ─── P2a M4：merge / recordBaseline / push-baseline ──────────────────────────────
+// ─── P2a M4：recordBaseline / push-baseline ──────────────────────────────
 
 test('push: 完成后 sync-state.lastSnapshotId 指向本次推送快照（祖先基线已记录）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-baseline-'));
@@ -756,90 +653,7 @@ test('recordBaseline: 写本地祖先副本 + 更新 sync-state + 触发裁剪',
   }
 });
 
-test('merge: 不写本地配置、不执行导入，返回 MergePlan', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-merge-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    // 远端与本地不同：本地 settings.theme = dark；远端 = light
-    const remote: SyncSnapshot = {
-      id: 'remote-merge',
-      createdAt: '2026-08-16T12:00:00.000Z',
-      manifest: { schemaVersion: 1, dshVersion: '1.2.3', platform: 'win32', sectionIds: ['settings'], containsSecrets: false },
-      sections: {
-        settings: {
-          version: 1,
-          namespaces: {
-            general: { value: { theme: 'light', language: 'zh-CN' }, revision: 5, secrets: [] },
-          },
-        },
-      },
-    };
-    const transport = new MemSyncTransport();
-    transport.snapshots.set(remote.id, remote);
-    transport.metas.push(computeSnapshotMeta(remote));
-    // 祖先：与本地相同（本地未改 → useRemote）
-    const ancestor: SyncSnapshot = {
-      id: 'anc',
-      createdAt: '2026-08-15T00:00:00.000Z',
-      manifest: { schemaVersion: 1, dshVersion: '1.2.3', platform: 'win32', sectionIds: ['settings'], containsSecrets: false },
-      sections: {
-        settings: {
-          version: 1,
-          namespaces: { general: { value: { theme: 'dark', language: 'zh-CN' }, revision: 3, secrets: [] } },
-        },
-      },
-    };
-    const local = path.join(tmp, 'ancestors');
-    // 预置祖先副本
-    const { writeSnapshotToDir } = await import('./layout.ts');
-    await writeSnapshotToDir(ancestor, path.join(local, 'anc'));
-    // 预置 sync-state（指向祖先 id）
-    const { saveSyncState } = await import('./sync-state.ts');
-    await saveSyncState(tmp, {
-      schemaVersion: 2,
-      lastSyncAt: '2026-08-15T00:00:00.000Z',
-      sections: { settings: { hash: '0'.repeat(64), updatedAt: '2026-08-15T00:00:00.000Z' } },
-      lastSnapshotId: 'anc',
-    });
-
-    const engine = makeEngine({ ctx, transport, stateDir: tmp, localSnapshotsDir: local });
-    const plan = await engine.merge();
-    assert.ok(plan.sections.length >= 1, '至少包含 settings 分区');
-    const settings = plan.sections.find((s) => s.id === 'settings');
-    assert.ok(settings, 'settings 在 MergePlan 中');
-    // 本地未改（=祖先）、远端改了 → useRemote
-    assert.equal(settings!.decision, 'useRemote');
-    // 零写入：目标 settings 未被覆盖
-    assert.deepEqual(ctx.settings.ns.get('general')?.value, { theme: 'dark', language: 'zh-CN' });
-    // transport 仅被 list/download 调用（无 upload/delete）
-    assert.deepEqual(transport.calls, ['list', 'download']);
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
 // ─── P3：applyItems（一键同步逐项执行）测试 ──────────────────────────────
-
-import type { ImportPlan } from '../core/types.ts';
-
-function makeImportPlan(seed: string): ImportPlan {
-  return {
-    items: [{
-      id: `settings:general-${seed}`,
-      kind: 'Update',
-      adapter: 'settings',
-      description: `Update settings.general (${seed})`,
-      severity: 'info',
-      target: { adapter: 'settings', ref: 'general' },
-    }],
-    globalStrategy: 'merge',
-    pathMappings: [],
-    missingSecrets: [],
-    needsRestart: false,
-    estimatedActions: { settings: 1 } as unknown as Record<SectionId, number>,
-  };
-}
 
 test('applyItems: 成功路径 → 执行子计划 + recordBaseline', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-applyitems-ok-'));

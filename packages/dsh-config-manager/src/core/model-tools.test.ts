@@ -332,7 +332,8 @@ test('config_sync_push：复用 SyncEngine.push（内存 transport），返回 s
     assert.ok(transport.calls.includes('upload'), 'push 写远端')
     const uploadedSections = transport.snapshots.get(out.snapshotId)!.sections as Record<string, unknown>
     assert.ok(!('secrets' in uploadedSections), '不含 secrets 分区')
-    assert.ok(!('credentialsStatus' in uploadedSections), '不含 credentialsStatus 分区')
+    // credentialsStatus 只含 configured/source 标记（值恒不导出），可勾选同步
+    assert.ok('credentialsStatus' in uploadedSections, 'credentialsStatus 状态标记进入同步')
   } finally {
     await fs.rm(tmp, { recursive: true, force: true })
   }

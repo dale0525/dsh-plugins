@@ -1,8 +1,8 @@
 {
-  "name": "dsh-config-manager",
+  "name": "@logictan/dsh-config-manager",
   "version": "0.1.60",
   "license": "MIT",
-  "description": "Backup, restore, export, import, migrate and sync your DeepSeek Harness (DSH) configuration: settings, plugins, MCP servers, skills, agent presets and workspaces. One-click migration to another machine. DSH 配置一键备份、恢复、导出、导入、迁移与同步插件。",
+  "description": "Sync your DeepSeek Harness (DSH) configuration between machines over a private git or WebDAV channel: settings, plugins, MCP servers, skills, agent presets, workspaces and provider credentials. DSH 配置远程同步插件（私有通道，明文自用）。",
   "keywords": [
     "dsh",
     "deepseek-harness",
@@ -25,7 +25,8 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/xiajiajun516/dsh-config-manager.git"
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-config-manager"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -72,14 +73,14 @@
     "!lib/**/*.map",
     "src",
     "cordis.patch.yml",
-    "README.md",
-    "README.zh-CN.md"
+    "README.md"
   ],
   "scripts": {
     "test": "node --test \"src/**/*.test.ts\" \"tests/**/*.test.ts\"",
     "smoke": "node --test src/core/smoke.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json && tsdown",
+    "prepare": "tsc -p tsconfig.build.json && tsdown",
     "bundle": "tsdown",
     "watch": "tsdown --watch",
     "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\""

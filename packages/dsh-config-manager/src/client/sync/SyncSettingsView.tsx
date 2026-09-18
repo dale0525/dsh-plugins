@@ -1618,7 +1618,6 @@ function PushPreviewCard({ preview, t, uiT }: {
       {view.remoteSnapshotCount === 0 && (
         <Banner kind="warn">{t('syncflow.pushFirstBaseline')}</Banner>
       )}
-      {view.encryptedHint !== '' && <Banner kind="warn">{view.encryptedHint}</Banner>}
       <Card className={css.card}>
         <div className={css.groupLabel}>{t('syncflow.pushPreviewSections')}</div>
         <div className={css.planScroll}>

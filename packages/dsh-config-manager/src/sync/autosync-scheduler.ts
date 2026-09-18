@@ -17,9 +17,9 @@
  *  - runs.register('autosync') 防重复；同 kind running → 跳过
  *  - readSyncConfig(该通道) → 按通道判定未配置（git 无 git.repoUrl / webdav 无 webdav.url）
  *    → 记 skipped(未配置) → return
- *  - Phase A: engine.merge() 三方合并 → 判定 needsReview（冲突/缺失依赖/Install/Error）
- *  - 冲突 → 跳过 + 写历史 skipped + conflictedSections[] → return
- *  - Phase B: 无冲突 → engine.applyMergePlan(apply) 写入本地
+ *  - Phase A: engine.pull() 差异预览 → 判定 needsReview（冲突/缺失依赖/路径问题）
+ *  - 需人工决策 → 跳过 + 写历史 skipped + conflictedSections[] → return
+ *  - Phase B: 无冲突 → engine.preview() + engine.applyItems() 覆盖写入本地
  *  - Phase C: 完整双向 → engine.push() 上传
  *  - 收尾：写该通道 autosync-config（lastRunAt, lastRunStatus, consecutiveFailures, lastRunHistoryId）
  *
@@ -41,8 +41,7 @@ import { readSyncConfigFor, isGitConfig, isWebDavConfig } from './sync-config.ts
 import type { SyncConfig, SyncTransportType } from './sync-config.ts';
 import { readSyncHistory, appendAutosyncEntry } from './sync-history.ts';
 import type { AutosyncHistoryEntry } from './sync-history.ts';
-import type { MergePlan, MergeSectionResult } from './merge.ts';
-import type { SyncApplyPlan } from './risk.ts';
+import type { ImportPlan } from '../core/types.ts';
 
 /** 间隔 → ms 换算（§4.3） */
 export function intervalToMs(interval: AutosyncInterval): number {
@@ -346,31 +345,6 @@ export class AutoSyncScheduler {
 
       const engine = this.makeSyncEngine(syncCfg!);
 
-      // 加密快照检测：远端最新快照为加密 → 自动同步无密码无法解密 → 整体跳过，
-      // 同步历史记录 skipReason='encrypted'（提示需手动输入密码同步）。
-      // 加密快照只通过手动推送/拉取产生与消费；自动同步仅处理普通快照。
-      // list 失败宽容处理：视为无加密快照，继续正常流程（网络问题由后续链路暴露为 failed）。
-      let encryptedRemote = false;
-      try {
-        const metas = await engine.listSnapshots();
-        const latestMeta = metas.length > 0 ? metas[metas.length - 1]! : null;
-        encryptedRemote = latestMeta !== null && latestMeta.manifest.encrypted === true;
-      } catch {
-        encryptedRemote = false;
-      }
-      if (encryptedRemote) {
-        const result: AutosyncRunResult = {
-          status: 'skipped', direction: 'pull', skipReason: 'encrypted', historyId,
-          consecutiveFailures: cfg.consecutiveFailures,
-        };
-        await this.appendHistory(channel, {
-          direction: 'pull', status: 'skipped', skipReason: 'encrypted',
-          createdAt: nowIso, failureCountAtRun: cfg.consecutiveFailures,
-        });
-        await this.writeFinalConfig(cfg, result, nowIso, historyId, channel);
-        return result;
-      }
-
       // 事件驱动触发（§3.1/§3.2/§3.3 看变化不看时间）：
       // - remoteNew：远端是否出现比本地祖先更新的快照 → 决定是否做下载合并（Phase A）；
       // - localDirty：本地 portable 配置相对基线是否真的变了 → 决定是否上传（Phase C）。
@@ -394,11 +368,12 @@ export class AutoSyncScheduler {
 
       let appliedSections: SectionId[] = [];
 
-      // Phase A: pull 合并（下载）—— 仅当远端有新快照才拉取（§3.2）。
+      // Phase A: pull 覆盖（下载）—— 仅当远端有新快照才拉取（§3.2）。
+      // 产品语义：勾选即同步，不做 diff/合并；远端最新快照按选择覆盖写入本地。
       if (remoteNew) {
-        let mergePlan: MergePlan;
+        let pullReport: import('./sync-engine.ts').SyncPullReport;
         try {
-          mergePlan = await engine.merge();
+          pullReport = await engine.pull();
         } catch (err) {
           const error = err instanceof Error ? err.message : String(err);
           const result: AutosyncRunResult = {
@@ -414,10 +389,12 @@ export class AutoSyncScheduler {
           return result;
         }
 
-        // 判定 needsReview
-        const reviewSections = mergePlan.sections.filter((s) => s.decision === 'conflict');
-        if (reviewSections.length > 0) {
-          const conflictedSections = reviewSections.map((s) => s.id);
+        // 有需要人工决策的项（冲突/缺失依赖/路径问题）→ 自动同步不擅自覆盖，交手动同步处理。
+        if (pullReport.needsReview) {
+          const conflictedSections = [...new Set(pullReport.changes
+            .filter((c) => c.kind === 'Conflict' || c.kind === 'MissingSecret'
+              || c.kind === 'MissingDependency' || c.kind === 'Error')
+            .map((c) => c.adapter))];
           const result: AutosyncRunResult = {
             status: 'skipped', direction: 'pull', skipReason: 'conflict',
             conflictedSections, historyId,
@@ -432,23 +409,32 @@ export class AutoSyncScheduler {
           return result;
         }
 
-        // 无冲突：构造 SyncApplyPlan（autoApply = 所有 useRemote/keepLocal 项；skipped = skip 项）
-        const apply = buildAutoApplyPlan(mergePlan);
-        if (apply.autoApply.length === 0) {
-          // 远端快照无物可应用（全部 skip / 无变化）→ 无远端合并产出；若本地有改动则仅走上传。
+        const pullSections = [...new Set(pullReport.changes.map((c) => c.adapter))];
+        if (pullSections.length === 0) {
+          // 远端快照无物可应用（无变化）→ 无远端产出；若本地有改动则仅走上传。
           // 此处不立即返回，让 Phase C 依据 localDirty 决定是否上传本地改动。
         } else {
-          // Phase B: 写入本地（applyMergePlan，无 review-queue 写）。P0-A：包 intent journal。
-          const rawApply = async () => engine.applyMergePlan(apply);
+          // Phase B: 写入本地（preview 会话 → 全部采纳 → applyItems）。P0-A：包 intent journal。
+          const rawApply = async () => {
+            const preview = await engine.preview();
+            if (preview.plan === null || preview.zipPath === '') {
+              throw new Error(preview.message ?? '同步预览失败：远端无快照');
+            }
+            const subPlan: ImportPlan = {
+              ...preview.plan,
+              items: preview.plan.items.filter((i) => i.kind !== 'Skip'),
+            };
+            return await engine.applyItems(preview.zipPath, subPlan);
+          };
           const applyReport = (this.phase3Recovery !== undefined && this.lockCtxForJournal !== null)
             ? (await this.phase3Recovery.runExternalIntent({
                 operationType: 'autosync-apply', lockCtx: this.lockCtxForJournal,
                 intent: { adapter: 'sync', ref: channel, kind: 'Apply' }, fn: rawApply,
-              })).result as import('./sync-engine.ts').ApplyReport
+              })).result as import('./sync-engine.ts').ApplyItemsReport
             : await rawApply();
           appliedSections = applyReport.applied as SectionId[];
           if (!applyReport.ok) {
-            const error = applyReport.warnings.join('; ') || 'applyMergePlan 执行失败';
+            const error = applyReport.warnings.join('; ') || 'applyItems 执行失败';
             const result: AutosyncRunResult = {
               status: 'failed', direction: 'pull', error, historyId,
               consecutiveFailures: cfg.consecutiveFailures + 1,
@@ -601,30 +587,6 @@ export class AutoSyncScheduler {
       }).catch(() => { /* 尽力而为 */ });
     }
   }
-}
-
-/** 从 MergePlan 构造 SyncApplyPlan（autoApply = 所有非 skip 非 conflict 项）。 */
-export function buildAutoApplyPlan(plan: MergePlan): SyncApplyPlan {
-  const autoApply: MergeSectionResult[] = [];
-  const review: MergeSectionResult[] = [];
-  const skipped: MergeSectionResult[] = [];
-  for (const s of plan.sections) {
-    if (s.decision === 'skip') {
-      skipped.push(s);
-      continue;
-    }
-    if (s.decision === 'conflict') {
-      review.push(s);
-      continue;
-    }
-    // useRemote / keepLocal：都有 merged 数据
-    if (s.merged !== undefined) {
-      autoApply.push(s);
-    } else {
-      skipped.push(s);
-    }
-  }
-  return { autoApply, review, skipped };
 }
 
 /**

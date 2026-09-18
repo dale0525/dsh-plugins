@@ -14,6 +14,6 @@
     "cordis.patch.yml"
   ],
   "dependencies": {
-    "dsh-config-manager": "^0.1.60"
+    "@logictan/dsh-config-manager": "^0.1.60"
   }
 }

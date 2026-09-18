@@ -79,7 +79,6 @@ export function describeSkipReason(reason: string | undefined): string {
     case 'no-remote': return '远端无快照';
     case 'not-configured': return '未配置仓库';
     case 'network': return '网络问题';
-    case 'encrypted': return '远端快照已加密，自动同步跳过（请手动同步）';
     // issue #31：宿主侧的分类锁判定（LOCKED/STALE/UNKNOWN）统一以 'mutation-locked' 落历史，
     // 客户端拿不到细分 reason → 文案必须同时覆盖「活锁占用」与「残留锁需回收」两种可能，
     // 并给出可操作方向（否则界面只显示裸 token，用户无从判断要不要处理）。

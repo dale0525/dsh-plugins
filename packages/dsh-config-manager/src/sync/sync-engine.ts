@@ -1,17 +1,15 @@
 /**
  * m-sync-flow：push/pull 编排（SyncEngine）。
  *
- * push：createAdapters 逐个 export（includeSecrets=false 恒成立）→ SecretScanner 剥离 →
- *       组装 SyncSnapshot（只含 portable 分区）→ 本地散文件副本（复用 t2 layout，不写 ZIP）→
- *       transport.upload → 更新 sync-state（每分区 hash + updatedAt + lastSyncAt + transport 绑定）。
- * pull：transport.list/download 取远端快照 → 过滤 portable 分区 → 转临时标准 ZIP
- *       （buildManifest + checksums，喂给现有 Importer）→ analyzeImport/createImportPlan 预览差异。
+ * push：createAdapters 逐个 export（includeSecrets=true，真实值）→ 组装 SyncSnapshot →
+ *       本地散文件副本（复用 t2 layout，不写 ZIP）→ transport.upload → 更新 sync-state
+ *       （每分区 hash + updatedAt + lastSyncAt + transport 绑定）。
+ * pull：transport.list/download 取远端快照 → 转临时标准 ZIP（buildManifest + checksums，
+ *       喂给 Importer）→ analyzeImport/createImportPlan 预览差异。
  *       绝不直接写配置、绝不执行导入（executeImportPlan 由上层按用户确认驱动）。
  *
- * 安全不变量：
- *  - secret 值永不参与同步：includeSecrets=false 恒成立 + 敏感字段扫描剥离 + 凭据分区结构性排除断言；
- *  - 远端快照声明 containsSecrets=true → 拒绝拉取；
- *  - 同步只做 portable 分区（deviceSpecific/platformSpecific 永不进入同步通道）。
+ * 明文同步（产品语义）：同步通道是用户自有的私有通道，勾选即同步——
+ * 不加密、不脱敏、不做 diff/合并。快照按实际内容如实标注 manifest.security.containsSecrets。
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -23,7 +21,7 @@ import { defaultSecretScanner } from '../core/exporter.ts';
 import { Importer } from '../core/importer.ts';
 import type {
   ConfigAdapter, ExportSection, GlobalConflictStrategy, HostContext,
-  ImportAnalysis, ImportPlan, ImportResult, PlanItem, PlanItemKind, SecretScanner,
+  ImportAnalysis, ImportPlan, ImportResult, PlanItem, PlanItemKind,
 } from '../core/types.ts';
 import { isFileSection, SECTION_FILE_PREFIXES, SECTION_JSON_PATHS } from '../schema/config.ts';
 import { buildManifest, CHECKSUMS_FILE, MANIFEST_FILE } from '../schema/manifest.ts';
@@ -36,16 +34,11 @@ import type { ZipWriteEntry } from '../utils/zip.ts';
 import { createSnapshotFs, joinFs } from './fs.ts';
 import type { SnapshotFs } from './fs.ts';
 import { writeSnapshotToDir } from './layout.ts';
-import { decryptSectionsPayload, encryptSectionsPayload } from './snapshot-crypto.ts';
 import { hashSection, loadSyncState, saveSyncState } from './sync-state.ts';
-import type { EncryptedSections, SyncSnapshot, SyncSnapshotMeta, SyncTransport } from './transport.ts';
+import type { SyncSnapshot, SyncSnapshotMeta, SyncTransport } from './transport.ts';
 import { isEncryptedSections } from './transport.ts';
 import { msgOf, zhMsg } from '../core/messages.ts';
 import type { MsgFunc } from '../core/messages.ts';
-import { DEFAULT_ANCESTOR_KEEP, loadAncestor, pruneAncestors, writeAncestor } from './ancestor.ts';
-import type { MergePlan, MergeSectionResult } from './merge.ts';
-import { merge as mergeSections } from './merge.ts';
-import type { SyncApplyPlan } from './risk.ts';
 import { createSnapshot } from '../core/backup.ts';
 import { rollback } from '../core/rollback.ts';
 import { FileSnapshotStore } from '../core/backup.ts';
@@ -59,8 +52,6 @@ export interface SyncEngineOptions {
   stateDir: string;
   /** 分区 adapter 列表（缺省 createAdapters()；宿主应注入 namespaces 等） */
   adapters?: ConfigAdapter[];
-  /** 秘密扫描器（缺省 defaultSecretScanner：敏感字段名剥离） */
-  scanner?: SecretScanner;
   /** pull 需要；不注入则 pull 抛错（push 不受影响） */
   importer?: Importer;
   now?: () => Date;
@@ -70,7 +61,7 @@ export interface SyncEngineOptions {
   transportRef?: string;
   /** 本地散文件快照副本目录（push 落盘审计副本；不传则跳过本地落盘） */
   localSnapshotsDir?: string;
-  /** 一键回滚兜底快照目录（apply-items / apply-merge-plan 落盘；缺省 <stateDir>/snapshots，
+  /** 一键回滚兜底快照目录（apply-items 落盘；缺省 <stateDir>/snapshots，
    *  与 Host /sync/rollback 路由读取的目录保持一致，否则回滚找不到 snapshot.json） */
   rollbackSnapshotsDir?: string;
   /** pull 临时 ZIP 目录（缺省 os.tmpdir()） */
@@ -80,10 +71,9 @@ export interface SyncEngineOptions {
   /** 消息翻译器（缺省 ctx.msg ?? zh） */
   msg?: MsgFunc;
   /**
-   * 同步范围（高级/自定义导出模式持久化配置）：只处理这些 portable 分区。
-   * 缺省 = 全部 portable 推荐分区。应用于 push / merge / applyMergePlan / applyItems
-   * 等全部链路（portableAdapters 层过滤），供自动同步等后台流程复用用户选择；
-   * 手动请求仍可用 push(opts.sections) 覆盖。
+   * 同步范围（自定义同步模式持久化配置）：只处理这些分区。
+   * 缺省 = 全部推荐分区。应用于 push / pull 等全部链路，供自动同步等后台流程复用
+   * 用户选择；手动请求仍可用 push(opts.sections) 覆盖。
    */
   sections?: SectionId[];
 }
@@ -91,33 +81,22 @@ export interface SyncEngineOptions {
 export interface SyncPushOptions {
   /** 覆盖自动生成的快照 id */
   snapshotId?: string;
-  /** 仅同步指定分区（缺省 = 全部 portable 推荐分区，即「默认/快速导出」模式）。
-   *  传入非 portable 或未知分区 → 忽略并告警（同步通道安全约束：
-   *  deviceSpecific/platformSpecific 永不进入同步通道；未知 id 不静默吞掉）。 */
+  /** 仅同步指定分区（缺省 = 全部推荐分区）。
+   *  传入未知分区 → 忽略并告警（不静默吞掉）。 */
   sections?: SectionId[];
-  /** 加密快照：sections 载荷整体加密（AES-256-GCM），manifest.encrypted=true。
-   *  开启时必须提供 password（仅本次调用内存使用，绝不落盘/落日志）。 */
-  encrypt?: boolean;
-  /** 加密密码（仅内存；encrypt=true 时必填）。 */
-  password?: string;
-  /** 导出真实凭据值（凭据值进入快照）。安全不变量：includeSecrets=true 必须同时 encrypt=true，
-   *  否则拒绝（密钥绝不明文进入同步通道）；自动同步恒 includeSecrets=false（推普通快照）。 */
-  includeSecrets?: boolean;
 }
 
 export interface SyncPullOptions {
   /** 指定远端快照 id（缺省 = 最新） */
   snapshotId?: string;
-  /** 冲突全局策略（缺省 merge：冲突保留待决策） */
+  /** 冲突全局策略（缺省 replace：勾选即同步，远端值直接覆盖本地，不做 diff/合并） */
   strategy?: GlobalConflictStrategy;
-  /** 解密密码（加密快照需要；仅内存，绝不落盘/落日志） */
-  password?: string;
 }
 
 export interface SyncPushReport {
   ok: boolean;
   snapshotId: string;
-  /** 实际进入同步的 portable 分区 */
+  /** 实际进入同步的分区 */
   sections: SectionId[];
   /** 分区级告警（单项失败不拖垮整体，§34.17 语义） */
   warnings: string[];
@@ -137,15 +116,14 @@ export interface SyncPullReport {
   ok: boolean;
   snapshotId: string;
   changes: PullChange[];
-  /** 是否存在需要人工决策的项（Conflict / MissingSecret / MissingDependency / 路径问题）。
-   * 插件 Install 不算 —— 插件安装随同步自动采用（product requirement）。 */
+  /** 是否存在需要人工决策的项（Conflict / MissingSecret / MissingDependency / 路径问题）。 */
   needsReview: boolean;
   message?: string;
 }
 
-/** P0-②：push 前只读预览 ——「将推送什么」的单分区摘要（不写远端、不落盘）。 */
+/** push 前只读预览 ——「将推送什么」的单分区摘要（不写远端、不落盘）。 */
 export interface SyncPushPreviewSection {
-  /** 分区 id（将进入快照的 portable 分区） */
+  /** 分区 id（将进入快照的分区） */
   section: SectionId;
   /** 分区内条目计数（adapter.export 的 counts 聚合；无计数时为 0） */
   count: number;
@@ -153,15 +131,13 @@ export interface SyncPushPreviewSection {
   changed: boolean;
 }
 
-/** P0-②：push 前预览结果（零写入）。 */
+/** push 前预览结果（零写入）。 */
 export interface SyncPushPreview {
   ok: boolean;
   /** 将推送的分区清单（含计数与变化标记） */
   sections: SyncPushPreviewSection[];
   /** 远端现有快照数（0 = 首次推送将创建首个基线） */
   remoteSnapshotCount: number;
-  /** 加密快照：载荷将整体加密（分区计数与基线比较不可得） */
-  encrypted: boolean;
   message?: string;
 }
 
@@ -174,21 +150,6 @@ export interface SyncPreviewResult {
   analysis: ImportAnalysis | null;
   snapshotId: string;
   message?: string;
-}
-
-/** 自动应用执行器（P2b）报告 */
-export interface ApplyReport {
-  ok: boolean;
-  /** 实际写入本地的分区 id 列表 */
-  applied: string[];
-  /** 应用前快照 id（UI 可借此一键回滚）；失败时仍透传以便排查 */
-  restoreId: string;
-  /** 是否触发了整体回滚 */
-  rolledBack: boolean;
-  /** 失败时移到 review 队列的项（ReviewQueueItem 形态供 UI 直接渲染） */
-  review: import('./review-queue.ts').ReviewQueueItem[];
-  /** 来自 Importer.ImportResult 的 warnings；UI 可用于红条提示 */
-  warnings: string[];
 }
 
 /** applyItems 报告（§3.4 ApplyItemsResponse 的服务端形态） */
@@ -209,10 +170,6 @@ export interface ApplyItemsReport {
   needsRestart?: boolean;
 }
 
-/** 同步通道结构性排除的敏感分区（即使 portable 判定有误也双保险拒绝；
- * 注：'credentials' 不是合法 SectionId——凭据状态分区为 credentialsStatus） */
-const FORBIDDEN_SECTIONS: readonly SectionId[] = ['credentialsStatus', 'secrets'];
-
 /**
  * 远端快照保留数量上限：每次 push 上传成功后对远端裁剪，
  * 保留最新 N 个（按 createdAt 升序的最末 N 个，含刚 push 的），更旧的逐个删除。
@@ -225,7 +182,6 @@ export class SyncEngine {
   private readonly transport: SyncTransport;
   private readonly stateDir: string;
   private readonly adapters: ConfigAdapter[];
-  private readonly scanner: SecretScanner;
   private readonly importer: Importer | undefined;
   private readonly now: () => Date;
   private readonly snapshotIdFn: () => string;
@@ -252,7 +208,6 @@ export class SyncEngine {
     this.transport = opts.transport;
     this.stateDir = opts.stateDir;
     this.adapters = opts.adapters ?? createAdapters();
-    this.scanner = opts.scanner ?? defaultSecretScanner();
     this.importer = opts.importer;
     this.now = opts.now ?? (() => new Date());
     this.snapshotIdFn = opts.snapshotId ?? (() => `sync-${crypto.randomUUID()}`);
@@ -266,31 +221,28 @@ export class SyncEngine {
     this.sections = opts.sections !== undefined && opts.sections.length > 0 ? [...opts.sections] : undefined;
   }
 
-  /** 同步只做 portable 分区（deviceSpecific/platformSpecific 永不参与）。
-   *  构造注入 sections（同步范围）时再按注入范围过滤 —— 自动同步等后台流程
-   *  merge/apply/push 全链路复用用户选择；手动请求仍可用 push(opts.sections) 覆盖。 */
-  private portableAdapters(): ConfigAdapter[] {
-    const portable = this.adapters.filter((a) => a.portability === 'portable');
-    if (this.sections === undefined) return portable;
+  /** 参与同步的分区：构造注入 sections（同步范围）时按注入范围过滤 ——
+   *  自动同步等后台流程 push/pull 全链路复用用户选择；手动请求仍可用 push(opts.sections) 覆盖。 */
+  private syncAdapters(): ConfigAdapter[] {
+    if (this.sections === undefined) return this.adapters;
     const wanted = new Set(this.sections);
-    return portable.filter((a) => wanted.has(a.id));
+    return this.adapters.filter((a) => wanted.has(a.id));
   }
 
   /**
    * push 候选 adapter：
-   * - sections 缺省/空 → 全部 portable（「默认/快速导出」模式）；
-   * - sections 显式给出 → 只取 portable 且命中的（「高级/自定义导出」模式）；
-   *   非 portable / 未知分区 → 警告跳过（安全约束 + 不静默，用户能看见自己勾了哪个无效项）。
+   * - sections 缺省/空 → 全部推荐分区；
+   * - sections 显式给出 → 只取命中的；未知分区 → 警告跳过（不静默，用户能看见自己勾了哪个无效项）。
    */
   private pushTargets(sections: readonly SectionId[] | undefined, warnings: string[]): ConfigAdapter[] {
-    const portable = this.portableAdapters();
-    if (sections === undefined || sections.length === 0) return portable;
-    const byId = new Map(portable.map((a) => [a.id, a]));
+    const available = this.syncAdapters();
+    if (sections === undefined || sections.length === 0) return available;
+    const byId = new Map(available.map((a) => [a.id, a]));
     const out: ConfigAdapter[] = [];
     for (const id of sections) {
       const adapter = byId.get(id);
       if (adapter === undefined) {
-        warnings.push(this.msg('sync.skipNonPortable', { section: id }));
+        warnings.push(this.msg('sync.unknownSection', { section: id }));
         continue;
       }
       out.push(adapter);
@@ -298,89 +250,45 @@ export class SyncEngine {
     return out;
   }
 
-  /** 结构性断言：凭据/秘密分区绝不进入同步载荷（双保险，portable 过滤之上） */
-  private assertNoForbiddenSections(sections: Record<string, unknown>): void {
-    for (const sid of FORBIDDEN_SECTIONS) {
-      if (sid in sections) {
-        throw new Error(this.msg('sync.denySensitiveSection', { section: sid }));
-      }
-    }
-  }
-
   /**
    * 快照读取准备（download 后、使用前）：
-   * - 加密快照（manifest.encrypted）→ 用 password 解密回明文 sections（原地替换）；
-   *   无密码 → 明确报错（自动同步等无密码场景在调用方先行跳过）。
-   * - 普通快照声明 containsSecrets=true → 拒绝（同步通道永不携带秘密，防御篡改/旧坏数据）。
-   * 密码仅本次调用内存使用，绝不落盘/落日志。
+   * 加密快照（manifest.encrypted）→ 明确拒绝：同步通道已不再产生加密快照，
+   * 旧加密快照无法用当前引擎读取（拒绝静默当明文处理）。
    */
-  private async prepareSnapshot(snapshot: SyncSnapshot, password?: string): Promise<void> {
-    if (snapshot.manifest.encrypted) {
-      if (password === undefined || password === '') {
-        throw new Error(this.msg('sync.encryptedNeedsPassword', { id: snapshot.id }));
-      }
-      if (!isEncryptedSections(snapshot.sections)) {
-        throw new Error(this.msg('sync.encryptedNeedsPassword', { id: snapshot.id }));
-      }
-      const decrypted = await decryptSectionsPayload(snapshot.sections.encrypted, password);
-      snapshot.sections = decrypted;
-      return;
-    }
-    if (snapshot.manifest.containsSecrets) {
-      throw new Error(this.msg('sync.remoteContainsSecrets', { id: snapshot.id }));
+  private async prepareSnapshot(snapshot: SyncSnapshot): Promise<void> {
+    if (snapshot.manifest.encrypted === true || isEncryptedSections(snapshot.sections)) {
+      throw new Error(this.msg('sync.legacyEncryptedSnapshot', { id: snapshot.id }));
     }
   }
 
   /**
-   * push：导出 portable 分区 → 组装快照 → 本地散文件副本 → transport.upload → 更新 sync-state。
+   * push：导出分区（真实值）→ 组装快照 → 本地散文件副本 → transport.upload → 更新 sync-state。
    * 单项分区导出失败只告警跳过（§34.17），全部失败才整体失败。
-   * opts.sections：指定仅同步这些分区（高级/自定义模式）；缺省 = 全部 portable 推荐分区。
-   * opts.encrypt/password/includeSecrets：加密快照（含可选密钥导出）。
-   * 安全不变量：includeSecrets ⇒ encrypt（密钥绝不明文进入同步通道）；密码仅内存。
+   * opts.sections：指定仅同步这些分区（自定义模式）；缺省 = 全部推荐分区。
    */
   async push(opts: SyncPushOptions = {}): Promise<SyncPushReport> {
     const warnings: string[] = [];
-    const includeSecrets = opts.includeSecrets ?? false;
-    const encrypt = opts.encrypt ?? false;
-    // 安全不变量：导出密钥必须加密；加密必须给密码（密码绝不落盘）
-    if (includeSecrets && !encrypt) {
-      throw new Error(this.msg('sync.includeSecretsRequiresEncryption'));
-    }
-    if (encrypt && (opts.password === undefined || opts.password === '')) {
-      throw new Error(this.msg('sync.encryptRequiresPassword'));
-    }
     const plainSections: Partial<Record<SectionId, SectionData>> = {};
     const targets = this.pushTargets(opts.sections, warnings);
     for (const adapter of targets) {
       let section: ExportSection;
       try {
-        section = await adapter.export(this.ctx, { includeSecrets });
+        section = await adapter.export(this.ctx, { includeSecrets: true });
       } catch (err) {
         warnings.push(this.msg('sync.sectionFailed', { adapter: adapter.id, reason: err instanceof Error ? err.message : String(err) }));
         continue;
       }
       warnings.push(...section.warnings);
-      // includeSecrets=true：凭据值保留（随后整体加密）；否则过 SecretScanner 剥离（默认安全）
-      const data = isFileSection(adapter.id) || includeSecrets
-        ? section.data
-        : this.scanner.scanAndRedact(section.data).sanitized;
-      plainSections[adapter.id] = data as SectionData;
+      plainSections[adapter.id] = section.data as SectionData;
     }
 
     if (Object.keys(plainSections).length === 0) {
-      return { ok: false, snapshotId: '', sections: [], warnings, message: this.msg('sync.noPortableSections') };
-    }
-    this.assertNoForbiddenSections(plainSections as Record<string, unknown>);
-
-    // 加密：整个明文 sections 载荷加密为密文（manifest 只存非秘密参数）
-    let sections: SyncSnapshot['sections'] = plainSections;
-    const encrypted = encrypt;
-    if (encrypt) {
-      sections = await encryptSectionsPayload(plainSections, opts.password!);
+      return { ok: false, snapshotId: '', sections: [], warnings, message: this.msg('sync.noSections') };
     }
 
     const nowIso = this.now().toISOString();
     const id = opts.snapshotId ?? this.snapshotIdFn();
+    const containsSecrets = sectionsCarrySecrets(plainSections);
     const snapshot: SyncSnapshot = {
       id,
       createdAt: nowIso,
@@ -389,82 +297,66 @@ export class SyncEngine {
         dshVersion: this.ctx.dshVersion,
         platform: this.ctx.platform as Platform,
         sectionIds: Object.keys(plainSections) as SectionId[],
-        containsSecrets: includeSecrets,
+        containsSecrets,
         // 记录触发通道（git/webdav），供同步历史展示「由哪个通道触发」
         transport: this.transport.type,
-        ...(encrypted ? { encrypted: true } : {}),
       },
-      sections,
+      sections: plainSections,
     };
 
-    // ① 本地散文件快照副本（审计；复用 t2 layout，不写 ZIP）。
-    //    加密快照不写本地散文件副本（磁盘不落任何密文/明文载荷；远端已存密文）。
-    if (this.localSnapshotsDir !== undefined && !encrypted) {
+    // ① 本地散文件快照副本（审计；复用 t2 layout，不写 ZIP）
+    if (this.localSnapshotsDir !== undefined) {
       await writeSnapshotToDir(snapshot, joinFs(this.localSnapshotsDir, id), this.fsx);
     }
     // ② 上传远端（传输通道负责散文件落盘 + 提交推送）
     await this.transport.upload(snapshot);
     // ②·1 裁剪远端快照：保留最新 MAX_REMOTE_SNAPSHOTS 个（含刚 push 的）。
     //      删除失败只告警（进 warnings），不上抛 —— 不阻断 push 主流程。
-    //      放在 upload 之后（保证新快照已推送成功）与 recordBaseline 之前（先管好远端再记基线）。
     await this.pruneRemoteSnapshots(id, warnings);
-    // ③ 记录祖先基线：写 sync-state（lastSnapshotId + 每分区 hash/updatedAt + lastSyncAt + transport）+ 裁剪。
-    //    基线 hash 用明文（hasLocalChanges 与本地明文可比）；加密快照不写明文祖先副本（密钥不落盘）。
-    await this.recordBaseline(id, plainSections, nowIso, { writeAncestor: !encrypted });
+    // ③ 记录基线：写 sync-state（lastSnapshotId + 每分区 hash/updatedAt + lastSyncAt + transport）
+    await this.recordBaseline(id, plainSections, nowIso);
 
     return { ok: true, snapshotId: id, sections: Object.keys(plainSections) as SectionId[], warnings };
   }
 
   /**
-   * P0-②：push 前只读预览「将推送什么」—— 零写入、零远端变更：
-   *  - 导出目标 portable 分区（与 push 同口径：sections 过滤 + secret 剥离）；
+   * push 前只读预览「将推送什么」—— 零写入、零远端变更：
+   *  - 导出目标分区（与 push 同口径：sections 过滤）；
    *  - 逐分区相对上次基线（sync-state.sections hash）的 changed 标记；
    *  - 远端现有快照数（list 只读；首次推送 = 0）。
-   * 加密快照（encrypt）时不再比较基线（密文不可比），sections 只带计数。
    * 任何失败都不写任何内容；预览只是 push 的「确认前说明书」。
    */
   async previewPush(opts: SyncPushOptions = {}): Promise<SyncPushPreview> {
     const warnings: string[] = [];
-    const includeSecrets = opts.includeSecrets ?? false;
-    const encrypted = opts.encrypt ?? false;
-    if (includeSecrets && !encrypted) {
-      throw new Error(this.msg('sync.includeSecretsRequiresEncryption'));
-    }
     const targets = this.pushTargets(opts.sections, warnings);
     const plainSections: Partial<Record<SectionId, SectionData>> = {};
     const counts: Partial<Record<SectionId, number>> = {};
     for (const adapter of targets) {
       let section: ExportSection;
       try {
-        section = await adapter.export(this.ctx, { includeSecrets });
+        section = await adapter.export(this.ctx, { includeSecrets: true });
       } catch (err) {
         warnings.push(this.msg('sync.sectionFailed', { adapter: adapter.id, reason: err instanceof Error ? err.message : String(err) }));
         continue;
       }
-      const data = isFileSection(adapter.id) || includeSecrets
-        ? section.data
-        : this.scanner.scanAndRedact(section.data).sanitized;
-      plainSections[adapter.id] = data as SectionData;
+      plainSections[adapter.id] = section.data as SectionData;
       counts[adapter.id] = section.counts ? Object.values(section.counts).reduce((a, b) => a + b, 0) : 0;
     }
     if (Object.keys(plainSections).length === 0) {
-      return { ok: false, sections: [], remoteSnapshotCount: 0, encrypted, message: this.msg('sync.noPortableSections') };
+      return { ok: false, sections: [], remoteSnapshotCount: 0, message: this.msg('sync.noSections') };
     }
-    this.assertNoForbiddenSections(plainSections as Record<string, unknown>);
 
-    // 基线对比（非加密）：sync-state.sections 存每分区 hash；缺基线分区 → 视为新增
+    // 基线对比：sync-state.sections 存每分区 hash；缺基线分区 → 视为新增
     let baselineHashes: Record<string, string> = {};
-    if (!encrypted) {
-      try {
-        const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
-        baselineHashes = state.sections as Record<string, string>;
-      } catch {
-        baselineHashes = {};
-      }
+    try {
+      const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
+      baselineHashes = state.sections as Record<string, string>;
+    } catch {
+      baselineHashes = {};
     }
     const sections: SyncPushPreviewSection[] = Object.keys(plainSections).map((sid) => {
       const id = sid as SectionId;
-      const changed = encrypted || baselineHashes[id] === undefined || baselineHashes[id] !== hashSection(plainSections[id] as SectionData);
+      const changed = baselineHashes[id] === undefined || baselineHashes[id] !== hashSection(plainSections[id] as SectionData);
       return { section: id, count: counts[id] ?? 0, changed };
     });
 
@@ -475,7 +367,7 @@ export class SyncEngine {
     } catch {
       // list 失败只影响展示（首次推送提示），不阻断预览
     }
-    return { ok: true, sections, remoteSnapshotCount, encrypted, message: warnings.length > 0 ? warnings.join('; ') : undefined };
+    return { ok: true, sections, remoteSnapshotCount, message: warnings.length > 0 ? warnings.join('; ') : undefined };
   }
 
   /**
@@ -511,7 +403,7 @@ export class SyncEngine {
   }
 
   /**
-   * pull：拉取远端最新（或指定）快照 → 过滤 portable 分区 → 转临时标准 ZIP →
+   * pull：拉取远端最新（或指定）快照 → 转临时标准 ZIP →
    * 复用 Importer 预览流程（analyzeImport/createImportPlan）产出差异报告。
    * 绝不直接写配置、绝不执行导入；执行由上层按用户确认后走 Importer.executeImportPlan。
    */
@@ -525,15 +417,14 @@ export class SyncEngine {
     }
     const targetId = opts.snapshotId ?? metas[metas.length - 1]!.id; // list 按 createdAt 升序 → 最新
     const snapshot = await this.transport.download(targetId);
-    // 加密快照 → 用密码解密回明文（无密码明确报错）；普通快照 → containsSecrets 拒绝
-    await this.prepareSnapshot(snapshot, opts.password);
+    await this.prepareSnapshot(snapshot);
 
-    const portableIds = new Set(this.portableAdapters().map((a) => a.id));
-    const zipPath = await this.snapshotToZip(snapshot, portableIds);
+    const knownIds = new Set(this.syncAdapters().map((a) => a.id));
+    const zipPath = await this.snapshotToZip(snapshot, knownIds);
     try {
       const analysis = await this.importer.analyzeImport(zipPath);
       const plan = await this.importer.createImportPlan(zipPath, {
-        strategy: opts.strategy ?? 'merge',
+        strategy: opts.strategy ?? 'replace',
         resolutions: {},
         pathMappings: [],
       });
@@ -580,26 +471,25 @@ export class SyncEngine {
   }
 
   /**
-   * 本地 portable 配置当前内容与上次基线（sync-state.sections hash）相比是否有变化（§3.1 上传「看变化」）。
+   * 本地配置当前内容与上次基线（sync-state.sections hash）相比是否有变化（§3.1 上传「看变化」）。
    * - 从未同步（sync-state.sections 为空）→ true；
-   * - 任一 portable 分区当前导出 hash ≠ 基线 hash → true；
+   * - 任一分区当前导出 hash ≠ 基线 hash → true；
    * - 全部一致 → false（无本地改动，不上传）。
    * 只读本地导出 + sync-state，不写任何东西、不碰远端。
    */
   async hasLocalChanges(): Promise<boolean> {
     const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
     if (Object.keys(state.sections).length === 0) return true;
-    for (const adapter of this.portableAdapters()) {
+    for (const adapter of this.syncAdapters()) {
       let section: ExportSection;
       try {
-        section = await adapter.export(this.ctx, { includeSecrets: false });
+        section = await adapter.export(this.ctx, { includeSecrets: true });
       } catch {
         continue; // 单项导出失败不影响判定（与 push 单项跳过语义一致）
       }
-      const data = isFileSection(adapter.id) ? section.data : this.scanner.scanAndRedact(section.data).sanitized;
       const recorded = state.sections[adapter.id];
       if (recorded === undefined) return true; // 基线缺该分区 → 视为有变化
-      if (recorded.hash !== hashSection(data as SectionData)) return true;
+      if (recorded.hash !== hashSection(section.data as SectionData)) return true;
     }
     return false;
   }
@@ -620,75 +510,31 @@ export class SyncEngine {
     }
     const targetId = opts.snapshotId ?? metas[metas.length - 1]!.id;
     const snapshot = await this.transport.download(targetId);
-    // 加密快照 → 用密码解密回明文（无密码明确报错）；普通快照 → containsSecrets 拒绝
-    await this.prepareSnapshot(snapshot, opts.password);
-    const portableIds = new Set(this.portableAdapters().map((a) => a.id));
-    const zipPath = await this.snapshotToZip(snapshot, portableIds);
+    await this.prepareSnapshot(snapshot);
+    const knownIds = new Set(this.syncAdapters().map((a) => a.id));
+    const zipPath = await this.snapshotToZip(snapshot, knownIds);
     const analysis = await this.importer.analyzeImport(zipPath);
     const plan = await this.importer.createImportPlan(zipPath, {
-      strategy: opts.strategy ?? 'merge',
+      strategy: opts.strategy ?? 'replace',
       resolutions: {},
       pathMappings: [],
     });
     return { ok: analysis.valid, zipPath, plan, analysis, snapshotId: targetId, message: undefined };
   }
 
-  async merge(opts: { snapshotId?: string; password?: string } = {}): Promise<MergePlan> {
-    const metas = await this.transport.list();
-    if (metas.length === 0) {
-      return { sections: [] };
-    }
-    const targetId = opts.snapshotId ?? metas[metas.length - 1]!.id;
-    const remote = await this.transport.download(targetId);
-    // 加密快照 → 用密码解密；普通快照 containsSecrets=true → 拒绝（防御）
-    await this.prepareSnapshot(remote, opts.password);
-    // 共同祖先：从 sync-state.lastSnapshotId 读本地副本；空 = 首次/无祖先
-    const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
-    let ancestor: SyncSnapshot | undefined;
-    if (state.lastSnapshotId !== '' && this.localSnapshotsDir !== undefined) {
-      ancestor = await loadAncestor(this.localSnapshotsDir, state.lastSnapshotId, this.fsx);
-    }
-    // 本地当前：现场 export（含 s​e​c​r​e​t 剥离），与 push 同口径
-    const localSections: Partial<Record<SectionId, SectionData>> = {};
-    for (const adapter of this.portableAdapters()) {
-      let section: ExportSection;
-      try {
-        section = await adapter.export(this.ctx, { includeSecrets: false });
-      } catch {
-        continue;
-      }
-      const data = isFileSection(adapter.id) ? section.data : this.scanner.scanAndRedact(section.data).sanitized;
-      localSections[adapter.id] = data as SectionData;
-    }
-    const portableIds = new Set(this.portableAdapters().map((a) => a.id));
-    const remotePortable: Partial<Record<SectionId, SectionData>> = {};
-    for (const [id, data] of Object.entries(remote.sections)) {
-      if (portableIds.has(id as SectionId)) remotePortable[id as SectionId] = data as SectionData;
-    }
-    const ancestorPortable: Partial<Record<SectionId, SectionData>> = {};
-    if (ancestor) {
-      for (const [id, data] of Object.entries(ancestor.sections)) {
-        if (portableIds.has(id as SectionId)) ancestorPortable[id as SectionId] = data as SectionData;
-      }
-    }
-    return mergeSections(localSections, remotePortable, ancestorPortable);
-  }
-
   /**
-   * 记录祖先基线：写本地祖先副本 + 更新 sync-state（lastSnapshotId、每分区 hash/updatedAt、lastSyncAt、transport）+ 裁剪到 keep。
-   * 通常由 push() 在上传成功后调用，也可被上层（合并 apply 完成后）显式调用以更新基线到合并后的快照。
+   * 记录基线：写本地快照副本 + 更新 sync-state
+   * （lastSnapshotId、每分区 hash/updatedAt、lastSyncAt、transport）。
+   * 通常由 push() 在上传成功后调用，也可被上层（apply-items 完成后）显式调用。
    */
   async recordBaseline(
     snapshotId: string,
     sections: SyncSnapshot['sections'],
     nowIso?: string,
-    opts: { writeAncestor?: boolean } = {},
   ): Promise<void> {
     const ts = nowIso ?? this.now().toISOString();
-    // 1) 写本地祖先副本（如有 localSnapshotsDir）。
-    //    writeAncestor=false（加密快照基线）：不写明文祖先副本（磁盘不落密钥；
-    //    基线仅用 sync-state 的明文 hash，供 hasLocalChanges 比较）。
-    if (this.localSnapshotsDir !== undefined && opts.writeAncestor !== false) {
+    if (this.localSnapshotsDir !== undefined && !isEncryptedSections(sections)) {
+      const plain = sections as Partial<Record<SectionId, SectionData>>;
       const snapshot: SyncSnapshot = {
         id: snapshotId,
         createdAt: ts,
@@ -696,16 +542,15 @@ export class SyncEngine {
           schemaVersion: CURRENT_SCHEMA_VERSION,
           dshVersion: this.ctx.dshVersion,
           platform: this.ctx.platform as Platform,
-          sectionIds: Object.keys(sections) as SectionId[],
-          containsSecrets: false,
+          sectionIds: Object.keys(plain) as SectionId[],
+          containsSecrets: sectionsCarrySecrets(plain),
           // 记录触发通道（git/webdav），供同步历史展示「由哪个通道触发」
           transport: this.transport.type,
         },
-        sections,
+        sections: plain,
       };
-      await writeAncestor(this.localSnapshotsDir, snapshot, this.fsx);
+      await writeSnapshotToDir(snapshot, joinFs(this.localSnapshotsDir, snapshotId), this.fsx);
     }
-    // 2) 更新 sync-state：lastSnapshotId + 每分区 hash/updatedAt + lastSyncAt + transport
     const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
     state.lastSnapshotId = snapshotId;
     state.lastSyncAt = ts;
@@ -714,123 +559,15 @@ export class SyncEngine {
       state.sections[sid as SectionId] = { hash: hashSection(data as SectionData), updatedAt: ts };
     }
     await saveSyncState(this.stateDir, state, this.fsx);
-    // 3) 裁剪祖先副本（最近 N 个）
-    if (this.localSnapshotsDir !== undefined) {
-      await pruneAncestors(this.localSnapshotsDir, DEFAULT_ANCESTOR_KEEP, this.fsx);
-    }
-  }
-
-  /**
-   * 应用自动应用计划：写本地（走 Importer.executeImportPlan 标准路径；应用前调 backup.createSnapshot 兜底）；
-   * 任一 auto 项失败 → 整体 rollback；成功后 recordBaseline 更新祖先基线。
-   * 返回 ApplyReport；不抛错到调用方（失败返回 ok:false + rolledBack:true）。
-   * 不再写 review-queue（§2.3/§7.4：待审语义改由同步历史 skipped 标记表达）。
-   */
-  async applyMergePlan(apply: SyncApplyPlan): Promise<ApplyReport> {
-    if (!this.importer) {
-      throw new Error('applyMergePlan: SyncEngine 缺少 importer（需在 options 中注​入）');
-    }
-    const appliedIds = apply.autoApply.map((r) => r.id);
-    // 0) 空 autoApply：无物可应用，直接短路（不构造 ZIP、不调 Importer）
-    if (appliedIds.length === 0) {
-      return { ok: true, applied: [], restoreId: '', rolledBack: false, review: [], warnings: [] };
-    }
-    // 1) 构造临时 ZIP（仅含 autoApply 项的 merged payload）+ 分析 + 计划
-    const portableIds = new Set(this.portableAdapters().map((a) => a.id));
-    const tempSnapshot: SyncSnapshot = {
-      id: this.snapshotIdFn(),
-      createdAt: this.now().toISOString(),
-      manifest: {
-        schemaVersion: CURRENT_SCHEMA_VERSION,
-        dshVersion: this.ctx.dshVersion,
-        platform: this.ctx.platform as Platform,
-        sectionIds: apply.autoApply.map((r) => r.id) as SectionId[],
-        containsSecrets: false,
-      },
-      sections: apply.autoApply.reduce<Record<string, SectionData>>((acc, r) => {
-        if (r.merged !== undefined) acc[r.id] = r.merged as SectionData;
-        return acc;
-      }, {}),
-    };
-    const zipPath = await this.snapshotToZip(tempSnapshot, portableIds);
-    try {
-      const analysis = await this.importer.analyzeImport(zipPath);
-      const plan = await this.importer.createImportPlan(zipPath, {
-        strategy: 'replace', // auto 路径：冲突已在外部分流；这里 replace = 接受导入值
-        resolutions: {},
-        pathMappings: [],
-      });
-      if (!plan.items.length) {
-        // 没有可执行项 → 视为 ok 但空 applied
-        return { ok: true, applied: [], restoreId: '', rolledBack: false, review: [], warnings: [] };
-      }
-      // 2) 兜底：先建快照（拿到 restoreId 给 UI 一键回滚用）
-      const store: SnapshotStore = new FileSnapshotStore({ dir: this.rollbackSnapshotsDir });
-      let snapshot: Snapshot | undefined;
-      try {
-        snapshot = await createSnapshot({
-          ctx: this.ctx,
-          plan,
-          sourceZip: zipPath,
-          store,
-          adapters: this.adapters,
-        });
-      } catch (backupErr) {
-        return {
-          ok: false,
-          applied: [],
-          restoreId: '',
-          rolledBack: false,
-          review: [],
-          warnings: [`应用前快照失败：${backupErr instanceof Error ? backupErr.message : String(backupErr)}`],
-        };
-      }
-      // 3) 真正执行：Importer.executeImportPlan（rollbackOnError=true → 任一失败整体回滚）
-      const result = await this.importer.executeImportPlan(zipPath, plan, {
-        confirm: true,
-        rollbackOnError: true,
-        secretInputs: undefined,
-        decryptedCredentials: undefined,
-      });
-      if (!result.ok) {
-        try { await rollback({ ctx: this.ctx, snapshot, store, adapters: this.adapters }); } catch { /* noop */ }
-        // 失败路径不再写 review-queue（§7.4）：历史 skipped/failed 标记由上层（路由/调度器）写入。
-        return {
-          ok: false,
-          applied: [],
-          restoreId: snapshot.id,
-          rolledBack: true,
-          review: [],
-          warnings: result.warnings ?? [],
-        };
-      }
-      // 5) 全成功 → recordBaseline（更新祖先基线指向合并后的快照）
-      const mergedSections: SyncSnapshot['sections'] = apply.autoApply.reduce<Record<string, SectionData>>((acc, r) => {
-        if (r.merged !== undefined) acc[r.id] = r.merged as SectionData;
-        return acc;
-      }, {});
-      await this.recordBaseline(tempSnapshot.id, mergedSections);
-      return {
-        ok: true,
-        applied: appliedIds,
-        restoreId: snapshot.id,
-        rolledBack: false,
-        review: [],
-        warnings: result.warnings ?? [],
-      };
-    } finally {
-      try { await fs.rm(path.dirname(zipPath), { recursive: true, force: true }); } catch { /* noop */ }
-    }
   }
 
   /**
    * applyItems：按用户对差异项的逐项决策执行导入（§3.4/§5.3）。
    *
-   * 与 applyMergePlan 的区别：applyItems 接收「会话级临时 ZIP + 子计划」，
-   * 直接执行（backup.createSnapshot 兜底 → importer.executeImportPlan →
-   * 成功 recordBaseline / 失败 rollback），不构造中间 SyncApplyPlan。
+   * 接收「会话级临时 ZIP + 子计划」，直接执行
+   * （backup.createSnapshot 兜底 → importer.executeImportPlan → 成功 recordBaseline / 失败 rollback）。
    *
-   * @param zipPath 会话级临时标准 ZIP（由 sync/sync 生成，包含采纳项的 merged payload）
+   * @param zipPath 会话级临时标准 ZIP（由 sync 预览生成，包含采纳项的 payload）
    * @param subPlan 子计划（仅含采纳项的 ImportPlan；globalStrategy/pathMappings/needsRestart 沿用会话 plan）
    * @param opts 执行选项（onItem 进度回调）
    * @returns ApplyItemsReport（ok/applied/restoreId/rolledBack/warnings/result）
@@ -845,7 +582,7 @@ export class SyncEngine {
     } = {},
   ): Promise<ApplyItemsReport> {
     if (!this.importer) {
-      throw new Error('applyItems: SyncEngine 缺少 importer（需在 options 中注​入）');
+      throw new Error('applyItems: SyncEngine 缺少 importer（需在 options 中注入）');
     }
     if (subPlan.items.length === 0) {
       return { ok: true, applied: [], restoreId: '', rolledBack: false, warnings: [], failed: [], result: null };
@@ -898,21 +635,14 @@ export class SyncEngine {
       };
     }
 
-    // 成功：recordBaseline 更新祖先基线（合并后的快照）
+    // 成功：recordBaseline 更新基线（应用后的快照）
     const appliedIds = [...new Set(subPlan.items.map((i) => i.adapter))];
-    const mergedSections: SyncSnapshot['sections'] = {};
-    // 从 subPlan 中按 adapter 收集写入的分区数据（无法直接从 plan item 获取 merged data，
-    // 但这里不需要精确的 merged 数据——recordBaseline 只需要 sectionIds 与数据来源；
-    // 用现有应用后的 adapter export 作为快照数据更准确）
-    // 注意：recordBaseline 需要各分区内容 hash，因此导出当前各分区最新状态。
-    for (const adapter of this.portableAdapters()) {
+    const mergedSections: Partial<Record<SectionId, SectionData>> = {};
+    for (const adapter of this.syncAdapters()) {
       if (!appliedIds.includes(adapter.id)) continue;
       try {
-        const section = await adapter.export(this.ctx, { includeSecrets: false });
-        const data = isFileSection(adapter.id)
-          ? section.data
-          : this.scanner.scanAndRedact(section.data).sanitized;
-        mergedSections[adapter.id] = data as SectionData;
+        const section = await adapter.export(this.ctx, { includeSecrets: true });
+        mergedSections[adapter.id] = section.data as SectionData;
       } catch {
         // 单个分区导出失败不拖垮 recordBaseline（已应用的分区数据从 subPlan 兜底）
       }
@@ -934,14 +664,14 @@ export class SyncEngine {
   }
 
   /** 散文件快照 → 标准导出 ZIP（临时目录，用完即删）：buildManifest + checksums + 平铺分区 */
-  private async snapshotToZip(snapshot: SyncSnapshot, portableIds: Set<SectionId>): Promise<string> {
-    // 防御：加密快照必须已由调用方解密（prepareSnapshot）；此处不处理密文载荷
+  private async snapshotToZip(snapshot: SyncSnapshot, knownIds: Set<SectionId>): Promise<string> {
+    // 防御：加密快照必须已由调用方拒绝（prepareSnapshot）；此处不处理密文载荷
     if (isEncryptedSections(snapshot.sections)) {
-      throw new Error('快照仍为加密载荷，无法转 ZIP（需先解密）');
+      throw new Error('快照仍为加密载荷，无法转 ZIP');
     }
     const entries: ZipWriteEntry[] = [];
     const sectionFlags = {} as Record<SectionId, boolean>;
-    for (const sid of portableIds) {
+    for (const sid of knownIds) {
       const data = snapshot.sections[sid];
       if (data === undefined) continue;
       sectionFlags[sid] = true;
@@ -963,7 +693,7 @@ export class SyncEngine {
       platform: snapshot.manifest.platform as Platform,
       arch: 'unknown', // ManifestSummary 不含 arch；仅影响展示，不影响导入决策
       sections: sectionFlags,
-      containsSecrets: false,
+      containsSecrets: snapshot.manifest.containsSecrets === true,
       encrypted: false,
       encryption: null,
       exportedAt: snapshot.createdAt,
@@ -981,4 +711,14 @@ export class SyncEngine {
     await writeZip(zipPath, entries);
     return zipPath;
   }
+}
+
+/**
+ * 快照是否实际携带凭据值：复用 exporter 的敏感字段扫描器（单一真源，不另造字段表）。
+ * 用于如实标注 manifest.security.containsSecrets —— 标注必须与内容一致，
+ * 否则「含明文却标注 false」会让下游按「无秘密」处理。
+ */
+export function sectionsCarrySecrets(sections: Partial<Record<SectionId, SectionData>>): boolean {
+  const scanner = defaultSecretScanner();
+  return Object.values(sections).some((data) => scanner.scanAndRedact(data).hits.length > 0);
 }

@@ -234,25 +234,17 @@ export function createModelTools(deps: ModelToolsDeps) {
       }
     },
 
-    /** 手动推送同步（写远端）。encrypt/includeSecrets 由引擎强制约束（密钥绝不明文进通道）。 */
+    /** 手动推送同步（写远端）。明文快照：勾选即同步，不加密、不脱敏。 */
     async syncPush(input: {
       channel?: SyncTransportType
       sections?: SectionId[]
-      encrypt?: boolean
-      includeSecrets?: boolean
-      password?: string
     }): Promise<JsonValue> {
       const { engine } = await resolveEngine(deps, input.channel)
       const sections = input.sections === undefined ? undefined : filterSectionIds(input.sections)
-      const encrypt = input.encrypt === true
-      const includeSecrets = input.includeSecrets === true
       // Phase 2 锁：push 写远端 + 本地散文件 + sync-state，属 GLOBAL mutation。
       // Step 3 P0-A：外部 push 记 intent journal（crash 后不可证明 → NEEDS_ATTENTION，不自动重推）。
       const doPush = () => engine.push({
         ...(sections === undefined ? {} : { sections }),
-        ...(encrypt || includeSecrets
-          ? { encrypt: true, includeSecrets, password: input.password ?? '' }
-          : {}),
       })
       const report = await runWithMutationLock(deps.host.mutationLock, { op: 'model-sync-push', isBlocked: () => deps.host.safeModeIsBlocked?.() ?? false }, async (lockCtx) => {
         if (deps.host.phase3Recovery !== undefined && lockCtx !== null) {
@@ -280,14 +272,12 @@ export function createModelTools(deps: ModelToolsDeps) {
       channel?: SyncTransportType
       snapshotId?: string
       strategy?: 'merge' | 'replace' | 'skipExisting'
-      password?: string
     }): Promise<JsonValue> {
       const { engine } = await resolveEngine(deps, input.channel)
-      const strategy = input.strategy === 'replace' || input.strategy === 'skipExisting' ? input.strategy : 'merge'
+      const strategy = input.strategy === 'replace' || input.strategy === 'skipExisting' ? input.strategy : 'replace'
       const report = await engine.pull({
         strategy,
         ...(input.snapshotId === undefined || input.snapshotId === '' ? {} : { snapshotId: input.snapshotId }),
-        ...(input.password === undefined || input.password === '' ? {} : { password: input.password }),
       })
       return {
         ok: report.ok,
@@ -395,7 +385,7 @@ export function registerModelTools(ctx: Context, deps: ModelToolsDeps): void {
   register(defineTool({
     name: 'config_sync_push',
     description:
-      '手动推送 DSH 配置同步到远端（Git/WebDAV），复用已持久化的通道配置。写远端属主动操作；加密/含凭据须传 password 且引擎强制 encrypt。',
+      '手动推送 DSH 配置同步到远端（Git/WebDAV），复用已持久化的通道配置。写远端属主动操作；快照为明文（私有通道自用），勾选即同步。',
     parameters: {
       channel: {
         type: 'string',
@@ -405,19 +395,7 @@ export function registerModelTools(ctx: Context, deps: ModelToolsDeps): void {
       sections: {
         type: 'array',
         items: { type: 'string', enum: [...SECTION_IDS] },
-        description: '仅推送的分区；缺省 = 全部推荐 portable 分区（非 portable 自动跳过）',
-      },
-      encrypt: {
-        type: 'boolean',
-        description: '加密快照；开启必须提供 password',
-      },
-      includeSecrets: {
-        type: 'boolean',
-        description: '推送真实凭据值（必须同时 encrypt=true，否则引擎拒绝）',
-      },
-      password: {
-        type: 'string',
-        description: '加密密码（仅内存，不落盘/不回显）',
+        description: '仅推送的分区；缺省 = 全部推荐分区',
       },
     },
     output: {
@@ -446,11 +424,7 @@ export function registerModelTools(ctx: Context, deps: ModelToolsDeps): void {
       strategy: {
         type: 'string',
         enum: ['merge', 'replace', 'skipExisting'],
-        description: '冲突全局策略；缺省 merge（冲突保留待决策）',
-      },
-      password: {
-        type: 'string',
-        description: '解密密码（加密快照需要；仅内存）',
+        description: '差异全局策略；缺省 replace（远端值覆盖本地）',
       },
     },
     output: {

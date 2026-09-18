@@ -1798,19 +1798,19 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
     }
   }
 
-  /** 指定通道的分区选择视图（{ mode, sections, encrypt, includeSecrets }，无 schemaVersion/密码）。 */
-  const selectionView = async (channel: SyncTransportType): Promise<{ mode: SyncSelectionMode; sections: SectionId[]; encrypt: boolean; includeSecrets: boolean }> => {
+  /** 指定通道的分区选择视图（{ mode, sections }，无 schemaVersion）。 */
+  const selectionView = async (channel: SyncTransportType): Promise<{ mode: SyncSelectionMode; sections: SectionId[] }> => {
     const sel = await ensureSelectionLoaded(channel)
-    return { mode: sel.mode, sections: sel.sections, encrypt: sel.encrypt, includeSecrets: sel.includeSecrets }
+    return { mode: sel.mode, sections: sel.sections }
   }
 
   /** 全部通道的分区选择视图（status 路由一次返回；UI 按当前 tab 取对应通道）。 */
-  const selectionViewByChannel = async (): Promise<Record<SyncTransportType, { mode: SyncSelectionMode; sections: SectionId[]; encrypt: boolean; includeSecrets: boolean }>> => {
+  const selectionViewByChannel = async (): Promise<Record<SyncTransportType, { mode: SyncSelectionMode; sections: SectionId[] }>> => {
     const all = await readAllSyncSelections(syncDir)
     selectionCache.git = all.git
     selectionCache.webdav = all.webdav
-    const view = (sel: SyncSelection): { mode: SyncSelectionMode; sections: SectionId[]; encrypt: boolean; includeSecrets: boolean } =>
-      ({ mode: sel.mode, sections: sel.sections, encrypt: sel.encrypt, includeSecrets: sel.includeSecrets })
+    const view = (sel: SyncSelection): { mode: SyncSelectionMode; sections: SectionId[] } =>
+      ({ mode: sel.mode, sections: sel.sections })
     return { git: view(all.git), webdav: view(all.webdav) }
   }
 
@@ -4087,13 +4087,10 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
             schemaVersion: SYNC_SELECTION_SCHEMA_VERSION,
             mode,
             sections: [...new Set(rawSections as string[])] as SectionId[],
-            encrypt: body['encrypt'] === true,
-            // 安全兜底：includeSecrets 必须同时 encrypt（密钥绝不明文进同步通道）
-            includeSecrets: body['includeSecrets'] === true && body['encrypt'] === true,
           }
           await writeSyncSelection(syncDir, channel, next)
           selectionCache[channel] = next
-          writeJson(res, 200, { ok: true, transport: channel, mode: next.mode, sections: next.sections, encrypt: next.encrypt, includeSecrets: next.includeSecrets })
+          writeJson(res, 200, { ok: true, transport: channel, mode: next.mode, sections: next.sections })
         } catch (error) {
           writeSyncRouteError(res, error)
         }

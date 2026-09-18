@@ -10,7 +10,7 @@ importers:
 
   packages/all:
     dependencies:
-      dsh-config-manager:
+      '@logictan/dsh-config-manager':
         specifier: ^0.1.60
         version: link:../dsh-config-manager
 
