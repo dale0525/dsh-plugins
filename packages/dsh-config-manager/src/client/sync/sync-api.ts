@@ -80,7 +80,7 @@ export interface SyncStatusResponse {
   transport?: { type: string; ref: string };
   /** 上次选择的同步通道（磁盘 ui-prefs.json；UI 回填优先于此，localStorage 仅兜底） */
   lastSyncChannel?: 'git' | 'webdav';
-  /** 可同步分区目录（「高级/自定义导出」勾选列表；host adapters 唯一事实源，只含 portable） */
+  /** 可同步分区目录（自定义同步勾选列表；host adapters 唯一事实源） */
   syncSections?: SyncSectionInfo[];
   /** 当前分区选择（当前激活通道；UI 回填用，自动同步与手动 push 共用） */
   syncSelection?: SyncSelectionPayload;
@@ -100,10 +100,6 @@ export interface SyncSelectionPayload {
   mode: 'default' | 'advanced';
   /** 高级模式勾选分区；default 模式可为空数组 */
   sections: SectionId[];
-  /** 手动推送默认加密快照（密码每次推送输入，不持久化） */
-  encrypt?: boolean;
-  /** 手动推送默认导出真实凭据值（必须同时 encrypt） */
-  includeSecrets?: boolean;
 }
 
 /** webdav 通道状态字段（无任何 secret 值；password 只报 passwordConfigured 布尔） */
@@ -132,12 +128,11 @@ export interface SyncConfigSaveResponse {
   };
 }
 
-/** 可同步分区条目（status.syncSections 项）。只含 portable —— 与 SyncEngine 同步通道一致。 */
+/** 可同步分区条目（status.syncSections 项）。 */
 export interface SyncSectionInfo {
   id: SectionId;
   /** 展示名（host adapter displayName） */
   displayName: string;
-  portability: 'portable' | 'deviceSpecific' | 'platformSpecific';
   defaultIncluded: boolean;
 }
 
@@ -145,8 +140,8 @@ export interface SyncSectionInfo {
  *  扁平形状与 Host parseSyncBody 一致：git 携带 repoUrl/token；
  *  webdav 携带 url/username/password（顶层，不嵌套 webdav 对象）。
  *  git 可执行文件固定使用系统 PATH 中的 git，不再接受自定义路径。
- *  sections 可选（高级/自定义导出模式）：只推送勾选分区；缺省 = 默认模式全部推荐分区。
- *  encrypt/encryptPassword/includeSecrets：加密快照（含可选密钥导出；密码仅内存传输，绝不落盘）。 */
+ *  sections 可选（自定义同步模式）：只推送勾选分区；缺省 = 全部推荐分区。
+ *  快照恒为明文：勾选即同步，不加密、不脱敏。 */
 export interface SyncPushPayload {
   /** 通道类型；缺省 'git' */
   transport?: SyncTransportType;
@@ -156,23 +151,14 @@ export interface SyncPushPayload {
   url?: string;
   username?: string;
   password?: string;
-  /** 仅同步指定分区（缺省 = 全部 portable 推荐分区；即「默认/快速导出」vs「高级/自定义导出」） */
+  /** 仅同步指定分区（缺省 = 全部推荐分区） */
   sections?: SectionId[];
-  /** 加密快照（sections 载荷整体加密；开启时必须提供 encryptPassword） */
-  encrypt?: boolean;
-  /** 加密密码（仅本次请求体内存传输，Host 绝不落盘/落日志；encrypt=true 时必填） */
-  encryptPassword?: string;
-  /** 导出真实凭据值（必须同时 encrypt=true，否则 Host 拒绝：密钥绝不明文进同步通道） */
-  includeSecrets?: boolean;
 }
 
-/** pull 请求体（strategy 缺省 merge：冲突保留待决策；snapshotId 缺省 = 最新；
- *  decryptPassword 可选：拉取加密快照时提供，仅内存传输）。 */
+/** pull 请求体（strategy 缺省 replace：远端值覆盖本地；snapshotId 缺省 = 最新）。 */
 export interface SyncPullPayload extends SyncPushPayload {
   strategy?: 'merge' | 'replace' | 'skipExisting';
   snapshotId?: string;
-  /** 解密密码（拉取/一键同步遇到加密快照时提供；仅内存传输，绝不落盘） */
-  decryptPassword?: string;
 }
 
 /* ---------------------------------------------------------------- 一键同步（方案 A） */
@@ -453,7 +439,7 @@ export class SyncApi {
     return readJson<SyncStatusResponse>(response, this.t);
   }
 
-  /** 推送：导出 portable 分区 → 提交到私有 Git 仓库 → 更新 sync-state */
+  /** 推送：导出勾选分区 → 提交到私有 Git 仓库 → 更新 sync-state */
   async push(payload: SyncPushPayload): Promise<SyncPushReport> {
     return postJson<SyncPushReport>(SYNC_API.push, payload, this.t);
   }

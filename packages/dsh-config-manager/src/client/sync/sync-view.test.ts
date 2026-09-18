@@ -27,10 +27,10 @@ test('sync-view: 私有仓库强制提示文案存在且强调私有', () => {
 /* ---------------------------------------------------------------- 同步分区模式（默认/高级） */
 
 const SYNC_CATALOG: SyncSectionInfo[] = [
-  { id: 'settings', displayName: 'Settings', portability: 'portable', defaultIncluded: true },
-  { id: 'providers', displayName: 'Providers & Models', portability: 'portable', defaultIncluded: true },
-  { id: 'plugins', displayName: 'Plugins', portability: 'portable', defaultIncluded: true },
-  { id: 'skills', displayName: 'Skills', portability: 'portable', defaultIncluded: true },
+  { id: 'settings', displayName: 'Settings', defaultIncluded: true },
+  { id: 'providers', displayName: 'Providers & Models', defaultIncluded: true },
+  { id: 'plugins', displayName: 'Plugins', defaultIncluded: true },
+  { id: 'skills', displayName: 'Skills', defaultIncluded: true },
 ];
 
 test('sync-view: syncSectionOptions 把 host 目录投影为勾选项（保 id 顺序 + 导出目录分组/描述补充）', () => {
@@ -49,7 +49,7 @@ test('sync-view: syncSectionOptions 把 host 目录投影为勾选项（保 id �
 
 test('sync-view: syncSectionOptions 未知分区 id → 兜底（description 空、group=general）', () => {
   const opts = syncSectionOptions([
-    { id: 'nope' as SectionId, displayName: 'Nope', portability: 'portable', defaultIncluded: true },
+    { id: 'nope' as SectionId, displayName: 'Nope', defaultIncluded: true },
   ])
   assert.equal(opts[0]?.label, 'Nope')
   assert.equal(opts[0]?.description, '')
@@ -65,19 +65,19 @@ test('sync-view: syncSectionGroups 按导出分组投影（与「导出备份·�
   assert.deepEqual(groups[2]?.items.map((i) => i.id), ['plugins'])
 });
 
-test('sync-view: recommendedSyncSections 只取可移植且默认包含的分区（默认/快速导出模式）', () => {
+test('sync-view: recommendedSyncSections 只取默认包含的分区（默认模式）', () => {
   const rec = recommendedSyncSections(SYNC_CATALOG)
   assert.deepEqual(rec, ['settings', 'providers', 'plugins', 'skills'])
 });
 
-test('sync-view: recommendedSyncSections 排除非 portable / 非默认包含分区', () => {
+test('sync-view: recommendedSyncSections 排除非默认包含分区', () => {
   const catalog: SyncSectionInfo[] = [
-    { id: 'settings', displayName: 'Settings', portability: 'portable', defaultIncluded: true },
-    { id: 'credentialsStatus', displayName: 'Credentials', portability: 'deviceSpecific', defaultIncluded: true },
-    { id: 'mcp', displayName: 'MCP', portability: 'platformSpecific', defaultIncluded: true },
-    { id: 'pluginFiles', displayName: 'Plugin Files', portability: 'deviceSpecific', defaultIncluded: false },
+    { id: 'settings', displayName: 'Settings', defaultIncluded: true },
+    { id: 'credentialsStatus', displayName: 'Credentials', defaultIncluded: true },
+    { id: 'mcp', displayName: 'MCP', defaultIncluded: true },
+    { id: 'pluginFiles', displayName: 'Plugin Files', defaultIncluded: false },
   ];
-  assert.deepEqual(recommendedSyncSections(catalog), ['settings'])
+  assert.deepEqual(recommendedSyncSections(catalog), ['settings', 'credentialsStatus', 'mcp'])
 });
 
 test('sync-view: 空/缺省目录 → 推荐分区为空数组（UI 显示「至少选一个」场景）', () => {
@@ -475,10 +475,6 @@ test('sync-view: defaultChannelSyncState 每通道独立缺省值', () => {
   const git = defaultChannelSyncState()
   assert.equal(git.syncMode, 'default')
   assert.deepEqual(git.syncSections, [])
-  assert.equal(git.encrypt, false)
-  assert.equal(git.includeSecrets, false)
-  assert.equal(git.encryptPassword, '')
-  assert.equal(git.decryptPassword, '')
   assert.equal(git.selectedSnapshotId, '')
   assert.deepEqual(git.snapshots, [])
   assert.equal(git.autosync, null)

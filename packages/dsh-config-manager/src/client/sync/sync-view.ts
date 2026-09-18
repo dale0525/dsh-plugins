@@ -40,7 +40,6 @@ export interface SyncSectionOption {
   description: string;
   /** 所属导出分组（General / AI / Extensions / …；未知 id 兜底 'general'） */
   group: ExportGroup;
-  portability: 'portable' | 'deviceSpecific' | 'platformSpecific';
   /** 是否为推荐分区（defaultIncluded=true；默认模式全选、高级模式初始勾选） */
   defaultIncluded: boolean;
 }
@@ -57,7 +56,6 @@ export function syncSectionOptions(info: readonly SyncSectionInfo[]): SyncSectio
       label: s.displayName,
       description: cat?.description ?? '',
       group: cat?.group ?? 'general',
-      portability: s.portability,
       defaultIncluded: s.defaultIncluded,
     };
   });
@@ -81,9 +79,9 @@ export function syncSectionGroups(options: readonly SyncSectionOption[]): {
     .filter((g) => g.items.length > 0);
 }
 
-/** 默认（快速导出）模式的推荐同步分区：可移植且默认包含（与 ExportFlow.quickSelection 同口径）。 */
+/** 默认模式的推荐同步分区：默认包含的分区。 */
 export function recommendedSyncSections(info: readonly SyncSectionInfo[]): SectionId[] {
-  return info.filter((s) => s.portability === 'portable' && s.defaultIncluded).map((s) => s.id);
+  return info.filter((s) => s.defaultIncluded).map((s) => s.id);
 }
 
 /* ---------------------------------------------------------------- 变更摘要 */
@@ -154,24 +152,13 @@ export type SyncChannel = 'git' | 'webdav';
 
 /**
  * 每个同步通道（git/webdav）各自独立的设置状态：
- * 自动同步、同步模式（默认/高级 + 分区勾选）、是否加密、远端快照互不共享。
- * 敏感字段（加密/解密密码）仅内存：成功后清空，绝不持久化/回显。
+ * 自动同步、同步模式（默认/高级 + 分区勾选）、远端快照互不共享。
  */
 export interface ChannelSyncState {
   /** 同步模式：默认（快速导出推荐分区） / 高级（自定义勾选分区） */
   syncMode: SyncMode
   /** 高级模式勾选的同步分区（初始 = 推荐分区；空 = 未勾选任何分区） */
   syncSections: SectionId[]
-  /** 手动推送默认加密快照（持久化开关；密码不持久化） */
-  encrypt: boolean
-  /** 手动推送默认导出真实凭据值（持久化开关；必须同时 encrypt） */
-  includeSecrets: boolean
-  /** 加密密码（仅内存；推送成功后清空，绝不持久化/回显） */
-  encryptPassword: string
-  /** 加密密码确认（仅内存） */
-  encryptPasswordConfirm: string
-  /** 解密密码（拉取/一键同步加密快照用；仅内存，绝不持久化） */
-  decryptPassword: string
   /** 当前选中的历史快照 id（'' = 最新） */
   selectedSnapshotId: string
   /** 该通道远端历史快照列表（「选择历史快照」下拉数据源） */
@@ -191,11 +178,6 @@ export function defaultChannelSyncState(): ChannelSyncState {
   return {
     syncMode: 'default',
     syncSections: [],
-    encrypt: false,
-    includeSecrets: false,
-    encryptPassword: '',
-    encryptPasswordConfirm: '',
-    decryptPassword: '',
     selectedSnapshotId: '',
     snapshots: [],
     loadingSnapshots: false,

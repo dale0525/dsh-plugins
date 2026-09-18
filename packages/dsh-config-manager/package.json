@@ -80,6 +80,7 @@
     "prepare": "tsc -p tsconfig.build.json && tsdown",
     "bundle": "tsdown",
     "watch": "tsdown --watch",
+    "dev:watch": "node scripts/dev-watch.mjs",
     "clean": "node -e \"require('node:fs').rmSync('lib', { recursive: true, force: true })\""
   },
   "dependencies": {

@@ -73,11 +73,6 @@ test('run-store: byChannel 加密解密密码绝不写入 sessionStorage', () =>
         git: {
           syncSections: ['settings'],
           syncMode: 'advanced',
-          encrypt: true,
-          encryptPassword: 'GIT_ENCRYPT_PWD',
-          encryptPasswordConfirm: 'GIT_ENCRYPT_PWD',
-          decryptPassword: 'GIT_DECRYPT_PWD',
-          includeSecrets: true,
           selectedSnapshotId: '',
           autosync: null,
           autosyncEnabled: false,
@@ -87,11 +82,6 @@ test('run-store: byChannel 加密解密密码绝不写入 sessionStorage', () =>
         webdav: {
           syncSections: ['settings', 'skills'],
           syncMode: 'default',
-          encrypt: true,
-          encryptPassword: 'WEBDAV_ENCRYPT_PWD',
-          encryptPasswordConfirm: 'WEBDAV_ENCRYPT_PWD',
-          decryptPassword: 'WEBDAV_DECRYPT_PWD',
-          includeSecrets: false,
           selectedSnapshotId: '',
           autosync: null,
           autosyncEnabled: true,
@@ -104,18 +94,11 @@ test('run-store: byChannel 加密解密密码绝不写入 sessionStorage', () =>
 
   const text = raw()
   assert.ok(text !== null)
-  assert.ok(!text.includes('GIT_ENCRYPT_PWD'), 'git 加密密码不得落盘')
-  assert.ok(!text.includes('GIT_DECRYPT_PWD'), 'git 解密密码不得落盘')
-  assert.ok(!text.includes('WEBDAV_ENCRYPT_PWD'), 'webdav 加密密码不得落盘')
-  assert.ok(!text.includes('WEBDAV_DECRYPT_PWD'), 'webdav 解密密码不得落盘')
 
-  // 刷新后敏感密码为空串
+  // 刷新后分区选择正确保留（凭据本身走 DSH credentials，不进 UI 状态）
   const reloaded = new RunStore({ storage })
   const snap = reloaded.getSnapshot().sync
-  assert.equal(snap.byChannel.git.encryptPassword, '')
-  assert.equal(snap.byChannel.git.decryptPassword, '')
-  assert.equal(snap.byChannel.webdav.encryptPassword, '')
-  assert.equal(snap.byChannel.webdav.decryptPassword, '')
+  assert.equal('encryptPassword' in snap.byChannel.git, false, 'ChannelSyncState 不再有加密密码字段')
   // 非敏感选项正确保留
   assert.equal(snap.byChannel.git.syncMode, 'advanced')
   assert.deepEqual(snap.byChannel.git.syncSections, ['settings'])

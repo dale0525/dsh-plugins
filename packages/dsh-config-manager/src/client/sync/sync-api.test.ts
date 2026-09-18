@@ -452,8 +452,8 @@ test('S-23 api.status()：解析 syncSections（可同步分区目录，无 secr
   const body = {
     ok: true, configured: true, credentialConfigured: true, credentialWritable: true, sectionCount: 4,
     syncSections: [
-      { id: 'settings', displayName: 'Settings', portability: 'portable', defaultIncluded: true },
-      { id: 'skills', displayName: 'Skills', portability: 'portable', defaultIncluded: true },
+      { id: 'settings', displayName: 'Settings', defaultIncluded: true },
+      { id: 'skills', displayName: 'Skills', defaultIncluded: true },
     ],
   };
   let called: FetchCall | null = null;
@@ -466,7 +466,6 @@ test('S-23 api.status()：解析 syncSections（可同步分区目录，无 secr
   const result = await api.status();
   assert.equal(result.syncSections?.length, 2);
   assert.equal(result.syncSections?.[0]?.id, 'settings');
-  assert.equal(result.syncSections?.[1]?.portability, 'portable');
   assert.equal(lastCall()?.url, SYNC_API.status);
 });
 
@@ -506,57 +505,42 @@ test('S-25 api.saveSelection()：POST /sync/selection 携带 transport + mode + 
   assert.deepEqual(sent['sections'], ['settings', 'skills']);
 });
 
-test('S-26 api.push()：加密快照 → 请求体携带 encrypt/encryptPassword/includeSecrets', async () => {
+test('S-26 api.push()：明文同步 → 请求体只带通道与分区，不带任何加密字段', async () => {
   const calls: FetchCall[] = [];
   installFetchMock((call) => {
     calls.push(call);
-    return jsonResponse(200, { ok: true, snapshotId: 'sync-enc', sections: ['settings'], warnings: [] });
+    return jsonResponse(200, { ok: true, snapshotId: 'sync-plain', sections: ['settings'], warnings: [] });
   });
   const api = new SyncApi();
-  await api.push({
-    repoUrl: 'https://github.com/u/r.git',
-    encrypt: true,
-    encryptPassword: 'pw-12345678',
-    includeSecrets: true,
-  });
+  await api.push({ repoUrl: 'https://github.com/u/r.git', sections: ['settings'] });
   assert.equal(calls.length, 1);
   const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent['encrypt'], true);
-  assert.equal(sent['encryptPassword'], 'pw-12345678');
-  assert.equal(sent['includeSecrets'], true);
+  assert.deepEqual(sent['sections'], ['settings']);
+  assert.equal('encrypt' in sent, false, '明文同步不携带 encrypt');
+  assert.equal('includeSecrets' in sent, false);
+  assert.equal('encryptPassword' in sent, false);
 });
 
-test('S-27 api.pull()：拉取加密快照 → 请求体携带 decryptPassword（仅内存传输）', async () => {
+test('S-27 api.pull()：请求体只带通道与 snapshotId（无解密密码字段）', async () => {
   const calls: FetchCall[] = [];
   installFetchMock((call) => {
     calls.push(call);
-    return jsonResponse(200, { ok: true, snapshotId: 'sync-enc', changes: [], needsReview: false });
+    return jsonResponse(200, { ok: true, snapshotId: 'sync-1', changes: [], needsReview: false });
   });
   const api = new SyncApi();
-  await api.pull({ repoUrl: 'https://github.com/u/r.git', decryptPassword: 'pw-12345678' });
+  await api.pull({ repoUrl: 'https://github.com/u/r.git', snapshotId: 'sync-1' });
   assert.equal(calls[0]?.url, SYNC_API.pull);
   const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent['decryptPassword'], 'pw-12345678');
-});
-
-test('S-28 api.status()：syncSelection 含 encrypt/includeSecrets 开关（UI 回填）', async () => {
-  const body = {
-    ok: true, configured: true, credentialConfigured: true, credentialWritable: true, sectionCount: 2,
-    syncSelection: { mode: 'advanced', sections: ['settings'], encrypt: true, includeSecrets: true },
-  };
-  installFetchMock(() => jsonResponse(200, body));
-  const api = new SyncApi();
-  const result = await api.status();
-  assert.equal(result.syncSelection?.encrypt, true);
-  assert.equal(result.syncSelection?.includeSecrets, true);
+  assert.equal(sent['snapshotId'], 'sync-1');
+  assert.equal('decryptPassword' in sent, false, '明文同步不携带 decryptPassword');
 });
 
 test('S-28b api.status()：syncSelectionByChannel / autosyncByChannel 按通道独立解析（子 tab UI 回填）', async () => {
   const body = {
     ok: true, configured: true, credentialConfigured: true, credentialWritable: true, sectionCount: 2,
     syncSelectionByChannel: {
-      git: { mode: 'default', sections: [], encrypt: false, includeSecrets: false },
-      webdav: { mode: 'advanced', sections: ['settings'], encrypt: true, includeSecrets: true },
+      git: { mode: 'default', sections: [] },
+      webdav: { mode: 'advanced', sections: ['settings'] },
     },
     autosyncByChannel: {
       git: { enabled: true, interval: '30m', consecutiveFailures: 0, elapsedMs: 60000 },
@@ -568,7 +552,6 @@ test('S-28b api.status()：syncSelectionByChannel / autosyncByChannel 按通道�
   const result = await api.status();
   assert.equal(result.syncSelectionByChannel?.git.mode, 'default', 'git 通道选择独立');
   assert.equal(result.syncSelectionByChannel?.webdav.mode, 'advanced');
-  assert.equal(result.syncSelectionByChannel?.webdav.encrypt, true);
   assert.equal(result.autosyncByChannel?.git.enabled, true, 'git 通道自动同步独立');
   assert.equal(result.autosyncByChannel?.webdav.enabled, false);
   assert.equal(result.autosyncByChannel?.webdav.interval, '5m');

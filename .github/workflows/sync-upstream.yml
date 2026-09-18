@@ -1,0 +1,103 @@
+# 上游同步：把 dsh-config-manager 上游的新版本合进本仓库的 fork。
+#
+# 只开 PR，**绝不直接推 main**：上游一天 1-2 个版本，冲突需人工裁定。
+#
+# 两个触发方式：
+#   - schedule：每天一次。上游发版频繁，但每天最多一个 PR，避免噪音；
+#   - workflow_dispatch：手动指定上游 ref（缺省 = 最新 tag）。
+#
+# 冲突分类由 scripts/sync-upstream.mjs 输出：A 类真冲突（需人工裁定）/ B 类机械重删。
+name: sync-upstream
+
+on:
+  schedule:
+    # 每天 03:17 UTC（避开整点，减少 GitHub Actions 排队）
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '上游 ref（tag / branch / commit）；留空 = 上游最新 v* tag'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 需要完整历史：subtree pull 要基于共同祖先做三方合并
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Configure git identity
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Validate sync policy
+        run: |
+          node -e "const p=require('./sync-policy.json'); if(!p.upstream||!p.upstream.url) { console.error('sync-policy.json: upstream.url missing'); process.exit(1) } console.log('owned='+ (p.owned||[]).length + ' deleted=' + (p.deleted||[]).length)"
+
+      - name: Apply upstream sync
+        id: sync
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          if [ -n "$REF" ]; then
+            node scripts/sync-upstream.mjs --ref "$REF"
+          else
+            node scripts/sync-upstream.mjs
+          fi
+
+      - name: Capture applied branch
+        id: branch
+        run: |
+          echo "name=$(git rev-parse --abbrev-ref HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile=false
+
+      - name: Typecheck
+        run: pnpm --filter @logictan/dsh-config-manager typecheck
+
+      - name: Test
+        run: pnpm --filter @logictan/dsh-config-manager test
+
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          # 只推 PR 分支；本 action 从不推 base（main）
+          branch: ${{ steps.branch.outputs.name }}
+          base: main
+          title: 'chore: sync upstream dsh-config-manager'
+          commit-message: 'chore: sync upstream dsh-config-manager'
+          delete-branch: true
+          body: |
+            自动上游同步（`scripts/sync-upstream.mjs` + `sync-policy.json`）。
+
+            **顺序**：先 `git checkout --theirs`（全取上游）→ 再 `--ours`（恢复 `owned`）→ 再 `git rm`（重删 `deleted`）。
+            顺序反了会让本仓库的改造被上游覆盖。
+
+            合并前请人工确认：
+            - [ ] `sync-policy.json` 的 `owned` / `deleted` 清单是否仍与仓库实际状态一致（本轮新增/删除的文件可能未登记）
+            - [ ] 上游在「我们保留的文件」里的 bug 修复是否已带入
+            - [ ] 我们删掉的功能是否被上游静默复活（`deleted` 清单覆盖不到的新文件）

@@ -266,7 +266,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
       // 回退 localStorage 记忆（升级前遗留）→ 最后按配置（sync-config.transport）
       const savedChannel: SyncChannel = info.transport?.type === 'webdav' ? 'webdav' : 'git'
       const remembered = info.lastSyncChannel ?? readStoredChannel()
-      // 可同步分区目录回填（host adapters 唯一事实源；仅 portable；两通道共用）
+      // 可同步分区目录回填（host adapters 唯一事实源；两通道共用）
       const catalog = info.syncSections !== undefined ? syncSectionOptions(info.syncSections) : []
       // 每通道回填：优先该通道的持久化配置（syncSelectionByChannel / autosyncByChannel）；
       // 无持久化 → 默认模式 + 推荐分区
@@ -282,8 +282,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
         return {
           syncMode: persistedMode,
           syncSections: persistedSections,
-          encrypt: sel?.encrypt ?? false,
-          includeSecrets: sel?.includeSecrets ?? false,
           autosyncEnabled: auto?.enabled ?? false,
           autosyncInterval: auto?.interval ?? '30m',
         }
@@ -641,20 +639,14 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     setChannelOpen(false)
   }
 
-  /** 组装 push/preview 的公共载荷（分区选择 + 加密选项；密码仅内存） */
-  const buildPushPayload = (): SyncPushPayload & { encryptPassword?: string } => {
-    // 默认模式：不传 sections（= 全部 portable 推荐分区）；高级模式：传勾选分区
+  /** 组装 push/preview 的公共载荷（分区选择；快照恒为明文） */
+  const buildPushPayload = (): SyncPushPayload => {
+    // 默认模式：不传 sections（= 全部推荐分区）；高级模式：传勾选分区
     const selection =
       chState.syncMode === 'advanced' && chState.syncSections.length > 0
         ? { sections: chState.syncSections }
         : {}
-    // 加密快照：勾选加密 → 携带密码（仅内存传输；密码错误由 Host 解密认证兜底）；
-    // includeSecrets 必须伴随 encrypt（Host 安全断言兜底）
-    const cryptoOpts =
-      chState.encrypt || chState.includeSecrets
-        ? { encrypt: true, encryptPassword: chState.encryptPassword, includeSecrets: chState.includeSecrets }
-        : {}
-    return { ...payload(), ...selection, ...cryptoOpts }
+    return { ...payload(), ...selection }
   }
 
   /** P0-②：push 前只读预览（弹窗确认流程第一步）——不写远端，只展示「将推送什么」。 */
@@ -675,7 +667,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     patch({ busy: 'push', pushReport: null, pullReport: null })
     try {
       const report = await api.push(buildPushPayload())
-      // 成功即清空 token/webdavPassword/加密密码（已安全使用完；绝不持久化）；失败保留以便重试
+      // 成功即清空 token/webdavPassword（已安全使用完；绝不持久化）；失败保留以便重试
       patch({
         busy: null, pushReport: report, pushPreview: { preview: null, open: false },
         ...(report.ok
@@ -683,7 +675,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
           : {}),
       })
       if (report.ok) {
-        patchChannel({ encryptPassword: '', encryptPasswordConfirm: '' })
         // M-19：推送终局回执（结果弹窗关闭后不再有任何痕迹）
         toast.ok(t('toast.pushDone'))
         void loadSnapshots()
@@ -700,12 +691,8 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   const runPull = async (): Promise<void> => {
     patch({ busy: 'pull', pullReport: null, pushReport: null })
     try {
-      // 解密密码（可选）：拉取加密快照时提供；仅内存传输
-      const decrypt =
-        chState.decryptPassword !== '' ? { decryptPassword: chState.decryptPassword } : {}
-      const report = await api.pull({ ...payload(), ...decrypt })
+      const report = await api.pull({ ...payload() })
       patch({ busy: null, pullReport: report, token: '', webdavPassword: '' })
-      patchChannel({ decryptPassword: '' })
       // M-19：拉取终局回执（弹窗关闭后无痕迹）
       toast.ok(t('toast.pullDone'))
     } catch (err) {
@@ -716,11 +703,10 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
 
   /* ------------------------------------------------ 同步模式（默认/高级） */
 
-  /** 保存当前通道的分区选择到 Host（持久化；自动同步与手动 push 共用；失败提示但不阻断本地 UI）。
-   *  附带持久化加密/密钥开关（密码不持久化）。 */
-  const saveSelection = async (mode: SyncMode, sections: SectionId[], encrypt = chState.encrypt, includeSecrets = chState.includeSecrets): Promise<void> => {
+  /** 保存当前通道的分区选择到 Host（持久化；自动同步与手动 push 共用；失败提示但不阻断本地 UI）。 */
+  const saveSelection = async (mode: SyncMode, sections: SectionId[]): Promise<void> => {
     try {
-      await api.saveSelection({ transport: state.channel, mode, sections, encrypt, includeSecrets })
+      await api.saveSelection({ transport: state.channel, mode, sections })
     } catch (err) {
       // R-20/M-22：同步设置持久化失败（此前写共享 error Banner，与刚点的模式页签相距整屏）
       toast.error(`${t('toast.selectionSaveFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
@@ -743,34 +729,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     void saveSelection(state.byChannel[state.channel].syncMode, next)
   }
 
-  /** 当前通道加密备份开关（持久化）。取消加密时若勾选着导出密钥 → 一并取消（密钥必须加密，安全底线）。 */
-  const setEncrypt = (next: boolean): void => {
-    patchChannel({
-      encrypt: next,
-      includeSecrets: next ? chState.includeSecrets : false,
-      // 密码字段仅内存：取消加密时清空
-      ...(next ? {} : { encryptPassword: '', encryptPasswordConfirm: '' }),
-    })
-    void saveSelection(
-      state.byChannel[state.channel].syncMode,
-      state.byChannel[state.channel].syncSections,
-      next,
-      next ? chState.includeSecrets : false,
-    )
-  }
-
-  /** 当前通道导出密钥开关（持久化）。勾选时自动联动选中加密（密钥绝不明文进同步通道）。 */
-  const setIncludeSecrets = (next: boolean): void => {
-    patchChannel({ includeSecrets: next, encrypt: next ? true : chState.encrypt })
-    void saveSelection(
-      state.byChannel[state.channel].syncMode,
-      state.byChannel[state.channel].syncSections,
-      next ? true : chState.encrypt,
-      next,
-    )
-  }
-
-  /** 默认（快速导出）模式的推荐分区数（渲染计数用；catalog 已只含 portable）。 */
+  /** 默认模式的推荐分区数（渲染计数用）。 */
   const recommendedSectionCount = state.catalog.filter((c) => c.defaultIncluded).length
 
   /* ------------------------------------------------ 一键同步（方案 A） */
@@ -783,13 +742,9 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     }
     patch({ busy: 'sync', confirmSession: null, confirmDecisions: null, lastRestoreId: null })
     try {
-      // 解密密码（可选）：一键同步拉取加密快照时提供；仅内存传输
-      const decrypt =
-        chState.decryptPassword !== '' ? { decryptPassword: chState.decryptPassword } : {}
       const session = await api.sync({
         ...payload(),
         ...(snapshotId !== undefined && snapshotId !== '' ? { snapshotId } : {}),
-        ...decrypt,
       })
       if (!session.ok) {
         // R-20：一键同步启动失败（宿主明确回报 message，无异常抛出）
@@ -798,7 +753,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
         return
       }
       patch({ busy: null, confirmSession: session, confirmDecisions: null, token: '', webdavPassword: '' })
-      patchChannel({ decryptPassword: '' })
       void loadSnapshots()
     } catch (err) {
       patch({ busy: null })
@@ -868,11 +822,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
 
   /** 高级模式勾选为空 → 禁止推送（默认模式不受限）。 */
   const pushSelectionReady = chState.syncMode !== 'advanced' || chState.syncSections.length > 0
-
-  /** 加密推送校验：勾选加密时密码非空且两次一致（密码仅内存）。 */
-  const encryptInvalid =
-    (chState.encrypt || chState.includeSecrets) &&
-    (chState.encryptPassword === '' || chState.encryptPassword !== chState.encryptPasswordConfirm)
 
   const autosyncText = chState.autosync !== null ? autosyncStatusText(chState.autosync, uiT) : t('autosync.statusNever')
   /** 距下次自动同步剩余 ms（null = 从未运行；0 = 已到期） */
@@ -1229,7 +1178,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                                 <span className={css.categoryItem}>
                                   <span className={css.categoryName}>{s.label}</span>
                                   <span className={css.categoryDesc}>{s.description}</span>
-                                  <Badge kind="info">{t('mode.sectionPortable')}</Badge>
                                   {s.defaultIncluded && <Badge kind="ok">{t('mode.sectionRecommended')}</Badge>}
                                 </span>
                               }
@@ -1254,69 +1202,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             )}
           </Card>
 
-          {/* 加密与密钥导出（当前通道手动推送；仿「导出备份·自定义模式」安全选项） */}
-          <Card>
-            <span className={css.groupLabel}>{t('mode.security')}</span>
-            <Checkbox
-              checked={chState.encrypt}
-              onChange={setEncrypt}
-              label={<span className={css.categoryName}>{t('mode.encrypt')}</span>}
-            />
-            <div className={css.hint}>{t('mode.encryptHint')}</div>
-            {chState.encrypt && (
-              <div className={css.secretFields}>
-                <label className={css.field}>
-                  <span className={css.fieldLabel}>{t('mode.password')}</span>
-                  <input
-                    type="password"
-                    className={css.input}
-                    value={chState.encryptPassword}
-                    autoComplete="new-password"
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => { patchChannel({ encryptPassword: e.target.value }) }}
-                  />
-                </label>
-                <label className={css.field}>
-                  <span className={css.fieldLabel}>{t('mode.passwordConfirm')}</span>
-                  <input
-                    type="password"
-                    className={css.input}
-                    value={chState.encryptPasswordConfirm}
-                    autoComplete="new-password"
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => { patchChannel({ encryptPasswordConfirm: e.target.value }) }}
-                  />
-                </label>
-                {chState.encryptPassword !== '' && chState.encryptPassword !== chState.encryptPasswordConfirm && (
-                  <span className={css.formError}>{t('mode.passwordMismatch')}</span>
-                )}
-                {chState.encryptPassword === '' && (
-                  <span className={css.formError}>{t('mode.passwordRequired')}</span>
-                )}
-              </div>
-            )}
-            <Checkbox
-              checked={chState.includeSecrets}
-              onChange={setIncludeSecrets}
-              label={<span className={css.categoryName}>{t('mode.includeSecrets')}</span>}
-            />
-            <div className={css.hint}>{t('mode.includeSecretsHint')}</div>
-            <span className={css.hint}>{t('mode.encryptAutosyncNotice')}</span>
-          </Card>
-
-          {/* 解密密码（当前通道拉取/一键同步加密快照用；仅内存） */}
-          <Card>
-            <label className={css.field}>
-              <span className={css.fieldLabel}>{t('mode.decryptPassword')}</span>
-              <input
-                type="password"
-                className={css.input}
-                value={chState.decryptPassword}
-                autoComplete="off"
-                onChange={(e: ChangeEvent<HTMLInputElement>) => { patchChannel({ decryptPassword: e.target.value }) }}
-              />
-              <span className={css.hint}>{t('mode.decryptPasswordHint')}</span>
-            </label>
-          </Card>
-
           {/* 一键同步 + 手动推送/拉取（当前通道） */}
           <div className={css.actionRow}>
             <Button
@@ -1326,7 +1211,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             >
               {state.busy === 'sync' ? <Spinner label={t('syncflow.syncing')} /> : t('syncflow.button')}
             </Button>
-            <Button disabled={!buttons.canPush || githubBusy || !pushSelectionReady || encryptInvalid} onClick={() => { void runPushPreview() }}>
+            <Button disabled={!buttons.canPush || githubBusy || !pushSelectionReady} onClick={() => { void runPushPreview() }}>
               {state.busy === 'push' ? <Spinner label={buttons.pushLabel} /> : buttons.pushLabel}
             </Button>
             <Button disabled={!buttons.canPull || githubBusy} onClick={() => { void runPull() }}>

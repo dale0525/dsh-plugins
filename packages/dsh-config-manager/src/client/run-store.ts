@@ -162,8 +162,6 @@ export function toPersistedState(state: StoreState): PersistedState {
         git: {
           syncSections: Array.isArray(git.syncSections) ? [...git.syncSections] : [],
           syncMode: git.syncMode,
-          encrypt: git.encrypt,
-          includeSecrets: git.includeSecrets,
           selectedSnapshotId: git.selectedSnapshotId ?? '',
           autosync: git.autosync ?? null,
           autosyncEnabled: git.autosyncEnabled,
@@ -173,8 +171,6 @@ export function toPersistedState(state: StoreState): PersistedState {
         webdav: {
           syncSections: Array.isArray(webdav.syncSections) ? [...webdav.syncSections] : [],
           syncMode: webdav.syncMode,
-          encrypt: webdav.encrypt,
-          includeSecrets: webdav.includeSecrets,
           selectedSnapshotId: webdav.selectedSnapshotId ?? '',
           autosync: webdav.autosync ?? null,
           autosyncEnabled: webdav.autosyncEnabled,
@@ -352,16 +348,10 @@ export class RunStore {
           git: {
             ...def.byChannel.git,
             ...parsed.sync.byChannel.git,
-            encryptPassword: '',
-            encryptPasswordConfirm: '',
-            decryptPassword: '',
           },
           webdav: {
             ...def.byChannel.webdav,
             ...parsed.sync.byChannel.webdav,
-            encryptPassword: '',
-            encryptPasswordConfirm: '',
-            decryptPassword: '',
           },
         },
       },
