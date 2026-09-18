@@ -305,6 +305,38 @@ test('push: 显式 sections（自定义同步）→ 只同步指定分区', asyn
   }
 });
 
+test('push: 构造注入持久化勾选后，显式 opts.sections 仍可覆盖（不被注入范围截断）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-ctor-override-'));
+  try {
+    const ctx = makeContext('darwin', '/Users/alice');
+    seedSource(ctx);
+    await ctx.fs.writeFile('skills/coding.md', Buffer.from('# Coding\n', 'utf8'));
+    await ctx.fs.writeFile('sessions/proj/s1.jsonl', Buffer.from('{"a":1}\n', 'utf8'));
+    const adapters = createAdapters({ namespaces: NS, includeSessions: true, selfDir: 'dsh-config-manager' });
+    const transport = new MemSyncTransport();
+    const engine = new SyncEngine({
+      ctx, transport, adapters,
+      importer: new Importer({ ctx, adapters, snapshotStore: new MemSnapshotStore() }),
+      stateDir: tmp, localSnapshotsDir: path.join(tmp, 'snap'),
+      // 模拟 makeSyncEngine：注入用户持久化的高级勾选
+      sections: ['settings'],
+      now: () => new Date('2026-08-16T12:00:00.000Z'),
+    } as ConstructorParameters<typeof SyncEngine>[0]);
+
+    // 显式覆盖成注入范围之外的分区：必须生效，不得被误判为未知分区
+    const report = await engine.push({ snapshotId: 'sync-ov', sections: ['skills', 'sessions'] });
+    assert.equal(report.ok, true, '显式覆盖的合法分区不得导致 ok=false');
+    assert.deepEqual(report.warnings, [], '合法分区不得产生 unknownSection 告警');
+    assert.deepEqual(
+      transport.snapshots.get('sync-ov')!.manifest.sectionIds.sort(),
+      ['sessions', 'skills'],
+      '显式 opts.sections 覆盖构造注入范围',
+    );
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('push: sections 含未知分区 → 警告跳过，其余照常同步', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-sections-skip-'));
   try {

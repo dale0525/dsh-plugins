@@ -2598,13 +2598,14 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
           const channel: SyncTransportType = body['transport'] === 'webdav' ? 'webdav' : 'git'
           const mode: SyncSelectionMode = body['mode'] === 'advanced' ? 'advanced' : 'default'
           const rawSections = Array.isArray(body['sections']) ? body['sections'] : []
-          const portableIds = new Set(syncSectionCatalog.map((s) => s.id))
+          // 目录已含全部分区（不再按 portability 过滤），变量名不沿用 portable*
+          const catalogSectionIds = new Set(syncSectionCatalog.map((s) => s.id))
           for (const s of rawSections) {
             if (typeof s !== 'string' || s === '') {
               writeJson(res, 400, { error: 'sections must be an array of non-empty strings' })
               return
             }
-            if (!portableIds.has(s as SectionId)) {
+            if (!catalogSectionIds.has(s as SectionId)) {
               writeJson(res, 400, { error: `unknown sync section: ${s}` })
               return
             }

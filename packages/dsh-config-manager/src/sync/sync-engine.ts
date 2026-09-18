@@ -251,7 +251,10 @@ export class SyncEngine {
    */
   private pushTargets(sections: readonly SectionId[] | undefined, warnings: string[]): ConfigAdapter[] {
     if (sections === undefined || sections.length === 0) return this.defaultTargets();
-    const available = this.syncAdapters();
+    // 显式 sections 从**全部已挂载分区**解析，而非 syncAdapters()：后者受构造注入范围限制，
+    // 会让「手动 push(opts.sections) 覆盖持久化勾选」失效（未在注入范围内的合法分区被误判为未知）。
+    // 与路由侧 extractSyncSections(knownSyncSectionIds=全部 adapter) 的校验口径一致。
+    const available = this.adapters;
     const byId = new Map(available.map((a) => [a.id, a]));
     const out: ConfigAdapter[] = [];
     for (const id of sections) {
