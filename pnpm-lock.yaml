@@ -6,7 +6,11 @@ settings:
 
 importers:
 
-  .: {}
+  .:
+    dependencies:
+      '@logictan/dsh-plugins-all':
+        specifier: 0.2.0
+        version: link:packages/all
 
   packages/all:
     dependencies:
