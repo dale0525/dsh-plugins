@@ -2,9 +2,9 @@
  * m-sync-selection：远程同步分区选择持久化（sync-selection.json）。
  *
  * 与 sync-config.json / sync-autosync.json 并列独立文件：语义清楚、schema 演进独立。
- * schemaVersion:1 —— 按同步通道拆分（git / webdav 各自独立的分区勾选）：
+ * schemaVersion:2 —— 按同步通道拆分（git / webdav 各自独立的分区勾选）：
  * ```
- * { "schemaVersion": 1,
+ * { "schemaVersion": 2,
  *   "channels": {
  *     "git":    { mode: 'default'|'advanced', sections: SectionId[] },
  *     "webdav": { ... } } }
@@ -14,6 +14,13 @@
  *   避免自动同步卡死）。
  *
  * 快照恒为明文：同步通道是用户自有的私有通道，勾选即同步，不加密、不脱敏。
+ *
+ * **版本号与上游同号是刻意的**：上游 0.1.60 的 `schemaVersion:2` 就是本信封
+ * （多出 `encrypt` / `includeSecrets` 两个已废弃字段），上游的 v1 则是**顶层单通道**
+ * 形状（`{mode, sections}`，无 channels）。本文件必须能读回上游 v2，否则升级即静默
+ * 丢失用户勾选；写出的 v2 上游也仍能读（它接受 ver===2），故回滚到上游不会重置。
+ * 若把本信封编号写成 1，就会与上游 v1 的顶层形状撞号：既读不回上游 v2，写出的文件
+ * 上游按顶层解析又只得到缺省。
  *
  * 原子写（临时文件 + rename），损坏/不支持 schema 回退缺省（mode='default', sections=[]）。
  * 持久化原因：自动同步调度器运行于 Host 进程（浏览器关闭也在跑），必须从磁盘读
@@ -28,7 +35,9 @@ import { parseJsonSafe, stringifyJsonSafe } from '../utils/json.ts';
 import { atomicWriteFile } from '../utils/atomic-write.ts';
 
 export const SYNC_SELECTION_FILE = 'sync-selection.json';
-export const SYNC_SELECTION_SCHEMA_VERSION = 1;
+export const SYNC_SELECTION_SCHEMA_VERSION = 2;
+/** 可读的版本：1 = 上游顶层单通道（或早期 channels 信封）；2 = 本信封（含上游 0.1.60）。 */
+export const SYNC_SELECTION_SUPPORTED_VERSIONS: readonly number[] = [1, 2];
 
 /** 远程同步分区选择模式：default = 全部推荐分区；advanced = 自定义勾选。 */
 export type SyncSelectionMode = 'default' | 'advanced';
@@ -89,12 +98,17 @@ export async function readAllSyncSelections(dir: string): Promise<Record<SyncTra
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return fallback();
   const obj = parsed as Record<string, unknown>;
-  const ver = typeof obj['schemaVersion'] === 'number' ? obj['schemaVersion'] : 0;
-  if (ver !== SYNC_SELECTION_SCHEMA_VERSION) return fallback();
+  // 缺 schemaVersion 视为 v1（与上游一致）；不支持的版本回退缺省。
+  const ver = typeof obj['schemaVersion'] === 'number' ? obj['schemaVersion'] : 1;
+  if (!SYNC_SELECTION_SUPPORTED_VERSIONS.includes(ver)) return fallback();
   const channels = obj['channels'];
-  const ch = channels !== null && typeof channels === 'object' && !Array.isArray(channels)
-    ? channels as Record<string, unknown>
-    : {};
+  if (channels === null || typeof channels !== 'object' || Array.isArray(channels)) {
+    // v1 顶层单通道形状：整个对象就是一个通道配置（归 git），与上游迁移语义一致。
+    // v2 缺 channels 信封属于损坏 → 回退缺省。
+    if (ver === 1) return { git: parseChannelSelection(obj), webdav: defaultSyncSelection() };
+    return fallback();
+  }
+  const ch = channels as Record<string, unknown>;
   const pick = (ns: unknown): SyncSelection =>
     ns !== null && typeof ns === 'object' && !Array.isArray(ns)
       ? parseChannelSelection(ns as Record<string, unknown>)

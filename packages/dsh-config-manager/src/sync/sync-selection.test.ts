@@ -108,6 +108,33 @@ test('readSyncSelection：旧字段（encrypt/includeSecrets）被忽略，只�
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
+test('readSyncSelection：升级路径 —— 上游 v2 文件（含 encrypt/includeSecrets）→ 保留用户勾选', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-selection-upstream-v2-'));
+  try {
+    // 逐字取自上游 dsh-config-manager@0.1.60 实际落盘的文件形状：
+    // 同一 channels 信封，多出 encrypt / includeSecrets 两个已废弃字段。
+    await fs.writeFile(
+      path.join(dir, SYNC_SELECTION_FILE),
+      JSON.stringify({
+        schemaVersion: 2,
+        channels: {
+          git: { mode: 'advanced', sections: ['settings', 'providers', 'prompts'], encrypt: true, includeSecrets: true },
+          webdav: { mode: 'advanced', sections: ['settings', 'skills'], encrypt: true, includeSecrets: true },
+        },
+      }),
+      'utf8',
+    );
+    const git = await readSyncSelection(dir, 'git');
+    assert.equal(git.mode, 'advanced', '上游 v2 的 git 勾选必须被保留，不得回退缺省');
+    assert.deepEqual(git.sections, ['settings', 'providers', 'prompts']);
+    assert.equal('encrypt' in git, false, '已废弃字段不进入读取结果');
+    assert.equal('includeSecrets' in git, false);
+    const webdav = await readSyncSelection(dir, 'webdav');
+    assert.equal(webdav.mode, 'advanced', '上游 v2 的 webdav 勾选必须被保留');
+    assert.deepEqual(webdav.sections, ['settings', 'skills']);
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
 test('按通道独立：写 webdav 不影响 git，反之亦然', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-selection-perchannel-'));
   try {
@@ -122,6 +149,23 @@ test('按通道独立：写 webdav 不影响 git，反之亦然', async () => {
     const all = await readAllSyncSelections(dir);
     assert.equal(all.git.mode, 'default');
     assert.equal(all.webdav.mode, 'advanced');
+  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+test('readSyncSelection：上游 v1 顶层单通道形状 → 归 git 通道，webdav 缺省', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-selection-upstream-v1-'));
+  try {
+    // 上游 v1：整个文件就是一个通道配置，没有 channels 信封。
+    await fs.writeFile(
+      path.join(dir, SYNC_SELECTION_FILE),
+      JSON.stringify({ schemaVersion: 1, mode: 'advanced', sections: ['settings', 'mcp'] }),
+      'utf8',
+    );
+    const git = await readSyncSelection(dir, 'git');
+    assert.equal(git.mode, 'advanced');
+    assert.deepEqual(git.sections, ['settings', 'mcp']);
+    const webdav = await readSyncSelection(dir, 'webdav');
+    assert.equal(webdav.mode, 'default', 'v1 无 webdav 信息 → 缺省');
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
