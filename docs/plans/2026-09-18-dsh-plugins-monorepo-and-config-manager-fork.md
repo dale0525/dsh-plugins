@@ -653,3 +653,46 @@ tests/route/status-plugin-diagnostics.test.ts        76
 | dsh-web 无上游同步 workflow | `.github/workflows/` 16 个文件全量检查 |
 
 **被否掉的候选方案（存档，供后续会话不再重提）**：子包用 `workspace:*` 从 git 装（`Cannot resolve package from workspace...`）；`file:../x`（consumer 侧路径不存在）；commit SHA 自引用（`git checkout failed: unable to read tree`）；tag + 默认设置（`ERR_PNPM_EXOTIC_SUBDEP`）；`blockExoticSubdeps` 写 `.npmrc`（无效，只认 `pnpm-workspace.yaml`）。**以上均因「发布 npm」的裁定而整体作废。**
+
+
+---
+
+## 14. 实施记录（实施完成后回填；偏离以实际代码为准）
+
+实施已完成，T1–T10 全部落地。以下是**实测结果与本计划的偏离**。
+
+### 14.1 与计划的偏离
+
+| # | 计划 | 实际 | 原因 |
+|---|---|---|---|
+| 1 | C 类 78 + D 类 23 共 101 个文件 | 净删更多：路由删除后**整条依赖链不可达**，追加删除 `src/market/**`、`src/sync/backup-*`、`retention-policy`、`src/cli/**`、12 个 `src/ui/*`、`core/transaction-coordinator` | 计划按「面板→模块」人工列清单，漏了「路由删除后没人再引用的整棵子树」。用 import 图闭包重算后才暴露 |
+| 2 | `packages/dsh-config-manager` 改名 @logictan 但未提 loader id | tsdown banner 里 `id` 硬编码为 `dsh-config-manager`，与改名后的包名不一致 | 实测 npm 上 `@linxin666/dsh-ssh` 产物 id 与其包名逐字一致；已改为由 `LOADER_ID` 派生 |
+| 3 | `build`/`prepare` 直接 `tsc && tsdown` | 前置 `npm run clean` | tsc 不删除已删源文件对应的产物，导致 npm pack 里带 28 个陈旧 `lib/market/**` |
+| 4 | CLI 删除只列子命令 | 整个 `src/cli/**` + `backup-plan`/`backup-verify`/`reinstall` + `tests/cli/` 一并删除 | CLI 的全部子命令都属导出/恢复/重装，同步面没有任何 CLI 入口 |
+| 5 | 未提 `core/cache-cleaner` | 收缩为 tmp + exports 两个面 | 市场缓存面随 `src/market` 删除而失效 |
+| 6 | 未提 `sync/github-auth` | 新增 `getUser(token)` | `/sync/github/validate` 原本借用 `market/github-repos` 的 `GitHubAuthRest`；该模块随市场删除 |
+
+### 14.2 实施中发现并修掉的自研缺陷
+
+| # | 缺陷 | 证据 |
+|---|---|---|
+| 1 | `sync-upstream.mjs` 版本排序被 peeled tag 破坏 | `git ls-remote --tags` 同时返回 `refs/tags/vX` 与 `refs/tags/vX^{}`；后者的数字段解析成 NaN，使比较器失去全序，实测把 `v0.1.9` 当成「最新」（而真实最新是 `v0.1.60`） |
+| 2 | `sync-upstream.mjs` 把 `git grep` 的「无命中」当成失败 | `git grep` 无匹配时退出码为 1，被 `execFileSync` 当异常抛出，导致「零冲突」这条成功路径反而报错 |
+| 3 | 冲突归零判据用错了对象 | `git checkout --ours/--theirs` 只改工作区，**索引仍是 unmerged**，直到 `git add` 才收敛；原实现用 `git diff --diff-filter=U` 判定，恒报「仍有冲突」 |
+
+### 14.3 验收证据（全部实跑）
+
+| 验收 | 结果 |
+|---|---|
+| `pnpm typecheck` / `tsc --noEmit` | 0 error |
+| `node --test` | **1273/1273 通过** |
+| §7.2.6 端到端（真实 Git 通道） | push → 远端 manifest `containsSecrets: true` → pull → applyItems → 另一侧读到真实 provider 密钥（PASS） |
+| §7.3.7-1 面板组件名零命中 | 通过 |
+| §7.3.7-2 设置页只剩「同步」 | `NAV_ITEMS` 只有 `sync` |
+| §7.3.7-3 路由仅同步 | 17 条，全部 `/api/dsh-config-manager/sync/*` |
+| §7.3.7-4 CLI 子命令 | `bin` 字段与 `src/cli/**` 均已删除 |
+| §7.4 热重载（配置/补丁） | 改 `~/.dsh/cordis.patch.yml` 的 `toolCallTimeoutMs`，**PID 23575 未变**，新调用即按新值生效；改回后 md5 与备份一致 |
+| §7.4 热重载（客户端产物） | `dev-watch.mjs` 监听源码 → 重建 `lib/client.js`（mtime/size 变化、标记入包） |
+| §8 安装形态 | `npm pack` + 干净 profile `dsh plugin add`：bundle 注册成功、patch 行 name 正确、`prepare` 构建出 host+client 产物、产物内无 `market`/`cli` 残留、bundle id == 包名 |
+| §6 上游同步 policy | 合成上游 v0.1.61 上实测：原始冲突 2 个 → 应用 policy 后 **0 个**；我方改写保留、我方删除保留、上游新增文件带入 |
+
