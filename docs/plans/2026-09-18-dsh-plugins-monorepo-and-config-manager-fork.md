@@ -696,3 +696,49 @@ tests/route/status-plugin-diagnostics.test.ts        76
 | §8 安装形态 | `npm pack` + 干净 profile `dsh plugin add`：bundle 注册成功、patch 行 name 正确、`prepare` 构建出 host+client 产物、产物内无 `market`/`cli` 残留、bundle id == 包名 |
 | §6 上游同步 policy | 合成上游 v0.1.61 上实测：原始冲突 2 个 → 应用 policy 后 **0 个**；我方改写保留、我方删除保留、上游新增文件带入 |
 
+
+### 14.4 里程碑盲审（Root 自审 + 独立席位）
+
+**触发依据**：本次交付新增了对外契约（同步引擎的明文语义、聚合包安装入口）与跨文件不变量
+（containsSecrets 标注、基线对齐），且收尾一个可独立验收的交付单元（T1–T10）——两个正条件同时成立。
+
+**席位**：`antigravity/gemini-3.8-flash`（只给路径与五维审查维度，未给背景）。
+
+#### Root 自审
+
+按「重复 / 冲突 / 矛盾 / 遗漏 / 过度设计」五维自审，实测确认：
+- 聚合 patch 与子包 patch 一致（`aggregate.mjs --check`）；
+- 同步路由仅一套 17 条，无重复注册；
+- 明文语义在引擎层处处一致（`sync-selection` 零 `encrypt` 残留）；
+- `containsSecrets` 三处标注点（push / recordBaseline / snapshotToZip）均如实取值。
+
+**自审另发现两处缺陷（已修）**：
+1. `tsdown.config.ts` 的 loader `id` 硬编码为 `dsh-config-manager`，与改名后的包名不一致（实测 npm 上 `@linxin666/dsh-ssh` 产物 id 与其包名逐字一致）；
+2. `build`/`prepare` 未先清理 `lib/`，tsc 不删已删源文件的产物 → npm pack 带 28 个陈旧 `lib/market/**`。
+
+#### 子代理盲审
+
+返回 **14 条**。Root 对**每一条都做了独立探针复验**（不接受二手转述），结论：**14 条全部属实，全部采纳**。
+
+| 条目 | 内容 | 复验证据 | 裁定 |
+|---|---|---|---|
+| 1 | `applyItems` 基线写成新生成的本地 id，`hasNewRemoteSnapshot()` 恒真 → 自动同步空转 | `sync-engine.ts:660` 与 `:469` 对读 | **采纳**（新增 `opts.snapshotId`） |
+| 2 | HTTP `/sync/pull` 缺省 `'merge'`，与引擎/产品语义的 `replace` 冲突 | `index.ts:2171` vs `sync-engine.ts:427/518` | **采纳** |
+| 3 | 根文档写的 `scripts/dev-watch.mjs` 实际在子包内 | `ls scripts/` 无该文件 | **采纳** |
+| 4 | sync 路由仍解析并伪传 `encrypt/includeSecrets/password`，注释与现状相反 | `index.ts:2118-2141` | **采纳** |
+| 5 | 中英文案仍称自动同步「拉取合并」 | `sync-locales.ts:136/139/337/340` | **采纳** |
+| 6 | model-tools JSDoc 写「5 个工具」，strategy 枚举含已不可达的 `merge` | `model-tools.ts:68/111` | **采纳** |
+| 7 | `sync-policy.json` 漏登 64 个已删文件、owned 含已删文件 → 上游会静默复活 | 实测 deleted 应为 143 而非 79 | **采纳**（并加 `--refresh-policy`） |
+| 8 | `SyncConfirmView` 调已被删除的 `/consult` 路由 → 永远 404，ConsultCard 永不渲染 | `grep -c API.consult` = 0 | **采纳** |
+| 9 | autosync 未清理 `preview()` 的临时 ZIP（契约要求调用方清理） | `autosync-scheduler.ts:418-428` | **采纳** |
+| 10 | `adapters/self` 白名单残留 `backup-schedule.json`/`market-config.json` | `self.ts:37-38` | **采纳** |
+| 11 | `index.ts` 残留 48 个已废弃 API 常量与空段落注释 | 脚本比对 used vs declared | **采纳** |
+| 12 | README 凭据槽位名留空 | `README.md:55` | **采纳** |
+| 13 | `sync-upstream` 在无冲突时提前 `exit(0)`，跳过 policy 全部步骤 | `sync-upstream.mjs:195` | **采纳** |
+| 14 | `run-store` 对不存在字段做 `Omit` | `run-store.ts:60-63` | **采纳** |
+
+**共识状态**：14 条全部处于「采纳」，**无「不采纳/部分采纳」，故按协议无需再开辩论轮**。
+
+**盲审后回归**：typecheck 0 error；测试 1272/1273（唯一失败为改造前既有的 `config-lifecycle`
+防抖时序 flake，与本次改动无关——改造前后三次重跑均有 1/3 概率出现）。
+
