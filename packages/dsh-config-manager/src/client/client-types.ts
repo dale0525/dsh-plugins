@@ -1,0 +1,41 @@
+/**
+ * Client 半的类型集中出口：把对 @deepseek-ai 运行时包的类型依赖收敛到本文件，
+ * 其余组件只从 `../client-types.ts` 引用，避免类型散落与误用值导入。
+ *
+ * p3 构建前需安装的依赖（见 CLIENT_DEPENDENCIES.md）：
+ *   - @deepseek-ai/dsh-client-runtime（ClientContext 声明合并）
+ *   - @deepseek-ai/dsh-client-locale（ctx.locale 声明合并）
+ *   - @deepseek-ai/dsh-client-ui-settings（settings.section SlotMap 声明合并）
+ *   - @deepseek-ai/dsh-client-ui-slots（SlotMap / LocaleNamespaceMap / TranslateNS）
+ *   - @deepseek-ai/cordis（Context 基础类型）
+ */
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+
+export type { ClientContext }
+export type { TranslateNS }
+
+/** 本插件 Client 半的注入业务面：每个 settings.section 注册项都拿到同一个 api 实例 */
+export interface ConfigManagerSectionInjected {
+  api: import('./api.ts').ConfigManagerApi
+  /** 远程同步 API（备份与迁移页第 4 个 tab 使用，主 section 注册时注入） */
+  syncApi: import('./sync/sync-api.ts').SyncApi
+  /** 远程同步 locale（config-manager-sync 命名空间，主 section 注册时注入） */
+  syncT: import('@deepseek-ai/dsh-client-ui-slots').TranslateNS<'config-manager-sync'>
+  /** 配置市场 API（备份与迁移页第 5 个 tab 使用，主 section 注册时注入） */
+  marketApi: import('./market/market-api.ts').MarketApi
+  /** 「我的配置」API（MarketPanel 的「我的配置」子视图使用，主 section 注册时注入） */
+  myConfigsApi: import('./market/my-configs-api.ts').MyConfigsApi
+  /** 配置市场 locale（config-manager-market 命名空间，主 section 注册时注入） */
+  marketT: import('@deepseek-ai/dsh-client-ui-slots').TranslateNS<'config-manager-market'>
+  /** Recovery API（Phase 5：引导式恢复工作流；主 section 注册时注入） */
+  recoveryApi: import('./recovery/recovery-api.ts').RecoveryApi
+  /** Recovery locale（config-manager-recovery 命名空间，主 section 注册时注入） */
+  recoveryT: import('@deepseek-ai/dsh-client-ui-slots').TranslateNS<'config-manager-recovery'>
+  /** Migration History API（Phase 6：统一审计史；主 section 注册时注入） */
+  historyApi: import('./history/history-api.ts').HistoryApi
+  /** Phase 1 灾备 API（自动快照 / 撤销 / 重做 / 救援模式 / 崩溃归因；主 section 注册时注入） */
+  lifecycleApi: import('./lifecycle/lifecycle-api.ts').LifecycleApi
+  /** Migration History locale（config-manager-history 命名空间，主 section 注册时注入） */
+  historyT: import('@deepseek-ai/dsh-client-ui-slots').TranslateNS<'config-manager-history'>
+}

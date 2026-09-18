@@ -1,0 +1,433 @@
+/**
+ * Import 矩阵测试（m7-tests-docs；规范 §33 Import 组 / §36 场景 C/D、§32 删除策略）。
+ *
+ * 覆盖：正常导入 / Merge / Replace / Skip（不删目标独有）/ Conflict /
+ *       Missing plugin / Missing dependency / Missing secret。
+ * 全部基于内存 mock HostContext + 真实 adapter（createAdapters），同平台导入避免路径映射干扰。
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+import { Exporter } from '../../src/core/exporter.ts';
+import { Importer } from '../../src/core/importer.ts';
+import { createAdapters } from '../../src/adapters/index.ts';
+import { makeContext, MemSnapshotStore, type MockHostContext } from '../../src/adapters/test-helpers.ts';
+import type { ImportPlan } from '../../src/core/types.ts';
+
+const NS = ['general', 'llm-deepseek'];
+
+async function withTmp<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-cm-import-'));
+  try {
+    return await fn(dir);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** 源配置：general + llm-deepseek + 插件 + MCP + 技能 + 工作区 */
+async function seedSource(ctx: MockHostContext): Promise<void> {
+  ctx.settings.ns.set('general', { value: { theme: 'dark', language: 'zh-CN' }, revision: 3, secrets: [] });
+  ctx.settings.ns.set('llm-deepseek', {
+    value: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat', apiKey: 'sk-super-secret-value-123' },
+    revision: 5,
+    secrets: [{ path: ['apiKey'], set: true }],
+  });
+  ctx.credentials.values.set('DEEPSEEK_API_KEY', 'sk-super-secret-value-123');
+  ctx.plugins.installed.set('@linxin666/dsh-ssh', { name: '@linxin666/dsh-ssh', version: '0.1.12', enabled: true });
+  ctx.plugins.installed.set('@linxin666/dsh-task-board', { name: '@linxin666/dsh-task-board', version: '0.1.0', enabled: true });
+  await ctx.fs.writeFile('skills/coding.md', Buffer.from('# Coding skill\n', 'utf8'));
+  ctx.workspace.records.set('ws-ops', { id: 'ws-ops', path: 'C:\\Users\\alice\\projects\\ops', title: 'OpsFlow', sessionIds: [] });
+  ctx.patchFile.lines.set('mcp-fs', {
+    lineId: 'mcp-fs',
+    raw: { id: 'mcp-fs', name: 'dsh-mcp-client', config: { serverName: 'filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'] } },
+  });
+}
+
+/** 导出 → 返回 ZIP 路径 */
+async function exportFixture(src: MockHostContext, outPath: string): Promise<void> {
+  const adapters = createAdapters({ namespaces: NS });
+  await new Exporter({ ctx: src, adapters, now: () => new Date('2026-08-14T12:00:00.000Z') })
+    .export({ includeSecrets: false, outPath });
+}
+
+function makeImporter(dst: MockHostContext) {
+  const adapters = createAdapters({ namespaces: NS });
+  return new Importer({ ctx: dst, adapters, snapshotStore: new MemSnapshotStore() });
+}
+
+test('I-01 正常导入：同平台全流程 analyze → plan → execute 成功', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    await seedSource(src);
+    const zipPath = path.join(dir, 'i01.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    // 目标已装同插件（general/llm-deepseek 注册但为空 → Create 初始化）
+    dst.settings.registered.add('general');
+    dst.settings.registered.add('llm-deepseek');
+    const importer = makeImporter(dst);
+
+    const analysis = await importer.analyzeImport(zipPath);
+    assert.equal(analysis.valid, true);
+    assert.equal(analysis.compatibility, 'excellent', '同平台同版本应 excellent');
+    assert.equal(analysis.secretCount, 1, '1 个已配置凭据需补录');
+    assert.ok(analysis.pathIssues.some((p) => p.kind === 'missing'), '目标机器路径不存在 → missing 需映射');
+
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+    assert.ok(plan.items.some((i) => i.kind === 'Create'), '应有新建项');
+    assert.ok(plan.items.some((i) => i.kind === 'MissingSecret'), '应有补录占位');
+    assert.equal(plan.needsRestart, true, 'MCP/插件写入需重启');
+
+    const result = await importer.executeImportPlan(zipPath, plan, { confirm: true, secretInputs: { DEEPSEEK_API_KEY: 'sk-reentered' } });
+    assert.equal(result.ok, true);
+    assert.deepEqual(dst.settings.ns.get('general')?.value, { theme: 'dark', language: 'zh-CN' });
+    assert.equal(dst.credentials.values.get('DEEPSEEK_API_KEY'), 'sk-reentered', '补录值应写入');
+    assert.ok(dst.workspace.records.has('ws-ops'));
+    assert.ok(dst.patchFile.lines.has('mcp-fs'), 'MCP patch 行应写入');
+  });
+});
+
+test('I-02 Merge：目标已有同名配置 → Conflict 保留，无决策不覆盖', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.settings.ns.set('general', { value: { theme: 'dark' }, revision: 1, secrets: [] });
+    const zipPath = path.join(dir, 'i02.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    dst.settings.ns.set('general', { value: { theme: 'light' }, revision: 7, secrets: [] });
+    const importer = makeImporter(dst);
+
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+    const conflict = plan.items.find((i) => i.id === 'settings:general');
+    assert.equal(conflict?.kind, 'Conflict', 'merge + 无决策 → Conflict 项');
+    const r = await importer.executeImportPlan(zipPath, plan, { confirm: true });
+    assert.equal((dst.settings.ns.get('general')?.value as { theme: string }).theme, 'light', '冲突未解决不覆盖');
+    assert.ok(r.executed.find((e) => e.itemId === 'settings:general')?.status === 'skipped');
+  });
+});
+
+test('I-03 Replace：全局 replace 策略 → 冲突项覆盖为导入值', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.settings.ns.set('general', { value: { theme: 'dark' }, revision: 1, secrets: [] });
+    const zipPath = path.join(dir, 'i03.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    dst.settings.ns.set('general', { value: { theme: 'light' }, revision: 7, secrets: [] });
+    const importer = makeImporter(dst);
+
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'replace', resolutions: {}, pathMappings: [] });
+    assert.equal(plan.items.find((i) => i.id === 'settings:general')?.kind, 'Update', 'replace 策略 → Conflict 变 Update');
+    const r = await importer.executeImportPlan(zipPath, plan, { confirm: true });
+    assert.equal((dst.settings.ns.get('general')?.value as { theme: string }).theme, 'dark', 'replace 覆盖为导入值');
+    assert.ok(r.executed.find((e) => e.itemId === 'settings:general')?.status === 'ok');
+  });
+});
+
+test('I-04 Skip：skipExisting 策略 + §32 不删除目标独有配置', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.plugins.installed.set('plugin-a', { name: 'plugin-a', version: '1.0.0', enabled: true });
+    src.plugins.installed.set('plugin-b', { name: 'plugin-b', version: '1.0.0', enabled: true });
+    const zipPath = path.join(dir, 'i04.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    // 目标已有：plugin-a（同版本）、plugin-b（同版本）、plugin-c（ZIP 没有 → 目标独有）
+    dst.plugins.installed.set('plugin-a', { name: 'plugin-a', version: '1.0.0', enabled: true });
+    dst.plugins.installed.set('plugin-b', { name: 'plugin-b', version: '1.0.0', enabled: true });
+    dst.plugins.installed.set('plugin-c', { name: 'plugin-c', version: '2.0.0', enabled: true });
+    const importer = makeImporter(dst);
+
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'skipExisting', resolutions: {}, pathMappings: [] });
+    assert.ok(
+      plan.items.filter((i) => i.adapter === 'plugins').every((i) => i.kind === 'Skip'),
+      '同版本插件应为 Skip',
+    );
+    const r = await importer.executeImportPlan(zipPath, plan, { confirm: true });
+    assert.ok(r.ok);
+
+    // §32：ZIP 没有的 plugin-c 必须保留（导入默认不删除目标独有）
+    const after = new Set((await dst.plugins.listInstalled()).map((p) => p.name));
+    assert.ok(after.has('plugin-c'), '目标独有插件不得被删除');
+    assert.ok(after.has('plugin-a') && after.has('plugin-b'));
+    assert.equal(after.size, 3, '导入后目标插件集合 = 源 + 目标独有');
+  });
+});
+
+test('I-05 Conflict：MCP serverName 冲突 → Conflict 项 + useImported 决策覆盖', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.patchFile.lines.set('mcp-fs', {
+      lineId: 'mcp-fs',
+      raw: { id: 'mcp-fs', name: 'dsh-mcp-client', config: { serverName: 'filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'] } },
+    });
+    const zipPath = path.join(dir, 'i05.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    // 目标已有同名 serverName 但不同参数
+    dst.patchFile.lines.set('mcp-fs', {
+      lineId: 'mcp-fs',
+      raw: { id: 'mcp-fs', name: 'dsh-mcp-client', config: { serverName: 'filesystem', command: 'node', args: ['old.js'] } },
+    });
+    const importer = makeImporter(dst);
+
+    // 无决策 → Conflict
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+    const conflict = plan.items.find((i) => i.id === 'mcp:filesystem');
+    assert.equal(conflict?.kind, 'Conflict', 'MCP 同名不同参 → Conflict');
+
+    // useImported 决策 → Update 覆盖
+    const plan2 = await importer.createImportPlan(zipPath, {
+      strategy: 'merge', resolutions: { 'mcp:filesystem': 'useImported' }, pathMappings: [],
+    });
+    assert.equal(plan2.items.find((i) => i.id === 'mcp:filesystem')?.kind, 'Update');
+    const r = await importer.executeImportPlan(zipPath, plan2, { confirm: true });
+    assert.equal(r.ok, true);
+    const line = dst.patchFile.lines.get('mcp-fs')?.raw as { config: { command?: string } };
+    assert.equal(line.config.command, 'npx', 'useImported 后 MCP command 应为导入值');
+  });
+});
+
+test('I-06 Missing plugin：未安装插件 → Install 计划项 + 执行安装 + needsRestart', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.plugins.installed.set('plugin-new', { name: 'plugin-new', version: '3.0.0', enabled: true });
+    const zipPath = path.join(dir, 'i06.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    const importer = makeImporter(dst);
+
+    const analysis = await importer.analyzeImport(zipPath);
+    assert.equal(analysis.pluginSummary.toInstall, 1, '应报告 1 个插件需安装');
+
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+    const install = plan.items.find((i) => i.kind === 'Install');
+    assert.ok(install, '应有 Install 计划项');
+    assert.equal(plan.needsRestart, true, '安装插件需重启');
+
+    const r = await importer.executeImportPlan(zipPath, plan, { confirm: true });
+    assert.ok(r.ok);
+    assert.ok((await dst.plugins.listInstalled()).some((p) => p.name === 'plugin-new'), '插件应被安装');
+  });
+});
+
+test('I-07 Missing dependency：MCP 依赖缺失 → 报告但不阻塞整体导入', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.patchFile.lines.set('mcp-fs', {
+      lineId: 'mcp-fs',
+      raw: { id: 'mcp-fs', name: 'dsh-mcp-client', config: { serverName: 'filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'] } },
+    });
+    src.settings.ns.set('general', { value: { theme: 'dark' }, revision: 1, secrets: [] });
+    const zipPath = path.join(dir, 'i07.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    const adapters = createAdapters({ namespaces: NS });
+    // npx 缺失
+    const importer = new Importer({
+      ctx: dst, adapters, snapshotStore: new MemSnapshotStore(),
+      dependencyChecker: async (cmd) => cmd !== 'npx',
+    });
+
+    const analysis = await importer.analyzeImport(zipPath);
+    assert.ok(
+      analysis.dependencyIssues.some((d) => d.item === 'filesystem' && d.dependency === 'npx'),
+      '应报告 MCP filesystem 缺 npx',
+    );
+    assert.equal(analysis.valid, true, '依赖缺失不使整体分析失败');
+
+    // 导入本身仍成功（依赖缺失标记 Requires Attention，不阻塞 §15）
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+    const r = await importer.executeImportPlan(zipPath, plan, { confirm: true });
+    assert.equal(r.ok, true, '缺依赖时其他配置仍可导入');
+  });
+});
+
+test('I-08 Missing secret：补录值写入；未提供值如实报告且不落盘', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.settings.ns.set('llm-deepseek', {
+      value: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat' },
+      revision: 5,
+      secrets: [{ path: ['apiKeyEnv'], set: true }],
+    });
+    src.credentials.values.set('DEEPSEEK_API_KEY', 'sk-super-secret-value-123');
+    const zipPath = path.join(dir, 'i08.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    const importer = makeImporter(dst);
+
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+    assert.ok(plan.missingSecrets.some((s) => s.ref === 'DEEPSEEK_API_KEY'), '计划应列出待补录凭据');
+
+    // 不提供值 → skipped + missingSecrets 报告 + 不写入
+    const r1 = await importer.executeImportPlan(zipPath, plan, { confirm: true, secretInputs: {} });
+    assert.ok(r1.missingSecrets.includes('DEEPSEEK_API_KEY'), '未补录凭据进入结果报告');
+    assert.ok(!dst.credentials.values.has('DEEPSEEK_API_KEY'), '未提供值不得写入');
+
+    // 提供值 → 写入
+    const r2 = await importer.executeImportPlan(zipPath, plan, { confirm: true, secretInputs: { DEEPSEEK_API_KEY: 'sk-reentered' } });
+    assert.ok(!r2.missingSecrets.includes('DEEPSEEK_API_KEY'), '补录后不再缺失');
+    assert.equal(dst.credentials.values.get('DEEPSEEK_API_KEY'), 'sk-reentered');
+  });
+});
+
+test('I-09 未确认 → ImportNotConfirmedError 且零写入（安全阀）', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.settings.ns.set('general', { value: { theme: 'dark' }, revision: 1, secrets: [] });
+    const zipPath = path.join(dir, 'i09.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    const importer = makeImporter(dst);
+    const plan: ImportPlan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+
+    await assert.rejects(
+      () => importer.executeImportPlan(zipPath, plan, { confirm: false }),
+      /导入未确认/,
+    );
+    assert.equal(dst.settings.ns.size, 0, '未确认不得写任何数据');
+    assert.equal(dst.fs.files.size, 0);
+  });
+});
+
+/**
+ * I-10 仅导入已批准分区（严格分层信任；安全不变式 (c) 回归）。
+ *
+ * 配置市场「逐分区批准」最终依赖：MarketPanel 把 plan 过滤为「仅已批准分区」的子计划
+ * （src/client/market/market-view.ts buildApprovedPlan），再交给 executeImportPlan。
+ * 本用例证明 Importer.executeImportPlan **只执行 plan.items 里出现的分区** —— 即使完整 plan
+ * 含高风险分区（plugins/mcp），只要子计划里不含它们，就绝不写入。
+ */
+test('I-10 仅导入已批准分区：executeImportPlan 只执行子计划出现的高风险之外的已批准分区', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    await seedSource(src); // settings(general/llm-deepseek) + plugins + mcp + skills + workspaces
+
+    const zipPath = path.join(dir, 'i10.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    dst.settings.registered.add('general');
+    dst.settings.registered.add('llm-deepseek');
+    const importer = makeImporter(dst);
+
+    // 完整 dry-run 计划（/market/download 形态：含全部能导出的分区）
+    const fullPlan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+    const fullAdapters = new Set(fullPlan.items.map((i) => i.adapter));
+    // 前提：本例导出确实包含高/低风险分区
+    assert.ok(fullAdapters.has('settings'), '完整计划应含 settings');
+    assert.ok(fullAdapters.has('skills'), '完整计划应含 skills');
+
+    // 模拟「逐分区批准」：只批准 settings + skills（高风险 plugins/mcp 不勾选 → 从子计划剔除）
+    const approved = new Set(['settings', 'skills']);
+    const subPlan: ImportPlan = {
+      ...fullPlan,
+      items: fullPlan.items.filter((it) => approved.has(it.adapter)),
+    };
+    // 需要重启重算：仅保留 settings/skills 已批准项 → 无 Install/MCP → 不重启
+    subPlan.needsRestart = false;
+    assert.ok(!subPlan.items.some((i) => i.adapter === 'plugins'), '子计划不含 plugins');
+    assert.ok(!subPlan.items.some((i) => i.adapter === 'mcp'), '子计划不含 mcp');
+
+    const result = await importer.executeImportPlan(zipPath, subPlan, {
+      confirm: true,
+    });
+    assert.equal(result.ok, true);
+
+    // 已批准分区写入
+    assert.deepEqual(dst.settings.ns.get('general')?.value, { theme: 'dark', language: 'zh-CN' }, 'settings 已批准 → 写入');
+    assert.equal(Buffer.from(await dst.fs.readFile('skills/coding.md')).toString(), '# Coding skill\n', 'skills 已批准 → 写入');
+
+    // 高风险未批准分区 —— 绝不被写（即使完整计划里存在，也不执行）
+    assert.ok(!dst.patchFile.lines.has('mcp-fs'), 'mcp 未批准 → 不得写入 MCP patch 行');
+    assert.ok(!dst.plugins.installed.has('@linxin666/dsh-ssh'), 'plugins 未批准 → 不得安装/写入插件');
+  });
+});
+
+/**
+ * I-11 F4 删除墓碑：导入计划按墓碑过滤（插件/技能/分区级），被跳过项记入
+ * plan.skippedTombstoned；executeImportPlan 消费过滤后的 plan → 墓碑条目不复活。
+ *
+ * 墓碑数据源 = 目标机 <dataDir>/tombstones.json（$DSH_HOME/dsh-config-manager/ 下，
+ * 由 createImportPlan 内部读取并过滤；纯函数过滤逻辑见 src/core/analyzer.ts）。
+ */
+test('I-11 删除墓碑：墓碑插件/技能/分区在导入计划中剔除并记入报告，执行不复活', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    await seedSource(src); // settings + plugins(@linxin666/dsh-ssh、@linxin666/dsh-task-board) + mcp + skills/coding.md + workspaces
+    await src.fs.writeFile('.agent-presets/preset-a.yaml', Buffer.from('# preset a\n', 'utf8'));
+    const zipPath = path.join(dir, 'i11.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    // 预写删除墓碑：插件 @linxin666/dsh-ssh、技能 skills/coding.md、整个 agentPresets 分区
+    const tombstones = [
+      { kind: 'plugin', id: '@linxin666/dsh-ssh', deletedAt: '2026-08-20T00:00:00.000Z' },
+      { kind: 'skill', id: 'coding.md', deletedAt: '2026-08-20T00:00:00.000Z' },
+      { kind: 'section', id: 'agentPresets', deletedAt: '2026-08-20T00:00:00.000Z' },
+    ];
+    await dst.fs.writeFile('dsh-config-manager/tombstones.json', Buffer.from(JSON.stringify(tombstones)));
+    const importer = makeImporter(dst);
+
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+
+    // 墓碑插件（Install 意图）不出现；未墓碑插件保留
+    assert.ok(!plan.items.some((i) => i.id === 'plugin:@linxin666/dsh-ssh'), '墓碑插件不得出现在计划中');
+    assert.ok(plan.items.some((i) => i.id === 'plugin:@linxin666/dsh-task-board'), '未墓碑插件应保留');
+    // 墓碑技能不出现
+    assert.ok(!plan.items.some((i) => i.id === 'skills:coding.md'), '墓碑技能不得出现在计划中');
+    // 分区级墓碑：agentPresets 整分区不出现
+    assert.ok(!plan.items.some((i) => i.adapter === 'agentPresets'), '墓碑分区不得出现在计划中');
+    // 未墓碑内容保留（skills 分区本例仅 coding.md 一个文件，被墓碑后无其余项；
+    // 以未墓碑的 workspaces 条目验证过滤只剔除命中项）
+    assert.ok(plan.items.some((i) => i.id === 'workspace:ws-ops'), '未墓碑条目应保留');
+
+    // 报告：被跳过的墓碑条目
+    const skipped = plan.skippedTombstoned ?? [];
+    assert.ok(skipped.some((s) => s.kind === 'plugin' && s.id === '@linxin666/dsh-ssh' && s.adapter === 'plugins'), '报告应记录墓碑插件');
+    assert.ok(skipped.some((s) => s.kind === 'skill' && s.id === 'coding.md' && s.adapter === 'skills'), '报告应记录墓碑技能');
+    assert.ok(skipped.some((s) => s.kind === 'section' && s.id === 'agentPresets' && s.adapter === 'agentPresets'), '报告应记录墓碑分区');
+    assert.ok(skipped.every((s) => s.kind !== 'section' || s.id !== 'skills'), '未墓碑分区不得误报');
+
+    // 执行：过滤后的 plan 不复活墓碑插件；未墓碑插件正常安装
+    const r = await importer.executeImportPlan(zipPath, plan, { confirm: true });
+    assert.equal(r.ok, true);
+    const after = new Set((await dst.plugins.listInstalled()).map((p) => p.name));
+    assert.ok(!after.has('@linxin666/dsh-ssh'), '墓碑插件不得被安装');
+    assert.ok(after.has('@linxin666/dsh-task-board'), '未墓碑插件应被安装');
+    // 墓碑技能文件不得被写入
+    assert.equal(await dst.fs.exists('skills/coding.md'), false, '墓碑技能文件不得被写回');
+    // 墓碑分区文件不得被写入
+    assert.equal(await dst.fs.exists('.agent-presets/preset-a.yaml'), false, '墓碑分区文件不得被写回');
+  });
+});
+
+test('I-12 无墓碑文件：计划不包含 skippedTombstoned 过滤记录（安全降级路径）', async () => {
+  await withTmp(async (dir) => {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    await seedSource(src);
+    const zipPath = path.join(dir, 'i12.zip');
+    await exportFixture(src, zipPath);
+
+    const dst = makeContext('win32', 'C:\\Users\\bob');
+    const importer = makeImporter(dst);
+
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
+    assert.ok(plan.items.some((i) => i.id === 'plugin:@linxin666/dsh-ssh'), '无墓碑 → 插件项照常出现');
+    assert.equal(plan.skippedTombstoned?.length ?? 0, 0, '无墓碑 → 无过滤记录（或空数组）');
+  });
+});
