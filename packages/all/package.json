@@ -13,5 +13,7 @@
     "package.json",
     "cordis.patch.yml"
   ],
-  "dependencies": {}
+  "dependencies": {
+    "dsh-config-manager": "^0.1.60"
+  }
 }
