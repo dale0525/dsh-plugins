@@ -579,6 +579,15 @@ export class SyncEngine {
       onItem?: (info: PlanItemProgress) => void;
       /** Phase 4 生产 journal↔snapshot 绑定（deferred；透传给 Importer.executeImportPlan） */
       snapshotBinding?: TransactionSnapshotContext;
+      /**
+       * 本次应用的**远端快照 id**（preview() 返回值）。
+       *
+       * 必须传：基线（sync-state.lastSnapshotId）要与「刚刚应用的远端快照」对齐，
+       * 否则 `hasNewRemoteSnapshot()` 会把同一个远端快照一直判定为「新的」，
+       * 自动同步每轮都会重复拉取同一个快照（空转）。
+       * 缺省（不传）时才回退到本地新生成的 id —— 仅适用于「本地产生的快照」语义。
+       */
+      snapshotId?: string;
     } = {},
   ): Promise<ApplyItemsReport> {
     if (!this.importer) {
@@ -647,7 +656,8 @@ export class SyncEngine {
         // 单个分区导出失败不拖垮 recordBaseline（已应用的分区数据从 subPlan 兜底）
       }
     }
-    const snapshotId = this.snapshotIdFn();
+    // 基线指向「刚应用的远端快照」；缺省才回退本地新 id（见 opts.snapshotId 注释）
+    const snapshotId = opts.snapshotId !== undefined && opts.snapshotId !== '' ? opts.snapshotId : this.snapshotIdFn();
     await this.recordBaseline(snapshotId, mergedSections);
 
     return {

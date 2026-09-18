@@ -42,7 +42,7 @@ Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏。
 | **薄壳渲染，逻辑下沉** | React 只装配；渲染模型/状态判定在 `src/ui/` 纯函数（node 单测） |
 | **密度优先** | 基准字号 12.5px；行高 1.5；卡片 padding 12px；页面 padding 16px；区块间距 10px |
 | **状态即语义** | ok/info/warn/error 四态贯穿 Badge/Banner/StatusDot/choiceCard |
-| **危险操作隔离** | 删除/恢复恒 `danger` 变体或 `data-danger` 图标 + ConfirmDialog 二次确认；行内用 `.rowDivider` 与安全操作分隔 |
+| **危险操作隔离** | 删除/回滚恒 `danger` 变体或 `data-danger` 图标 + `Modal` 二次确认；行内用 `.rowDivider` 与安全操作分隔 |
 | **开发者排版** | 路径/文件名/时间戳/命令一律等宽栈（`.mono`）；长文件名**中段省略**（保留尾部时间戳）+ `title` 全文 |
 | **无障碍** | 所有交互元素 `:focus-visible` 双环；图标按钮必须 `aria-label`；表格行选择支持 Enter/Space |
 
@@ -116,18 +116,15 @@ Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏。
   （该文件刻意不含顶层 import，保持全局脚本态，否则 `declare module` 退化为 augmentation 而部分失效）。
   新增图标须同步登记 `Icon.tsx` 映射表 + `lucide-icons.d.ts`。
 - **弹窗 = @radix-ui/react-dialog**（`common/Modal.tsx`）：统一原先两套弹窗
-  （ConfirmDialog 手写 focus trap + 各页内联 `dialogMask` 无 trap）为一套，获得成熟
+  （手写 focus trap + 内联 `dialogMask` 无 trap）为一套，获得成熟
   focus trap / Esc / 初始焦点与关闭后焦点还原 / body 滚动锁 / Portal 渲染。
   `Modal`（容器，`open/onClose/title/wide/busy/cardStyle/onOpenAutoFocus`）+
   `Modal.Header`（标题行 + 可选关闭按钮 + trailing）/ `Modal.Body`（`scroll/innerRef/onScroll/style`）/
   `Modal.Footer`。Radix Content 用 `.dialogContentCenter` 自居中（Portal 下与 Overlay 平级）；
   旧 `.dialogMask/.dialogCard` 类保留供未迁移弹窗兼容。busy 时守卫 `onOpenChange` +
   `onEscapeKeyDown/onPointerDownOutside/onInteractOutside` 双保险禁闭。
-  **已迁移（全部弹窗）**：ConfirmDialog、Profiles 切换预览、Market 条目详情、MyConfigs 上传向导 + 装回本地、
-  Snapshots 恢复计划预览 + 备份查看、ReleaseNotes、**SyncSettingsView 全部 5 个弹窗**（通道配置 / 推送预览 /
-  推送结果 / 拉取差异 / 一键同步确认 —— 实测为同级独立弹窗而非嵌套，逐个迁为 `<Modal>`，自定义宽度走
-  `cardStyle`、限高走 `Modal.Body style`；通道配置弹窗的刷新快照按钮 `🔄` 亦改 Lucide `RefreshIcon`）。
-  迁移后全仓再无手写 `dialogMask+dialogCard` 弹窗（`grep css.dialogMask` 仅余注释）。
+  **当前弹窗**：`SyncSettingsView` 的 5 个弹窗（通道配置 / 推送预览 / 推送结果 / 拉取差异 / 一键同步确认）
+  均走 `<Modal>`，自定义宽度用 `cardStyle`、限高用 `Modal.Body style`。全仓无手写 `dialogMask+dialogCard` 弹窗。
 - **构建接线**：`tsdown.config.ts` 的 `deps.alwaysBundle: [/^lucide-react(\/.*)?$/, /^@radix-ui\//]`
   强制把二者打进单文件 cjs（否则被当 dependencies 外部化 → 运行时 `require` 命中 DSH loader
   「module table miss」崩溃）。注意 tsdown 0.22 读 `deps.alwaysBundle`，旧的顶层 `noExternal`

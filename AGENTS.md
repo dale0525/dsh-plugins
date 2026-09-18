@@ -16,9 +16,9 @@ dsh-plugins/
 │   └── dsh-config-manager/ # git subtree fork 自上游 v0.1.60
 ├── scripts/
 │   ├── aggregate.mjs       # aggregate.yml → patch + deps
-│   ├── sync-upstream.mjs   # 上游同步（policy 应用）
-│   └── dev-watch.mjs       # 源 → 产物自动重建
-└── sync-policy.json        # 声明 owned / deleted / upstream
+│   └── sync-upstream.mjs   # 上游同步（policy 应用）
+├── sync-policy.json        # 声明 owned / deleted / upstream
+└── packages/dsh-config-manager/scripts/dev-watch.mjs   # 源 → 产物自动重建（子包内）
 ```
 
 **单一真源**：每个子插件自己的 `cordis.patch.yml` 决定它的 patch 行（id / name / config）；聚合 patch 由 `scripts/aggregate.mjs` 逐字拼接，**绝不改写行**。改行名改子包自己的 patch 文件，然后跑 `node scripts/aggregate.mjs`。
@@ -38,7 +38,7 @@ dsh-plugins/
 | 插件**宿主半边源码**（`src/**` 非 client） | **是**（默认） | `dsh-base` 的 hmr 行是 `config.root: []` —— module watch 默认**关闭** |
 
 **因此**：
-- 改 `src/client/**` → 跑 `pnpm --filter @logictan/dsh-config-manager dev:watch`，浏览器不刷新即见新 UI（已实测：改源码 → 重建 `lib/client.js` → mtime/size 变化）。
+- 改 `src/client/**` → 跑 `pnpm --filter @logictan/dsh-config-manager dev:watch`（脚本在**子包** `packages/dsh-config-manager/scripts/dev-watch.mjs`），浏览器不刷新即见新 UI（已实测：改源码 → 重建 `lib/client.js` → mtime/size 变化）。
 - 改宿主半边 → 需重启（`dsh-web restart`），或自行在 profile patch 的 hmr 行开 `config.root`。
 - **不要**把 `lib/` 纳入 `dev-watch` 监听：产物变化会触发重建，自激成死循环。
 

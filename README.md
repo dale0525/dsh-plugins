@@ -19,7 +19,7 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest
 | `packages/dsh-config-manager/` | 配置远程同步插件（`@logictan/dsh-config-manager`，git subtree fork 自上游 v0.1.60） |
 | `scripts/aggregate.mjs` | 由 `aggregate.yml` 生成聚合 patch 与 dependencies |
 | `scripts/sync-upstream.mjs` | 按 `sync-policy.json` 把上游改动合进来（只开 PR） |
-| `scripts/dev-watch.mjs` | 改源码 → 自动重建产物（客户端半边不刷新即生效） |
+| `packages/dsh-config-manager/scripts/dev-watch.mjs` | 改源码 → 自动重建产物（客户端半边不刷新即生效） |
 | `sync-policy.json` | 上游同步的三类清单：`owned` / `deleted` / `upstream` |
 
 ## 开发

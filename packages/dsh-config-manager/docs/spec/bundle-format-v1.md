@@ -873,11 +873,9 @@ if (!isFileSection(adapter.id)) {
 |---|---|---|---|
 | `ExportReport.security.redactedHits` | `number` | 否（返回值，随进程生命周期） | `src/core/types.ts:462` |
 | 导出日志 | `this.ctx.log.info('导出完成', {..., redactedFields: redactedHits.length, ...})` —— **日志字段名是 `redactedFields`，值是同一个数** | 否（进宿主日志 sink，不进 bundle） | `src/core/exporter.ts:371-380`（`redactedFields` 在 `src/core/exporter.ts:376`） |
-| UI 徽章 | `<Badge kind="error">{report.security.redactedHits} redacted</Badge>`（仅 `> 0` 时渲染） | 否 | `src/client/common/ReportView.tsx:69-71` |
 | UI 文本报告 | `if (report.security.redactedHits > 0) lines.push('⚠ {n} 个敏感字段已脱敏')` | 否 | `src/ui/report.ts:35`、文案 `src/ui/i18n.ts:43`（zh）/ `src/ui/i18n.ts:327`（en） |
-| 模型工具返回值 | `redactedHits: report.security.redactedHits`（`config_backup` 工具的 JSON 结果字段） | 否（单次工具调用返回值） | `src/core/model-tools.ts:161`（工具描述在 `src/core/model-tools.ts:358`） |
 
-**全仓库检索 `redactedHits` 只有 5 处命中**（定义 1 + 产出 1 + 消费 3）：`src/core/types.ts:462`、`src/core/exporter.ts:389`、`src/core/model-tools.ts:161`、`src/client/common/ReportView.tsx:69`、`src/ui/report.ts:35`。检索 `redactedFields` 只有 `src/core/exporter.ts:376` 一处。
+**全仓库检索 `redactedHits` 的消费点**：`src/core/types.ts`（定义）、`src/core/exporter.ts`（产出）、`src/ui/report.ts`（UI 文本报告）。检索 `redactedFields` 只有 `src/core/exporter.ts` 一处。
 
 #### 5.3.3 它**不**持久化进 bundle（本规格的明确结论）
 

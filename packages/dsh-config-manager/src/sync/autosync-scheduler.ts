@@ -27,6 +27,8 @@
  * 连续失败 ≥ 3 → host.log.warn 通知 + 记 notifiedAt。
  */
 import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 import type { Logger } from '../utils/logger.ts';
 import type { MsgFunc } from '../core/messages.ts';
@@ -424,7 +426,14 @@ export class AutoSyncScheduler {
               ...preview.plan,
               items: preview.plan.items.filter((i) => i.kind !== 'Skip'),
             };
-            return await engine.applyItems(preview.zipPath, subPlan);
+            try {
+              // snapshotId：基线必须对齐「刚应用的远端快照」，否则 hasNewRemoteSnapshot()
+              // 会把这个快照一直当成新的 → 每轮空转重复拉取。
+              return await engine.applyItems(preview.zipPath, subPlan, { snapshotId: preview.snapshotId });
+            } finally {
+              // preview() 的临时 ZIP 由调用方负责清理（SyncEngine.preview 契约）。
+              try { await fs.rm(path.dirname(preview.zipPath), { recursive: true, force: true }); } catch { /* 尽力清理 */ }
+            }
           };
           const applyReport = (this.phase3Recovery !== undefined && this.lockCtxForJournal !== null)
             ? (await this.phase3Recovery.runExternalIntent({

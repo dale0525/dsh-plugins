@@ -189,13 +189,17 @@ git(['checkout', '-b', branch])
 
 try {
   log('[sync-upstream] 1/4 subtree pull ...')
+  // 无冲突也**必须**继续走 2/3/4：git 的自动合并不会重删我们删过的文件，
+  // 也不会恢复被上游覆盖的我方改造。提前 return 会让 policy 整段失效。
+  let pulled = true
   try {
     git(['subtree', 'pull', '--prefix=' + PREFIX, URL, targetRef], { stdio: 'inherit' })
-    log('[sync-upstream] subtree pull 无冲突完成')
-    process.exit(0)
+    log('[sync-upstream] subtree pull 无冲突完成（仍需应用 policy：重删 + 恢复我方改造）')
   } catch {
+    pulled = false
     log('[sync-upstream] subtree pull 产生冲突，按 policy 归零 ...')
   }
+  if (!pulled) log('[sync-upstream] （冲突已记录，下方 policy 步骤会统一收敛）')
 
   log('[sync-upstream] 2/4 全取上游：git checkout --theirs -- ' + PREFIX)
   git(['checkout', '--theirs', '--', PREFIX])

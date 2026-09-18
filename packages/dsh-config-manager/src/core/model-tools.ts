@@ -65,7 +65,7 @@ async function resolveEngine(
 
 /* ------------------------------------------------------------ 纯编排函数 */
 
-/** 5 个工具的纯编排实现（可独立测试，不依赖 Cordis ctx）。所有返回均为 JsonValue（可序列化、无 undefined）。 */
+/** 2 个工具的纯编排实现（可独立测试，不依赖 Cordis ctx）。所有返回均为 JsonValue（可序列化、无 undefined）。 */
 export function createModelTools(deps: ModelToolsDeps) {
   return {
     /** 手动推送同步（写远端）。明文快照：勾选即同步，不加密、不脱敏。 */
@@ -191,7 +191,7 @@ export function registerModelTools(ctx: Context, deps: ModelToolsDeps): void {
       },
       strategy: {
         type: 'string',
-        enum: ['merge', 'replace', 'skipExisting'],
+        enum: ['replace', 'skipExisting'],
         description: '差异全局策略；缺省 replace（远端值覆盖本地）',
       },
     },

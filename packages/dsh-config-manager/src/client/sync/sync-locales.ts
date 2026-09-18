@@ -130,13 +130,12 @@ export const zh = {
   'mode.defaultCount': '将同步 {n} 个推荐分区',
   'mode.sectionRecommended': '推荐',
   'mode.persistHint': '模式与分区选择已保存到本机：自动同步和手动推送都会使用此配置（重启后仍生效）。',
-  // 加密与密钥导出（手动推送；自动同步恒推普通快照、遇加密快照跳过）
   // 自动同步（方案 A）
   'autosync.title': '自动同步',
-  'autosync.description': '开启后，DSH 在后台保持配置一致：本地配置有改动时自动上传，检测到远端有新快照时才自动拉取合并；定时器仅作兜底轮询，无变化不重复动作。仅在无冲突且无需人工干预时才自动写入本地。',
+  'autosync.description': '开启后，DSH 在后台保持配置一致：本地配置有改动时自动上传，检测到远端有新快照时才自动拉取覆盖；定时器仅作兜底轮询，无变化不重复动作。仅在无冲突且无需人工干预时才自动写入本地。',
   'autosync.enable': '启用自动同步',
   'autosync.interval': '兜底轮询间隔',
-  'autosync.intervalHint': '间隔到点 / DSH 启动时检查远端是否有新快照，有才拉取合并（不上传本地）；本地配置改动会触发上传。',
+  'autosync.intervalHint': '间隔到点 / DSH 启动时检查远端是否有新快照，有才拉取覆盖（不上传本地）；本地配置改动会触发上传。',
   'autosync.interval5m': '5 分钟',
   'autosync.interval15m': '15 分钟',
   'autosync.interval30m': '30 分钟',
@@ -334,10 +333,10 @@ export const en: Record<keyof typeof zh, string> = {
   'mode.persistHint': 'The mode and section selection are saved locally: both auto sync and manual push use this configuration (persists across restarts).',
   // Encryption & secret export (manual push only; auto sync always pushes plain snapshots and skips encrypted ones)
   'autosync.title': 'Auto Sync',
-  'autosync.description': 'When enabled, DSH keeps config in sync in the background: uploads locally-changed config automatically, pulls and merges only when it detects a new remote snapshot; the timer is just a fallback poll and no-ops when nothing changed. Local writes happen only when there are no conflicts or manual-decision items.',
+  'autosync.description': 'When enabled, DSH keeps config in sync in the background: uploads locally-changed config automatically, pulls and overwrites only when it detects a new remote snapshot; the timer is just a fallback poll and no-ops when nothing changed. Local writes happen only when there are no conflicts or manual-decision items.',
   'autosync.enable': 'Enable auto sync',
   'autosync.interval': 'Fallback poll interval',
-  'autosync.intervalHint': 'On interval / DSH startup, checks for a new remote snapshot and pulls+merges only if one exists (no upload); local config changes trigger an upload.',
+  'autosync.intervalHint': 'On interval / DSH startup, checks for a new remote snapshot and pulls+overwrites only if one exists (no upload); local config changes trigger an upload.',
   'autosync.interval5m': '5 min',
   'autosync.interval15m': '15 min',
   'autosync.interval30m': '30 min',

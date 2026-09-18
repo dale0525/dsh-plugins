@@ -220,32 +220,11 @@ export interface Config {
 
 /** Route family — must match the browser half's CONFIG_MANAGER_API exactly. */
 const API = {
-  status: '/api/dsh-config-manager/status',
-  export: '/api/dsh-config-manager/export',
   // P2-⑫：导出前只读预览（不落盘 ZIP；返回各分区 counts + 估算大小）
-  exportPreview: '/api/dsh-config-manager/export-preview',
-  download: '/api/dsh-config-manager/download',
-  upload: '/api/dsh-config-manager/upload',
-  analyze: '/api/dsh-config-manager/analyze',
-  plan: '/api/dsh-config-manager/plan',
-  execute: '/api/dsh-config-manager/execute',
-  skipExecute: '/api/dsh-config-manager/execute/skip',
-  decryptArchive: '/api/dsh-config-manager/decrypt-archive',
-  progress: '/api/dsh-config-manager/progress',
-  runs: '/api/dsh-config-manager/runs',
-  snapshots: '/api/dsh-config-manager/snapshots',
-  restore: '/api/dsh-config-manager/restore',
   // P1-⑧：快照管理（手动删除 + 置顶豁免自动清理）
-  snapshotDelete: '/api/dsh-config-manager/snapshots/delete',
-  snapshotPin: '/api/dsh-config-manager/snapshots/pin',
   // m-backup-schedule：定时全量备份（读/存 backup-schedule.json + 立即执行一次）
-  backupSchedule: '/api/dsh-config-manager/backup-schedule',
-  backupScheduleRun: '/api/dsh-config-manager/backup-schedule/run',
   // m-backup-files：导出产物管理（列出 exports/*.zip + 删除；下载复用 /download）
-  backupFiles: '/api/dsh-config-manager/backup-files',
-  backupFilesDelete: '/api/dsh-config-manager/backup-files/delete',
   // Phase 7：迁移前咨询（只读健康评分 + 建议；POST，loopback fence）
-  consult: '/api/dsh-config-manager/consult',
   // m-sync-ui：远程同步（Git 私有仓库通道）
   syncStatus: '/api/dsh-config-manager/sync/status',
   syncPush: '/api/dsh-config-manager/sync/push',
@@ -272,42 +251,15 @@ const API = {
   // m-self：插件 UI 偏好（如上次选择的同步通道；ui-prefs.json，随 self 分区进备份）
   syncUiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
   // m-star-prompt：Star 引导弹窗状态（复用 ui-prefs.json；GET 读 + POST 局部更新）
-  starPrompt: '/api/dsh-config-manager/star-prompt',
   // 版本更新内容弹窗状态（复用 ui-prefs.json；GET 读 + POST 局部更新）
-  releaseNotesPrompt: '/api/dsh-config-manager/release-notes-prompt',
   // m-market：配置市场（内置单仓库，只读公开仓库：浏览 + 下载 + 安全校验；apply 复用 execute）
-  marketStatus: '/api/dsh-config-manager/market/status',
-  marketRefresh: '/api/dsh-config-manager/market/refresh',
-  marketBrowse: '/api/dsh-config-manager/market/browse',
-  marketDownload: '/api/dsh-config-manager/market/download',
-  marketPrepare: '/api/dsh-config-manager/market/prepare',
   // m-my-configs：「一键上传 / 我的配置」（目标仓库固定 xiajiajun516/dsh-config-market；
   // 登录复用 sync/github/start|poll|cancel，不重复实现；/me/items 401 → 未登录）
-  meStatus: '/api/dsh-config-manager/me/status',
-  meUpload: '/api/dsh-config-manager/me/upload',
-  meItems: '/api/dsh-config-manager/me/items',
-  meUpdate: '/api/dsh-config-manager/me/update',
-  meListing: '/api/dsh-config-manager/me/listing',
-  meRelist: '/api/dsh-config-manager/me/relist',
-  meDelete: '/api/dsh-config-manager/me/delete',
   // m-profiles：配置档案（Profile = 一组可切换的配置快照；Save/List/Delete/Rename/Switch/Import）
-  profiles: '/api/dsh-config-manager/profiles',
-  profilesSave: '/api/dsh-config-manager/profiles/save',
-  profilesDelete: '/api/dsh-config-manager/profiles/delete',
-  profilesRename: '/api/dsh-config-manager/profiles/rename',
-  profilesAnalyzeSwitch: '/api/dsh-config-manager/profiles/analyze-switch',
-  profilesExecuteSwitch: '/api/dsh-config-manager/profiles/execute-switch',
-  profilesImport: '/api/dsh-config-manager/profiles/import',
   // Phase 5：recovery 编排（prefix 路由，内部按 path 分发：status / <opId>/preview|confirm|execute|verify|retry|dismiss）
-  recovery: '/api/dsh-config-manager/recovery',
   // Phase 6：迁移历史审计（统一历史引擎；只读 GET + 导出）
-  history: '/api/dsh-config-manager/history',
-  historyExport: '/api/dsh-config-manager/history/export',
   // Phase 1 P0-1/P0-2：配置生命周期（自动快照 / 撤销 / 重做）与崩溃归因
-  lifecycle: '/api/dsh-config-manager/lifecycle',
-  crash: '/api/dsh-config-manager/crash',
   // Phase 1 P0-3：启动救援模式（禁用其它插件使 DSH 能启动）
-  rescue: '/api/dsh-config-manager/rescue',
 } as const
 
 /**
@@ -2114,23 +2066,12 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
           const snapshotId =
             typeof body['snapshotId'] === 'string' && body['snapshotId'] !== '' ? body['snapshotId'] : undefined
           const sections = extractSyncSections(body, knownSyncSectionIds)
-          // 加密快照选项：encrypt=true 时携带密码（仅内存传输，绝不落盘/落日志）；
-          // includeSecrets=true 由 engine 强制要求 encrypt（密钥绝不明文进同步通道）
-          const encrypt = body['encrypt'] === true
-          const includeSecrets = body['includeSecrets'] === true
-          const encryptPassword =
-            typeof body['encryptPassword'] === 'string' && body['encryptPassword'] !== ''
-              ? body['encryptPassword']
-              : undefined
           // P0-②：push 前只读预览（body.preview === true → 不写远端，只返回「将推送什么」）
           const preview = body['preview'] === true
           // 分支调用以保证 withTimeout 的泛型结果类型正确（SyncPushReport | SyncPushPreview）
           const report = preview
             ? await withTimeout(
-                engine.previewPush({
-                  ...(sections === undefined ? {} : { sections }),
-                  ...(encrypt || includeSecrets ? { encrypt: true, includeSecrets } : {}),
-                }),
+                engine.previewPush({ ...(sections === undefined ? {} : { sections }) }),
                 ROUTE_TIMEOUT_MS,
                 msg('host.syncPushTimeout'),
               )
@@ -2138,7 +2079,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
                 engine.push({
                   ...(snapshotId === undefined ? {} : { snapshotId }),
                   ...(sections === undefined ? {} : { sections }),
-                  ...(encrypt || includeSecrets ? { encrypt: true, includeSecrets, password: encryptPassword ?? '' } : {}),
                 }),
                 ROUTE_TIMEOUT_MS,
                 msg('host.syncPushTimeout'),
@@ -2166,20 +2106,15 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
         try {
           const syncCfg = await prepareSync(body)
           const engine = makeSyncEngine(syncCfg)
+          // 缺省 replace：明文同步的产品语义是「远端值覆盖本地」，不做 diff/合并
           const strategy =
-            body['strategy'] === 'replace' || body['strategy'] === 'skipExisting' ? body['strategy'] : 'merge'
+            body['strategy'] === 'merge' || body['strategy'] === 'skipExisting' ? body['strategy'] : 'replace'
           const snapshotId =
             typeof body['snapshotId'] === 'string' && body['snapshotId'] !== '' ? body['snapshotId'] : undefined
-          // 解密密码（加密快照拉取时提供；仅内存传输，绝不落盘/落日志）
-          const decryptPassword =
-            typeof body['decryptPassword'] === 'string' && body['decryptPassword'] !== ''
-              ? body['decryptPassword']
-              : undefined
           const report = await withTimeout(
             engine.pull({
               strategy,
               ...(snapshotId === undefined ? {} : { snapshotId }),
-              ...(decryptPassword === undefined ? {} : { password: decryptPassword }),
             }),
             ROUTE_TIMEOUT_MS,
             msg('host.syncPullTimeout'),
@@ -2454,16 +2389,8 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
           const syncCfg = await prepareSync(body)
           const engine = makeSyncEngine(syncCfg)
           const snapshotId = typeof body['snapshotId'] === 'string' && body['snapshotId'] !== '' ? body['snapshotId'] : undefined
-          // 解密密码（一键同步拉取加密快照时提供；仅内存传输，绝不落盘/落日志）
-          const decryptPassword =
-            typeof body['decryptPassword'] === 'string' && body['decryptPassword'] !== ''
-              ? body['decryptPassword']
-              : undefined
           const preview = await withTimeout(
-            engine.preview({
-              ...(snapshotId === undefined ? {} : { snapshotId }),
-              ...(decryptPassword === undefined ? {} : { password: decryptPassword }),
-            }),
+            engine.preview({ ...(snapshotId === undefined ? {} : { snapshotId }) }),
             ROUTE_TIMEOUT_MS,
             msg('host.syncPullTimeout'),
           )

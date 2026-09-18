@@ -52,7 +52,7 @@ dsh plugin --profile web add @logictan/dsh-config-manager@latest
 |---|---|
 | 快照内容 | **明文**，含 provider 密钥等一切隐私信息（`manifest.security.containsSecrets` 按实际内容如实标注） |
 | 通道要求 | 必须是你自有的**私有**仓库；本插件不会、也无法阻止你把它指向公开仓库 |
-| 通道凭据 | 存于 DSH credentials（`` 槽位），值只在宿主内部读取，绝不落盘到快照/日志/浏览器 |
+| 通道凭据 | 存于 DSH credentials（Git 用 `DSH_CONFIG_MANAGER_SYNC_TOKEN`，WebDAV 用 `DSH_CONFIG_MANAGER_SYNC_WEBDAV_PASSWORD`），值只在宿主内部读取，绝不落盘到快照/日志/浏览器 |
 | 日志 | 全程脱敏（`security/redaction.ts`） |
 | 导入 | 应用前强制落回滚快照；任一失败整体回滚 |
 

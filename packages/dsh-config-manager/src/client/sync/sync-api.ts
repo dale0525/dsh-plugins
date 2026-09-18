@@ -26,7 +26,6 @@ import type { SyncPullReport, SyncPushPreview, SyncPushReport } from '../../sync
 import type { PlanItemKind } from '../../core/types.ts';
 import type { SectionId } from '../../schema/types.ts';
 import { ConfigManagerApiError } from '../api.ts';
-import type { ConsultReport } from '../../core/migration-consult.ts';
 import { zhUiT, type UiT } from '../../ui/i18n.ts';
 
 /** 同步端点常量（与 Host 半 src/index.ts API 常量保持一致） */
@@ -541,8 +540,4 @@ export class SyncApi {
     return postJson<{ ok: boolean; full: boolean }>(SYNC_API.rollback, payload, this.t);
   }
 
-  /** Phase 7 迁移前咨询（只读健康评分 + 建议）：对远端快照生成咨询报告。 */
-  async consult(input: { type: 'remote-snapshot'; id: string; snapshotId?: string }): Promise<ConsultReport> {
-    return postJson<ConsultReport>('/api/dsh-config-manager/consult', input, this.t);
-  }
 }

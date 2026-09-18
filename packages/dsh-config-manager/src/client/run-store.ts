@@ -57,10 +57,7 @@ export type SyncConfirmDecision = { adopted: boolean; resolution?: SyncConflictR
 
 export type SyncConfirmDecisions = Record<string, SyncConfirmDecision>
 
-export type PersistedChannelSyncState = Omit<
-  ChannelSyncState,
-  'encryptPassword' | 'encryptPasswordConfirm' | 'decryptPassword'
->
+export type PersistedChannelSyncState = ChannelSyncState
 
 export type PersistedSyncState = Omit<SyncStoreSlice, 'token' | 'webdavPassword' | 'busy' | 'savingConfig' | 'byChannel'> & {
   byChannel: {
