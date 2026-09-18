@@ -1,0 +1,26 @@
+{
+  "name": "dsh-plugins",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH plugin monorepo: aggregate bundle carrier + forked plugins.",
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./packages/all/cordis.patch.yml"
+    }
+  },
+  "files": [
+    "package.json",
+    "packages/all/cordis.patch.yml"
+  ],
+  "scripts": {
+    "aggregate": "node scripts/aggregate.mjs",
+    "aggregate:check": "node scripts/aggregate.mjs --check",
+    "build": "pnpm -r --if-present run build",
+    "test": "pnpm -r --if-present run test",
+    "typecheck": "pnpm -r --if-present run typecheck"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  }
+}

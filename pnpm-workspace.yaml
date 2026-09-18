@@ -1,0 +1,7 @@
+packages:
+  - 'packages/*'
+
+# 根包（private）只是工作区壳；聚合包 @logictan/dsh-plugins-all 的 dependencies
+# 写普通 semver range，仓库内开发时链接到 workspace 工程（版本同源），
+# profile 里从 npm registry 安装时按该 range 解析。
+linkWorkspacePackages: true

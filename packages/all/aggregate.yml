@@ -1,0 +1,7 @@
+# 聚合包清单（手写）：scripts/aggregate.mjs 据此生成 cordis.patch.yml 与 package.json 的 dependencies。
+# patchFrom: 该子包的 cordis.patch.yml 会被汇总进本包 patch（按顺序拼接，保留行 id）。
+# deps: 该子包以普通 semver range 写进本包 dependencies（版本取自子包 package.json）。
+patchFrom:
+  - ../dsh-config-manager
+deps:
+  - ../dsh-config-manager

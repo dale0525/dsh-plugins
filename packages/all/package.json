@@ -1,0 +1,17 @@
+{
+  "name": "@logictan/dsh-plugins-all",
+  "version": "0.2.0",
+  "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
+  "license": "MIT",
+  "type": "module",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "package.json",
+    "cordis.patch.yml"
+  ],
+  "dependencies": {}
+}
