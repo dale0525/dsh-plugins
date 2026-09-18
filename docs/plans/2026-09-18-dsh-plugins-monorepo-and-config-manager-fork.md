@@ -781,3 +781,35 @@ tests/route/status-plugin-diagnostics.test.ts        76
 | 真实 GUI 界面验证 | **未执行** | 运行中的 web profile 装的是上游 `dsh-config-manager@0.1.60`，不是本 fork；要让本 fork 生效需改 profile 依赖并重启宿主，会中断当前会话 |
 | 真实上游同步 PR | **未执行** | 上游 `main` 当前就停在 `v0.1.60`（即我们的基线），没有更新可同步；policy 算法已在**合成上游**上端到端验证（冲突 2 → 0） |
 
+
+### 14.7 真实浏览器内的 loader 验证（补做）
+
+运行中的 web profile 装的是**上游** `dsh-config-manager@0.1.60`（不是本 fork），
+因此无法直接走本 fork 的同步标签页。但可以在**真实浏览器**里验证本 fork 产物的加载契约。
+
+**先取证宿主侧的 id 约定**：读运行中页面的 `window.__DSH_BOOT__`（插件图载荷），
+69 个 entry 的 id 全是**完整包名**：
+
+```
+@deepseek-ai/dsh-api-gateway / @deepseek-ai/dsh-client-ui-settings / ...
+@dickpy/dsh-imagegen / dsh-agy-link / dsh-config-manager / dsh-pet / ...
+```
+
+即 scoped 包用完整 scoped 名、非 scoped 包用裸名 —— 与 §14.1 #2 的结论一致。
+
+**再验证本 fork 产物**：在真实页面里包一层 `window.__ModuleLoader__.load` 捕获注册，
+把本 fork 的 `lib/client.js`（415 KB）作为 `<script>` 注入：
+
+| 断言 | 结果 |
+|---|---|
+| 注册次数 | 1 |
+| 注册的 `id` | `@logictan/dsh-config-manager`（== 包名，符合宿主约定） |
+| `factory` 类型 | `function` |
+| 注入后控制台错误数 | **0** |
+
+**结论**：loader id 修复在真实浏览器里得到确认。此项虽未覆盖「同步标签页的实际交互」，
+但覆盖了「产物能否被真实宿主加载」这一此前完全空白的环节。
+
+**仍缺的一项**：让本 fork 在 GUI 里真正跑起来（改 profile 依赖 → 重启宿主）会中断当前会话，
+故留给用户执行；重启后按 §7.3.7 验收 2 检查「设置页只剩同步一个标签」即可。
+

@@ -1,0 +1,41 @@
+- generic [ref=e4]:
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - button "新建会话" [ref=e9] [cursor=pointer]
+      - button "收起侧边栏" [ref=e38] [cursor=pointer]
+    - tablist "AI 生图面板（gpt-image-2 / glm-image / grok-imagine-image / nanobanana / seedream 系列）" [ref=e41]:
+      - button "新会话" [ref=e42] [cursor=pointer]
+      - button "生图" [ref=e47] [cursor=pointer]
+    - navigation "全局面板" [ref=e54]:
+      - button "插件" [ref=e55] [cursor=pointer]
+    - generic [ref=e66]:
+      - generic [ref=e67]:
+        - generic [ref=e68]: 工作区
+        - generic [ref=e70]:
+          - button "搜索会话" [ref=e71] [cursor=pointer]
+          - textbox "搜索会话…"
+        - generic [ref=e75]:
+          - button "视图选项" [ref=e77] [cursor=pointer]
+          - button "添加工作区" [ref=e80] [cursor=pointer]
+      - tree "会话" [ref=e86]:
+        - treeitem "临时会话" [ref=e89] [cursor=pointer]
+        - treeitem "dsh-plugins" [ref=e97] [cursor=pointer]
+        - treeitem "Telegramail" [ref=e105] [cursor=pointer]
+        - treeitem "dsh-pet" [ref=e113] [cursor=pointer]
+        - treeitem "DSH-Novel" [ref=e121] [cursor=pointer]
+        - treeitem "GuoTangDoctor" [ref=e129] [cursor=pointer]
+    - button "设置" [ref=e139] [cursor=pointer]
+  - generic [ref=e155]:
+    - generic [ref=e163]:
+      - generic [ref=e164]: 探索未至之境
+      - generic [ref=e165]: 预览版
+    - button "选择工作区" [ref=e167] [cursor=pointer]
+    - generic [ref=e175] [cursor=pointer]:
+      - generic [ref=e177]:
+        - textbox "选择工作区" [ref=e178]
+        - generic [aria-hidden]: 选择一个工作区开始
+      - generic [ref=e179]:
+        - generic [ref=e180]:
+          - button "添加文件或调用指令" [disabled]
+        - generic [ref=e181]:
+          - button "发送消息" [disabled]
