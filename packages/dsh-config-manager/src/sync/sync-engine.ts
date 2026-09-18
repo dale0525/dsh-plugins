@@ -221,7 +221,7 @@ export class SyncEngine {
     this.sections = opts.sections !== undefined && opts.sections.length > 0 ? [...opts.sections] : undefined;
   }
 
-  /** 参与同步的分区：构造注入 sections（同步范围）时按注入范围过滤 ——
+  /** 参与同步的分区全集：构造注入 sections（同步范围）时按注入范围过滤 ——
    *  自动同步等后台流程 push/pull 全链路复用用户选择；手动请求仍可用 push(opts.sections) 覆盖。 */
   private syncAdapters(): ConfigAdapter[] {
     if (this.sections === undefined) return this.adapters;
@@ -229,14 +229,29 @@ export class SyncEngine {
     return this.adapters.filter((a) => wanted.has(a.id));
   }
 
+  /** 未显式传 sections 时的默认范围。
+   *
+   *  - 构造注入 sections（高级模式：用户已在 UI 勾选并持久化）→ 该选择**就是**默认范围，
+   *    不再按 defaultIncluded 收窄（否则高级模式勾选的 sessions/pluginFiles 会被悄悄剔除）；
+   *  - 未注入（默认模式「快速导出」）→ 只取推荐分区 defaultIncluded。
+   *
+   *  defaultIncluded=false 的分区（sessions 含历史会话明文、pluginFiles）语义是「用户显式
+   *  勾选才同步」；把它们并进默认模式的范围会绕过 UI 勾选与「将同步 N 个推荐分区」计数，
+   *  把敏感内容静默推到远端通道。 */
+  private defaultTargets(): ConfigAdapter[] {
+    if (this.sections !== undefined) return this.syncAdapters();
+    return this.adapters.filter((a) => a.defaultIncluded);
+  }
+
   /**
    * push 候选 adapter：
-   * - sections 缺省/空 → 全部推荐分区；
-   * - sections 显式给出 → 只取命中的；未知分区 → 警告跳过（不静默，用户能看见自己勾了哪个无效项）。
+   * - sections 缺省/空 → 全部推荐分区（defaultIncluded）；
+   * - sections 显式给出 → 从**全部已挂载分区**取命中项（显式勾选可触达 defaultIncluded=false
+   *   的分区，这正是「默认关闭」的含义）；未知分区 → 警告跳过（不静默，用户能看见自己勾了哪个无效项）。
    */
   private pushTargets(sections: readonly SectionId[] | undefined, warnings: string[]): ConfigAdapter[] {
+    if (sections === undefined || sections.length === 0) return this.defaultTargets();
     const available = this.syncAdapters();
-    if (sections === undefined || sections.length === 0) return available;
     const byId = new Map(available.map((a) => [a.id, a]));
     const out: ConfigAdapter[] = [];
     for (const id of sections) {
@@ -480,7 +495,9 @@ export class SyncEngine {
   async hasLocalChanges(): Promise<boolean> {
     const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
     if (Object.keys(state.sections).length === 0) return true;
-    for (const adapter of this.syncAdapters()) {
+    // 必须与 push 的默认范围同源：基线只记录 push 实际上传的分区，
+    // 若此处遍历更大的集合，未上传分区会因「基线缺该分区」恒判为有改动。
+    for (const adapter of this.defaultTargets()) {
       let section: ExportSection;
       try {
         section = await adapter.export(this.ctx, { includeSecrets: true });

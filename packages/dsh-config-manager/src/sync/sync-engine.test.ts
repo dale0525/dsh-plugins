@@ -199,7 +199,7 @@ test('sectionsCarrySecrets: 无敏感字段 → false；含 apiKey/token/passwor
   } as never), false, '仅环境变量引用名不算秘密');
 });
 
-test('push: 默认范围含全部分区（原 platformSpecific/deviceSpecific 分区也可同步）', async () => {
+test('push: 默认范围 = 推荐分区（原 platformSpecific/deviceSpecific 也可同步，但 defaultIncluded=false 的仍不进）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-portable-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -212,11 +212,70 @@ test('push: 默认范围含全部分区（原 platformSpecific/deviceSpecific �
     await engine.push({ snapshotId: 'sync-p' });
     const uploaded = transport.snapshots.get('sync-p')!;
     assert.ok(uploaded.manifest.sectionIds.includes('settings'));
-    assert.ok(uploaded.manifest.sectionIds.includes('workspaces' as SectionId), 'workspaces 现可勾选同步');
-    assert.ok(uploaded.manifest.sectionIds.includes('mcp' as SectionId), 'mcp 现可勾选同步');
+    assert.ok(uploaded.manifest.sectionIds.includes('workspaces' as SectionId), 'workspaces（推荐分区）默认同步');
+    assert.ok(uploaded.manifest.sectionIds.includes('mcp' as SectionId), 'mcp（推荐分区）默认同步');
     // credentialsStatus / secrets 不是 ConfigAdapter，结构上不可能进入快照
     assert.ok(!('credentials' in uploaded.sections));
     assert.ok(!('secrets' in uploaded.sections));
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('push: 默认范围尊重 adapter 的 defaultIncluded 契约（sessions/pluginFiles 不得默认上传）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-default-included-'));
+  try {
+    const ctx = makeContext('darwin', '/Users/alice');
+    seedSource(ctx);
+    // 复刻 Host 接线：includeSessions=true（index.ts 挂载 sessions 供显式勾选）
+    await ctx.fs.writeFile('sessions/proj/s1.jsonl', Buffer.from('{"secret":"history"}\n', 'utf8'));
+    await ctx.fs.writeFile('dsh-ssh.json', Buffer.from('{"hosts":{}}', 'utf8')); // pluginFiles 白名单
+    const adapters = createAdapters({ namespaces: NS, includeSessions: true, selfDir: 'dsh-config-manager' });
+    const transport = new MemSyncTransport();
+    const engine = new SyncEngine({
+      ctx, transport, adapters,
+      importer: new Importer({ ctx, adapters, snapshotStore: new MemSnapshotStore() }),
+      stateDir: tmp, localSnapshotsDir: path.join(tmp, 'snap'),
+      now: () => new Date('2026-08-16T12:00:00.000Z'),
+    } as ConstructorParameters<typeof SyncEngine>[0]);
+
+    await engine.push({ snapshotId: 'sync-di' });
+    const uploaded = transport.snapshots.get('sync-di')!;
+    const ids = uploaded.manifest.sectionIds;
+    // 默认模式（未显式勾选）= 推荐分区：defaultIncluded=false 的分区不得被静默上传
+    assert.ok(!ids.includes('sessions' as SectionId), 'sessions 默认关闭：含历史会话敏感内容，必须显式勾选才上传');
+    assert.ok(!ids.includes('pluginFiles' as SectionId), 'pluginFiles 默认关闭：必须显式勾选才上传');
+    assert.ok(ids.includes('settings' as SectionId), '推荐分区照常同步');
+    // 与 UI「将同步 N 个推荐分区」的计数同源
+    assert.deepEqual(
+      [...ids].sort(),
+      adapters.filter((a) => a.defaultIncluded).map((a) => a.id).sort(),
+      '默认上传集合 === defaultIncluded 集合',
+    );
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('push: 显式勾选 sessions → 仍可上传（默认关闭不等于不可同步）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-explicit-sessions-'));
+  try {
+    const ctx = makeContext('darwin', '/Users/alice');
+    seedSource(ctx);
+    await ctx.fs.writeFile('sessions/proj/s1.jsonl', Buffer.from('{"secret":"history"}\n', 'utf8'));
+    const adapters = createAdapters({ namespaces: NS, includeSessions: true, selfDir: 'dsh-config-manager' });
+    const transport = new MemSyncTransport();
+    const engine = new SyncEngine({
+      ctx, transport, adapters,
+      importer: new Importer({ ctx, adapters, snapshotStore: new MemSnapshotStore() }),
+      stateDir: tmp, localSnapshotsDir: path.join(tmp, 'snap'),
+      now: () => new Date('2026-08-16T12:00:00.000Z'),
+    } as ConstructorParameters<typeof SyncEngine>[0]);
+
+    const report = await engine.push({ snapshotId: 'sync-es', sections: ['sessions'] });
+    assert.equal(report.ok, true);
+    assert.ok(transport.snapshots.get('sync-es')!.manifest.sectionIds.includes('sessions' as SectionId),
+      '高级模式显式勾选 sessions → 允许上传（与 defaultIncluded 无关）');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

@@ -1554,9 +1554,13 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
 
   /** 已知 adapter id 集合（push 请求体 sections 校验用）。 */
   const knownSyncSectionIds = new Set(adapters.map((a) => a.id))
-  /** 可同步分区目录（status 回填 UI「高级/自定义导出」勾选列表；只含 portable，与 SyncEngine 一致）。 */
+  /** 可同步分区目录（status 回填 UI「高级/自定义导出」勾选列表）。
+   *
+   *  含**全部已挂载分区**（不再按 portability 过滤）：改造一取消了 portability 对同步范围的
+   *  限制，所有分区都可勾选；这里若仍只列 portable，mcp/workspaces/credentialsStatus/
+   *  pluginFiles/sessions 就永远无法被勾选，用户既看不到也同步不了。
+   *  列表顺序即 adapters 顺序；defaultIncluded 由 UI 用于「推荐分区」默认勾选与计数。 */
   const syncSectionCatalog = adapters
-    .filter((a) => a.portability === 'portable')
     .map((a) => ({ id: a.id, displayName: a.displayName, portability: a.portability, defaultIncluded: a.defaultIncluded }))
 
   const makeImporter = (): Importer => new Importer({
