@@ -773,13 +773,68 @@ tests/route/status-plugin-diagnostics.test.ts        76
 > 这补上了「打包成功」与「真机加载成功」之间的空档：此前只验证了文件存在，
 > 未验证产物能否在 loader 协议下真正注册。
 
-### 14.6 已知未做（如实登记）
+### 14.6 收尾阶段：发布受阻与 GUI 验证（补做）
 
-| 项 | 状态 | 原因 |
-|---|---|---|
-| `npm publish` | **未执行** | 需要 npm 账号写操作；本机已确认 `npm whoami` = `logictan`、2FA 关闭、`@logictan` 作用域可用（计划 §3.1/§3.2 已实测），但发布是外部不可逆动作，留给用户执行 |
-| 真实 GUI 界面验证 | **未执行** | 运行中的 web profile 装的是上游 `dsh-config-manager@0.1.60`，不是本 fork；要让本 fork 生效需改 profile 依赖并重启宿主，会中断当前会话 |
-| 真实上游同步 PR | **未执行** | 上游 `main` 当前就停在 `v0.1.60`（即我们的基线），没有更新可同步；policy 算法已在**合成上游**上端到端验证（冲突 2 → 0） |
+#### 14.6.1 `npm publish`：被 registry 侧策略拒绝（非本机配置问题）
+
+| 步骤 | 结果 |
+|---|---|
+| 发布前预检 | 全部通过：两包名 404 可用；`npm whoami` = `logictan`；`npm publish --dry-run --access public` 退出码 0；tarball 无 `market`/`cli` 残留；仓库与产物内无真实密钥 |
+| 实发 `@logictan/dsh-config-manager@0.1.60` | **失败**：`E403 ... Two-factor authentication or granular access token with bypass 2fa enabled is required to publish packages.` |
+| `@logictan/dsh-plugins-all@0.2.0` | **未发**（依赖前者，前置未成） |
+
+**根因**：npm 现行策略要求**发布**动作具备「granular access token + bypass 2FA」或交互式 OTP。
+本机 `~/.npmrc` 里是 classic token（`npm_EfDA…`），且 `npm profile get` 显示
+`two-factor auth: disabled` —— 账号本身没开 2FA，但 registry 仍要求发布令牌显式携带 bypass 能力，
+classic token 不满足。**这不是本项目可修的缺陷，需账号侧操作**（用户处理）。
+
+> 注意：`--dry-run` 不做 registry 鉴权写入，因此它通过**不能**推出实发会通过 ——
+> 这正是「dry-run 通过」与「真机能发」之间的空档。
+
+#### 14.6.2 真实 GUI 验证：**已补做**（隔离 profile + 独立端口）
+
+原「未执行」的理由是「改 profile 依赖需重启宿主，会中断当前会话」。改用手法绕开：
+
+- 新建隔离 `DSH_HOME=/tmp/dsh-verify-home`（不碰 `~/.dsh`）；
+- `dsh plugin --profile web add link:<本仓库>` 把本 fork 装进隔离 profile；
+- 在 **:10099** 启动隔离宿主（`:10000` 的会话完全不受影响）。
+
+| 验收 | 结果 |
+|---|---|
+| §7.3.7-2 设置页只剩「同步」 | **通过**：设置面板仅「配置同步」一个插件入口，内层 tablist 仅「远程同步」 |
+| §7.3.7-3 非同步路由 | **通过**：`snapshots`/`export`/`market` 等与**不存在的路由**同样返回 401（该插件路由缺失时的统一响应），`sync/*` 正常 200 |
+| 同步页渲染 | **通过**：通道卡片、模式切换（默认/高级）、自动同步段均正常 |
+| 高级模式分区列表 | **通过**：14 个分区全可勾选，「推荐」标记 12 个 |
+| 默认模式计数文案 | **通过**：「将同步 12 个推荐分区」与 `defaultIncluded` 计数一致 |
+
+**过程中发现并修复 3 个改造一引入的缺陷**（见 §14.8）——这正是「只做产物级验证」会漏掉的：
+三个缺陷都只在**真实宿主 + 真实路由**下才暴露。
+
+#### 14.6.3 真实上游同步 PR：仍未开
+
+上游 `main` 当前就停在 `v0.1.60`（即我们的基线），没有更新可同步；
+policy 算法已在**合成上游**上端到端验证（冲突 2 → 0）。**这一项确实无需动作**，不是遗漏。
+
+#### 14.6.4 切到本 fork 的操作与雷区（供用户执行）
+
+**雷区（实测，会硬崩）**：两个包都声明 patch 行 id `config-manager`。
+若把本 fork **与上游并存**（同时是依赖），宿主启动即失败：
+
+```
+Error: dsh: plugin tree failed to load: failed to apply loader entry include
+(cordis:include): duplicate loader entry id: config-manager
+```
+
+因此必须**先删上游、再加本 fork**，不可反过来或并存：
+
+```sh
+dsh plugin --profile web remove dsh-config-manager
+dsh plugin --profile web add @logictan/dsh-config-manager@latest   # 或 add link:<本仓库路径>
+dsh-web restart
+```
+
+> 依赖安装本身走的是 profile 目录的 pnpm（`dsh plugin` 转发），**不需要**改本仓库的
+> workspace 配置；本仓库的 `packages/*` workspace 只服务于本仓库内开发。
 
 
 ### 14.7 真实浏览器内的 loader 验证（补做）
@@ -812,4 +867,54 @@ tests/route/status-plugin-diagnostics.test.ts        76
 
 **仍缺的一项**：让本 fork 在 GUI 里真正跑起来（改 profile 依赖 → 重启宿主）会中断当前会话，
 故留给用户执行；重启后按 §7.3.7 验收 2 检查「设置页只剩同步一个标签」即可。
+（**此项已在 §14.6.2 用隔离 profile + :10099 补做**，上句所述的取舍已不再必要。）
+
+---
+
+### 14.8 GUI 验证中发现的三个缺陷（改造一引入，均已修复）
+
+三个缺陷都**只在真实宿主 + 真实路由下暴露**：单元测试、类型检查、产物级加载验证全部是绿的。
+这坐实了「打包成功 ≠ 真机正确」。
+
+#### 缺陷 1（隐私回归，最严重）：默认同步范围吞掉了 `defaultIncluded=false` 的分区
+
+- **成因**：改造一删掉 `SyncEngine.portableAdapters()` 的 `portability==='portable'` 过滤是对的
+  （§7.2.2 要求取消 portability），但删除后默认模式（未显式勾选）的候选集**退化成了全部已挂载
+  adapter**。`sessions`（历史会话明文，含敏感内容）与 `pluginFiles` 的 `defaultIncluded=false`
+  语义是「**用户显式勾选才同步**」，被并进默认范围即绕过 UI 勾选。
+- **实测**：默认 push 集合 = 14 项，比「推荐分区」集合多 `sessions`、`pluginFiles` 两项；
+  而 UI 同时显示「将同步 12 个推荐分区」——**界面承诺与实际上传不一致**。
+- **修复**：新增 `defaultTargets()`：未显式勾选 → 只取 `defaultIncluded`；显式勾选 → 可触达全部分区。
+- **验证**：默认 push 12 项（无 sessions/pluginFiles）；显式 `sections:['sessions']` 仍成功上传。
+
+#### 缺陷 2：基线错位导致自动同步恒判「本地有改动」
+
+- **成因**：`hasLocalChanges()` 遍历 `syncAdapters()`（全集），而 push 的基线只覆盖**实际上传集**。
+  未上传的分区在 `sync-state.sections` 里没有记录 → `recorded === undefined` → 恒返回 `true`。
+- **后果**：自动同步每次巡检都认为本地有改动 → 反复上传（配合缺陷 1 还会反复上传敏感分区）。
+- **修复**：两处同源，均走 `defaultTargets()`。
+- **验证**：`hasLocalChanges` 用例恢复绿色（推后无改动 → `false`）。
+
+#### 缺陷 3：分区目录仍按 `portability` 过滤，5 个分区在 UI 里不可见
+
+- **成因**：`src/index.ts` 的 `syncSectionCatalog` 仍 `.filter(a => a.portability === 'portable')`。
+- **后果**：`mcp`/`workspaces`/`credentialsStatus`/`pluginFiles`/`sessions` 在高级模式里
+  **既看不到也勾不到**，与 §7.2.2「取消 portability，所有分区都可勾选」直接冲突；
+  且与缺陷 1 形成互锁——即便引擎允许勾选，UI 也提供不了入口。
+- **修复**：列出全部已挂载分区。**验证**：catalog 14 项（推荐 12 项），Sessions 复选框可见可勾。
+
+#### 顺带修正
+
+高级模式文案原文「全部推荐分区都可勾选同步」已不成立（现在是全部分区），中英同步改为
+「所有分区都可勾选同步（标「推荐」的默认勾选）」。
+
+#### 另发现：升级路径会静默重置用户勾选（独立缺陷，已修）
+
+`sync-selection.json` 把握手信封编号写成 `1`，但该信封形状与上游 `0.1.60` 的 `2` 相同，
+而上游的 `1` 是**顶层单通道**形状 —— 编号撞号导致升级后读不回用户既有的按通道勾选，
+静默回退成 `default`。**实测本机 `git` 7 个分区 / `webdav` 8 个分区全部丢失**。
+修复：编号对齐上游 `2`、接受 `1|2` 两个版本、`1` 的顶层形状归 `git` 通道（与上游迁移语义一致）。
+写出的 `2` 上游仍可读，故**回滚到上游也不会重置**。
+
+> 计划 §7.2.2 本就写明这一项是「schema 降级」（第 256 行），实现与冻结计划不一致，属实现缺陷。
 
