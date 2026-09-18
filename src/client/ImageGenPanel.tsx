@@ -27,7 +27,11 @@ import type { ImageGenConfig, ImageGenScope } from './settings-scope.ts'
 import { imageModelOptions } from './settings-scope.ts'
 import { normalizeImageModels } from '../image-models.ts'
 import { describeModel, promptCharLimit } from '../model-catalog.ts'
-import { CHAT_IMAGE_EVENT, type ChatImageEventDetail, type ConversationService } from './conversation-sync.ts'
+import {
+  addConversationAttachments, conversationInput, createConversationDrafts, releaseConversationDrafts,
+  removeConversationAttachment, CHAT_IMAGE_EVENT,
+  type ChatImageEventDetail, type ConversationDraftAttachment, type ConversationService,
+} from './conversation-sync.ts'
 import css from './panel.module.css'
 
 /** Size options, presented as aspect ratios (auto = let the model decide).
@@ -1355,21 +1359,25 @@ export function ImageGenPanel(props: {
       return
     }
     setAddingToConversation(actionKey)
-    let attachments: ReturnType<ConversationService['createDraftImages']> = []
+    let attachments: readonly ConversationDraftAttachment[] = []
     let added = false
     try {
       const prepared = await prepareConversationImage(image, index)
       const file = prepared.file
-      attachments = conversation.createDraftImages([file])
-      const input = conversation.input.for(sessionScope)
-      if (!input.addImages(attachments.map(attachment => attachment.id))) {
-        throw new Error(tt('conversation.busy'))
-      }
+      // The draft verbs were renamed when the composer grew plain-file drafts;
+      // the bridge drives whichever pair the running shell exposes.
+      const created = createConversationDrafts(conversation, currentSessionId, [file])
+      if (created === undefined) throw new Error(tt('conversation.unavailable'))
+      attachments = created
+      const input = conversationInput(conversation.input.for(sessionScope))
+      const accepted = addConversationAttachments(input, attachments.map(attachment => attachment.id))
+      if (accepted === undefined) throw new Error(tt('conversation.unavailable'))
+      if (!accepted) throw new Error(tt('conversation.busy'))
       added = true
       try {
         await api.attachConversationImage(String(currentSessionId), prepared.dataUrl, file.name)
       } catch (caught) {
-        for (const attachment of attachments) input.removeImage(attachment.id)
+        for (const attachment of attachments) removeConversationAttachment(input, attachment.id)
         added = false
         throw caught
       }
@@ -1377,7 +1385,7 @@ export function ImageGenPanel(props: {
       setConversationMessage(tt('conversation.added'))
       window.setTimeout(() => { setConversationMessage(null) }, 2200)
     } catch (caught) {
-      if (!added) conversation.releaseDraftImages(attachments)
+      if (!added) releaseConversationDrafts(conversation, attachments)
       setError(errorMessage(caught))
     } finally {
       setAddingToConversation(null)

@@ -65,15 +65,31 @@ html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ss
 }
 
 /* DSH's native conversation root is a flex item with an intrinsic width.
-   Stretch that direct child to the complete chat column so its hero composer
+   Stretch it to the complete chat column so its hero composer
    can center itself inside the resized pane instead of leaving a blank rail
    on the right. */
-html[data-dsh-imagegen-active] [data-slot='conversation'] > [data-phase] {
+html[data-dsh-imagegen-active] [data-slot='conversation'] > [data-phase],
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
   align-self: stretch;
   flex: 1 1 auto;
   width: 100%;
   max-width: none;
   min-width: 0;
+}
+
+/* 0.1.5+ seats the Conversation in the keyed `main` slot instead of a
+   `conversation` slot, so the chat column arrives as
+   `[data-slot="main"] > [data-slot="main.conversation"] > [data-phase]`.
+   Both anchors are layout-neutral (`display: contents`) by contract: the
+   Conversation root itself is the grid item, so the chat track places it
+   directly instead of re-boxing the shell's anchors. */
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-base);
 }
 
 html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-dsh-imagegen-chat-resizer] {
@@ -118,8 +134,8 @@ html[data-dsh-imagegen-active] [data-dsh-imagegen-chat-resizer] {
 }
 
 /* Hide only unrelated center-column plugin children. */
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-dsh-imagegen-chat-resizer]),
-html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-dsh-imagegen-chat-resizer]) {
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane='conversation'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-slot='main']):not([data-dsh-imagegen-chat-resizer]),
+html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-slot='main']):not([data-dsh-imagegen-chat-resizer]) {
   display: none !important;
 }
 
@@ -138,7 +154,8 @@ html[data-dsh-imagegen-active] [data-dsh-imagegen-sidebar-root] > :not([data-dsh
     overflow-y: auto;
   }
 
-  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'] {
+  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'],
+  html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
     grid-column: 1;
     grid-row: 2;
   }
@@ -1715,9 +1732,12 @@ html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-t
   grid-template-columns: minmax(0, 1fr);
 }
 
-/* Drop the conversation column entirely while the chat toggle is collapsed.
-   The hide rule must out-specify the base `display: flex !important`. */
-html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'] {
+/* Drop the Conversation while the chat toggle is collapsed. Both shell
+   generations are hidden here: the legacy slot anchor, and the 0.1.5+ slot
+   pair's Conversation root (its `display: contents` anchors draw nothing on
+   their own). This must out-specify the base chat-track placement. */
+html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='conversation'],
+html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase] {
   display: none !important;
 }
 

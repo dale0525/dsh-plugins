@@ -2501,7 +2501,7 @@ await check('C13d the config routes save and apply through the library backend',
 await new Promise(resolve => server.close(resolve))
 
 // -------------------------------------------------- D. client bundle shape
-await check('D1 client bundle registers via __ModuleLoader__ and exposes the canvas raster helpers', () => {
+await check('D1 client bundle registers via __ModuleLoader__ and exposes the canvas raster and conversation-draft helpers', () => {
   const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
   let handoff
   const sandbox = {
@@ -2555,6 +2555,7 @@ await check('D1 client bundle registers via __ModuleLoader__ and exposes the can
   // --- canvas raster helpers (image-ops.ts), reachable only through the bundle
   // Cross-realm values (VM context): spread into local objects before comparing.
   const { containRect, rectBetween, rectToPixels, removeBackground, autoRemoveBackground, transparencyRatio, drawAnnotation, compositeAnnotatedResult } = exportsOf
+  const { conversationInput, createConversationDrafts, releaseConversationDrafts, addConversationAttachments, removeConversationAttachment } = exportsOf
   // Letterbox: a 200x100 image inside a 100x100 node body.
   assert.deepEqual({ ...containRect(100, 100, 200, 100) }, { left: 0, top: 25, width: 100, height: 50 })
   // Dragging across the letterboxed image yields the full normalized rect.
@@ -2701,6 +2702,61 @@ await check('D1 client bundle registers via __ModuleLoader__ and exposes the can
   } finally {
     delete sandbox.document
   }
+
+  // --- conversation draft bridge (conversation-sync.ts)
+  // DSH renamed the image-only draft verbs to attachment-wide ones in 0.1.5
+  // (`createDrafts` / `releaseDraftAttachments` / `input.addAttachments`), so
+  // the panel must drive whichever pair the running shell exposes instead of
+  // calling a verb that no longer exists (#18).
+  const modernCalls = []
+  const modernInput = {
+    addAttachments: (ids) => { modernCalls.push(`add:${ids.join(',')}`); return true },
+    removeAttachment: (id) => { modernCalls.push(`remove:${id}`) },
+    addImages: () => { throw new Error('the legacy verb was called on a 0.1.5+ shell') },
+  }
+  const modern = {
+    createDrafts: (sessionId, files) => {
+      modernCalls.push(`create:${sessionId}:${files.length}`)
+      return [{ id: 'draft-1', kind: 'image' }]
+    },
+    releaseDraftAttachments: (drafts) => { modernCalls.push(`release:${drafts.length}`) },
+    createDraftImages: () => { throw new Error('the legacy verb was called on a 0.1.5+ shell') },
+  }
+  const modernDrafts = createConversationDrafts(modern, 'session-1', ['file'])
+  assert.equal(modernDrafts.map(draft => draft.id).join(','), 'draft-1', 'a 0.1.5+ shell hands the drafts back')
+  assert.equal(addConversationAttachments(conversationInput(modernInput), modernDrafts.map(draft => draft.id)), true)
+  removeConversationAttachment(conversationInput(modernInput), 'draft-1')
+  releaseConversationDrafts(modern, modernDrafts)
+  assert.equal(modernCalls.join(' | '), 'create:session-1:1 | add:draft-1 | remove:draft-1 | release:1')
+
+  // A 0.1.2 shell keeps the image-only names; the bridge must not reach for the
+  // newer verbs there either.
+  const legacyCalls = []
+  const legacy = {
+    createDraftImages: (files) => {
+      legacyCalls.push(`createImages:${files.length}`)
+      return [{ id: 'legacy-1' }]
+    },
+    releaseDraftImages: (drafts) => { legacyCalls.push(`releaseImages:${drafts.length}`) },
+  }
+  const legacyInput = {
+    addImages: (ids) => { legacyCalls.push(`addImages:${ids.join(',')}`); return true },
+    removeImage: (id) => { legacyCalls.push(`removeImage:${id}`) },
+  }
+  const legacyDrafts = createConversationDrafts(legacy, 'session-1', ['file'])
+  assert.equal(addConversationAttachments(conversationInput(legacyInput), legacyDrafts.map(draft => draft.id)), true)
+  removeConversationAttachment(conversationInput(legacyInput), 'legacy-1')
+  releaseConversationDrafts(legacy, legacyDrafts)
+  assert.equal(legacyCalls.join(' | '), 'createImages:1 | addImages:legacy-1 | removeImage:legacy-1 | releaseImages:1')
+
+  // A shell exposing neither pair reports the gap (the panel shows its
+  // localized "unavailable" copy) and release stays a no-op instead of throwing
+  // the `releaseDraftImages is not a function` TypeError that masked the real
+  // failure in #18.
+  assert.equal(createConversationDrafts({}, 'session-1', ['file']), undefined)
+  assert.equal(addConversationAttachments(conversationInput({}), ['draft-1']), undefined)
+  releaseConversationDrafts({}, [])
+  releaseConversationDrafts({}, [{ id: 'draft-1' }])
 })
 
 await check('D2 the client bundle ships the canvas skill + file-node surface', () => {
@@ -2747,6 +2803,16 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     '<!doctype html><html lang="zh-CN"><head></head><body>'
     + '<div data-pane="sidebar"><div class="logoRow"><button class="newSession">New session</button></div><div class="regionArea"></div></div>'
     + '<div data-pane="conversation"><div data-slot="conversation"><div data-conversation-scroll></div></div></div>'
+    // DSH 0.1.5+ frame: the centre column is the AppFrame's `centerCol` and the
+    // Conversation arrives as a keyed `main` slot entry. Both slot anchors are
+    // `display: contents` by contract, so the Conversation root itself is the
+    // grid item the chat track has to place (#19).
+    + '<div class="smoke_centerCol">'
+    + '<div data-slot="main" style="display: contents">'
+    + '<div data-slot="main.conversation" style="display: contents"><div class="smoke_root" data-phase="hero"></div></div>'
+    + '</div>'
+    + '<div data-other-plugin-entry></div>'
+    + '</div>'
     + '</body></html>',
     { pretendToBeVisual: true },
   )
@@ -3292,6 +3358,53 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     assert.equal(connectionStatus?.getAttribute('data-connected'), 'false', 'missing key is shown as disconnected')
     assert.equal(jsdomDocument.querySelectorAll('[data-comparison]').length, 1, 'comparison history rows collapse into one item')
     assert.ok(jsdomDocument.querySelector('[data-comparison]')?.textContent?.includes('gpt-image-2'), 'comparison history shows its models')
+
+    // Issue #19 regression: DSH 0.1.5+ seats the Conversation in the keyed
+    // `main` slot instead of a `conversation` slot, whose anchors are
+    // layout-neutral. The studio takeover must keep that slot (hiding it leaves
+    // the chat pane blank) and must place the Conversation root inside the chat
+    // track. jsdom's cascade cannot evaluate this selector shape (an
+    // attribute-valued ancestor with a child combinator) and does not apply
+    // `!important` sheet rules over inline styles, so the takeover is asserted
+    // through selector matching and the placement through the shipped sheet's
+    // own declarations.
+    jsdomDocument.querySelector('[data-dsh-imagegen-tab="image"]')
+      .dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(jsdomDocument.documentElement.hasAttribute('data-dsh-imagegen-active'), 'the image tab opens the studio')
+    const chatToggle = view.querySelector('button[data-open]')
+    assert.ok(chatToggle !== null, 'chat toggle rendered in the panel header')
+    chatToggle.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(jsdomDocument.documentElement.hasAttribute('data-dsh-imagegen-chat-collapsed'), false, 'the chat toggle opens the chat track')
+    const centreCol = jsdomDocument.querySelector('.smoke_centerCol')
+    const mainSlot = centreCol.querySelector('[data-slot="main"]')
+    const conversationRoot = centreCol.querySelector('[data-slot="main.conversation"] > [data-phase]')
+    assert.ok(mainSlot !== null && conversationRoot !== null, 'the 0.1.5+ conversation fixture stays mounted')
+    const takeoverSelector = "html[data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*='centerCol'] > :not([data-dsh-imagegen-view]):not([data-slot='conversation']):not([data-slot='main']):not([data-dsh-imagegen-chat-resizer])"
+    assert.equal(mainSlot.matches(takeoverSelector), false, 'the keyed main slot survives the studio takeover')
+    assert.equal(centreCol.querySelector('[data-other-plugin-entry]').matches(takeoverSelector), true, 'unrelated center-column entries are still hidden')
+    const collapseSelector = "html[data-dsh-imagegen-chat-collapsed][data-dsh-imagegen-active]:not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-slot='main.conversation'] > [data-phase]"
+    assert.equal(conversationRoot.matches(collapseSelector), false, 'the open chat track keeps the conversation root')
+    // The shipped sheet carries the chat-track placement and the stretch; the
+    // minifier may fold the placement into the `grid-area` shorthand.
+    const chatTrackDeclarations = [...jsdomDocument.styleSheets]
+      .flatMap(sheet => [...sheet.cssRules])
+      .filter(rule => typeof rule.selectorText === 'string' && rule.selectorText.includes('main\\.conversation') && rule.selectorText.includes('[data-phase]'))
+      .map(rule => rule.style.cssText)
+      .join(' ; ')
+    assert.match(chatTrackDeclarations, /grid-area:\s*1\s*\/\s*3|grid-column:\s*3/, 'the conversation root is placed in the chat track')
+    assert.match(chatTrackDeclarations, /width:\s*100%/, 'the conversation root stretches over the chat track')
+    assert.match(chatTrackDeclarations, /max-width:\s*none/)
+    assert.match(chatTrackDeclarations, /display:\s*none/, 'the collapsed chat track still hides the conversation root')
+    chatToggle.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(jsdomDocument.documentElement.hasAttribute('data-dsh-imagegen-chat-collapsed'), 'the chat toggle collapses the track again')
+    assert.equal(conversationRoot.matches(collapseSelector), true, 'the collapsed chat track drops the conversation root')
+    jsdomDocument.querySelector('[data-dsh-imagegen-tab="new-session"]')
+      .dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(jsdomDocument.documentElement.hasAttribute('data-dsh-imagegen-active'), false, 'the studio closes again')
 
     // Gallery keeps the sidebar history visible, and selecting one history
     // group returns the center workspace to text-to-image.

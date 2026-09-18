@@ -66,6 +66,7 @@ export const inject = ['slots', 'locale', 'connection', 'sessions', 'conversatio
 // Internals re-exported for the standalone smoke test (the browser bundle is
 // the only place these are reachable from Node); not part of the contract.
 export { autoRemoveBackground, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, rectBetween, rectToPixels, removeBackground, transparencyRatio } from './image-ops.ts'
+export { addConversationAttachments, conversationInput, createConversationDrafts, releaseConversationDrafts, removeConversationAttachment } from './conversation-sync.ts'
 
 /**
  * Mount the studio, its sidebar entry, and the settings card.
