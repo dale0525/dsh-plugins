@@ -12,7 +12,7 @@ import { execFile } from 'node:child_process';
 
 import { GitTransport, GitTransportError } from './git-transport.ts';
 import type { GitExecFn, GitExecResult, GitTransportOptions } from './git-transport.ts';
-import { encryptSectionsPayload } from '../snapshot-crypto.fixture.ts';
+import { encryptSectionsPayload } from '../../../tests/fixtures/legacy-snapshot-crypto.ts';
 import { computeSnapshotMeta, isEncryptedSections } from '../transport.ts';
 import type { SyncSnapshot } from '../transport.ts';
 import type { FilesSection, SectionData, SectionId } from '../../schema/types.ts';

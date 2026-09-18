@@ -7,11 +7,11 @@
  *
  * 复用 security/encryption.ts 的底层原语（scrypt KDF + AES-256-GCM，salt/iv 全随机）。
  */
-import { decryptCredentials, encryptCredentials } from '../security/encryption.ts';
-import type { SectionData, SectionId } from '../schema/types.ts';
-import { parseJsonSafe, stringifyJsonSafe } from '../utils/json.ts';
-import { sectionsFromJsonSafe, sectionsToJsonSafe } from './snapshot-json.ts';
-import type { EncryptedSections } from './transport.ts';
+import { decryptCredentials, encryptCredentials } from '../../src/security/encryption.ts';
+import type { SectionData, SectionId } from '../../src/schema/types.ts';
+import { parseJsonSafe, stringifyJsonSafe } from '../../src/utils/json.ts';
+import { sectionsFromJsonSafe, sectionsToJsonSafe } from '../../src/sync/snapshot-json.ts';
+import type { EncryptedSections } from '../../src/sync/transport.ts';
 
 /** 加密整个明文 sections Record → 密文载荷（info 进 manifest 非秘密参数；data 为 base64 密文）。 */
 export async function encryptSectionsPayload(

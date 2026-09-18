@@ -21,7 +21,7 @@ import { WebDavTransport, WebDavTransportError } from './webdav-transport.ts';
 import type { WebDavRequestFn, WebDavResponse, WebDavTransportOptions } from './webdav-transport.ts';
 import { computeSnapshotMeta, sectionsEqual } from '../transport.ts';
 import type { SyncSnapshot, SyncSnapshotMeta } from '../transport.ts';
-import { encryptSectionsPayload } from '../snapshot-crypto.fixture.ts';
+import { encryptSectionsPayload } from '../../../tests/fixtures/legacy-snapshot-crypto.ts';
 import type { SectionData, SectionId } from '../../schema/types.ts';
 
 const TEST_PASSWORD = 'super-secret-password-9876';

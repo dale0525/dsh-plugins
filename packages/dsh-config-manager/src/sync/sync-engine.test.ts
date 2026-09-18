@@ -14,7 +14,7 @@ import path from 'node:path';
 
 import { SyncEngine, MAX_REMOTE_SNAPSHOTS, sectionsCarrySecrets } from './sync-engine.ts';
 import { hashSection, loadSyncState, SYNC_STATE_FILE } from './sync-state.ts';
-import { encryptSectionsPayload } from './snapshot-crypto.fixture.ts';
+import { encryptSectionsPayload } from '../../tests/fixtures/legacy-snapshot-crypto.ts';
 import { computeSnapshotMeta } from './transport.ts';
 import type { SyncSnapshot, SyncSnapshotMeta, SyncTransport } from './transport.ts';
 import { WebDavTransport } from './webdav/webdav-transport.ts';
