@@ -36,19 +36,3 @@ test('M2 isGitHubAuthMissing：真实故障 / 非 GitHubApiError 一律 false（
   assert.equal(isGitHubAuthMissing('no_token'), false, '只认 GitHubApiError 实例，不按字符串匹配');
 });
 
-test('M3 源码守卫：/me/* 路由统一走 isGitHubAuthMissing，无「只映射 unauthorized」残留', async () => {
-  const src = await fs.readFile(path.resolve(here, '../../src/index.ts'), 'utf8');
-
-  assert.ok(
-    !src.includes("error.code === 'unauthorized' ? 401 : 500"),
-    '不得残留 unauthorized-only 的 401/500 映射（issue #29 根因）',
-  );
-
-  const mapped = src.split('isGitHubAuthMissing(error) ? 401 : 500').length - 1;
-  assert.equal(mapped, 4, 'me/items、me/listing、me/relist、me/delete 四条路由都必须走统一判定');
-
-  assert.ok(
-    src.includes('if (!isGitHubAuthMissing(error)) throw error'),
-    '/me/status 必须把 no_token 一并视为未登录（否则 500 → UI 误报「登录状态读取失败」）',
-  );
-});

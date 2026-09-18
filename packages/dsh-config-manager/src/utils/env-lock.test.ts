@@ -19,7 +19,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parseCli } from '../cli/index.ts';
 import {
   EnvironmentLockManager,
   EnvironmentLockIOError,
@@ -654,19 +653,6 @@ test('§11.1-c14 recovery 只删被 rename 捕获且二次验证的 inode；新 
   // 无 recovering 残留
   const files = await fs.readdir(locksDir);
   assert.ok(!files.some((n) => n.startsWith(RECOVERING_PREFIX)), '恢复成功不应残留 recovering 文件');
-});
-
-test('§11.1-c15 CLI 无 bypass-active-lock `--force`（parseCli 拒绝，无旁路）', async (t) => {
-  // 行为断言：所有 destructive 子命令遇到 --force 一律返回未知参数错误（无 bypass 解析分支）
-  for (const cmd of ['restore', 'snapshots', 'reinstall', 'recover-stale-lock']) {
-    const r = parseCli([cmd, '--force']);
-    assert.equal(r.ok, false, `parseCli(['${cmd}','--force']) 必须拒绝`);
-    assert.ok(r.ok === false && r.error.includes('未知参数'), `错误应指明未知 flag: ${r.error}`);
-  }
-  // 源码级断言：--force 只出现在「声明其不存在」的注释中，不作为可解析 flag（parseCli 无 flag==='--force' 分支）
-  const src = await readText(path.resolve(here, '../cli/index.ts'));
-  assert.ok(!src.includes("=== '--force'") && !src.includes("=== \"--force\""), 'parseCli 不得有 --force 解析分支');
-  assert.ok(!/VALUE_FLAGS[^]*?'--force'/.test(src), 'VALUE_FLAGS 不得含 --force');
 });
 
 test('§11.1-c16 崩溃模拟（child）：持锁后 exit → 残留 lock；recoverStaleLock 显式回收', async (t) => {

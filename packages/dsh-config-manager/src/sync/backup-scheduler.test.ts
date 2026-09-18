@@ -617,11 +617,8 @@ test('M1 源码守卫：index.ts 给 BackupScheduler 注入与 makeRoutes/regist
     `BackupScheduler 必须注入同一个 scanner 实例（scanner: ${name},）`,
   );
 
-  // 5) 另两条路径仍用同一标识符（三路一致，防将来各造实例）
-  const routesStart = source.indexOf('makeRoutes({');
-  const routesBody = source.slice(routesStart, source.indexOf('\n  })', routesStart));
-  assert.ok(routesBody.includes(`scanner: ${name},`), `makeRoutes 必须注入同一 scanner（scanner: ${name},）`);
-  const toolsStart = source.indexOf('registerModelTools(ctx, {');
-  const toolsBody = source.slice(toolsStart, source.indexOf('\n  })', toolsStart));
-  assert.ok(toolsBody.includes(`scanner: ${name},`), `registerModelTools 必须注入同一 scanner（scanner: ${name},）`);
+  // 5) HTTP 路由仍用同一标识符（两路一致，防将来各造实例）
+  const routesStart = source.indexOf('makeRoutes({')
+  const routesBody = source.slice(routesStart, source.indexOf('\n  })', routesStart))
+  assert.ok(routesBody.includes("scanner: " + name + ","), 'makeRoutes 必须注入同一 scanner')
 });

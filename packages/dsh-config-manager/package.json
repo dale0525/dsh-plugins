@@ -33,9 +33,6 @@
   },
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
-  "bin": {
-    "dsh-config-manager": "./lib/cli/index.js"
-  },
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",

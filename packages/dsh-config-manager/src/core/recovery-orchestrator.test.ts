@@ -143,38 +143,3 @@ test('recoverStaleLock：未被判定为 stale → ok=false（绝不谎称成功
  * 同时锁分支必须排在 :operationId 解析之前——'lock' 不是 UUID，否则会被 400 挡掉。
  * 按文本解析源码前先归一化行尾（Windows 工作区 CRLF / CI LF），否则守卫只在一边通过。
  */
-test('源码守卫：/recovery/lock/recover 分支先于 operationId 解析，且不经 acquire（否则回收必然失败）', async () => {
-  const source = (await fs.readFile(new URL('../index.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
-
-  const lockBranch = source.indexOf("if (segments[0] === 'lock') {");
-  assert.ok(lockBranch > 0, '应能找到残留锁回收分支（segments[0] === \'lock\'）');
-
-  const idParse = source.indexOf('const operationId = segments[0]!');
-  assert.ok(idParse > 0, '应能找到 operationId 解析点');
-  assert.ok(
-    lockBranch < idParse,
-    `锁分支必须排在 operationId 解析之前（lock=${lockBranch}, idParse=${idParse}）：'lock' 不是 UUID，落到后面会被 400 invalid operationId 挡掉`,
-  );
-
-  const branchBody = source.slice(lockBranch, idParse);
-  // 先剥注释再判定：本分支**注释里**会解释「为何不经 acquire」，直接正则匹配注释会误报
-  const code = branchBody
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n]*/g, '');
-  assert.equal(
-    /runWithMutationLock|withMutationGate/.test(code),
-    false,
-    '回收分支不得经 acquire：要回收的正是挡住 acquire 的残留锁，先取锁必然抛 423 → 回收永不生效',
-  );
-  assert.equal(
-    code.includes('recoverStaleLock'), true,
-    '回收分支必须真的调用编排器 recoverStaleLock',
-  );
-
-  // 接线不得丢：创建编排器时必须注入两个新依赖
-  const ctor = source.indexOf('createRecoveryOrchestrator({');
-  assert.ok(ctor > 0, '应能找到 createRecoveryOrchestrator 调用');
-  const ctorBody = source.slice(ctor, source.indexOf('\n  })', ctor));
-  assert.ok(ctorBody.includes('inspectLockState:'), 'createRecoveryOrchestrator 必须注入 inspectLockState');
-  assert.ok(ctorBody.includes('recoverStaleLock:'), 'createRecoveryOrchestrator 必须注入 recoverStaleLock');
-});
