@@ -13,7 +13,7 @@ export interface SnapshotHistoryEntry {
   createdAt: string;
   /** 分区数（manifest.sectionHashes 的 key 数） */
   sectionCount: number;
-  /** 关联到该快照的待审项数（来自 sync-review-queue.json 中的 items） */
+  /** 关联到该快照的待审项数（待审队列已随合并逻辑删除，当前恒为 0；保留字段兼容契约） */
   reviewCount: number;
 }
 

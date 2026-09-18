@@ -2270,8 +2270,7 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
       },
     },
     // ------------------------------------------------------ sync/history
-    // P2：列出本地祖先快照目录的 manifest.json（id/createdAt/sectionHashes），
-    // 同时统计 review-queue 中关联到该 snapshotId 的项数。
+    // 列出本地快照目录的 manifest.json（id/createdAt/sectionHashes/transport）。
     {
       kind: 'exact',
       path: API.syncHistory,
@@ -2301,24 +2300,8 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
               rows.push({ id: m.id, createdAt: m.createdAt, sectionCount, reviewCount: 0, ...(transport !== undefined ? { transport } : {}) })
             } catch { /* skip malformed */ }
           }
-          // 关联 review-queue 计数
-          const rqPath = join(syncDir, 'sync-review-queue.json')
-          const rqRaw = await fs.readFile(rqPath, 'utf8').catch(() => null)
-          if (rqRaw !== null) {
-            try {
-              const rq = JSON.parse(rqRaw) as { items?: Array<{ snapshotId?: string }> }
-              const byId = new Map<string, number>()
-              for (const it of rq.items ?? []) {
-                if (typeof it.snapshotId === 'string') {
-                  byId.set(it.snapshotId, (byId.get(it.snapshotId) ?? 0) + 1)
-                }
-              }
-              for (const r of rows) {
-                const c = byId.get(r.id)
-                if (c !== undefined) r.reviewCount = c
-              }
-            } catch { /* skip */ }
-          }
+          // reviewCount 恒 0：待审队列（sync-review-queue.json）已随合并逻辑一并删除，
+          // 保留该字段仅为与客户端契约兼容。
           rows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
           // 合并自动同步执行记录（sync-history.json）
           const hist = await readSyncHistory(syncDir)
