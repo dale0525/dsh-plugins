@@ -742,3 +742,42 @@ tests/route/status-plugin-diagnostics.test.ts        76
 **盲审后回归**：typecheck 0 error；测试 1272/1273（唯一失败为改造前既有的 `config-lifecycle`
 防抖时序 flake，与本次改动无关——改造前后三次重跑均有 1/3 概率出现）。
 
+
+### 14.5 安装链与产物级验证（补做）
+
+计划 §8 的「安装形态」只写了「`npm pack` + 干净 profile 安装」。实际补做了**完整依赖链**验证，
+并发现一处会让用户装不上的缺陷。
+
+**新发现并修复**：根包 `package.json` 未声明聚合包依赖 —— 根包自己就是被安装的那个包
+（`dsh.bundle.patch` → `packages/all/cordis.patch.yml`），但它的 `dependencies` 是空的，
+所以 profile 里只装到根包、**子插件不会随包带出**。已补
+`"@logictan/dsh-plugins-all": "0.2.0"`（普通 semver range + `linkWorkspacePackages: true`，
+与 dsh-web 根包同款；计划 §3.3 明确否掉了 `workspace:*` 跨 git 安装，故不写 `workspace:*`）。
+
+**完整链验证**（把 registry 换成本地 tarball，其余不变）：
+
+| 环节 | 结果 |
+|---|---|
+| 根包 tarball 内容 | `package.json` / `packages/all/cordis.patch.yml` / `packages/all/package.json` / `README.md` |
+| 根包 `dsh.bundle.patch` 可解析 | 是（`packages/all/cordis.patch.yml`，1570 B） |
+| `dsh plugin add <根包>` | 依赖链 +5 个包：根 → 聚合 → 子插件 |
+| 聚合 patch 的子插件行 | `id: config-manager` / `name: '@logictan/dsh-config-manager'` |
+| 子插件宿主产物 | `lib/index.js` 存在 |
+| 子插件客户端产物 | `lib/client.js` 存在（`prepare` 构建） |
+| patch 行 `name` 从 profile 根可解析 | 是 |
+
+**产物级加载验证**（不依赖浏览器）：把 `lib/client.js` 放进最小 `window`/`document` shim 里执行，
+注入真实 react —— 断言它按 loader 协议注册 1 次、`id` 等于包名、`factory` 可调用、
+导出的模块带 `apply` 函数与 `inject: ["slots","locale"]`。**PASS**。
+
+> 这补上了「打包成功」与「真机加载成功」之间的空档：此前只验证了文件存在，
+> 未验证产物能否在 loader 协议下真正注册。
+
+### 14.6 已知未做（如实登记）
+
+| 项 | 状态 | 原因 |
+|---|---|---|
+| `npm publish` | **未执行** | 需要 npm 账号写操作；本机已确认 `npm whoami` = `logictan`、2FA 关闭、`@logictan` 作用域可用（计划 §3.1/§3.2 已实测），但发布是外部不可逆动作，留给用户执行 |
+| 真实 GUI 界面验证 | **未执行** | 运行中的 web profile 装的是上游 `dsh-config-manager@0.1.60`，不是本 fork；要让本 fork 生效需改 profile 依赖并重启宿主，会中断当前会话 |
+| 真实上游同步 PR | **未执行** | 上游 `main` 当前就停在 `v0.1.60`（即我们的基线），没有更新可同步；policy 算法已在**合成上游**上端到端验证（冲突 2 → 0） |
+
