@@ -1,15 +1,3 @@
-/**
- * issue #29 回归：GitHub 凭据「缺失 / 失效」的统一映射。
- *
- * 缺陷：'no_token'（credentials 里从未配置 token）原先只在部分路由被当作「未登录」，
- * `/me/status` 会把它 rethrow 成 500，前端 loadStatus 捕获异常 → 渲染「登录状态读取失败」，
- * 让首次使用的用户以为登录态读取功能损坏（真实状态是「未登录」）。
- *
- * 契约（本文件锁定）：
- *  - 'no_token' 与 'unauthorized' 同为「未登录」；
- *  - 其余分类（network_error / rate_limited / server_error / …）是真实故障，仍按 500 暴露；
- *  - /me/* 路由不得再出现「只映射 unauthorized」的残留写法。
- */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -17,22 +5,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isGitHubAuthMissing } from '../../src/index.ts';
-import { GitHubApiError } from '../../src/market/github-repos.ts';
+import { GitHubAuthError } from '../../src/sync/github-auth.ts';
 
 const here = import.meta.dirname ?? path.dirname(fileURLToPath(import.meta.url));
 
 test('M1 isGitHubAuthMissing：no_token（未配置 token）与 unauthorized（401 失效）同属未登录', () => {
-  assert.equal(isGitHubAuthMissing(new GitHubApiError('GitHub token 未配置（请先登录）', 'no_token')), true);
-  assert.equal(isGitHubAuthMissing(new GitHubApiError('Bad credentials', 'unauthorized', 401)), true);
+  assert.equal(isGitHubAuthMissing(new GitHubAuthError('GitHub token 未配置（请先登录）', 'no_token')), true);
+  assert.equal(isGitHubAuthMissing(new GitHubAuthError('Bad credentials', 'unauthorized', 401)), true);
 });
 
-test('M2 isGitHubAuthMissing：真实故障 / 非 GitHubApiError 一律 false（仍按 500 暴露，不伪装成未登录）', () => {
+test('M2 isGitHubAuthMissing：真实故障 / 非 GitHubAuthError 一律 false（仍按 500 暴露，不伪装成未登录）', () => {
   for (const code of ['network_error', 'rate_limited', 'server_error', 'validation_failed', 'fork_timeout']) {
-    assert.equal(isGitHubAuthMissing(new GitHubApiError(`boom:${code}`, code)), false, `${code} 不得判为未登录`);
+    assert.equal(isGitHubAuthMissing(new GitHubAuthError(`boom:${code}`, code)), false, `${code} 不得判为未登录`);
   }
   assert.equal(isGitHubAuthMissing(new Error('boom')), false, '普通 Error 不得判为未登录');
   assert.equal(isGitHubAuthMissing(undefined), false);
   assert.equal(isGitHubAuthMissing(null), false);
-  assert.equal(isGitHubAuthMissing('no_token'), false, '只认 GitHubApiError 实例，不按字符串匹配');
+  assert.equal(isGitHubAuthMissing('no_token'), false, '只认 GitHubAuthError 实例，不按字符串匹配');
 });
 

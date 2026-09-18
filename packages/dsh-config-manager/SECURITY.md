@@ -2,31 +2,42 @@
 
 ## 受支持版本 / Supported Versions
 
-DSH Config Manager 保持滚动发布（滚动发布，建议始终使用最新版本）。
-我们只对**最新发布版本**提供安全修复；历史版本请升级后再反馈。
+本插件随 `dsh-plugins` monorepo 滚动发布，建议始终使用最新版本。
+只对**最新发布版本**提供安全修复；历史版本请升级后再反馈。
 
-DSH Config Manager follows rolling releases. Security fixes are provided for
-the **latest published version** only — please upgrade before reporting.
+This plugin ships as part of the `dsh-plugins` monorepo with rolling releases.
+Security fixes are provided for the **latest published version** only.
 
 | 版本 / Version | 支持状态 / Support |
 | --- | --- |
-| 最新版 / Latest (>= 0.1.x) | ✅ 受支持 / Supported |
+| 最新 / Latest | ✅ 支持 / Supported |
 | 历史版本 / Older | ❌ 不受支持 / Not supported |
 
 ## 安全设计不变量 / Security Invariants
 
 本插件在安全上有一组硬约束，改动时不得破坏（详见 `DEVELOPERS.md`）：
 
-- **Secret 默认不导出**：凭据值（token / password / 密钥）默认不写入导出文件、同步文件或日志
+- **通道凭据不回传**：token / WebDAV 口令只写入 DSH credentials 槽位，响应里只出现 `configured` 布尔
 - **凭据不可回读**：DSH 凭据槽位永不回读值，只做文件级读取
 - **日志全程脱敏**：`redactValue` 掩码所有敏感值；UI 渲染前所有错误/报告文本再过 `redact()` 兜底
 - **ZIP 视为不可信输入**：zip bomb 条目数上限、checksum 校验、Zip Slip 拒绝
-- **加密备份**：密码仅内存传入、不落盘不落日志；解密明文 ZIP 用完即清
+- **导入前强制快照**：应用前落回滚快照，任一失败整体回滚
 
-This plugin enforces hard security invariants: secrets are not exported by
-default, credential values are never read back from DSH slots, all logs are
-redacted, ZIP archives are treated as untrusted input, and encryption
-passwords never touch disk or logs (see `DEVELOPERS.md`).
+### ⚠️ 同步快照是明文（刻意的产品选择）
+
+同步通道是**用户自有的私有通道**：勾选即同步，**不加密、不脱敏**。
+因此快照会携带真实凭据值（provider 密钥等），`manifest.security.containsSecrets` 按实际内容如实标注。
+
+**这意味着：同步渠道必须指向你自有的私有仓库。**
+把通道指向公开仓库等同于公开你的全部凭据 —— 本插件不会、也无法阻止这种配置。
+
+This plugin enforces hard security invariants: channel credentials are never
+read back or returned to the browser, all logs are redacted, and ZIP archives
+are treated as untrusted input.
+
+**Sync snapshots are plaintext by design** — the sync channel is your own
+private channel, so snapshots carry real credential values. Never point the
+channel at a public repository.
 
 ## 漏洞报告 / Reporting a Vulnerability
 
@@ -39,12 +50,12 @@ in public issues.
 
 使用 GitHub 的 **Security → Report a vulnerability**（私有漏洞报告）功能：
 
-1. 打开 <https://github.com/xiajiajun516/dsh-config-manager/security/advisories>
+1. 打开 <https://github.com/dale0525/dsh-plugins/security/advisories>
 2. 点击 **New draft security advisory** 提交报告
 3. 报告将仅对维护者可见，我们会尽快处理并在修复后公开致谢
 
 Use the private security advisory flow at
-<https://github.com/xiajiajun516/dsh-config-manager/security/advisories> —
+<https://github.com/dale0525/dsh-plugins/security/advisories> —
 reports stay private until a fix is released.
 
 ### 方式二 / Alternative: 直接联系

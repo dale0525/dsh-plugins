@@ -1,33 +1,22 @@
 /**
- * 缓存自动清理（cache-cleaner）
+ * 缓存自动清理：只清「可重建 / 一次性」的临时文件与导出副本。
  *
- * 只清理「可重建 / 一次性」的缓存与临时文件，绝不触碰用户数据与安全网：
- *   - tmpDir 下过期的 `.zip`（upload-* / market-* / publish-* / decrypted-* /
- *     export-plain-* 等导入/导出/市场暂存，以及 SyncEngine 遗留的临时目录
- *     dsh-sync-pull-*）——保留期内文件不删（供「刷新恢复导入」等跨请求流程继续消费）；
- *   - exportsDir 下过期的导出产物 `.zip`（导出时用户已通过浏览器下载/另存到本地，
- *     host 端只是暂存副本，按保留期回收）；
- *   - market/cache/<url-hash>/（市场 index 缓存与条目缓存，refresh/download 可重建）；
- *   - market/work/<url-hash>/（市场 git 只读工作副本，readIndex 时自动重新 clone）。
+ * 清理面（保留期内一律不删）：
+ *  - `tmp/`：过期 `.zip` 暂存 + SyncEngine 遗留的 `dsh-sync-pull-*` 目录；
+ *  - `exports/`：过期的导出产物 ZIP（导出时用户已下载/另存到本地）。
  *
- * 保留不动（属用户数据/安全网，由各自 UI 或业务逻辑管理）：
- *   - snapshots/（导入前强制快照）、sync/（同步配置/历史/git 工作副本）。
+ * **不清理**：`snapshots/`（回滚安全网）与 `sync/`（同步状态/快照）—— 它们是用户数据。
  *
- * 实现：与 DSH 运行时解耦的纯函数（node:fs/promises），保留期与时间源参数化，
- * 任何单项失败均不阻断其余清理（尽力而为），返回清理报告供宿主日志。
- * 健康性：删除前按 mtime 判定超期（now - mtime > retention），stat 失败保守不删。
+ * 失败语义：任何单项失败只计入 `errors`，不影响主流程（调用方仅记日志）。
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-/** 临时文件缺省保留期：24 小时（覆盖跨会话「刷新恢复导入」窗口，昨天的残留自动清） */
+/** 临时文件缺省保留期：24h（供刷新恢复等窗口继续消费） */
 export const TMP_RETENTION_DEFAULT_MS = 24 * 60 * 60 * 1000
 
 /** 导出产物缺省保留期：7 天（导出时用户已通过浏览器下载/另存到本地，host 端副本按周回收） */
 export const EXPORTS_RETENTION_DEFAULT_MS = 7 * 24 * 60 * 60 * 1000
-
-/** 市场缓存/工作副本缺省保留期：7 天（重建成本 = 一次网络拉取） */
-export const MARKET_RETENTION_DEFAULT_MS = 7 * 24 * 60 * 60 * 1000
 
 /** SyncEngine 在 zipDir（即 tmpDir）下 mkdtemp 的目录前缀（用完即删，崩溃残留由清理兜底） */
 const SYNC_TMP_DIR_PREFIX = 'dsh-sync-pull-'
@@ -37,22 +26,10 @@ export interface CacheCleanupOptions {
   tmpDir: string
   /** 导出产物目录（$DSH_HOME/dsh-config-manager/exports） */
   exportsDir: string
-  /** 市场缓存根（$DSH_HOME/dsh-config-manager/market/cache） */
-  marketCacheRoot: string
-  /** 市场工作副本根（$DSH_HOME/dsh-config-manager/market/work） */
-  marketWorkRoot: string
   /** 临时文件保留期（缺省 24h） */
   tmpRetentionMs?: number
   /** 导出产物保留期（缺省 7 天） */
   exportsRetentionMs?: number
-  /**
-   * exports 清理豁免的文件名前缀（如定时备份的 dsh-config-auto-）：
-   * 匹配该前缀的 ZIP 不按保留期回收 —— 其生命周期由业务保留策略管理
-   * （BackupScheduler.pruneAutoBackups「保留最近 N 个」）。缺省不豁免。
-   */
-  exportsExemptPrefix?: string
-  /** 市场缓存/工作副本保留期（缺省 7 天） */
-  marketRetentionMs?: number
   /** 时间源（测试注入；缺省 Date.now） */
   now?: () => number
 }
@@ -105,10 +82,9 @@ export async function cleanupCaches(opts: CacheCleanupOptions): Promise<CacheCle
   const nowMs = (opts.now ?? Date.now)()
   const tmpRetentionMs = opts.tmpRetentionMs ?? TMP_RETENTION_DEFAULT_MS
   const exportsRetentionMs = opts.exportsRetentionMs ?? EXPORTS_RETENTION_DEFAULT_MS
-  const marketRetentionMs = opts.marketRetentionMs ?? MARKET_RETENTION_DEFAULT_MS
   const result: CacheCleanupResult = { removed: 0, freedBytes: 0, errors: 0, detail: [] }
 
-  // 1) tmpDir：过期 .zip（导入/导出/市场/解密暂存）与 SyncEngine 遗留的 dsh-sync-pull-* 目录
+  // 1) tmpDir：过期 .zip（同步/解密暂存）与 SyncEngine 遗留的 dsh-sync-pull-* 目录
   try {
     const entries = await fs.readdir(opts.tmpDir, { withFileTypes: true })
     for (const entry of entries) {
@@ -126,14 +102,11 @@ export async function cleanupCaches(opts: CacheCleanupOptions): Promise<CacheCle
     result.errors += 1
   }
 
-  // 2) exportsDir：过期的导出产物 .zip（导出时已下载/另存到本地，host 端副本按保留期回收）。
-  //    豁免前缀（定时备份产物）跳过 —— 由备份保留策略管理，不按天回收。
-  const exemptPrefix = opts.exportsExemptPrefix
+  // 2) exportsDir：过期的导出产物 .zip（导出时已下载/另存到本地，host 端副本按保留期回收）
   try {
     const entries = await fs.readdir(opts.exportsDir, { withFileTypes: true })
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('.zip')) continue
-      if (exemptPrefix !== undefined && entry.name.startsWith(exemptPrefix)) continue
       const target = path.join(opts.exportsDir, entry.name)
       if (await isExpired(target, exportsRetentionMs, nowMs)) {
         await removeEntry(target, `exports/${entry.name}`, result)
@@ -141,63 +114,6 @@ export async function cleanupCaches(opts: CacheCleanupOptions): Promise<CacheCle
     }
   } catch {
     // exportsDir 不存在/不可读 → 跳过
-    result.errors += 1
-  }
-
-  // 3) market/cache：过期 index.json 与 items/<itemId> 条目缓存；删空后回收 hash 目录
-  try {
-    const hashes = await fs.readdir(opts.marketCacheRoot)
-    for (const hash of hashes) {
-      const hashDir = path.join(opts.marketCacheRoot, hash)
-      let st
-      try {
-        st = await fs.stat(hashDir)
-      } catch {
-        continue // 竞态删除/不可读 → 跳过该 hash
-      }
-      if (!st.isDirectory()) continue
-
-      const indexFile = path.join(hashDir, 'index.json')
-      if (await isExpired(indexFile, marketRetentionMs, nowMs)) {
-        await removeEntry(indexFile, `market/cache/${hash}/index.json`, result)
-      }
-
-      const itemsDir = path.join(hashDir, 'items')
-      const itemDirs = await fs.readdir(itemsDir).catch(() => [] as string[])
-      for (const itemId of itemDirs) {
-        const itemDir = path.join(itemsDir, itemId)
-        if (await isExpired(itemDir, marketRetentionMs, nowMs)) {
-          await removeEntry(itemDir, `market/cache/${hash}/items/${itemId}`, result)
-        }
-      }
-      // items 子目录删空后回收；hash 目录删空后回收
-      const itemsLeft = await fs.readdir(itemsDir).catch(() => [] as string[])
-      if (itemsLeft.length === 0) {
-        await removeEntry(itemsDir, `market/cache/${hash}/items`, result)
-      }
-      const remaining = await fs.readdir(hashDir).catch(() => [] as string[])
-      if (remaining.length === 0) {
-        await removeEntry(hashDir, `market/cache/${hash}`, result)
-      }
-    }
-  } catch {
-    // marketCacheRoot 不存在/不可读 → 跳过
-    result.errors += 1
-  }
-
-  // 3) market/work：过期 git 只读工作副本（readIndex 时会按需重新 clone）
-  try {
-    const hashes = await fs.readdir(opts.marketWorkRoot)
-    for (const hash of hashes) {
-      const workDir = path.join(opts.marketWorkRoot, hash)
-      const st = await fs.stat(workDir).catch(() => null)
-      if (st === null || !st.isDirectory()) continue
-      if (await isExpired(workDir, marketRetentionMs, nowMs)) {
-        await removeEntry(workDir, `market/work/${hash}`, result)
-      }
-    }
-  } catch {
-    // marketWorkRoot 不存在/不可读 → 跳过
     result.errors += 1
   }
 

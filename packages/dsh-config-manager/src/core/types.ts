@@ -217,7 +217,7 @@ export interface ImportAnalysis {
    * `missingSections` —— 它们并非「备份声明了但文件缺失」，而是「本插件不认识」。
    *
    * 当前用户可见路径是 `warnings` 里的文案键 `import.unsupportedSections`
-   * （`ImportWizardView` 直接渲染 `analysis.warnings`）；本字段供第三方实现者与
+   * （导入向导直接渲染 `analysis.warnings`）；本字段供第三方实现者与
    * 后续 UI 做结构化展示（例如把「未知分区」与「版本过高」分列）。**尚无 UI 消费点。**
    */
   unsupportedSections: string[];

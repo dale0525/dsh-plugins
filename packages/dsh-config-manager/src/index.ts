@@ -107,20 +107,11 @@ import type { MutationLockPort } from './utils/env-lock.ts'
 import type { RecursiveListing } from './utils/recursive-walk.ts'
 import { GitTransport } from './sync/git/git-transport.ts'
 import { WebDavTransport } from './sync/webdav/webdav-transport.ts'
-import { DeviceFlowStore, GitHubAuthClient } from './sync/github-auth.ts'
+import { DeviceFlowStore, GitHubAuthClient, GitHubAuthError } from './sync/github-auth.ts'
 import { SyncEngine } from './sync/sync-engine.ts'
 import type { ApplyItemsReport } from './sync/sync-engine.ts'
 import { SyncSessionStore } from './sync/sync-session.ts'
 import { AutoSyncScheduler } from './sync/autosync-scheduler.ts'
-import { BackupScheduler } from './sync/backup-scheduler.ts'
-import { readBackupSchedule, writeBackupSchedule } from './sync/backup-schedule-config.ts'
-import type { BackupScheduleConfig } from './sync/backup-schedule-config.ts'
-import { AUTO_BACKUP_PREFIX, deleteBackupFile, isValidBackupFileName, isValidExportFileName, listBackupFiles, resolveNonCollidingExportName, writeBackupNote } from './sync/backup-files.ts'
-import { DEFAULT_RETENTION_POLICY, selectPruneCandidatesByPolicy } from './sync/retention-policy.ts'
-import type { RetentionPolicy } from './sync/retention-policy.ts'
-import type { PruneSelector } from './core/backup.ts'
-import { selectPruneCandidates } from './core/backup.ts'
-import { validateBackupScheduleDraft } from './ui/backup-schedule.ts'
 import { readAllAutosyncConfigs, readAutosyncConfig, writeAutosyncConfig } from './sync/autosync-config.ts'
 import type { AutosyncConfig, AutosyncInterval, AutosyncRunStatus } from './sync/autosync-config.ts'
 import { appendAutosyncEntry, readSyncHistory } from './sync/sync-history.ts'
@@ -143,21 +134,6 @@ import type { SyncSelection, SyncSelectionMode } from './sync/sync-selection.ts'
 import { readUiPrefs, updateUiPrefs } from './sync/ui-prefs.ts'
 import type { UiPrefsChannel } from './sync/ui-prefs.ts'
 import type { SyncTransport } from './sync/transport.ts'
-import { GitMarketReader } from './market/reader.ts'
-import { parseMarketIndex, parseMarketItemManifest } from './market/index-parser.ts'
-import { BUILTIN_MARKET_URL, isOfficialMarket } from './market/builtin.ts'
-import { validateMarketItem } from './market/security.ts'
-import { prepareMarketItem } from './market/prepare.ts'
-import { validateMarketRepoUrl } from './market/url.ts'
-import { marketItemWarnings, toMarketListItem } from './market/view.ts'
-import type {
-  MarketDownloadResult, MarketIndex, MarketItemDetail, MarketListItem, MarketSummary,
-} from './market/types.ts'
-import { GitHubAuthRest, GitHubApiError } from './market/github-repos.ts'
-import { MyRepoError, MyRepoService, USER_CONFIGS_REPO, userConfigsRepoUrl } from './market/my-repo.ts'
-import { createGitFileWriter } from './market/git-file-writer.ts'
-import { parseGitHubRepoUrl } from './market/repo-url.ts'
-import { StarCache } from './market/star-cache.ts'
 import { redact } from './security/redaction.ts'
 import { createConfiguredSecretScanner } from './security/secret-scanner.ts'
 import type { ConfiguredSecretPatterns } from './security/secret-scanner.ts'
@@ -1041,7 +1017,6 @@ interface RoutesDeps {
   /** m-sync-ui：同步状态/配置目录（$DSH_HOME/dsh-config-manager/sync） */
   syncDir: string
   /** m-market：市场目录（$DSH_HOME/dsh-config-manager/market；其下 config/ 与 cache/） */
-  marketDir: string
   /** 插件数据根目录（$DSH_HOME/dsh-config-manager；F1 vault 镜像目录 = <dataDir>/vault） */
   dataDir: string
   /** F2 强化 Secret 扫描器（含部署者 personalPatterns）；缺省 = 默认扫描器 */
@@ -1051,13 +1026,6 @@ interface RoutesDeps {
   /** m-github-oauth：GitHub OAuth App 凭据（device flow 必需 client_id；client_secret 可选） */
   githubClientId?: string
   githubClientSecret?: string
-  /** m-backup-schedule：定时全量备份调度器（保存重排 reload / 立即执行 runOnce） */
-  backupScheduler: BackupScheduler
-  /**
-   * m-retention：快照保留策略提供者（GFS 分层；从 sync/backup-schedule.json 实时读取）。
-   * 每次 prune 时调用 → 用户在 UI 改完无需重启即生效；读取失败回退缺省（见 FileSnapshotStore）。
-   */
-  retentionPolicy?: () => RetentionPolicy | Promise<RetentionPolicy>
   /** Phase 6：迁移历史存储（统一审计史；<dataDir>/migration-history） */
   history: MigrationStore
 }
@@ -1500,7 +1468,7 @@ function parseMeForm(raw: unknown): { name: string; id?: string; description?: s
  * 是真实故障，仍按 500 暴露，绝不伪装成「未登录」。
  */
 export function isGitHubAuthMissing(error: unknown): boolean {
-  return error instanceof GitHubApiError && (error.code === 'unauthorized' || error.code === 'no_token')
+  return error instanceof GitHubAuthError && (error.code === 'unauthorized' || error.code === 'no_token')
 }
 
 /** /status 的插件诊断位（issue #28）。仅回非敏感元信息：目录、profile 名、计数。 */
@@ -1543,7 +1511,7 @@ async function readPluginDiagnostics(host: HostContext): Promise<Partial<PluginD
 
 /** Build the /api/dsh-config-manager route family. */
 function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSyncScheduler; makeSyncEngine: (cfg: SyncConfig) => SyncEngine; lifecycle: ConfigLifecycle } {
-  const { host, adapters, exportsDir, tmpDir, snapshotsDir, runs, syncDir, marketDir, dataDir, credentials, githubClientId, githubClientSecret, backupScheduler, history } = deps
+  const { host, adapters, exportsDir, tmpDir, snapshotsDir, runs, syncDir, dataDir, credentials, githubClientId, githubClientSecret, history } = deps
   /**
    * Phase 1 P0-1/P0-2：配置生命周期服务（自动快照 / 撤销 / 重做）。
    *
@@ -1568,19 +1536,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
   })
 
   const roots = [exportsDir, tmpDir]
-  /**
-   * m-retention：快照保留策略提供者（缺省 = 从 sync/backup-schedule.json 实时读取）。
-   * 用户改完策略即时生效（每次 prune 都重读）；读取失败 → 缺省策略（引擎侧兜底）。
-   */
-  const retentionPolicyProvider = deps.retentionPolicy
-    ?? (async () => (await readBackupSchedule(syncDir)).retention ?? DEFAULT_RETENTION_POLICY)
-  /**
-   * m-retention：GFS 分层选择器（sync 层实现）+ 旧路径快速路径绑定。
-   * 为什么由宿主注入：架构边界禁止 core → sync 反向依赖；core 只声明 PruneSelector 契约。
-   * 绑定 selectPruneCandidates 作为缺省策略快速路径 → 与改造前**逐字等价**。
-   */
-  const retentionPruneSelector: PruneSelector = (metas, policy) =>
-    selectPruneCandidatesByPolicy(metas, policy, selectPruneCandidates)
 
   /**
    * Phase 6：迁移历史 best-effort 追加（写失败不阻断操作，但记录/降级，不静默丢）。
@@ -1661,10 +1616,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
       referencedSnapshotIds: () => host.phase3Recovery?.store.listReferencedSnapshotIds() ?? Promise.resolve(new Set<string>()),
       // Phase 6：自动保留清理 → snapshot-prune 迁移历史（best-effort）
       onPrune: (removedIds) => { void tryAppendSnapshotPrune(removedIds) },
-      // m-retention：可配置 GFS 保留策略（缺省「最近 10 个」，用户在 UI 可改分层）
-      retentionPolicy: () => retentionPolicyProvider(),
-      // m-retention：分层选择器由宿主注入（core 不反向依赖 sync）
-      pruneSelector: retentionPruneSelector,
     }),
     parseZipOverride: createHardenedZipParser(),
     dependencyChecker: dependencyAvailable,
@@ -1682,10 +1633,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
       referencedSnapshotIds: () => host.phase3Recovery?.store.listReferencedSnapshotIds() ?? Promise.resolve(new Set<string>()),
       // Phase 6：自动保留清理 → snapshot-prune 迁移历史（best-effort）
       onPrune: (removedIds) => { void tryAppendSnapshotPrune(removedIds) },
-      // m-retention：可配置 GFS 保留策略（与导入器同一策略源）
-      retentionPolicy: () => retentionPolicyProvider(),
-      // m-retention：分层选择器由宿主注入（core 不反向依赖 sync）
-      pruneSelector: retentionPruneSelector,
     }),
   })
 
@@ -1889,11 +1836,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
   })
   // P1-B：调度器不再在 makeRoutes 内同步 start —— 由 apply() 在「启动 recovery 分类完成后、仅 NORMAL」时启动。
 
-  // ------------------------------------------------ market 辅助（m-market）
-  // 目录：<marketDir>/cache/<url-hash>/（index/条目缓存）
-  //       + <marketDir>/work/<url-hash>/（git 只读工作副本，--depth 1）。无任何凭据。
-  const marketCacheRoot = join(marketDir, 'cache')
-
   // ============================================================ Phase 5 recovery orchestration
   // Recovery 路由**禁用 withMutationGate**（避免 double-journal：recovery 复用被恢复 operation 的
   // 现有 journal，不新建）。mutation 路由只经 withMutationLock（Phase 2 GLOBAL 锁）+ loopback fence，
@@ -2013,7 +1955,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
     // 与全仓一致：每个方法分支都过 loopback fence（guard）——其他 /api/dsh-config-manager/*
     // 路由全部首行 guard，新增路由不得遗漏（安全不变量：仅 loopback + 同源可访问）。
     // ------------------------------------------------- backup-schedule/run
-    // 立即执行一次全量备份（复用 BackupScheduler.runOnce，同一时刻防重）：
     // 返回执行结果（status/zip/skipReason/error）+ 最新配置（含 lastRun 状态）。
     // 同全仓：loopback fence（guard）——远程调用方不得触发宿主写盘操作。
     // ------------------------------------------------------ backup-files
@@ -2370,17 +2311,16 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
           let valid = false
           let login: string | undefined
           const resolved = await credentials.resolve(credentialRef(SYNC_CREDENTIAL_REF))
-          configured = resolved !== undefined && resolved.value !== ''
+          const token = resolved?.value ?? ''
+          configured = token !== ''
           if (configured) {
             try {
-              const user = await new GitHubAuthRest({
-                tokenProvider: async () => (await credentials.resolve(credentialRef(SYNC_CREDENTIAL_REF)))?.value ?? '',
-              }).getUser()
+              const user = await githubAuth.getUser(token)
               valid = true
               login = user.login
             } catch (error) {
               // 仅 401（token 无效/过期）→ 视为未登录；其余错误（网络/限流）向上抛
-              if (!(error instanceof GitHubApiError && error.code === 'unauthorized')) throw error
+              if (!(error instanceof GitHubAuthError && error.code === 'unauthorized')) throw error
             }
           }
           writeJson(res, 200, {
@@ -2870,7 +2810,6 @@ export function apply(ctx: Context, config?: Config): void {
   const tmpDir = join(dataDir, 'tmp')
   const snapshotsDir = join(dataDir, 'snapshots')
   const syncDir = join(dataDir, 'sync')
-  const marketDir = join(dataDir, 'market')
   // Phase 6：迁移历史审计目录（统一历史引擎；加入 RESERVED_INTERNAL_PREFIXES 防 F23 投毒链）
   const historyDir = join(dataDir, MIGRATION_HISTORY_DIR)
   mkdirSync(exportsDir, { recursive: true })
@@ -2901,7 +2840,6 @@ export function apply(ctx: Context, config?: Config): void {
   mkdirSync(tmpDir, { recursive: true })
   mkdirSync(snapshotsDir, { recursive: true })
   mkdirSync(syncDir, { recursive: true })
-  mkdirSync(marketDir, { recursive: true })
   mkdirSync(historyDir, { recursive: true })
 
   const host = new ConfigManagerHostContext(ctx, homeDir, resolveProfileName(config))
@@ -2953,7 +2891,7 @@ export function apply(ctx: Context, config?: Config): void {
     host.log.warn('Phase 3 SAFE MODE 激活：存在未恢复的 transaction，destructive 操作被阻断（如需恢复请先显式处理）')
   }
   // P1-B：启动 recovery 分类 barrier。调度器（AutoSync/Backup）只在分类完成且 state=NORMAL 时启动。
-  // schedulerGate.start 由 makeRoutes 返回 scheduler + apply 构造 backupScheduler 后赋值；apply 为同步，
+  // schedulerGate.start 由 makeRoutes 返回 scheduler 后赋值；apply 为同步，
   // 故在该异步分类块 await 完成前，schedulerGate.start 通常已就绪。fail-closed：分类抛错 → 不启动调度器。
   const schedulerGate = { start: null as (() => void) | null }
   let startupStateResolved = false
@@ -3018,11 +2956,6 @@ export function apply(ctx: Context, config?: Config): void {
     void cleanupCaches({
       tmpDir,
       exportsDir,
-      // 定时备份产物（dsh-config-auto-*）豁免按天回收：保留策略归 BackupScheduler
-      // （保留最近 N 个），避免 7 天回收与「保留 10 个」相互截断。
-      exportsExemptPrefix: AUTO_BACKUP_PREFIX,
-      marketCacheRoot: join(marketDir, 'cache'),
-      marketWorkRoot: join(marketDir, 'work'),
     })
       .then((report) => {
         if (report.removed > 0) {
@@ -3069,41 +3002,10 @@ export function apply(ctx: Context, config?: Config): void {
     adapters: adapters.map((a) => a.id),
   })
 
-  // 定时全量备份调度器（P0-3）：宿主后台按固定间隔导出全量备份 ZIP（恒不含 secret、
-  // 不加密——加密密码仅内存且不能持久化，与自动同步同语义）。配置存
-  // sync/backup-schedule.json（随 self 分区备份迁移）；enabled 缺省 false。
-  // 路由（PUT /backup-schedule 保存重排 / POST run 立即执行）经 RoutesDeps 注入；
-  // 随插件生命周期停止（见下方 effect），避免旧调度器残留导致重复备份。
-  // P2-A（Phase 8）：run 注册表单实例 —— 定时备份调度器与路由层共享同一实例
-  // （/progress 与 /runs 的单一事实源；backup-schedule 与 import/restore 等 run 同库登记）。
-  // 注意：跨 kind 的真实互斥由 GLOBAL mutation lock 保证（backup-schedule 与 destructive
-  // 路由共用 host.mutationLock），共享注册表是 hygiene，不替代 Lock（见 Phase 2 Handoff）。
-  // M1（G-09 接线）：secret 扫描器**单一实例**来源 —— 三条全量导出路径必须共用同一个实例，
-  // 否则扫描档位漂移：HTTP 导出路由（makeRoutes）、Agent 模型工具 config_backup
-  // （registerModelTools）、定时自动备份（BackupScheduler）。三处都在下方同步构造，故此声明
-  // 必须早于三者（对象字面量中的 scanner 是即时求值，声明放在后面会 TDZ ReferenceError）。
-  const secretScanner = createConfiguredSecretScanner(config?.personalPatterns)
-  const runs = new RunRegistry({ msg: host.msg })
-  const backupScheduler = new BackupScheduler({
-    syncDir,
-    exportsDir,
-    host,
-    adapters,
-    runs,
-    msg: host.msg,
-    exporterVersion: PLUGIN_VERSION,
-    // M1（G-09 接线）：与 HTTP 导出路由 / config_backup 同一 scanner 实例 —— 定时备份是
-    // 无人值守路径，文件类分区的凭据告警与 redactedHits 统计必须与手动导出完全一致
-    // （缺省不传 = Exporter 落回无 scanText 的 defaultSecretScanner，文件类分区静默不扫描）。
-    scanner: secretScanner,
-    mutationLock: host.mutationLock,
-    isBlocked: () => host.safeModeIsBlocked?.() ?? false,
-    phase3Recovery: host.phase3Recovery,
-    // Phase 6：定时备份迁移历史（best-effort；COMPLETE 不变量）。
-    appendHistoryFn: async (entry) => { await historyStore.append(entry) },
-  })
   // Phase 6：迁移历史引擎（统一审计史；per-file append-only 存储于 <dataDir>/migration-history）
   const historyStore = new MigrationStore({ dir: historyDir })
+  const runs = new RunRegistry({ msg: host.msg })
+  const secretScanner = createConfiguredSecretScanner(config?.personalPatterns)
   const { routes, scheduler, makeSyncEngine, lifecycle } = makeRoutes({
     host,
     adapters,
@@ -3112,17 +3014,14 @@ export function apply(ctx: Context, config?: Config): void {
     snapshotsDir,
     runs,
     syncDir,
-    marketDir,
     dataDir,
-    retentionPolicy: async () => (await readBackupSchedule(syncDir)).retention ?? DEFAULT_RETENTION_POLICY,
     // F2：部署者 personalPatterns → 强化 secret 扫描器（未配置 = 默认行为）。
     // 该扫描器实现了 scanText（文件类分区文本级扫描，G-09 只告警不改写）——
     // 换成任何没有 scanText 的扫描器都会静默关闭 G-09，改这里务必先看 exporter.ts 的 scanFileSectionText。
-    scanner: secretScanner, // M1：与 config_backup 同一实例（见上方 secretScanner 构造）
+    scanner: secretScanner, // M1：与同步路径共用同一实例（见上方 secretScanner 构造）
     credentials: ctx.credentials,
     githubClientId: config?.githubClientId ?? DEFAULT_GITHUB_CLIENT_ID,
     githubClientSecret: config?.githubClientSecret,
-    backupScheduler,
     history: historyStore,
   })
   // Agent 可调用的模型工具（P0-1）：复用 src/core 引擎与同一 makeSyncEngine 来源。
@@ -3133,17 +3032,15 @@ export function apply(ctx: Context, config?: Config): void {
     syncDir,
     makeSyncEngine,
   })
-  // P1-B：backupScheduler 不再同步 start —— 由启动 recovery 分类完成后（仅 NORMAL）启动。
+  // P1-B：调度器不同步 start —— 由启动 recovery 分类完成后（仅 NORMAL）启动。
   schedulerGate.start = () => {
     scheduler.start();
-    backupScheduler.start();
     // Phase 1 P0-1：配置变更自动快照。放在同一闸门内，确保恢复/事务进行中不开拍。
     // 灾备总开关关闭时不启动监听（否则后台持续采集全部分区并刷「超出上限」告警）。
     if (LIFECYCLE_ENABLED) lifecycle.startAutoSnapshot();
   }
   // 若启动分类已在此构造完成前解析为 NORMAL（罕见竞态），立即补启动。
   if (startupStateResolved && shouldStartSchedulers && schedulerGate.start !== null) { schedulerGate.start(); }
-  ctx.effect(() => () => backupScheduler.stop(), 'config-manager: backup scheduler')
   // 自动同步调度器随插件生命周期停止：插件重载/卸载时清理定时器，
   // 避免旧调度器残留导致重复后台同步。
   ctx.effect(() => () => scheduler.stop(), 'config-manager: autosync scheduler')

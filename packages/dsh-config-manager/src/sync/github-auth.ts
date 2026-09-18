@@ -133,6 +133,48 @@ export class GitHubAuthClient {
   }
 
   /**
+   * 用给定 token 验证身份并取回当前用户（GET /user）。
+   *
+   * 供 /sync/github/validate 判定「已存 token 是否仍有效」：401 → `unauthorized`，
+   * 其余错误按 `http_error` 抛出（调用方据此区分「未登录」与「真实故障」，不误判登出）。
+   * token 只作为本次请求的 Authorization 头，绝不回传、不落盘、不进日志。
+   */
+  async getUser(token: string): Promise<{ login: string; id: number }> {
+    if (typeof token !== 'string' || token === '') {
+      throw new GitHubAuthError('token 必须是非空字符串', 'no_token');
+    }
+    let response: Response;
+    try {
+      response = await this.fetcher('https://api.github.com/user', {
+        method: 'GET',
+        headers: {
+          accept: 'application/vnd.github+json',
+          authorization: `Bearer ${token}`,
+          'user-agent': 'dsh-config-manager',
+        },
+      });
+    } catch (err) {
+      throw new GitHubAuthError(
+        `校验 GitHub token 失败：${err instanceof Error ? err.message : String(err)}`,
+        'network_error',
+      );
+    }
+    if (response.status === 401) {
+      throw new GitHubAuthError('GitHub token 无效或已过期', 'unauthorized', 401);
+    }
+    if (!response.ok) {
+      throw new GitHubAuthError(`GitHub 返回 HTTP ${response.status}`, 'http_error', response.status);
+    }
+    const parsed = await parseGitHubJson(response, '校验 token');
+    const login = parsed['login'];
+    const id = parsed['id'];
+    if (typeof login !== 'string' || login === '' || typeof id !== 'number') {
+      throw new GitHubAuthError('GitHub /user 响应缺少 login/id', 'invalid_response', response.status);
+    }
+    return { login, id };
+  }
+
+  /**
    * 第一步：请求设备码。产出一次性 user_code + 授权页 URL + device_code
    * （device_code 由宿主登记，只在本模块与宿主间流转，绝不发给浏览器）。
    */

@@ -24,15 +24,13 @@
 
 ## 1. IA（信息架构）
 
-Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏 + 活动抽屉。
+Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏。
 
-- **一级导航（7 页签）**：总览 / 备份 / 导出 / 导入 / 同步 / 市场 / 档案。
-  export/import 为一级页面；旧「更多」面板由「活动与关于」抽屉取代
-  （run-store `parsePersistedState` 迁移旧值，`moreSub` 保留）。
-- **活动抽屉**：右侧 400px 滑出，含 活动记录 / 关于 两个子视图（Segmented 切换）。
-- **状态栏（28px 圆角条）**：状态点 + 就绪/进行中/恢复待处理 + 插件与 DSH 版本；
+- **一级导航（1 页签）**：**同步**。本 fork 只保留远程同步功能，
+  导出 / 导入 / 备份 / 市场 / 档案 / 总览 / 灾备均已删除（见仓库根 `AGENTS.md`）。
+- **状态栏（28px 圆角条）**：状态点 + 就绪/进行中 + 插件与 DSH 版本；
   与顶部页签条同款「圆角分段条」外观（四周留白 8px，不再通栏贴底）。
-- 页内子视图切换一律用 `Segmented`（如备份页：安全快照 / 备份文件 / 定时备份 / 事故恢复）。
+- 页内子视图切换一律用 `Segmented`（如通道子 tab：Git / WebDAV）。
 
 ---
 
@@ -145,12 +143,7 @@ Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏 + 活�
   `data-selected` 选中淡底、数字列 `.num` 右对齐等宽、次级列 `.dim`。
   - **操作列**（`.cellActions`）：`overflow: visible; text-overflow: clip` 覆盖 `.tableFixed`
     给所有单元格加的省略号 —— 该列是按钮组，列宽略紧时浏览器会在按钮后补一个「…」
-    （备份页两张表都出现过）。宁可略微溢出也不截断；并给 `.tableFixed` 单元格左右各留 12px。
-- **状态条**（Overview）：`.statStrip`（健康点 + 可点指标段，名词在前值加粗）。
-- **事实网格**：`.factGrid/.factCell/.factLabel/.factValue`（四列 label/value）。
-- **键值行** `.kvRow`、**分区构成** `.sectionGrid/.sectionRow`（共享组件
-  `common/SectionComposition.tsx`，总览卡与导出预览弹窗共用；列用
-  `repeat(auto-fit, minmax(210px, 1fr))` 以便窄容器自动退化为单列）。
+    （历史上备份页两张表都出现过）。宁可略微溢出也不截断；并给 `.tableFixed` 单元格左右各留 12px。
 - **Stepper**：紧凑圆点 17px + 连接线，只读指示器。
 - **进度条**：`.progressTrack` 5px + 确定宽度过渡 / `.progressIndeterminate`。
 
@@ -192,48 +185,15 @@ Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏 + 活�
 
 ### 表单宽度纪律（本轮修正的回归）
 `.input/.select` **不得**全局 `width:100%`：它们大量出现在行内 flex 容器里
-（市场筛选、同步快照下拉），全局满宽会让每个控件各占一整行。
+（同步快照下拉），全局满宽会让每个控件各占一整行。
 满宽只在**纵向**容器内按需生效：`.field > .input/.select { width:100% }`
 （`.field` 是 column flex），路径映射则用 `.pathOld/.pathNew { display:flex;
-flex-direction:column }` 让内部 input 拉满。市场筛选用 `.marketFilterGrid`
-（2 列 grid）+ `.marketFilterSearch`（跨列）+ `.marketFilterMeta`（元信息行）。
+flex-direction:column }` 让内部 input 拉满。
 
 ### 页面级模式
-- **Overview 控制中心**：状态条 → 动作工具栏（主操作 + 活动入口右对齐）→
-  备份位置卡（路径+copy/体积/配额/间隔/下次）→ 分区构成卡 → 活动视口
-  （fit-content 上限 8 行内滚；成功=绿点降噪，失败/跳过=徽章）。
-  - 状态条指标段**精确跳转**：备份文件→备份页「备份文件」、安​全快照→「安​全快照」、
-    定时备份→「定时备份」、远程同步→同步页（`METRIC_TARGET` 同时写 panel 与 snapshots.subTab，
-    只写 panel 会全部停在子页默认值）。
-  - 健康段仅在「存在未解决恢复事项」时渲染为按钮，直达备份页「事故恢复」；正常态是纯展示 span。
-  - 活动行容器 `.activityRows` 取 `flex: 0 1 auto; min-height: 0`（**不可用 `flex: none`**）：
-    页面被压缩时列表须随之收缩并自身内滚，否则内容溢出卡片边框（曾实测 274px 内容 vs 205px 卡片）。
-- **Backups**：Segmented 四子视图；快照表（行点击→计划弹窗）、备份文件表
-  （图标操作 + 删除红色隔离 + 分隔线）、定时备份独立子视图（单行头：标题+结果徽章+上次+动作）。
-- **冲突解决**（ConflictList）：选边卡片模式——每项一张卡（kindTag 适配器 + 等宽描述），
-  保留当前 / 使用备份 两个并排 `.choiceCard`（radio 语义，选中高亮）；批量决策在顶部。
-  安全：不回显当前配置值（可能含秘密），不做值级 diff。
-- **配置更改明细**（`.conflictDetail`）：host 拼接的 `[prefix] current=… imported=…` 单行文本，
-  在纯展示层用 `splitConflictDetail` 切成 prefix / current / imported 三段，渲染为
-  「current 独占一行 → 1px 分割线 → imported 独占一行」（`.conflictLine` +
-  `.conflictLine + .conflictLine` 的 border-top），长 JSON 用 `overflow-wrap: anywhere` 折行。
-  **不再用 `<pre>`**：`white-space: pre` 会让长配置横向溢出、出现左右滚动条。
-  注意 `.conflictDetail` 亦被 `SyncConfirmView` 的 `<details>` 复用（该处非 pre，不受影响）。
-- **路径映射**（`PathMappingForm`）：每条 issue 一块 `.pathRow`，**纵向**堆叠 ——
-  「原路径」块（标题 + 等宽路径 + kind）在上、「新路径」块（标题 + input）在下，各自整宽。
-  两个块内的标题用块级元素（`.fieldLabel` 无 display 时是行内元素，会与 input 挤同一行）；
-  `.pathValue` 须 `white-space: pre-wrap`（长路径折行）。
-- **迁移前咨询卡**（`ConsultCard`）：`.consultSection` 包裹「将应用 / 评分维度」两个小节
-  （小节间距 10px）；「建议依据」用 `.reasonList`（`flex-basis: 100%`，在 `.banner` 的
-  flex+wrap 中独占整行）+ `.reasonLine`（每条一行，重复项以 `×N` 徽章标注，去重见
-  `consultReasonGroups`）。`.consultScroll` 带左右 6px 内边距 —— **评分维度行的徽章胶囊
-  原本紧贴容器左边框**（实测 inset 仅 1px，即边框本身），必须留内边距。
-- **导入向导**：6 阶段 Stepper + 分步页面；导入执行页含命令日志面板（`.logPanel`，
-  智能贴底滚动 + 「↓ 新输出」提示）。稀疏步骤（选择 ZIP）用 `.sparseFill` **顶部对齐**
-  （`justify-content: flex-start`）：内容贴顶、紧跟步骤条，不再垂直居中悬在页面中段。
-- **事故恢复**：仅在 `recoveryRequired === true` 时显示红色 SAFE MODE 横幅；
-  正常态（无待处理事项）不渲染任何横幅——「已恢复正常，可继续操作」绿灯提示已移除
-  （恢复成功后的确认由操作结果本身承载，常驻绿灯属冗余噪音）。
+- **同步页**：通道子 tab（Git / WebDAV）→ 远端地址与凭据卡 → 同步范围卡（默认 / 高级 + 分区勾选）
+  → 一键同步 + 手动推送/拉取动作行 → 自动同步卡 → 历史快照与同步历史。
+  推送前先给「将推送什么」的只读预览；一键同步走「拉取 → 差异确认 → 逐项采纳」流程。
 
 ---
 
@@ -249,8 +209,7 @@ flex-direction:column }` 让内部 input 拉满。市场筛选用 `.marketFilter
 
 ## 8. Responsive
 
-- 弹窗收缩（视口 <900px，弹窗变 100vw-48px）：`.ovGrid` 单列、统计/快捷网格 2 列、
-  `.secretFields` 单列、`.pagePad` padding 12px、抽屉全屏。
+- 弹窗收缩（视口 <900px，弹窗变 100vw-48px）：卡片纵向单列、`.pagePad` padding 12px。
 - 表格列宽用 th 显式宽度 + `table-layout: fixed` + 内容 ellipsis；先压缩次级列，
   最后主列；固定开销（时间/操作列）优先于内容列。
 

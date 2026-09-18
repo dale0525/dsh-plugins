@@ -1,11 +1,8 @@
 /**
- * model-tools 编排测试：5 个 Agent 模型工具的纯编排函数（createModelTools）+ 注册层（registerModelTools）。
- * - config_backup：导出真实 ZIP + 非敏感摘要（无凭据值）
- * - config_list_snapshots：非敏感 meta，按 createdAt 倒序
- * - config_restore：confirm:false 只预览（零写入）；快照不存在拒绝；非法 id 拒绝
+ * model-tools 编排测试：2 个 Agent 模型工具的纯编排函数（createModelTools）+ 注册层（registerModelTools）。
  * - config_sync_push：复用 SyncEngine.push（内存 transport），返回 snapshotId
  * - config_sync_pull：空远端 → 零写入空差异（不改本地配置）
- * - registerModelTools：tools 存在注册 5 工具；tools 缺失静默跳过
+ * - registerModelTools：tools 存在注册 2 工具；tools 缺失静默跳过
  * 对齐 sync-engine.test.ts：真实 tmp 目录 + makeContext + createAdapters + 内存 transport。
  */
 import test from 'node:test'
