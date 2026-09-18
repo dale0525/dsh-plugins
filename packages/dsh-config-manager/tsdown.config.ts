@@ -7,7 +7,7 @@
  * published lib/client.js):
  *
  *   window.__ModuleLoader__.load({
- *     id: "dsh-config-manager",
+ *     id: "@logictan/dsh-config-manager",   // 必须等于 package.json 的 name
  *     factory: (require) => { ... cjs bundle ... return module.exports; }
  *   });
  *
@@ -26,8 +26,14 @@ import { defineConfig } from 'tsdown'
 import type { Plugin } from 'rolldown'
 import { transform as transformCss } from 'lightningcss'
 
-/** Loader id must match the package name (dsh-ssh uses "@linxin666/dsh-ssh"). */
-const LOADER_ID = 'dsh-config-manager'
+/**
+ * Loader id must match the package name exactly.
+ *
+ * 实测依据：npm 上的 @linxin666/dsh-ssh 产物里 `id: "@linxin666/dsh-ssh"`，
+ * 与其 package.json 的 `name` 逐字一致。本包已改名为 @logictan/dsh-config-manager，
+ * 故此处必须同步 —— 否则加载器按包名登记的 entry 与产物里的 id 对不上。
+ */
+const LOADER_ID = '@logictan/dsh-config-manager'
 
 /** Virtual-module prefix for compiled CSS Modules. */
 const CSS_VIRTUAL_PREFIX = '\0config-manager-css:'
@@ -118,7 +124,7 @@ export default defineConfig({
   outExtensions: ({ format }) => (format === 'cjs' ? { js: '.js', dts: '.d.ts' } : undefined),
   banner: [
     'window.__ModuleLoader__.load({',
-    '\tid: "dsh-config-manager",',
+    `\tid: ${JSON.stringify(LOADER_ID)},`,
     '\tfactory: (require) => {',
     '\t\tvar module = { exports: {} };',
     '\t\tvar exports = module.exports;',
