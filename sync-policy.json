@@ -9,7 +9,8 @@
   "upstream": {
     "url": "https://github.com/xiajiajun516/dsh-config-manager",
     "prefix": "packages/dsh-config-manager",
-    "baseline": "v0.1.60"
+    "baseline": "v0.1.60",
+    "baselineCommit": "04cb91811375c455e4d5fe6538691a63d2dfb652"
   },
   "owned": [
     "AGENTS.md",
@@ -91,6 +92,7 @@
     "src/client/common/progress-view-edge.test.ts",
     "src/client/common/progress-view.test.ts",
     "src/client/common/progress-view.ts",
+    "src/client/consult/ConsultCard.tsx",
     "src/client/export/ExportView.tsx",
     "src/client/history/HistoryPanel.tsx",
     "src/client/history/history-api.ts",

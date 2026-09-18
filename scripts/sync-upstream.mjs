@@ -26,7 +26,7 @@
  *   0 成功；1 参数/环境错误；2 冲突未按 policy 归零；3 git 命令失败
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -36,6 +36,11 @@ const POLICY_PATH = join(REPO_ROOT, 'sync-policy.json')
 
 const argv = process.argv.slice(2)
 const DRY_RUN = argv.includes('--dry-run')
+/** --refresh-policy：只按当前 fork 状态重算 sync-policy.json，不碰 git 分支。 */
+const REFRESH_POLICY = argv.includes('--refresh-policy')
+/** --baseline <commit>：--refresh-policy 用的上游基线 commit（缺省读 policy.upstream.baselineCommit）。 */
+const baselineIndex = argv.indexOf('--baseline')
+const BASELINE = baselineIndex >= 0 ? argv[baselineIndex + 1] : undefined
 const refIndex = argv.indexOf('--ref')
 const REF = refIndex >= 0 ? argv[refIndex + 1] : undefined
 
@@ -117,7 +122,55 @@ function resolveRef() {
   return tags[tags.length - 1]
 }
 
+/* ---------------------------------------------------------------- policy 重算 */
+
+/**
+ * 按**当前 fork 状态**重算 owned / deleted / added 并写回 sync-policy.json。
+ *
+ * 为什么必须有：deleted 清单漏项时，上游同步会静默复活我们删掉的代码
+ * （第 2 步 --theirs 把上游全部取回，第 4 步按 deleted 重删 —— 名单漏了就不删）。
+ * 因此凡是改动过 fork 文件集的提交，都应重跑本函数。
+ *
+ * @param baselineCommit 上游基线 commit（sync-policy.json 的 upstream.baseline 对应的 commit）
+ */
+function refreshPolicy(baselineCommit) {
+  const listUpstream = git(['ls-tree', '-r', '--name-only', baselineCommit]).trim().split('\n').filter(Boolean)
+  const listFork = git(['ls-files', PREFIX]).trim().split('\n').filter(Boolean).map((f) => f.slice(PREFIX.length + 1))
+  const forkSet = new Set(listFork)
+  const upSet = new Set(listUpstream)
+  const deleted = listUpstream.filter((f) => !forkSet.has(f)).sort()
+  const owned = []
+  for (const f of listUpstream) {
+    if (!forkSet.has(f)) continue
+    const upHash = git(['rev-parse', baselineCommit + ':' + f]).trim()
+    let forkHash
+    try {
+      forkHash = git(['hash-object', PREFIX + '/' + f]).trim()
+    } catch {
+      continue // 文件在磁盘缺失（未构建/已删但未提交）→ 跳过
+    }
+    if (upHash !== forkHash) owned.push(f)
+  }
+  owned.sort()
+  const added = listFork.filter((f) => !upSet.has(f)).sort()
+  const next = { ...policy, owned, deleted, added }
+  writeFileSync(POLICY_PATH, JSON.stringify(next, null, 2) + '\n')
+  log('[sync-upstream] policy 已重算并写回 ' + POLICY_PATH)
+  log('[sync-upstream]   owned=' + owned.length + ' deleted=' + deleted.length + ' added=' + added.length)
+  return next
+}
+
 /* ---------------------------------------------------------------- plan */
+
+// --refresh-policy：只重算清单并退出（不改分支、不碰工作区）。
+if (REFRESH_POLICY) {
+  const baselineCommit = BASELINE ?? upstream.baselineCommit
+  if (typeof baselineCommit !== 'string' || baselineCommit === '') {
+    fail(1, '--refresh-policy 需要 --baseline <commit>，或在 sync-policy.json 里写 upstream.baselineCommit')
+  }
+  refreshPolicy(baselineCommit)
+  process.exit(0)
+}
 
 log('[sync-upstream] prefix   : ' + PREFIX)
 log('[sync-upstream] upstream : ' + URL)

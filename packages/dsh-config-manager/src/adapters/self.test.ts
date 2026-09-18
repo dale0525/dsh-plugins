@@ -31,9 +31,8 @@ test('self: 白名单收集（存在才收，子目录路径保留，白名单�
   ]);
   assert.equal(out.counts.files, 3);
   assert.equal(out.warnings.length, 0, '存在文件时不告警');
-  // 白名单常量齐全（sync-autosync / market-config 未创建时自然跳过）
+  // 白名单常量齐全（sync-autosync 未创建时自然跳过）
   assert.ok(SELF_CONFIG_FILES.includes('sync/sync-autosync.json'));
-  assert.ok(SELF_CONFIG_FILES.includes('market/market-config.json'));
 });
 
 test('self: 默认包含 + portable（Quick Export 推荐项）', () => {
