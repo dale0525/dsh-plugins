@@ -12,6 +12,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+
 import { dirname, join } from 'node:path'
 
 import {
@@ -26,6 +27,68 @@ import {
 } from './sync-upstream.mjs'
 
 const EXPECTED_IDS = ['config-manager', 'easyrewrite', 'imagegen', 'market', 'workbuddy']
+
+/**
+ * 取出 YAML 里每个 `run:` 会真正执行的命令文本。
+ *
+ * 不引 YAML 依赖：`js-yaml` 只存在于 pnpm store 的深层路径，从仓库根解析不到，CI 里也
+ * 不保证有。也不需要完整解析 —— 需要的只是「哪些文本会被当命令跑」。
+ *
+ * 两种形态都要认：`run: |` 块（取缩进更深的后续行）与 `run: <单行命令>`（直接取该行）。
+ * 注释行（`#` 开头）在调用处会被过滤掉，所以「把命令注释掉」不会算命中。
+ */
+function runBodies(yamlText) {
+  const lines = yamlText.split('\n')
+  const out = []
+  for (let i = 0; i < lines.length; i++) {
+    const block = lines[i].match(/^(\s*)run:\s*\|\s*$/)
+    if (block !== null) {
+      const indent = block[1].length
+      const body = []
+      for (let j = i + 1; j < lines.length; j++) {
+        const line = lines[j]
+        if (line.trim() === '') {
+          body.push(line)
+          continue
+        }
+        if (line.match(/^\s*/)[0].length <= indent) break
+        body.push(line)
+      }
+      out.push(body.join('\n'))
+      continue
+    }
+    const single = lines[i].match(/^\s*run:\s*(\S.*)$/)
+    if (single !== null) out.push(single[1])
+  }
+  return out
+}
+
+/**
+ * 取出 workflow matrix `include:` 里每一项的 `id`。
+ *
+ * 只认 `matrix:` 之后、缩进更深的 `- id: <x>` 行，避免误抓 `steps[].id`。
+ */
+function matrixIds(yamlText) {
+  const lines = yamlText.split('\n')
+  const ids = []
+  let matrixIndent = -1
+  for (const line of lines) {
+    const indent = line.match(/^\s*/)[0].length
+    if (/^\s*matrix:\s*$/.test(line)) {
+      matrixIndent = indent
+      continue
+    }
+    if (matrixIndent >= 0) {
+      if (line.trim() !== '' && indent <= matrixIndent) {
+        matrixIndent = -1
+        continue
+      }
+      const m = line.match(/^\s*-\s*id:\s*(\S+)\s*$/)
+      if (m !== null) ids.push(m[1])
+    }
+  }
+  return ids
+}
 
 /** 递归列出包内源文件；跳过 node_modules 与构建产物目录（产物里到处是版本字符串，会误报）。 */
 function walkFiles(dir, out = []) {
@@ -305,18 +368,6 @@ test('计划 §10.3：同步后必须推进 baseline 并按新基线重算清单
   assert.ok(!next.added.includes('sync-policy.json'), 'policy 自身不得出现在 added 里')
 })
 
-test('--list 零写入，且列出全部 5 个 target', () => {
-  const status = () =>
-    execFileSync('git', ['status', '--porcelain'], { cwd: REPO_ROOT, encoding: 'utf8' })
-  const before = status()
-  const out = execFileSync(process.execPath, ['scripts/sync-upstream.mjs', '--list'], {
-    cwd: REPO_ROOT,
-    encoding: 'utf8',
-  })
-  assert.equal(status(), before, '--list 不得改动工作区或索引')
-  for (const id of EXPECTED_IDS) assert.ok(out.includes(id), '--list 必须列出 ' + id)
-})
-
 test('--dry-run --target 未知 id → 退出码 1', () => {
   assert.throws(
     () =>
@@ -366,18 +417,33 @@ test('CLI：--target / --baseline 缺值 → 退出码 1（不静默退化成默
 })
 
 /**
- * `--list` 必须列出**全部** target（计划 §7.1 的冻结语义），**不**跟随 `--target`。
+ * `--list` 列出**全部** target（§7.1 冻结语义），**不**跟随 `--target`。
  *
- * 这条测试的存在理由：修复过程中曾把 `--list` 改成跟随 `--target`（理由是「带了筛选却列出
- * 全部，看起来像筛选没生效」），但 §7.1 把 `--list` 明确定义为「列出所有发现的 target」，
- * `--target` 的语义是「只同步该目标」—— 对只读的 `--list` 不适用。那是改动冻结契约，
- * 不是修缺陷。这条测试钉住「不要因为看着别扭就改它」。
+ * 两条断言缺一不可：只跑不带 `--target` 的那次，钉不住「跟随 --target」这个改动
+ * （原测试名写着「列出全部 5 个 target」却不传 --target，两次实现都能过）。
  */
-test('CLI：--list 列出全部 target，不跟随 --target（§7.1 冻结语义）', () => {
-  const r = runCli(['--list', '--target', 'imagegen'])
-  assert.equal(r.status, 0)
+test('CLI：--list 零写入，列出全部 target 且不跟随 --target（§7.1 冻结语义）', () => {
+  const status = () =>
+    execFileSync('git', ['status', '--porcelain'], { cwd: REPO_ROOT, encoding: 'utf8' })
+  const before = status()
+  const plain = runCli(['--list'])
+  assert.equal(plain.status, 0)
+  assert.equal(status(), before, '--list 不得改动工作区或索引')
+  for (const id of EXPECTED_IDS) assert.ok(plain.stdout.includes(id), '--list 必须列出 ' + id)
+
+  // 关键：带了 --target 仍然列出全部（§7.1 的 --list = 「列出所有发现的 target」）
+  const filtered = runCli(['--list', '--target', 'imagegen'])
+  assert.equal(filtered.status, 0)
+  assert.equal(
+    status(),
+    before,
+    '--list --target 同样不得改动工作区或索引',
+  )
   for (const id of EXPECTED_IDS) {
-    assert.ok(r.stdout.includes(id), '--list 必须列出全部 target，缺 ' + id)
+    assert.ok(
+      filtered.stdout.includes(id),
+      '--list 必须列出全部 target（不跟随 --target），缺 ' + id,
+    )
   }
 })
 
@@ -509,24 +575,233 @@ test('CLI：上游不可达 → 退出码 3 + ERROR 前缀（不是 node 内部�
 })
 
 /**
- * 同步 workflow 必须跑脚本自己的契约测试。
+ * 带取值的 flag 后跟**任何**以 `--` 开头的 token，都算缺值（退出码 1）。
+ *
+ * 实测修复前只挡「值等于某个已知 flag」：`--baseline --all` 里 `--all` 不是已知 flag，
+ * 于是被当作 baseline 传给 `git ls-tree`（`error: unknown option 'all'`，退出码 1 但**裸
+ * node 栈**）；`--ref --bogusflag` 里那个拼错的 flag 被当成 ref 值，未知 flag 一次都没报
+ * （退出码 0）。两者都是「拼错 flag 被当数据用」。
+ */
+test('CLI：取值 flag 后跟任何 --xxx 都算缺值（退出码 1，不把拼错的 flag 当数据）', () => {
+  for (const args of [
+    ['--dry-run', '--target', 'imagegen', '--ref', '--bogusflag'],
+    ['--refresh-policy', '--target', 'imagegen', '--baseline', '--all'],
+    ['--list', '--target', '--nope'],
+  ]) {
+    const r = runCli(args)
+    assert.equal(r.status, 1, args.join(' ') + ' 应退出码 1，实际 ' + r.status)
+    assert.match(r.stderr, /缺少取值/, args.join(' ') + ' 必须报缺值')
+    assert.ok(
+      !r.stderr.includes('node:internal'),
+      args.join(' ') + ' 不得暴露 node 内部栈：' + r.stderr.slice(0, 200),
+    )
+  }
+})
+
+/**
+ * `--refresh-policy` 的 git 失败也必须走退出码 3（§7.3），不能裸抛 node 栈。
+ *
+ * 实测修复前：`--refresh-policy --target imagegen --baseline deadbeef…` → 退出码 1 +
+ * `node:internal` 3 行 + 零 `[sync-upstream] ERROR` 前缀（computeLists 的 `ls-tree` 抛）。
+ * 实际影响最大的是**浅克隆**：policy 里的 baselineCommit 不在浅历史里，于是
+ * `--refresh-policy`（AGENTS.md 推荐的补救命令）在浅克隆里直接裸崩。
+ */
+test('CLI：--refresh-policy 遇到取不到的 baseline commit → 退出码 3 + ERROR 前缀', () => {
+  const r = runCli([
+    '--refresh-policy',
+    '--target',
+    'imagegen',
+    '--baseline',
+    'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+  ])
+  assert.equal(r.status, 3, 'git 失败必须退出码 3，实际 ' + r.status)
+  assert.match(r.stderr, /\[sync-upstream\] ERROR/, '必须带 [sync-upstream] ERROR 前缀')
+  assert.ok(
+    !r.stderr.includes('node:internal'),
+    '不得把 node 内部栈暴露给用户：' + r.stderr.slice(0, 300),
+  )
+})
+
+/**
+ * `pickLatestTag` 必须是**真全序**：数值核心相等但段数不同的别名
+ * （`v1.2.3` vs `v1.2.3.0`、`v1` vs `v1.0.0`）也不得判等。
+ *
+ * 实测修复前：这些别名在「缺失段按 0」的规则下数值相同，比较器返回 0，于是
+ * `sort` 的结果又回到依赖输入顺序（5/5 组正反序结果不同）—— 正是本函数要消除的失效模式。
+ */
+test('pickLatestTag：数值等价的别名 tag 也不判等（真全序）', () => {
+  const line = (tag) => 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\trefs/tags/' + tag
+  const pick = (...tags) => pickLatestTag(tags.map(line))
+  for (const tags of [
+    ['v1.2.3', 'v1.2.3.0'],
+    ['v1.0.0', 'v1.0.0.0'],
+    ['v1', 'v1.0.0'],
+    ['v1.2', 'v1.2.0.0'],
+    ['v2.0.0', 'v2.0.0.0.0'],
+  ]) {
+    const forward = pick(...tags)
+    const reversed = pick(...[...tags].reverse())
+    assert.equal(
+      forward,
+      reversed,
+      tags.join(' vs ') + ' 正反序必须选出同一个 tag（否则不是全序）',
+    )
+  }
+  // 段数少者更像正式发布
+  assert.equal(pick('v1.2.3', 'v1.2.3.0'), 'v1.2.3')
+})
+
+/**
+ * `subtree pull` 的**硬失败**不得被当成「产生冲突」而假成功。
+ *
+ * 实测的假成功（修复前）：目标目录若是「用普通提交导入、无 subtree 祖先」的形态，
+ * `subtree pull` 以 `fatal: refusing to merge unrelated histories` 失败（EXIT=128），
+ * 但脚本把任何异常都当冲突，照常往下走 —— 最终退出码 **0**，产出一个**只含 policy 的
+ * 提交**，并把 `baselineCommit` 推进到那个从未合并进来的上游 commit（假基线）。
+ * 表面上 PR 正常开出，实际什么都没同步，且下次 `--refresh-policy` 会拿假基线去比。
+ *
+ * 这条用**真实仓库对**复刻该形态（上游仓 + 无祖先的 fork 仓），断言退出码 3 且不提交。
+ * 判据是 MERGE_HEAD / 未合并索引条目：真冲突两者都有，硬失败两者皆无。
+ */
+test('subtree pull 硬失败（无 subtree 祖先）→ 退出码 3，不产出假提交、不推进基线', () => {
+  const upstream = mkdtempSync(join(tmpdir(), 'sync-up-'))
+  const fork = mkdtempSync(join(tmpdir(), 'sync-fork-'))
+  const up = (...args) => execFileSync('git', args, { cwd: upstream, encoding: 'utf8' })
+  const fk = (...args) => execFileSync('git', args, { cwd: fork, encoding: 'utf8' })
+  try {
+    // 上游：v1.0.0 → v1.1.0
+    up('init', '-q', '-b', 'main')
+    up('config', 'user.email', 'up@example.com')
+    up('config', 'user.name', 'Up')
+    writeFileSync(join(upstream, 'up.ts'), 'export const up = 1\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v1')
+    up('tag', 'v1.0.0')
+    const v1 = up('rev-parse', 'HEAD').trim()
+    writeFileSync(join(upstream, 'up.ts'), 'export const up = 2\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v1.1')
+    up('tag', 'v1.1.0')
+
+    // fork：普通导入（**没有** subtree add）→ 无共同祖先
+    fk('init', '-q', '-b', 'main')
+    fk('config', 'user.email', 'fk@example.com')
+    fk('config', 'user.name', 'Fk')
+    mkdirSync(join(fork, 'scripts'), { recursive: true })
+    mkdirSync(join(fork, 'packages/foo'), { recursive: true })
+    copyFileSync(join(REPO_ROOT, 'scripts/sync-upstream.mjs'), join(fork, 'scripts/sync-upstream.mjs'))
+    writeFileSync(join(fork, 'packages/foo/index.ts'), 'export const ours = 1\n')
+    writeFileSync(join(fork, 'packages/foo/package.json'), '{"name":"foo","version":"1.0.0"}\n')
+    writeFileSync(
+      join(fork, 'packages/foo/sync-policy.json'),
+      JSON.stringify(
+        {
+          target: { id: 'foo', url: 'file://' + upstream, prefix: 'packages/foo', baseline: 'v1.0.0', baselineCommit: v1 },
+          owned: [],
+          deleted: [],
+          added: [],
+        },
+        null,
+        2,
+      ) + '\n',
+    )
+    fk('add', '-A')
+    fk('commit', '-q', '-m', 'init')
+    const before = fk('rev-parse', 'HEAD').trim()
+
+    let r
+    try {
+      const stdout = execFileSync(
+        process.execPath,
+        ['scripts/sync-upstream.mjs', '--target', 'foo', '--ref', 'v1.1.0'],
+        { cwd: fork, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      )
+      r = { status: 0, stdout, stderr: '' }
+    } catch (err) {
+      r = { status: err.status, stdout: String(err.stdout ?? ''), stderr: String(err.stderr ?? '') }
+    }
+
+    assert.equal(
+      r.status,
+      3,
+      '硬失败必须退出码 3，不能假成功（实际 stdout: ' + r.stdout.slice(-200) + '）',
+    )
+    assert.match(r.stderr, /\[sync-upstream\] ERROR/, '必须带 ERROR 前缀')
+    assert.ok(
+      !r.stdout.includes('完成。当前分支'),
+      '不得打印「完成」——那是假成功',
+    )
+    // 关键：不得产出提交，基线不得被推进
+    assert.equal(fk('rev-parse', 'HEAD').trim(), before, '硬失败不得产出提交')
+    const policy = JSON.parse(readFileSync(join(fork, 'packages/foo/sync-policy.json'), 'utf8'))
+    assert.equal(policy.target.baselineCommit, v1, '基线不得被推进到从未合并进来的 commit')
+  } finally {
+    rmSync(upstream, { recursive: true, force: true })
+    rmSync(fork, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 同步 workflow 必须跑脚本自己的契约测试，且 policy 校验复用单一真源。
  *
  * 为什么单独立一条：`.github/workflows/*.yml` 的改动在本地不会被任何东西执行，
  * 最容易「改了以为没事」。实测修复前 sync-upstream.yml 的 Test 步骤只跑包测试，
  * 脚本自身的契约（policy 顺序、owned 覆盖、基线推进）完全没被 CI 覆盖。
  *
- * 同时钉住「policy 校验只有一份真源」：计划 §8 原本要求在 workflow 里内联校验
- * `url`/`prefix`/`baseline` 非空，但那份内联实现与脚本的 discoverTargets 口径不一致 ——
- * 删掉 `baselineCommit` 它照样 PASS，而脚本以退出码 1 拒绝同一份 policy。
- * 改走 discoverTargets 后，两者不可能再漂移。
+ * **按步骤的 `run` 正文断言，不是对整份 YAML 做正则**：后者连注释里的同一串文字
+ * 都算命中，把「把命令注释掉」这种真实回归判成通过。
  */
 test('workflow：sync-upstream.yml 跑脚本契约测试，且 policy 校验复用单一真源', () => {
   const yml = readFileSync(join(REPO_ROOT, '.github/workflows/sync-upstream.yml'), 'utf8')
-  assert.match(yml, /node --test scripts\/sync-upstream\.test\.mjs/, '必须跑脚本自己的契约测试')
-  assert.match(yml, /discoverTargets/, 'policy 校验必须复用脚本的 discoverTargets（单一真源）')
+  const executed = runBodies(yml)
+    .map((body) =>
+      body
+        .split('\n')
+        .filter((l) => !l.trim().startsWith('#'))
+        .join('\n'),
+    )
+    .join('\n')
+
+  assert.match(executed, /node --test scripts\/sync-upstream\.test\.mjs/, '必须跑脚本自己的契约测试')
+  assert.match(executed, /discoverTargets/, 'policy 校验必须复用脚本的 discoverTargets（单一真源）')
   assert.ok(
-    !/const missing = \["url", "prefix", "baseline"\]/.test(yml),
+    !/const missing = \["url", "prefix", "baseline"\]/.test(executed),
     '不得在 YAML 里重抄一份 policy 字段清单（口径会与脚本漂移）',
+  )
+})
+
+/**
+ * workflow matrix 的 target 必须与仓库里真实存在的 policy 一一对应。
+ *
+ * 为什么：matrix 是**手工维护**的清单，而 `discoverTargets()` 是自动发现。新增一个
+ * fork（新 `sync-policy.json`）却忘了加 matrix 行 → 该包永远不会被同步，且所有测试
+ * 仍然全绿（实测：克隆里加第 6 个 policy，发现 6 个 target、matrix 仍 5 个、全绿）。
+ *
+ * **只比较已提交的 policy**（`git ls-tree HEAD`）：工作区里别人正在写的 policy
+ * （例如并发会话尚未提交的 `ctx-mem`）不该让本仓库的测试变红。
+ */
+test('workflow：matrix 的 target 集合与已提交的 policy 集合一致', () => {
+  const yml = readFileSync(join(REPO_ROOT, '.github/workflows/sync-upstream.yml'), 'utf8')
+  const matrix = matrixIds(yml)
+  assert.ok(matrix.length > 0, '必须能从 workflow 里解析出 matrix id')
+
+  // 已提交的 policy 才是本仓库的契约；未提交的属于别的会话的在途工作。
+  // 比较的是 policy 里的 `target.id`（matrix 用的是它），不是目录名。
+  const committedPaths = execFileSync(
+    'git',
+    ['ls-tree', '-r', '--name-only', 'HEAD', 'packages/'],
+    { cwd: REPO_ROOT, encoding: 'utf8' },
+  )
+    .split('\n')
+    .filter((p) => p.endsWith('/sync-policy.json'))
+  const committedIds = committedPaths
+    .map((p) => JSON.parse(execFileSync('git', ['show', 'HEAD:' + p], { cwd: REPO_ROOT, encoding: 'utf8' })).target.id)
+    .sort()
+
+  assert.deepEqual(
+    [...matrix].sort(),
+    committedIds,
+    'matrix 必须覆盖全部已提交的 fork policy（新增 fork 要同步加一行，否则该包永远不会被同步）',
   )
 })
 

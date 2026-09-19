@@ -39,14 +39,13 @@
  *
  * ## 用法
  *
- *   node scripts/sync-upstream.mjs --list                      # 列出全部 target（零写入）
- *   node scripts/sync-upstream.mjs --dry-run [--target <id>]    # 只打印计划（零写入）
- *   node scripts/sync-upstream.mjs [--target <id>]              # 真实执行（在临时分支上）
- *   node scripts/sync-upstream.mjs --refresh-policy [--target <id>] [--baseline <commit>]
- *   node scripts/sync-upstream.mjs [--target <id>] --ref <tag|branch|commit>
+ *   权威副本是下方 `USAGE` 常量（`--help` 输出它）。语义要点：
  *
- * 无 `--target` 时对**全部**目标串行执行：每个目标从同一基点各开一条分支，跑完回到原分支。
- * CI 用 matrix 逐目标调用（见 .github/workflows/sync-upstream.yml），不依赖这个全量模式。
+ *   `--list` 列出**全部**发现的 target（§7.1），零写入。
+ *   `--dry-run` 只打印计划与清单，零写入；**不执行**它打印的前两步检查（那两步要 fetch 上游）。
+ *   `--refresh-policy` 重算并写回该目标的 policy。
+ *   无 `--target` 时对**全部**目标串行执行：每个目标从同一基点各开一条分支，跑完回到原分支。
+ *   CI 用 matrix 逐目标调用（见 .github/workflows/sync-upstream.yml），不依赖这个全量模式。
  *
  * ## 退出码
  *   0 成功；1 参数/环境错误；2 需人工裁定（冲突未按 policy 归零 / added 冲突 / 上游新增依赖）；3 git 失败
@@ -79,6 +78,20 @@ class SyncError extends Error {
 
 function fail(code, message) {
   throw new SyncError(code, message)
+}
+
+/**
+ * 当前是否处于「合并进行中」（真冲突）状态。
+ *
+ * 用于把 `subtree pull` 的**真冲突**与**硬失败**分开：真冲突会留下 MERGE_HEAD 与未合并的
+ * 索引条目；`fatal: refusing to merge unrelated histories` 这类硬失败两者皆无（实测）。
+ * 混为一谈会让硬失败被当成「冲突已归零」而假成功（见 syncOne 里的注释）。
+ */
+function isMergeInProgress() {
+  // `rev-parse -q --verify` 在 MERGE_HEAD 不存在时退出码 1（不是错误）—— 用 gitAllowStatus1 包住。
+  const mergeHead = gitAllowStatus1(['rev-parse', '-q', '--verify', 'MERGE_HEAD']).trim()
+  if (mergeHead !== '') return true
+  return git(['ls-files', '-u']).trim() !== ''
 }
 
 /**
@@ -171,8 +184,10 @@ export function pickLatestTag(refLines) {
  * 所以这不是理论问题：选错 tag 会同步到一个非正式发布。
  *
  * 规则：先比数字核心（缺失段按 0，故 `v1.2.3.1 > v1.2.3`）；核心相同时**正式版优先于任何
- * 带后缀的版本**（预发布/补丁命名不应盖过正式发布）；后缀之间按字典序定序，只为保证全序，
- * 不代表优先级。
+ * 带后缀的版本**（预发布/补丁命名不应盖过正式发布）；后缀之间按字典序定序。最后**仍相等时
+ * 按原始 tag 名做字典序兜底**：数字核心相等但段数不同的别名（`v1.2.3` vs `v1.2.3.0`、
+ * `v1` vs `v1.0.0`）在「缺失段按 0」的规则下数值相同，若不兜底，两个**不同的名字**会判等
+ * （返回 0），`sort` 稳定排序下结果又回到依赖输入顺序 —— 正是本函数要消除的失效模式。
  */
 function compareTags(a, b) {
   const parse = (tag) => {
@@ -186,10 +201,18 @@ function compareTags(a, b) {
     const d = (pa.core[i] ?? 0) - (pb.core[i] ?? 0)
     if (d !== 0) return d
   }
-  if (pa.suffix === pb.suffix) return 0
-  if (pa.suffix === '') return 1
-  if (pb.suffix === '') return -1
-  return pa.suffix < pb.suffix ? -1 : 1
+  if (pa.suffix !== pb.suffix) {
+    if (pa.suffix === '') return 1
+    if (pb.suffix === '') return -1
+    return pa.suffix < pb.suffix ? -1 : 1
+  }
+  // 数值与后缀都相同 → 只剩别名差异（`v1.2.3` vs `v1.2.3.0`、`v1` vs `v1.0.0`）。
+  // 先偏好段数少的（`v1.2.3` 比 `v1.2.3.0` 更像正式发布）—— 注意 `pickLatestTag` 取的是
+  // 升序排序的**末位**，所以「更受偏好」要返回正值。再按名字定序。
+  // 关键是**绝不在 a !== b 时返回 0**：判等会让 sort 的结果回到依赖输入顺序。
+  if (a === b) return 0
+  if (pa.core.length !== pb.core.length) return pb.core.length - pa.core.length
+  return a < b ? -1 : 1
 }
 
 /** 上游本次出现、且在我方 `added` 清单里的路径（包相对）。 */
@@ -440,6 +463,8 @@ function dryRunOne(target, ref) {
   log('[sync-upstream] --dry-run：以下是将执行的步骤（不改分支、不碰工作区）')
   log('  0. git fetch ' + target.url + ' ' + targetRef + '   # 取上游树，用于下面两项检查')
   log('  1. 检查 added 冲突 / 上游新增依赖（检出即退出码 2）')
+  log('     ↑ 第 0/1 步**在 dry-run 下不执行**（需要访问上游）；真实执行时才会跑。')
+  log('       所以 dry-run 不能预演 exit-2 的条件，只预演 policy 应用本身。')
   log('  2. git subtree pull --prefix=' + target.prefix + ' ' + target.url + ' ' + targetRef)
   log('  3. git checkout --theirs -- ' + target.prefix + '   # 只对未合并条目生效，干净合并的路径无需处理')
   log('  4. git checkout <pull 前的 HEAD> -- <' + target.owned.length + ' owned 文件>   # 非 --ours，见文件头')
@@ -670,10 +695,26 @@ function syncOne(target, ref) {  log('')
     log('[sync-upstream] 1/4 subtree pull ...')
     // 无冲突也**必须**继续走 2/3/4：git 的自动合并不会重删我们删过的文件，
     // 也不会恢复被上游覆盖的我方改造。提前 return 会让 policy 整段失效。
+    //
+    // 但**不能**把任何失败都当成「产生冲突」。实测的假成功：目标目录若是「用普通提交导入、
+    // 没有 subtree 祖先」的形态，`subtree pull` 以 `fatal: refusing to merge unrelated
+    // histories` 失败（EXIT=128）—— 此时脚本若照常往下走，`git add -A` 只会把 policy 的
+    // baseline 改动提交上去，产出一个**只含 policy 的提交**，并把 baselineCommit 推进到
+    // 那个从未合并进来的上游 commit。表面上退出码 0、PR 正常开出，实际什么都没同步，
+    // 且基线已被污染（下一次 `--refresh-policy` 会拿一个假基线去比）。
+    //
+    // 判据用 MERGE_HEAD：真冲突（`CONFLICT (content)`）一定会留下 MERGE_HEAD 与未合并索引
+    // 条目（实测 3 条）；而 unrelated histories 这类硬失败两者皆无（实测 MERGE_HEAD 缺失、
+    // `ls-files -u` 为空）。用「索引里有没有未合并条目」而不是「MERGE_HEAD 在不在」更贴近
+    // 本脚本真正依赖的性质，故两者取或。
     try {
       git(['subtree', 'pull', '--prefix=' + target.prefix, target.url, targetRef], { stdio: 'inherit' })
       log('[sync-upstream] subtree pull 无冲突完成（仍需应用 policy：重删 + 恢复我方改造）')
-    } catch {
+    } catch (err) {
+      if (!isMergeInProgress()) {
+        // 硬失败：工作区可能已被 subtree 动过，但既然没有合并进行中，就没有「按 policy 归零」可言。
+        gitFailure(err, 'subtree pull 失败且未产生合并冲突 —— 该目标可能尚未被 subtree 收养（见 AGENTS.md「fork 的判据」）。')
+      }
       log('[sync-upstream] subtree pull 产生冲突，按 policy 归零 ...')
     }
 
@@ -771,15 +812,22 @@ export function runCli(argv) {
 
   // 带取值的 flag：缺值必须当场报错（退出码 1）。
   // 为什么不能沿用 `argv[i + 1]` 直接取：静默拿到 undefined 会让
-  //   `--target`（无值）退化成「作用于全部 5 个目标」、
+  //   `--target`（无值）退化成「作用于全部目标」、
   //   `--baseline`（无值）退回 policy 里的旧 commit —— 实测两者都退出码 0，
   // 用户以为只动了一个目标/用了一个显式基线，实际动了全部目标或用了旧基线。
+  //
+  // 判据是「值看起来像 flag 吗」，不是「值等于某个**已知** flag 吗」。后者双向失准：
+  // 漏挡 —— `--baseline --all` 里 `--all` 不是已知 flag，于是被当作 baseline 传给
+  //   `git ls-tree`（`error: unknown option 'all'`，退出码 1 + 裸 node 栈）；
+  //   `--ref --bogusflag` 里那个拼错的 flag 被当成 ref 值，未知 flag 一次都没报。
+  // 凡以 `--` 开头一律按「缺值」处理即可：本仓库的 target id / tag / commit 都不以 `--`
+  // 开头，而拒绝的代价（退出码 1 + 明确提示）远小于把拼错的 flag 当数据用。
   const VALUE_FLAGS = ['--target', '--baseline', '--ref']
   const value = (name) => {
     const i = argv.indexOf(name)
     if (i < 0) return undefined
     const v = argv[i + 1]
-    if (v === undefined || VALUE_FLAGS.includes(v)) fail(1, name + ' 缺少取值\n' + USAGE)
+    if (v === undefined || v.startsWith('--')) fail(1, name + ' 缺少取值\n' + USAGE)
     return v
   }
 
@@ -818,6 +866,17 @@ export function runCli(argv) {
   // policy（owned 从 1 变 12），与 USAGE 与 AGENTS.md 对 dry-run 的承诺矛盾。
   if (flag('--dry-run')) {
     const ref = value('--ref')
+    // 同时给了 --refresh-policy 时，按 dry-run 处理（零写入）—— 但**不能**静默丢掉
+    // --baseline：实测修复前 `--refresh-policy --dry-run --baseline <sha>` 会退出码 0、
+    // 输出里一次都不出现用户给的 sha（dry-run 走的是 syncOne 的 printPlan，根本不读它），
+    // 用户以为「按这个基线预演过了」。这里显式说明它被忽略。
+    if (flag('--refresh-policy')) {
+      const ignored = value('--baseline')
+      log('[sync-upstream] --dry-run 优先于 --refresh-policy：不写盘。')
+      if (ignored !== undefined) {
+        log('[sync-upstream] 注意：--baseline ' + ignored + ' 在 dry-run 下**不生效**（dry-run 预演的是上游同步，不是 policy 重算）。')
+      }
+    }
     for (const t of selected) dryRunOne(t, ref)
     return
   }
@@ -830,7 +889,18 @@ export function runCli(argv) {
         fail(1, '--refresh-policy 需要 --baseline <commit>，或在 policy 里写 target.baselineCommit')
       }
       log('[sync-upstream] ================= ' + t.id + ' =================')
-      refreshPolicy(t, commit)
+      // computeLists 读 `git ls-tree <commit>`：commit 无效（打错的 sha）或不在本地历史里
+      // （**浅克隆**里 policy 的 baselineCommit 就取不到）都会抛。AGENTS.md 把
+      // `--refresh-policy` 列为推荐补救命令，所以这条路径必须给退出码 3 而不是裸 node 栈。
+      try {
+        refreshPolicy(t, commit)
+      } catch (err) {
+        gitFailure(
+          err,
+          '无法按 ' + commit + ' 重算 ' + t.prefix + '/sync-policy.json —— ' +
+            '该 commit 不在本地对象库里（浅克隆常见）。用 --baseline <commit> 指定一个本地可达的 commit。',
+        )
+      }
     }
     return
   }
@@ -844,8 +914,18 @@ export function runCli(argv) {
 
   // 全部目标：每个从同一基点各开一条分支（互不冲突：各自只碰自己的 prefix），
   // 跑完回到原分支。任一目标失败即停止，分支留在原地供检查。
-  const originalBranch = git(['symbolic-ref', '-q', '--short', 'HEAD']).trim()
-  const baseCommit = git(['rev-parse', 'HEAD']).trim()
+  //
+  // `symbolic-ref -q --short HEAD` 在 **detached HEAD** 上退出码为 1（这是 -q 的语义：
+  // 「没有分支名」不是错误）。直接调用会抛，异常穿透 main() 变成裸 node 栈 + 退出码 1，
+  // 违反 §7.3 的「git 失败 = 3」。用 gitAllowStatus1 把它当作「无分支名」处理。
+  let originalBranch = ''
+  let baseCommit = ''
+  try {
+    originalBranch = gitAllowStatus1(['symbolic-ref', '-q', '--short', 'HEAD']).trim()
+    baseCommit = git(['rev-parse', 'HEAD']).trim()
+  } catch (err) {
+    gitFailure(err, '无法确定当前基点，未改动任何分支。')
+  }
   if (originalBranch !== '') {
     const restore = () => {
       try {

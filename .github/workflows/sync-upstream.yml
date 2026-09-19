@@ -83,9 +83,9 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
       # 校验走脚本自己的 discoverTargets（单一真源），不在 YAML 里重抄一份 schema。
-      # 为什么：内联校验只查了 url/prefix/baseline 三个键，`baselineCommit` 缺失时它
-      # 照样通过，而 sync-upstream.mjs 随后以退出码 1 拒绝该 policy —— 门禁与真实校验
-      # 口径不一致，坏 policy 能一路走到「Apply upstream sync」才炸。
+      # 计划 §8 原先要求的是「校验该 target 的 policy（url/prefix/baseline 非空）」；
+      # 这里改用脚本的校验，是因为脚本还会额外要求 baselineCommit 非空（它重算清单时要用），
+      # 而 discoverTargets 是那份 schema 的唯一真源 —— 两处各写一份会漂移。
       # 顺带用它打印的 target 行做人工可读的记录。
       - name: Validate sync policy
         id: policy
