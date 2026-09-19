@@ -1,8 +1,0 @@
-# dsh-easyrewrite bundle patch layer —— 把本插件挂载进 profile 树。
-#
-# 行 id 保持 `dsh-easyrewrite`：它等于宿主半边 src/index.js 的 `export const name`，
-# 浏览器半边则以 `<bundle 包名>#dsh-easyrewrite` 作为自己的配置项 key。
-# name 为发布包名（@logictan 作用域）。
-- insert:
-    - id: dsh-easyrewrite
-      name: '@logictan/dsh-easyrewrite'
