@@ -39,8 +39,11 @@ jobs:
           # 需要完整历史：subtree pull 要基于共同祖先做三方合并
           fetch-depth: 0
 
+      # 显式给 version：本仓库没有 packageManager 字段，两者都缺时 action-setup 直接失败。
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
 
       - name: Setup Node
         uses: actions/setup-node@v4

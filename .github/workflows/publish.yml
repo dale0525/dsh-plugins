@@ -44,8 +44,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 必须显式给 version：本仓库没有 packageManager 字段，而 action-setup
+      # 在两者都缺时会直接失败（README: "otherwise, this field is required"）。
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.1
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -75,7 +79,7 @@ jobs:
       # 顺序敏感：子插件必须先上线，聚合包才能解析到它的依赖版本。
       # 逐包发布而非一次性，使某个包失败时能立刻定位，且不会发半个版本出去。
       - name: Publish packages in dependency order
-        if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
         run: |
           set -euo pipefail
           node scripts/publish.mjs > /tmp/plan.txt
