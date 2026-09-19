@@ -1,17 +1,39 @@
-# dsh-dcp bundle patch: mounts dsh-dcp as the compaction backend.
+# ctx-mem bundle patch layer.
 #
-# Adding this package to a profile's bundles (dsh plugin add @aiwayds/dsh-dcp,
-# or listing it under dsh.profile.bundles) applies this patch automatically —
-# the default LLM summarizer (compaction-basic) is disabled and dsh-dcp is
-# inserted alongside it. Standalone use therefore needs NO manual
-# cordis.patch.yml editing.
-
-- id: compaction-basic
-  name: '@deepseek-ai/dsh-compaction-basic'
-  disabled: true
+# Two rows, because this package ships two halves.
+#
+# `ctx-mem-bridge` runs on the PROFILE plane and is ENABLED. The host's cordis
+# loader resolves every loader entry's config through the synchronous
+# `internal/config` waterfall, so this row hangs off it and injects a `patches`
+# array into each preset composition as it is mounted: the preset's own
+# `compaction-basic` row is disabled and `ctx-mem` is inserted into the same
+# `compaction` group. That is what makes the backend work in ANY mode without a
+# dedicated preset copy.
+#
+# `ctx-mem` is the ENGINE and is DISABLED. A compaction backend is a
+# `ctx.compaction` SERVICE replacement, and every shipped preset composes its
+# own backend inside an `isolate: { compaction: true }` group
+# (`dsh-agent-presets/presets/*/agent.cordis.yml`), so an agent context resolves
+# `ctx.compaction` inside that realm and never sees a profile-plane provider.
+# Enabling this row would not replace the preset's backend — it would add a
+# SECOND engine beside it: a listener registered here carries no scope tag, and
+# an untagged listener is admitted for every agent in the process
+# (`dsh-scope`'s scope filter returns true when the dispatch context has no
+# tag), so its pressure listener would fire for every agent and both engines
+# would compact the same session. The row is declared so the package carries the
+# row the repo convention requires, with an id equal to the host half's
+# `export const name`; the bridge's injected row is what actually mounts it.
+#
+# The bridge only covers `standard`, `ptc` and `cordis` (see COVERED_PRESETS in
+# src/bridge.js). `minimal` and user-authored presets have no compaction group
+# by design, and a profile without `agent-presets` never mounts a preset subtree
+# at all, so the bridge is inert there.
 - insert:
-    - id: dsh-dcp
-      name: '@aiwayds/dsh-dcp'
+    - id: ctx-mem-bridge
+      name: '@logictan/dsh-ctx-mem/bridge'
       config:
-        thresholdRatio: 0.7
-        language: zh
+        engine: {}
+
+    - id: ctx-mem
+      name: '@logictan/dsh-ctx-mem'
+      disabled: true

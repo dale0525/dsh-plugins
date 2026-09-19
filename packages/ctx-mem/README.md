@@ -1,176 +1,117 @@
-# dsh-dcp
+# ctx-mem — 上下文交接后端
 
-dsh（DeepSeek Harness）的确定性压缩后端：**上下文压缩不调 LLM**，开箱即用。
+dsh（DeepSeek Harness）的压缩后端：**程序抽取硬事实 + 模型只补四节因果**。
 
-**要求 dsh >= 0.1.5-rc.2** — 本插件只跟随 dsh RC/stable 线（CI 与发版在运行时解析 latest/next 中更新的 dist-tag）。**不再支持 alpha 线。**
+替换 `compaction-basic` 的"把旧对话重新总结一遍"，改为：
 
-> **简体中文** · [English](README.en.md)
+1. **程序抽取**：从原始会话事件里逐字取出用户原话、路径、命令、报错——不经模型改写；
+2. **模型填空**：把这份骨架喂给模型，只让它写四节因果（为什么这么做、错在哪、悬而未决、下一步）。
 
-## 为什么做
+模型输入因此从整段历史缩到一份骨架，产出则不再有"摘要把命令改错"这一类失真。
 
-dsh 默认的压缩（`compaction-basic`）每次压缩都要让模型把旧对话**重新总结一遍**——费 token、慢、结果还不稳定。我们参考 opencode 社区的 [opencode-dcp](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning)（去重、清错、"技术摘要代替散文"），做了一个纯代码版本：
+## 为什么不是纯确定性抽取
 
-- **零 LLM 调用**：压缩本身不消耗任何额外 token
-- **输出稳定**：相同对话永远得到相同摘要
-- **中文友好**：用户原话/路径/命令/报错逐字保留，按 CJK 真实密度计价
-- **继承官方全部安全机制**：触发、保留尾巴、事务锁、tool-pairing 边界都复用 dsh 官方实现（只替换"摘要"这一环）
+纯确定性抽取丢因果。实测同一段历史（150 事件 / 160,323 token）交给纯代码后端，8 个产出节里 **4 节为空**——事实都在，但"为什么"没了，下一个会话无法接续。
 
-## 效果
+## 为什么不是照搬 `compaction-basic`
 
-### 与官方默认压缩的对比
+`compaction-basic` 把整段历史（实测 **81,667 input + 4,139 output** 全价 token）重发给模型做语义归纳。它的产出会重写命令与路径，且同一段历史多次压缩结果不同。本插件把"事实"与"因果"分开：事实由程序保证逐字一致，模型只负责它真正擅长的部分。
 
-| | 官方 compaction-basic | dsh-dcp |
-|---|---|---|
-| 摘要方式 | 每次调 LLM 重写 | 确定性代码抽取 |
-| 每次压缩的模型调用 | 1 次 | **0 次** |
-| 输出稳定性 | 同对话多次可能不同 | 相同输入永远相同 |
-| 摘要内容 | 语义归纳 | 逐字保硬信息（路径/命令/报错/待办/用户原话） |
-| 中文 | 依赖模型转写 | 原样保留 + CJK 计价 |
-| 触发/保留/溢出/安全 | 官方 | **继承官方，完全相同** |
-| 检查点格式 | 官方 | 兼容（可互相合并） |
+## PTC 感知
 
-设计上还吸收了 [opencode-dcp](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning) 的思路（去重、清错、`/dcp` 命令、技术摘要），但按 dsh 的压缩接口重新实现——它服务于 opencode，dsh-dcp 服务于 dsh。
+PTC（programmatic tool calling）模式下，模型写的是 `run_code` 脚本，真实工具调用是宿主在执行脚本时落盘的 `tool/ptc-dispatch` 事件。正则解析 `run_code` 源码会漏调用、漏引号内层内容、把模板字符串里的 `${...}` 当成事实。
 
-### CJK 适配
+本插件以 `tool/ptc-dispatch` 的**结构化** `arguments` 为权威源（实测 126 次调用 / 102 条命令，零截断），源码解析仅在该调用没有 dispatch 事件时兜底；非 PTC 的直接工具调用走 `assistant/message` 的 `tool-call` 块。`tools.mode: 'both'` 的混合区间两条路径并存。
 
-内容逐字保留、不做英文转写；token 计价按 CJK 真实密度（中/日/韩/全角约 2 字符/token），不沿用宿主"4 字符/token"对中文的低估——中文会话的摘要预算反映真实成本，不会被饿死，信息更密集。
+## 事件归属
 
-### 真实 dsh 会话实测
+从 `input.messages` 取回原始事件，靠**对象身份 → seq** 映射定位区间，再按 **seq 范围**取事件。不能用 `shadowedSeqs` 成员判定：`tool/ptc-dispatch` 是 log-only 事件，seq 与 surface 节点交错且不在该集合中，成员判定会得到"0 个 dispatch"的错误结论。
 
-一段约 8 万 token 的历史压成约 700 token（**~100x**），全程零 LLM 调用；缓存命中率几乎不变（压缩后总会有一个"冷请求"，任何后端都一样）。
+## 级联不衰减
 
-真实会话里压缩出的检查点（中文内容逐字保留）：
+骨架**每次从原始事件重建**，不转发上一次的 checkpoint 文本。既有后端在连续压缩中会丢失早期事实；原始区间始终留在 log 中，可重建、可回放、可审计。
 
-```
-## Primary Request and Intent
-- 帮我把登录页的重定向 bug 修掉
+## 产出格式
 
-## Files and Code
-- /app/src/auth/login.ts — W×1 R×1
+骨架（程序生成）在前，四节因果（模型生成）在后：
 
-## Errors and Fixes
-- bash: FAIL src/auth.test.ts
+```markdown
+## Extracted Facts
+### User Intents
+### Files Touched
+### Commands Run
+### Errors Seen
 
-## Pending Jobs
-- add regression test
-
-## Critical Context
-- dsh-dcp 确定性压缩了 12 条消息 / 8 次工具调用（未调用 LLM 摘要）
+## Why This Approach
+## Errors and Their Causes
+## Open Decisions
+## Next Step
 ```
 
-## Not in scope
-
-- **不做语义归纳**：不"理解"代码，只保留"出现过的事实"。需要深度语义摘要的场景，请继续用官方 `compaction-basic`
-- **dsh 已经有的我们不重复做**：
-  - 工具结果剪枝（`compaction-tool-result-pruner`，确定性按大小剪）
-  - 触发策略、保留尾巴、溢出恢复（直接继承官方；本插件仅新增轮数触发，见上）
-  - `/compact` 命令、UI 检查点卡片（dsh 自带）
-
-## 安装
-
-**推荐：配合我们的 dsh-tui-pi 用**（tui 已依赖 dsh-dcp）：
-
-```bash
-npm i @aiwayds/dsh-tui-pi
-dsh plugin add @aiwayds/dsh-dcp     # 激活 dcp，bundle 自动挂载
-```
-
-**独立使用**：
-
-```bash
-npm i @aiwayds/dsh-dcp
-npx dsh-dcp-setup                   # 安全脚本：带日期备份 → 只追加 → 幂等判断，不碰你已有的配置
-```
-
-> dsh-dcp 挂在 dsh 的压缩接口上，只对挂载了它的 profile 生效。web profile 没挂 tui，继续用官方压缩，不受影响。
-
-## 卸载
-
-**Bundle 方式**（`dsh plugin add` 或列在 `bundles`）：
-
-```sh
-dsh plugin --profile <name> remove @aiwayds/dsh-dcp
-```
-
-宿主自动收敛：bundles 条目移除、patch 层随包消失，官方 LLM 压缩后端 `compaction-basic` 自动恢复。
-
-**setup 脚本方式**（`npx dsh-dcp-setup` 写入的 patch 块）：
-
-```bash
-npx dsh-dcp-setup --remove                        # 默认 home patch
-npx dsh-dcp-setup --remove --profile tui          # 指定 profile
-npx dsh-dcp-setup --remove /path/to/cordis.patch.yml
-```
-
-`--remove` 只删除 setup 写入的挂载块（含你调过的 config），修改前同样带日期备份；手工写的挂载块不受影响；删完文件为空时自动删除文件。两条 WARN 要留意：文件里若还留有 `compaction-basic` 的 disable 条目，官方压缩后端会保持关闭 —— 不是给 dsh-dcp 用的就手动删掉；同一文件里另一处 dsh-dcp 挂载不会被碰。
-
-不执行反向步骤直接卸包，patch 里的绝对路径会指向已消失的安装目录，profile 启动将以 module-not-found 失败。
-
-## /dcp 命令
-
-| 命令 | 作用 |
-|---|---|
-| `/dcp` | 立即压缩（零 LLM）；等同于 `/dcp compact` |
-| `/dcp status` | 状态：配置、压缩次数、省下的 token |
-| `/dcp help` / `--help` / `-h` | 显示命令用法 |
-| `/dcp set <k> <v>` | 会话内调参，并提示如何持久化 |
-
-可调键：`dedup`、`purgeErrors`、`maxItems`、`maxItemChars`、`maxSummaryTokens`、`language`、`tokenEstimate`、`thresholdRatio`、`roundInterval`、`notice`、`onModelSwitch`、`modelSwitchMinTokens`。
-
-裸 `/dcp` 与 `/dcp compact` 走同一条手动压缩缝——最常用的动作零参数直达，不必记子命令；只读或调参的动作留在显式子命令后面（看状态打 `/dcp status`，用法打 `/dcp help`）。
-
-> **0.11.0 起语义变更**：裸 `/dcp` 由「显示状态」改为「立即压缩」，原来的状态输出移到 `/dcp status`。升级后别再用裸 `/dcp` 查状态——它会直接压一次。
-
-`/dcp status` 还会列出每个发生过压缩的会话（per-session 概览，含子代理），例如 `per-session: session-1 (2 compactions, ~444 tokens), child (1 compaction, ~22 tokens)`。压缩按会话独立计数；已销毁的会话（含 one-shot 子代理）自动从概览消失；列表封顶一行（最多前 10 个会话，超出显示 `+N more`）。
-
-## 触发条件
-
-| 触发 | 时机 | 说明 |
-|---|---|---|
-| 压力触发 | 每步请求前 | token ≥ `thresholdRatio`（继承上游默认 0.8；本插件 bundle 挂载默认 0.7，见配置表）× 上下文窗口 |
-| 溢出恢复 | 模型报 context 超限时 | 继承官方 |
-| **轮数触发** | 会话每收到 `roundInterval` 条 assistant message | 本插件新增；一条 = 一次 LLM 往返（每轮工具迭代各算一条，one-shot 子代理也能触发）。**默认 50**：第 50 条后触发第一次，之后每 50 条一次（100、150……）；任何一次压缩（含压力触发）都会重置轮数时钟。到达条数后的第一个空闲点触发（阈值之下也压）。`0` 关闭；需保持 `auto: true`（默认开） |
-| **模型切换** | 会话实际路由的 provider/model 变化时 | 本插件新增（`onModelSwitch`）。默认 `notice`：追加一行提醒"建议先执行 `/dcp compact` 压缩旧模型历史，节省 token"；`auto` 在该会话下一个空闲点自动压缩；`off` 关闭。两道门控：距上次压缩不足 10 条 assistant message 忽略（没有旧账可甩），上下文不足 `modelSwitchMinTokens`（默认 32768，`0` 关闭该门）忽略（不够甩的量）；`auto` 需保持 `auto: true`（默认开），否则降级为 `notice` |
-| 手动 | `/dcp`（无参数）、`/dcp compact`、`/compact` | 随时可用 |
-
-- **subagent 同样生效**：进程内 subagent（含 continuable 与 one-shot 子代理）走同一套事件分发，压力/溢出/轮数/模型切换对子会话独立计数、独立触发。轮数触发按 assistant message 计数，所以全程只有 1 个 turn 的 one-shot 子代理（多次工具迭代）也能触发。
-- **模型切换检测原理**：折叠每请求的 `request/context` 路由快照（provider 或 model 任一变化即判定切换），覆盖所有切换入口（TUI `/model`、Web 客户端、默认模型设置变更）；会话首个请求只播种基线不告警。`notice: false` 只关压缩通知行，模型切换提醒行由 `onModelSwitch` 独立控制。上下文下限按宿主 tokenMeter 的实测计价（`measure().surfaceTokens`），测不到时 fail-open（只留轮数门控）。
-- **压缩可见性**：每次压缩成功后，会话里追加一行 `dcp: 已压缩 N 条历史（约 X tokens，触发方式）` 通知行（前端渲染为折叠行）。注意该行也会作为上下文随请求发给模型（每次压缩约 15–25 tokens），且 **0.4.0 起默认开启**；`notice: false` 可关闭。`/dcp status` 的 stats 持续累计（压力触发的多次 region 提交各计一次）。
+四节顺序固定，空节写 `(none)`。
 
 ## 配置
 
-全部可选，默认即用：
-
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `thresholdRatio` | 0.8 | 压力触发阈值（继承上游 compaction-basic 默认 0.8；本插件 bundle patch 挂载时默认 0.7，中文场景建议 0.7） |
-| `roundInterval` | 50 | 每 N 条 assistant message（一次 LLM 往返）触发一次压缩（0 关闭）。默认 50：50、100、150……每次压缩后重数 |
-| `onModelSwitch` | `notice` | 模型切换后：`notice` 提醒执行 `/dcp compact`（默认）；`auto` 下一个空闲点自动压缩；`off` 关闭 |
-| `modelSwitchMinTokens` | 32768 | 模型切换提醒/自动压缩的上下文下限（按宿主 tokenMeter 实测计价）：不足则忽略该次切换；`0` 关闭此门。默认 32k ≈ 压缩后基线（~16% 窗口）之上再涨一截才有得甩 |
-| `notice` | `true` | 压缩后在会话中追加一行通知 |
-| `language` | `zh` | 摘要语言；`zh` 额外识别中文报错和"待办：" |
-| `tokenEstimate` | `cjk` | CJK（中/日/韩/全角）按 ~2 字符/token 计价；`ascii` 与宿主一致 |
-| `dedup` | `true` | 标注重复工具调用 |
-| `purgeErrors` | `true` | 旧报错折叠成一条提示 |
-| `maxItems` / `maxItemChars` | 10 / 200 | 摘要密度 |
-| `maxSummaryTokens` | 2048 | 摘要 token 预算 |
+| `fillEnabled` | `true` | 是否执行模型填空；`false` 时退化为纯确定性产出，且不发起模型调用 |
+| `fillProvider` / `fillModel` | 空 | 填空所用路由；两者都空 = 用当前会话路由，只填一个不生效 |
+| `language` | `zh` | 产出语言 |
+| `thresholdRatio` | `0.8` | 压力触发阈值（继承 `compaction-basic` 语义） |
+| `retainRatio` | `0.16` | 保留近期尾巴的比例（继承语义） |
+| `retainTokens` | 未设置 | 保留尾巴的绝对 token 数，设置后覆盖 `retainRatio`；`0` = 一条尾巴都不留（硬切断） |
+| `maxTokens` | `8192` | 填空调用的 token 上限 |
+| `modelPolicies` | `[]` | 按路由覆盖；`maxTokens` 等键可在此按 `provider`/`model` 单独钉住 |
+| `compactionRetries` | `1` | 一次压缩后仍超阈值的重试次数 |
+| `maxOverflowRetries` | `1` | 上下文溢出后的恢复重试次数 |
+| `auto` | `true` | 是否注册自动压缩 |
 
-> **升级提示（0.5.0）**：`roundInterval` 的计数单位由 completed turn 改为 assistant message——同值下触发会更频繁（一个 turn 内往往有多条 assistant message）。
+完整的键语义与两个易踩的坑见包内技能 `skills/ctx-mem-config/SKILL.md`（宿主技能名 `ctx-mem-config`），本表只列键与默认值。
 
-## 内置技能 / Bundled skill
+触发、保留尾巴、溢出恢复、事务锁、tool-pairing 边界全部继承 `BasicCompactionEngine`，本插件只替换 `summarize()`。
 
-插件随包注册了 `dsh-dcp-config` skill（`skills/dsh-dcp-config/SKILL.md`，经 `ctx.skills.registerProvider`）：在会话里让 agent 调压缩、配置 dcp 或排查压缩行为时，指南自动加载——内含 ask_user_question 交互式调参向导（先问期望再映射到具体键）与 cordis.patch.yml 挂载块 `config:` 段的持久化写法，无需翻文档。
+`summarizationProvider` / `summarizationModel` 对 ctx-mem **无效**（它们只在官方 `summarize()` 里被读取，而该方法已被覆写）；填空路由请用 `fillProvider` / `fillModel`。
 
-## 设计参考
+`retainTokens: 0` 是 codex 式的硬切断：压缩后 surface 只剩 system + checkpoint，模型请求不含任何被压缩区间的逐字消息。旧事件仍在 log 中（可回放、可审计、可 fork），只是没有任何模型可读接口能取回。**默认关闭**。
 
-- [Opencode-DCP/opencode-dynamic-context-pruning](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning)
-- dsh 官方 compaction 接口：`docs/subsystems/compaction.md`（deepseek-harness）
+## 挂载
+
+压缩后端是 `ctx.compaction` 服务替换，而每个 preset 都在 `isolate: { compaction: true }` 组里组合自己的后端，profile 层的行无法覆盖该 realm。本插件因此由两部分组成：
+
+1. **引擎行** `ctx-mem`（`@logictan/dsh-ctx-mem`）——真正的后端，必须落在 preset 的 `isolate` 组内。
+2. **bridge 行** `ctx-mem-bridge`（`@logictan/dsh-ctx-mem/bridge`）——挂在 profile 平面，在宿主挂载 preset 组合时给该组合注入一段 `patches`：关掉官方的 `compaction-basic`，并在同一个 `compaction` 组内插入 `ctx-mem`。
+
+因此**任何模式都直接生效**，无需新建或选择专用 preset：`standard` / `ptc` / `cordis` 三个预设会被 bridge 自动替换后端。`minimal` 与用户自建预设**不在覆盖范围内**——它们的设计意图里没有上下文压缩，bridge 不替它们做决定。无 preset 的 profile（如 `headless`）不经过 preset 子树，bridge 自然不生效。
+
+要调整行为，用 **bridge 行** 的 `config.engine:`（键见上表），不要改 preset 文件。
+
+```yaml
+# 覆盖的预设 id 由 src/bridge.js 的 COVERED_PRESETS 决定
+- id: ctx-mem-bridge
+  name: '@logictan/dsh-ctx-mem/bridge'
+  config:
+    engine:
+      fillModel: deepseek-v4.1-flash
+```
+
+**引擎行故意不写 `config:`**：上表每个键都已经等于继承来的默认值（或按设计不设置），写出来只会把默认值钉死在上游的当前取值上。引擎的配置只认 bridge 行的 `config.engine`——注入行由 bridge 生成，是它唯一的落点。
+
+本包的 `cordis.patch.yml` 声明两行：bridge 行 **enabled**（它的正确挂载点就是 profile 平面），引擎行 **disabled**（它在 profile 平面挂载会与 preset 的后端并存，两个引擎同时监听 `agent/pre-step` 压缩同一个会话）。两行的 id 分别等于各自宿主半边的 `export const name`；包本身必须被安装，因为 preset 行按包名从 profile 根解析它。
+
+## 使用指南（技能）
+
+包内自带 `skills/ctx-mem-config/SKILL.md`，随插件注册进宿主技能目录（名为 `ctx-mem-config`），供用户与模型按需查阅配置键、两个易踩的坑（`retainTokens` 覆盖 `retainRatio`；`fillEnabled: false` 不产出四节）与排查表。
 
 ## 开发
 
 ```bash
-npm install && npm test     # 65 个用例：抽取/压缩/命令/配置/触发/安装脚本
+node build.mjs     # src/ → lib/（lib/ 不入版本控制，prepare/prepack 也会跑）
+node --test        # 单元测试
 ```
+
+## 上游
+
+Fork 自 [`fan56/dsh-dcp`](https://github.com/fan56/dsh-dcp) `v0.11.0`（MIT）。同步清单见 `sync-policy.json`。
 
 ## License
 
