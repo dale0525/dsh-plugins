@@ -13,6 +13,7 @@
     "baselineCommit": "04cb91811375c455e4d5fe6538691a63d2dfb652"
   },
   "owned": [
+    ".gitignore",
     "AGENTS.md",
     "CHANGELOG.md",
     "DESIGN.md",
@@ -22,6 +23,7 @@
     "cordis.patch.yml",
     "docs/spec/bundle-format-v1.md",
     "package.json",
+    "src/adapters/self.test.ts",
     "src/adapters/self.ts",
     "src/client/ConfigManagerSection.tsx",
     "src/client/api.ts",
@@ -42,6 +44,7 @@
     "src/client/sync/sync-view.ts",
     "src/core/cache-cleaner.test.ts",
     "src/core/cache-cleaner.ts",
+    "src/core/config-lifecycle.test.ts",
     "src/core/messages.ts",
     "src/core/model-tools.test.ts",
     "src/core/model-tools.ts",
@@ -75,8 +78,14 @@
     "PHASE1_HANDOFF.md",
     "README.zh-CN.md",
     "UI_REFACTOR_HANDOFF.md",
+    "assets/screenshot-export.png",
+    "assets/screenshot-import-preview.png",
+    "assets/screenshot-market.png",
+    "assets/screenshot-snapshots.png",
+    "assets/screenshot-sync.png",
     "package-lock.json",
     "pnpm-lock.yaml",
+    "screenshots.json",
     "src/cli/index.ts",
     "src/client/CLIENT_DEPENDENCIES.md",
     "src/client/about/AboutPanel.tsx",
@@ -213,6 +222,6 @@
   ],
   "added": [
     "scripts/dev-watch.mjs",
-    "src/sync/snapshot-crypto.fixture.ts"
+    "tests/fixtures/legacy-snapshot-crypto.ts"
   ]
 }

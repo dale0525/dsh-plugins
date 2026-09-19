@@ -17,6 +17,13 @@ my-video/
 *.zip
 *.tar.gz
 
+# Promotional screenshots for the awesome-dsh-plugin listing. Kept on disk but
+# not version-controlled: this fork is for private self-use and does not carry
+# an upstream listing's marketing surface. `files` in package.json lists
+# neither `assets` nor `screenshots.json`, so nothing here reaches the tarball.
+/assets/*.png
+/screenshots.json
+
 # Logs & OS junk
 *.log
 .DS_Store
