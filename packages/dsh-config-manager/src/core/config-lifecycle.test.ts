@@ -474,7 +474,10 @@ test('自动快照端到端：真实变更 → 防抖到期 → 落盘一份 aut
   const metas = await h.lifecycle.list();
   assert.equal(metas[0]!.kind, 'auto');
   assert.equal(metas[0]!.trigger, 'watcher');
-  assert.equal(h.autoMetas.length, 1, '宿主回调必须被触发');
+  // 回调在 saveSnapshot 落盘**之后**才触发，所以「等文件出现」不等于「回调已跑」：
+  // 直接断言会在负载高时偶发失败。等回调本身，而不是等它的副作用。
+  const fired = await waitFor(async () => h.autoMetas.length === 1);
+  assert.equal(fired, true, '宿主回调必须被触发');
 });
 
 test('自动快照端到端：恢复自写文件是回声 → 不产生快照（否则会挡住重做）', async (t) => {
