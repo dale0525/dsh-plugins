@@ -4,13 +4,10 @@
  */
 import { zhUiT, type UiT } from '../ui/i18n.ts'
 
-/** Host 半状态响应（plugin 版本 / DSH 版本 / 平台，用于设置页页脚版本行） */
+/** Host 半状态响应：设置页页脚版本行的两个字段（消费方只有 ConfigManagerSection） */
 export interface ServiceStatus {
-  ready: boolean
   pluginVersion: string
   dshVersion: string
-  platform: string
-  arch: string
 }
 
 export const CONFIG_MANAGER_API = {

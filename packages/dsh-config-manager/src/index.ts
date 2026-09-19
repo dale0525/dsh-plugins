@@ -1827,11 +1827,8 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
       handler: async (req, res) => {
         if (!guard(req, res, 'GET')) return
         writeJson(res, 200, {
-          ready: true,
           pluginVersion: PLUGIN_VERSION,
           dshVersion: host.dshVersion,
-          platform: host.platform,
-          arch: host.arch,
         })
       },
     },
