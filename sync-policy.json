@@ -60,6 +60,7 @@
     "src/sync/webdav/webdav-transport.test.ts",
     "src/ui/i18n.ts",
     "src/utils/env-lock.test.ts",
+    "src/utils/env-lock.ts",
     "tests/e2e-sync-apply.test.ts",
     "tests/route/me-auth-mapping.test.ts",
     "tsdown.config.ts"

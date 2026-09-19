@@ -877,6 +877,91 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest   # 或 add link:<
 
 ---
 
+### 14.8 GUI 验证中发现的三个缺陷（改造一引入，均已修复）
+
+三个缺陷都**只在真实宿主 + 真实路由下暴露**：单元测试、类型检查、产物级加载验证全部是绿的。
+这坐实了「打包成功 ≠ 真机正确」。
+
+#### 缺陷 1（隐私回归，最严重）：默认同步范围吞掉了 `defaultIncluded=false` 的分区
+
+- **成因**：改造一删掉 `SyncEngine.portableAdapters()` 的 `portability==='portable'` 过滤是对的
+  （§7.2.2 要求取消 portability），但删除后默认模式（未显式勾选）的候选集**退化成了全部已挂载
+  adapter**。`sessions`（历史会话明文，含敏感内容）与 `pluginFiles` 的 `defaultIncluded=false`
+  语义是「**用户显式勾选才同步**」，被并进默认范围即绕过 UI 勾选。
+- **实测**：默认 push 集合 = 14 项，比「推荐分区」集合多 `sessions`、`pluginFiles` 两项；
+  而 UI 同时显示「将同步 12 个推荐分区」——**界面承诺与实际上传不一致**。
+- **修复**：新增 `defaultTargets()`：未显式勾选 → 只取 `defaultIncluded`；显式勾选 → 可触达全部分区。
+- **验证**：默认 push 12 项（无 sessions/pluginFiles）；显式 `sections:['sessions']` 仍成功上传。
+
+#### 缺陷 2：基线错位导致自动同步恒判「本地有改动」
+
+- **成因**：`hasLocalChanges()` 遍历 `syncAdapters()`（全集），而 push 的基线只覆盖**实际上传集**。
+  未上传的分区在 `sync-state.sections` 里没有记录 → `recorded === undefined` → 恒返回 `true`。
+- **后果**：自动同步每次巡检都认为本地有改动 → 反复上传（配合缺陷 1 还会反复上传敏感分区）。
+- **修复**：两处同源，均走 `defaultTargets()`。
+- **验证**：`hasLocalChanges` 用例恢复绿色（推后无改动 → `false`）。
+
+#### 缺陷 3：分区目录仍按 `portability` 过滤，5 个分区在 UI 里不可见
+
+- **成因**：`src/index.ts` 的 `syncSectionCatalog` 仍 `.filter(a => a.portability === 'portable')`。
+- **后果**：`mcp`/`workspaces`/`credentialsStatus`/`pluginFiles`/`sessions` 在高级模式里
+  **既看不到也勾不到**，与 §7.2.2「取消 portability，所有分区都可勾选」直接冲突；
+  且与缺陷 1 形成互锁——即便引擎允许勾选，UI 也提供不了入口。
+- **修复**：列出全部已挂载分区。**验证**：catalog 14 项（推荐 12 项），Sessions 复选框可见可勾。
+
+#### 顺带修正
+
+高级模式文案原文「全部推荐分区都可勾选同步」已不成立（现在是全部分区），中英同步改为
+「所有分区都可勾选同步（标「推荐」的默认勾选）」。
+
+#### 另发现：升级路径会静默重置用户勾选（独立缺陷，已修）
+
+`sync-selection.json` 把握手信封编号写成 `1`，但该信封形状与上游 `0.1.60` 的 `2` 相同，
+而上游的 `1` 是**顶层单通道**形状 —— 编号撞号导致升级后读不回用户既有的按通道勾选，
+静默回退成 `default`。**实测本机 `git` 7 个分区 / `webdav` 8 个分区全部丢失**。
+修复：编号对齐上游 `2`、接受 `1|2` 两个版本、`1` 的顶层形状归 `git` 通道（与上游迁移语义一致）。
+写出的 `2` 上游仍可读，故**回滚到上游也不会重置**。
+
+> 计划 §7.2.2 本就写明这一项是「schema 降级」（第 256 行），实现与冻结计划不一致，属实现缺陷。
+
+---
+
+### 14.9 收尾阶段的评审记录
+
+**触发依据**：本轮修复新增了对外行为契约（默认同步范围 = `defaultIncluded`；显式 sections 可覆盖）
+并改动跨文件不变量（`syncAdapters` / `defaultTargets` / `pushTargets` 三者口径），
+且收尾一个可独立验收的交付单元 —— §3.3 里程碑盲审的两个正条件同时成立。
+另因改动触及**隐私面**（哪些分区默认上传），按 §3.4 追加一次**独立的高风险只读审查**
+（两者是彼此不可替代的门禁）。
+
+#### 席位
+
+均用 `antigravity/gemini-3.8-flash`；只给路径与审查维度，不给背景。
+两个席位首轮都停在「等测试跑完」而未给结论，按协议向**同一席位**重发一次，第二轮均正常交付。
+
+#### 高风险审查（隐私面）结论
+
+**未发现安全缺陷。** 三个问题逐条回答：默认范围不触达未勾选分区；基线与上传内容同源；
+未削弱既有防护（旧加密快照仍拒绝、路由白名单校验仍在、`containsSecrets` 仍如实标注）。
+其中「`hasLocalChanges` 已与 push 同源」被明确认定为**消除了一处错位**而非引入风险。
+
+#### 里程碑盲审条目（2 条，**全部采纳**）
+
+| 条目 | 内容 | Root 独立复验 | 裁定 |
+|---|---|---|---|
+| 1 | `pushTargets` 显式 sections 分支仍用 `syncAdapters()`，受构造注入范围限制，「手动覆盖」失效 | 自写探针：构造注入 `['settings']` 后 `push({sections:['skills','sessions']})` → `ok=false` + 2 条 `unknownSection`、分区 0 个上传。**属实**，且生产可达（`makeSyncEngine` 注入持久化勾选 + push 路由传 sections） | **采纳** |
+| 2 | `/sync/selection` 校验变量名仍为 `portableIds`，与「不再按 portability 过滤」的事实矛盾 | `index.ts:2601` 实读确认；功能无碍，属误导性命名 | **采纳** |
+
+**共识状态**：2 条全部处于「采纳」，**无「不采纳/部分采纳」，故按协议无需再开辩论轮**。
+
+#### 修复与回归
+
+两条均已修复（commit `8609603`），并为条目 1 补了复现用例
+（构造注入 + 显式覆盖）。回归：`tsc --noEmit` 0 error；`node --test` **1277/1278**
+（唯一失败仍是改造前既有的 `config-lifecycle` 防抖 flake，三次重跑 1/3 失败率不变）。
+
+---
+
 ### 14.10 发布落地与 live profile 切换（用户执行 + Root 收尾）
 
 #### 14.10.1 两包已上线
@@ -980,89 +1065,46 @@ OIDC 每次换取短时、工作流专属、不可导出的凭证，且自动生
 
 **另一处登记未改**：`sync-upstream.yml` 的 `--frozen-lockfile=false` 是**刻意**的
 （subtree pull 会带入上游依赖变更，冻结会直接失败），已在文件内注明与 `publish.yml` 的差异。
-
 ---
 
-### 14.8 GUI 验证中发现的三个缺陷（改造一引入，均已修复）
+### 14.11 推送后 CI 首次真跑：发现两个问题
 
-三个缺陷都**只在真实宿主 + 真实路由下暴露**：单元测试、类型检查、产物级加载验证全部是绿的。
-这坐实了「打包成功 ≠ 真机正确」。
+推送 179 个提交到 `dale0525/dsh-plugins`（此前仓库为空，0 ref），两个 workflow 立即注册为 active。
+手动触发 `publish` 的 dry-run 后，**CI 首跑就失败** —— 这正是「本地全绿」覆盖不到的部分。
 
-#### 缺陷 1（隐私回归，最严重）：默认同步范围吞掉了 `defaultIncluded=false` 的分区
+#### 问题 A（既有缺陷，非本次改造引入）：`/proc/<pid>/stat` 取错字段
 
-- **成因**：改造一删掉 `SyncEngine.portableAdapters()` 的 `portability==='portable'` 过滤是对的
-  （§7.2.2 要求取消 portability），但删除后默认模式（未显式勾选）的候选集**退化成了全部已挂载
-  adapter**。`sessions`（历史会话明文，含敏感内容）与 `pluginFiles` 的 `defaultIncluded=false`
-  语义是「**用户显式勾选才同步**」，被并进默认范围即绕过 UI 勾选。
-- **实测**：默认 push 集合 = 14 项，比「推荐分区」集合多 `sessions`、`pluginFiles` 两项；
-  而 UI 同时显示「将同步 12 个推荐分区」——**界面承诺与实际上传不一致**。
-- **修复**：新增 `defaultTargets()`：未显式勾选 → 只取 `defaultIncluded`；显式勾选 → 可触达全部分区。
-- **验证**：默认 push 12 项（无 sessions/pluginFiles）；显式 `sections:['sessions']` 仍成功上传。
+- **现象**：`§11.1-c3 持句柄 = 持锁（child process）` 在 Linux CI 失败，期望 `LOCKED`/`UNKNOWN_STATE`，实得 `STALE_LOCK_DETECTED`；macOS 本地通过。
+- **根因**：字段布局（man 5 proc_pid_stat）为 `1 pid, 2 comm, …, 22 starttime, 23 vsize, 24 rss`。
+  代码按最后一个 `)` 切片后 **index 0 = 字段 3**，故 starttime 的索引应为 **19**；
+  原代码取 **21 = 字段 24（rss）**。rss 随进程内存占用变化，同一进程两次读取得到不同身份，
+  被判「PID 复用」→ `STALE_LOCK_DETECTED`，进而可能让 `recoverStaleLock()` 捕获一个**仍存活**持有者的锁。
+  该路径仅 Linux 生效（macOS/Windows 无 `/proc`），故只在 Linux 暴露 —— 与「本地全绿、CI 红」完全吻合。
+- **上游同样有此缺陷**（v0.1.61 实测 `afterComm[21]` 未改），故属继承缺陷而非我方引入。
+- **修复**：抽出 `parseLinuxProcStartTime()`（纯函数、可测、畸形输入返回 `null` 不编造身份），
+  索引改 19，两处调用点统一走它；补 3 条回归用例锁死字段语义（含 comm 含 `)` 的切片正确性）。
+- **顺带**：把 `src/utils/env-lock.ts` 加入 `sync-policy.json` 的 `owned`（原只有 `.test.ts`）——
+  否则下次上游同步的 `--theirs` 会**静默覆盖**这个修复。owned 50 → 51。
 
-#### 缺陷 2：基线错位导致自动同步恒判「本地有改动」
+#### 问题 B（我方 workflow 缺陷）：actions 落后于 Node 24 世代
 
-- **成因**：`hasLocalChanges()` 遍历 `syncAdapters()`（全集），而 push 的基线只覆盖**实际上传集**。
-  未上传的分区在 `sync-state.sections` 里没有记录 → `recorded === undefined` → 恒返回 `true`。
-- **后果**：自动同步每次巡检都认为本地有改动 → 反复上传（配合缺陷 1 还会反复上传敏感分区）。
-- **修复**：两处同源，均走 `defaultTargets()`。
-- **验证**：`hasLocalChanges` 用例恢复绿色（推后无改动 → `false`）。
+- **现象**：annotation 报 `Node.js 20 is deprecated ... forced to run on Node.js 24`，
+  且 `setup-node@v4` 报 `Unexpected input(s) "package-manager-cache"`。
+- **根因**：v4 世代不认该输入；Node 24 runner 上被强制降级运行。
+- **修复**：checkout / setup-node / pnpm-action-setup 升到 **v6** 世代，create-pull-request 升 **v8**，
+  全部继续锁 commit SHA。
 
-#### 缺陷 3：分区目录仍按 `portability` 过滤，5 个分区在 UI 里不可见
+#### 复验（CI 二次真跑，两次均绿）
 
-- **成因**：`src/index.ts` 的 `syncSectionCatalog` 仍 `.filter(a => a.portability === 'portable')`。
-- **后果**：`mcp`/`workspaces`/`credentialsStatus`/`pluginFiles`/`sessions` 在高级模式里
-  **既看不到也勾不到**，与 §7.2.2「取消 portability，所有分区都可勾选」直接冲突；
-  且与缺陷 1 形成互锁——即便引擎允许勾选，UI 也提供不了入口。
-- **修复**：列出全部已挂载分区。**验证**：catalog 14 项（推荐 12 项），Sessions 复选框可见可勾。
+| 运行 | 模式 | 结果 |
+|---|---|---|
+| dry-run（默认） | `dry_run` 默认 true | 全绿；`Publish packages` 步骤**按条件跳过**，`Dry run notice` 执行 —— 安全默认生效 |
+| 真发布路径 | 显式 `dry_run=false` | 全绿；两个包都走 `already published -- skipping`（幂等跳过） |
 
-#### 顺带修正
+**关键证据**：真发布路径的日志显示 `publishing @logictan/dsh-config-manager@0.1.60` →
+`already published -- skipping`，两个包各一次，**顺序为子插件 → 聚合包**（与 `scripts/publish.mjs` 的拓扑序一致），
+全程无 `ENEEDAUTH`/`EOTP`。这证明 OIDC 换取凭证、`npm view` 查询、循环解析三件事在真实 runner 上都成立。
 
-高级模式文案原文「全部推荐分区都可勾选同步」已不成立（现在是全部分区），中英同步改为
-「所有分区都可勾选同步（标「推荐」的默认勾选）」。
-
-#### 另发现：升级路径会静默重置用户勾选（独立缺陷，已修）
-
-`sync-selection.json` 把握手信封编号写成 `1`，但该信封形状与上游 `0.1.60` 的 `2` 相同，
-而上游的 `1` 是**顶层单通道**形状 —— 编号撞号导致升级后读不回用户既有的按通道勾选，
-静默回退成 `default`。**实测本机 `git` 7 个分区 / `webdav` 8 个分区全部丢失**。
-修复：编号对齐上游 `2`、接受 `1|2` 两个版本、`1` 的顶层形状归 `git` 通道（与上游迁移语义一致）。
-写出的 `2` 上游仍可读，故**回滚到上游也不会重置**。
-
-> 计划 §7.2.2 本就写明这一项是「schema 降级」（第 256 行），实现与冻结计划不一致，属实现缺陷。
-
----
-
-### 14.9 收尾阶段的评审记录
-
-**触发依据**：本轮修复新增了对外行为契约（默认同步范围 = `defaultIncluded`；显式 sections 可覆盖）
-并改动跨文件不变量（`syncAdapters` / `defaultTargets` / `pushTargets` 三者口径），
-且收尾一个可独立验收的交付单元 —— §3.3 里程碑盲审的两个正条件同时成立。
-另因改动触及**隐私面**（哪些分区默认上传），按 §3.4 追加一次**独立的高风险只读审查**
-（两者是彼此不可替代的门禁）。
-
-#### 席位
-
-均用 `antigravity/gemini-3.8-flash`；只给路径与审查维度，不给背景。
-两个席位首轮都停在「等测试跑完」而未给结论，按协议向**同一席位**重发一次，第二轮均正常交付。
-
-#### 高风险审查（隐私面）结论
-
-**未发现安全缺陷。** 三个问题逐条回答：默认范围不触达未勾选分区；基线与上传内容同源；
-未削弱既有防护（旧加密快照仍拒绝、路由白名单校验仍在、`containsSecrets` 仍如实标注）。
-其中「`hasLocalChanges` 已与 push 同源」被明确认定为**消除了一处错位**而非引入风险。
-
-#### 里程碑盲审条目（2 条，**全部采纳**）
-
-| 条目 | 内容 | Root 独立复验 | 裁定 |
-|---|---|---|---|
-| 1 | `pushTargets` 显式 sections 分支仍用 `syncAdapters()`，受构造注入范围限制，「手动覆盖」失效 | 自写探针：构造注入 `['settings']` 后 `push({sections:['skills','sessions']})` → `ok=false` + 2 条 `unknownSection`、分区 0 个上传。**属实**，且生产可达（`makeSyncEngine` 注入持久化勾选 + push 路由传 sections） | **采纳** |
-| 2 | `/sync/selection` 校验变量名仍为 `portableIds`，与「不再按 portability 过滤」的事实矛盾 | `index.ts:2601` 实读确认；功能无碍，属误导性命名 | **采纳** |
-
-**共识状态**：2 条全部处于「采纳」，**无「不采纳/部分采纳」，故按协议无需再开辩论轮**。
-
-#### 修复与回归
-
-两条均已修复（commit `8609603`），并为条目 1 补了复现用例
-（构造注入 + 显式覆盖）。回归：`tsc --noEmit` 0 error；`node --test` **1277/1278**
-（唯一失败仍是改造前既有的 `config-lifecycle` 防抖 flake，三次重跑 1/3 失败率不变）。
-
+> **未覆盖的一项（如实登记）**：本轮没有「发布一个全新版本」的实测 —— 那需要 bump 版本号，
+> 属发版决策而非验证动作。故「OIDC 能否真正 publish（而非仅 skip）」尚未端到端证明；
+> 但 skip 分支已证明凭证可用，且 `npm view` 需要同样的 registry 访问。
