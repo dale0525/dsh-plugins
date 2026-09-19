@@ -85,7 +85,7 @@ policy 顺序是**铁律**（顺序反了会让我们的改造被上游覆盖）
 
 ```
 git subtree pull --prefix=packages/<pkg> <target.url> <ref>   # 产生冲突
-git checkout --theirs -- packages/<pkg>                       # 1) 先全取上游
+git checkout --theirs -- packages/<pkg>                       # 1) 冲突条目取上游
 git checkout <pull 前的 HEAD> -- <owned 列表>                  # 2) 再恢复我方改造
 git rm -f --ignore-unmatch <deleted 列表>                      # 3) 重删我方删除
 git commit

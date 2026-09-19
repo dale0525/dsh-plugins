@@ -36,6 +36,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # `pkg` 是 id → npm 包名的可读映射（test 那行里也内嵌了同一个字符串）。
+          # 计划 §8 的 matrix 骨架里就有它，保留。
           - id: config-manager
             pkg: '@logictan/dsh-config-manager'
             test: 'pnpm --filter @logictan/dsh-config-manager test'
@@ -80,39 +82,37 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-      # 每个目标只校验自己那一份 policy：在 packages/*/sync-policy.json 里找
-      # target.id === matrix.id 的唯一一份（目录名与 id 不保证同名，故不硬编码路径）。
+      # 校验走脚本自己的 discoverTargets（单一真源），不在 YAML 里重抄一份 schema。
+      # 为什么：内联校验只查了 url/prefix/baseline 三个键，`baselineCommit` 缺失时它
+      # 照样通过，而 sync-upstream.mjs 随后以退出码 1 拒绝该 policy —— 门禁与真实校验
+      # 口径不一致，坏 policy 能一路走到「Apply upstream sync」才炸。
+      # 顺带用它打印的 target 行做人工可读的记录。
       - name: Validate sync policy
         id: policy
         env:
           TARGET_ID: ${{ matrix.id }}
         run: |
-          node -e '
-            const fs = require("fs"), path = require("path");
+          node --input-type=module -e '
+            import { discoverTargets } from "./scripts/sync-upstream.mjs";
             const id = process.env.TARGET_ID;
-            const candidates = fs.readdirSync("packages", { withFileTypes: true })
-              .filter((d) => d.isDirectory())
-              .map((d) => path.join("packages", d.name, "sync-policy.json"))
-              .filter((f) => fs.existsSync(f))
-              .map((f) => ({ f, p: JSON.parse(fs.readFileSync(f, "utf8")) }))
-              .filter((x) => x.p && x.p.target && x.p.target.id === id);
-            if (candidates.length === 0) {
-              console.error("no packages/*/sync-policy.json declares target.id = " + id);
+            let targets;
+            try {
+              targets = discoverTargets();
+            } catch (err) {
+              console.error("[policy] " + (err && err.message ? err.message : String(err)));
               process.exit(1);
             }
-            if (candidates.length > 1) {
-              console.error("target.id " + id + " declared by multiple policies: " + candidates.map((x) => x.f).join(", "));
+            const hits = targets.filter((t) => t.id === id);
+            if (hits.length !== 1) {
+              console.error("expected exactly one target.id = " + id + ", got " + hits.length +
+                " (known: " + targets.map((t) => t.id).join(", ") + ")");
               process.exit(1);
             }
-            const { f, p } = candidates[0];
-            const missing = ["url", "prefix", "baseline"]
-              .filter((k) => !p.target[k] || String(p.target[k]).trim() === "");
-            if (missing.length > 0) {
-              console.error(f + ": target." + missing.join(" / target.") + " missing or empty");
-              process.exit(1);
-            }
-            console.log(f + ": target.id=" + p.target.id + " url=" + p.target.url + " prefix=" + p.target.prefix + " baseline=" + p.target.baseline);
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, "path=" + f + "\n");
+            const t = hits[0];
+            const rel = t.policyPath.replace(process.cwd() + "/", "");
+            console.log(rel + ": id=" + t.id + " url=" + t.url + " prefix=" + t.prefix + " baseline=" + t.baseline);
+            const fs = await import("node:fs");
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "path=" + rel + "\n");
           '
 
       - name: Apply upstream sync
@@ -132,6 +132,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile=false
 
+      # 先跑同步脚本自己的契约测试，再跑包测试：脚本是本次改动的核心，它自己的
+      # 不变量（policy 顺序、owned 覆盖、基线推进）比任何一个包的测试更贴近这次变更。
+      # 根 `pnpm test` 包含 `node --test scripts/*.test.mjs`，但那个只在 publish.yml 里跑，
+      # 同步 workflow 之前完全不覆盖脚本本身 —— 脚本回归会一路带进 PR。
+      - name: Test sync script
+        run: node --test scripts/sync-upstream.test.mjs
+
       - name: Test
         run: ${{ matrix.test }}
 
@@ -147,11 +154,11 @@ jobs:
           body: |
             自动上游同步（`scripts/sync-upstream.mjs --target ${{ matrix.id }}` + `${{ steps.policy.outputs.path }}`）。
 
-            **顺序**：先 `git checkout --theirs`（全取上游）→ 再按 pull **之前**的 commit 恢复 `owned` → 再 `git rm`（重删 `deleted`）。
+            **顺序**：先 `git checkout --theirs`（冲突条目取上游）→ 再按 pull **之前**的 commit 恢复 `owned` → 再 `git rm`（重删 `deleted`）。
             顺序反了会让本仓库的改造被上游覆盖。
 
-            第 2 步用 `git checkout <pull 前的 HEAD> -- <owned>` 而非 `--ours`：`--ours` 只对未合并的索引条目生效，
-            对 git 干净三方合并的文件是**空操作**，我方版本会被静默污染。
+            第 2 步用 `git checkout <pull 前的 HEAD> -- <owned>` 而非 `--ours`：`--ours/--theirs` 只对未合并的索引条目生效，
+            对 git 干净三方合并的文件是**空操作**，我方版本会被静默污染。owned 的逐字节保证只由这一步承担。
 
             合并前请人工确认：
             - [ ] `${{ steps.policy.outputs.path }}` 的 `owned` / `deleted` 清单是否仍与仓库实际状态一致（本轮新增/删除的文件可能未登记）

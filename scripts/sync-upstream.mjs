@@ -9,15 +9,19 @@
  * ## 顺序铁律（实测：顺序反了会让我们的改造被上游覆盖）
  *
  *   1. git subtree pull --prefix=<prefix> <upstream> <ref>    # 会产生冲突
- *   2. git checkout --theirs -- <prefix>                      # 先全取上游
+ *   2. git checkout --theirs -- <prefix>                      # 冲突条目一律取上游
  *   3. git checkout <pull 前的 HEAD> -- <owned 文件>           # 再恢复我方改造
  *   4. git rm -f --ignore-unmatch <deleted 文件>               # 重删我方删除
  *   5. git commit
  *
- * 第 2 步是「全取上游」的关键：`git checkout --theirs -- <dir>` 把整棵子树恢复成上游版本；
- * 随后第 3 步只把 policy.owned 里的文件恢复成我方版本。若把 2/3 调换，上游会覆盖我们的改造。
- * **无冲突时也必须走完 2/3/4**：git 的自动合并不会重删我们删过的文件，也不会恢复被上游
- * 覆盖的我方改造。
+ * 第 2 步**只解决冲突条目**：`--theirs`（与 `--ours` 一样）只对**未合并的索引条目**生效，
+ * 对 git 干净三方合并的路径是空操作。它**不是**「把整棵子树恢复成上游版本」的手段 ——
+ * 那些干净合并的路径本来就是「上游内容 + 我方不相邻的改动」，无需额外处理。因此
+ * 「owned 文件必须逐字节等于我方版本」只能由第 3 步按 pull 前的 HEAD 覆盖来保证（见下）。
+ *
+ * **无冲突时也必须走完 2/3/4**（§7.3 不变量）：git 的自动合并不会重删我们删过的文件，也不会恢复
+ * 被上游覆盖的我方改造。第 2 步此时是空操作，但**仍然要执行** —— 跳过它会在有冲突时失去
+ * 「冲突条目一律取上游」这一步。
  *
  * 第 3 步**不能**写 `git checkout --ours`：`--ours/--theirs` 只对**未合并的索引条目**生效，
  * 而 git 对「双方都改、改在不同区域」的文件会干净三方合并（无冲突标记、无 stage 1/2/3），
@@ -77,6 +81,26 @@ function fail(code, message) {
   throw new SyncError(code, message)
 }
 
+/**
+ * 把 git 命令的失败统一成退出码 3（§7.3：「git 命令失败」）。
+ *
+ * 为什么必须收口：`main()` 只把 `SyncError` 翻译成 `[sync-upstream] ERROR <msg>` + 退出码；
+ * 其他异常直接重抛，用户看到的是 node 内部栈（`node:internal/errors`）与退出码 1，
+ * 与文档承诺的「git 失败 = 3」不符，也让 CI 无法区分「用法错误(1)」与「环境/网络失败(3)」。
+ *
+ * @param err  原始异常
+ * @param note 失败时的现场说明（是否已建分支、是否已改工作区）
+ * @returns never
+ */
+function gitFailure(err, note) {
+  if (err instanceof SyncError) throw err
+  process.stderr.write(
+    '[sync-upstream] git 命令失败：' + (err instanceof Error ? err.message : String(err)) + '\n',
+  )
+  if (note !== undefined) process.stderr.write('[sync-upstream] ' + note + '\n')
+  fail(3, 'git 命令失败（见上）')
+}
+
 function log(line) {
   process.stdout.write(line + '\n')
 }
@@ -116,6 +140,8 @@ function gitAllowStatus1(args, input) {
  * 不剥会得到重复项，且 `^{}` 会让数字段解析成 NaN，使比较器失去全序性
  * （实测会把 v0.1.9 当成「最新」）。
  *
+ * 排序用 `compareTags`（全序）而非逐段 `Number()` 相减，理由见该函数。
+ *
  * @returns tag 名（如 `v1.6.0`），无 `v*` tag 时返回 undefined
  */
 export function pickLatestTag(refLines) {
@@ -130,16 +156,40 @@ export function pickLatestTag(refLines) {
     if (!name.startsWith('v')) continue
     tags.add(name)
   }
-  const sorted = [...tags].sort((a, b) => {
-    const pa = a.replace(/^v/, '').split('.').map(Number)
-    const pb = b.replace(/^v/, '').split('.').map(Number)
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-      const d = (pa[i] ?? 0) - (pb[i] ?? 0)
-      if (d !== 0) return d
-    }
-    return 0
-  })
+  const sorted = [...tags].sort(compareTags)
   return sorted[sorted.length - 1]
+}
+
+/**
+ * tag 的**全序**比较器（`Array#sort` 的比较器必须是全序，否则结果取决于输入顺序）。
+ *
+ * 为什么不能只 `Number()` 各段相减：带后缀的 tag（`v2.3.1-final`、`v1.14.0-beta.1`）
+ * 会被 `Number('1-final')` 解析成 `NaN`，`NaN` 参与减法返回 `NaN` —— 比较器失去全序性，
+ * 排序结果随 `git ls-remote` 的返回顺序变化。实测：`['v2.3.1','v2.3.1-final']` 选出
+ * `v2.3.1-final`，而把输入反序就变成 `v2.3.1`。上游确实同时存在这类 tag
+ * （easyrewrite 有 `v2.3.1` / `v2.3.1-final`，market 有 `v1.14.0` / `v1.14.0-beta.1`），
+ * 所以这不是理论问题：选错 tag 会同步到一个非正式发布。
+ *
+ * 规则：先比数字核心（缺失段按 0，故 `v1.2.3.1 > v1.2.3`）；核心相同时**正式版优先于任何
+ * 带后缀的版本**（预发布/补丁命名不应盖过正式发布）；后缀之间按字典序定序，只为保证全序，
+ * 不代表优先级。
+ */
+function compareTags(a, b) {
+  const parse = (tag) => {
+    const body = tag.replace(/^v/, '')
+    const m = body.match(/^(\d+(?:\.\d+)*)(.*)$/)
+    return m === null ? { core: [], suffix: body } : { core: m[1].split('.').map(Number), suffix: m[2] }
+  }
+  const pa = parse(a)
+  const pb = parse(b)
+  for (let i = 0; i < Math.max(pa.core.length, pb.core.length); i++) {
+    const d = (pa.core[i] ?? 0) - (pb.core[i] ?? 0)
+    if (d !== 0) return d
+  }
+  if (pa.suffix === pb.suffix) return 0
+  if (pa.suffix === '') return 1
+  if (pb.suffix === '') return -1
+  return pa.suffix < pb.suffix ? -1 : 1
 }
 
 /** 上游本次出现、且在我方 `added` 清单里的路径（包相对）。 */
@@ -241,7 +291,14 @@ function assertCleanWorktree() {
 /** 解析要同步的上游 ref：显式 --ref 优先，否则取上游最新 tag。 */
 function resolveRef(target, ref) {
   if (typeof ref === 'string' && ref !== '') return ref
-  const latest = pickLatestTag(git(['ls-remote', '--tags', target.url]).split('\n'))
+  // `ls-remote` 会因网络/凭据/主机不可达而失败 —— 统一成退出码 3，不要让 node 栈穿透出去。
+  let lines
+  try {
+    lines = git(['ls-remote', '--tags', target.url]).split('\n')
+  } catch (err) {
+    gitFailure(err, '无法读取 ' + target.url + ' 的 tag 列表。')
+  }
+  const latest = pickLatestTag(lines)
   if (latest === undefined) fail(3, 'no v* tags found at ' + target.url)
   return latest
 }
@@ -384,7 +441,7 @@ function dryRunOne(target, ref) {
   log('  0. git fetch ' + target.url + ' ' + targetRef + '   # 取上游树，用于下面两项检查')
   log('  1. 检查 added 冲突 / 上游新增依赖（检出即退出码 2）')
   log('  2. git subtree pull --prefix=' + target.prefix + ' ' + target.url + ' ' + targetRef)
-  log('  3. git checkout --theirs -- ' + target.prefix)
+  log('  3. git checkout --theirs -- ' + target.prefix + '   # 只对未合并条目生效，干净合并的路径无需处理')
   log('  4. git checkout <pull 前的 HEAD> -- <' + target.owned.length + ' owned 文件>   # 非 --ours，见文件头')
   log('  5. git rm -f --ignore-unmatch <' + target.deleted.length + ' deleted 文件>')
   log('  6. git commit（分支 sync-upstream/' + target.id + '-' + targetRef + '-<ts>）')
@@ -541,10 +598,21 @@ function syncOne(target, ref) {  log('')
 
   assertCleanWorktree()
 
-  // 先取上游树：下面两项检查必须在**动分支之前**做，失败即零副作用退出。
-  git(['fetch', target.url, targetRef], { stdio: 'inherit' })
-  const upstreamCommit = git(['rev-parse', 'FETCH_HEAD^{commit}']).trim()
-  const upstreamPaths = git(['ls-tree', '-r', '--name-only', upstreamCommit]).trim().split('\n').filter(Boolean)
+  const branch = 'sync-upstream/' + target.id + '-' + targetRef + '-' + Date.now()
+  let upstreamCommit = ''
+  let upstreamPaths = []
+  let prePullCommit = ''
+  // 预检的 git 调用同样受 §7.3 的退出码契约约束：上游不可达 / tag 不存在 / 网络中断都发生在
+  // 这里，漏在 try 之外会让异常穿透到 main()，用户看到的是 node 内部栈、退出码从 3 变成 1
+  // （实测：url 指向不可达主机 → EXIT=1 + `node:internal/errors` 栈，零 `[sync-upstream]` 前缀）。
+  try {
+    // 先取上游树：下面两项检查必须在**动分支之前**做，失败即零副作用退出。
+    git(['fetch', target.url, targetRef], { stdio: 'inherit' })
+    upstreamCommit = git(['rev-parse', 'FETCH_HEAD^{commit}']).trim()
+    upstreamPaths = git(['ls-tree', '-r', '--name-only', upstreamCommit]).trim().split('\n').filter(Boolean)
+  } catch (err) {
+    gitFailure(err, '预检失败：尚未创建分支、未改动工作区。')
+  }
 
   // §6.2：added 是我方独有文件，上游出现同名路径会被 --theirs 静默覆盖。
   const clashes = addedConflicts(target.added, upstreamPaths)
@@ -585,13 +653,16 @@ function syncOne(target, ref) {  log('')
     )
   }
 
-  const branch = 'sync-upstream/' + target.id + '-' + targetRef + '-' + Date.now()
   log('[sync-upstream] 创建临时分支 ' + branch)
   // 我方版本的唯一真源：分支建好后、pull 之前的那一刻。git 的自动合并会把
   // 「双方都改、但改在不同区域」的 owned 文件干净地合起来（无冲突标记、无索引 stage），
   // 此时 `checkout --ours` 是**空操作**，我方版本会静默被上游内容污染。
-  const prePullCommit = git(['rev-parse', 'HEAD']).trim()
-  git(['checkout', '-b', branch])
+  try {
+    prePullCommit = git(['rev-parse', 'HEAD']).trim()
+    git(['checkout', '-b', branch])
+  } catch (err) {
+    gitFailure(err, '创建分支失败：仍在原分支，工作区未改动。')
+  }
 
   // 被忽略的 deleted 路径要在 pull **之前**快照：merge 一落地，磁盘与 HEAD 都已是上游版本。
   const ignoredSnapshot = snapshotIgnoredDeleted(target)
@@ -606,7 +677,7 @@ function syncOne(target, ref) {  log('')
       log('[sync-upstream] subtree pull 产生冲突，按 policy 归零 ...')
     }
 
-    log('[sync-upstream] 2/4 全取上游：git checkout --theirs -- ' + target.prefix)
+    log('[sync-upstream] 2/4 冲突条目取上游：git checkout --theirs -- ' + target.prefix)
     git(['checkout', '--theirs', '--', target.prefix])
 
     log('[sync-upstream] 3/4 恢复我方改造：' + target.owned.length + ' 个 owned 文件')
@@ -671,9 +742,7 @@ function syncOne(target, ref) {  log('')
     log('[sync-upstream] 下一步：推送该分支并开 PR（workflow 只开 PR，绝不直接推 main）。')
   } catch (err) {
     if (err instanceof SyncError) throw err
-    process.stderr.write('[sync-upstream] git 命令失败：' + (err instanceof Error ? err.message : String(err)) + '\n')
-    process.stderr.write('[sync-upstream] 当前在分支 ' + branch + '；处理完冲突后手动 commit，或 git checkout - 放弃。\n')
-    fail(3, 'git 命令失败（见上）')
+    gitFailure(err, '当前在分支 ' + branch + '；处理完冲突后手动 commit，或 git checkout - 放弃。')
   } finally {
     rmSync(ignoredSnapshot.dir, { recursive: true, force: true })
   }
@@ -685,17 +754,37 @@ const USAGE = `用法：
   node scripts/sync-upstream.mjs --list
   node scripts/sync-upstream.mjs --dry-run [--target <id>] [--ref <ref>]
   node scripts/sync-upstream.mjs [--target <id>] [--ref <ref>]
-  node scripts/sync-upstream.mjs --refresh-policy [--target <id>] [--baseline <commit>]`
+  node scripts/sync-upstream.mjs --refresh-policy [--target <id>] [--baseline <commit>]
+
+带取值的 flag（--target / --baseline / --ref）缺值即报错退出码 1，不会静默退化成默认行为。
+
+--list 列出**所有**发现的 target（§7.1）；--target 只作用于会写盘的子命令。
+
+--dry-run 优先于 --refresh-policy：两者同时出现时按 dry-run 处理（零写入）。
+
+--refresh-policy --baseline <commit> 只把 target.baselineCommit 换成该 commit，
+target.baseline（tag 名）保持 policy 里的原值不动 —— 它没有反向查 tag 的途径，
+想同时更正 tag 名请手改 policy。`
 
 export function runCli(argv) {
   const flag = (name) => argv.includes(name)
+
+  // 带取值的 flag：缺值必须当场报错（退出码 1）。
+  // 为什么不能沿用 `argv[i + 1]` 直接取：静默拿到 undefined 会让
+  //   `--target`（无值）退化成「作用于全部 5 个目标」、
+  //   `--baseline`（无值）退回 policy 里的旧 commit —— 实测两者都退出码 0，
+  // 用户以为只动了一个目标/用了一个显式基线，实际动了全部目标或用了旧基线。
+  const VALUE_FLAGS = ['--target', '--baseline', '--ref']
   const value = (name) => {
     const i = argv.indexOf(name)
-    return i >= 0 ? argv[i + 1] : undefined
+    if (i < 0) return undefined
+    const v = argv[i + 1]
+    if (v === undefined || VALUE_FLAGS.includes(v)) fail(1, name + ' 缺少取值\n' + USAGE)
+    return v
   }
 
   const known = ['--list', '--dry-run', '--refresh-policy', '--target', '--baseline', '--ref', '--help']
-  const unknown = argv.filter((a, i) => a.startsWith('--') && !known.includes(a) && !(i > 0 && ['--target', '--baseline', '--ref'].includes(argv[i - 1])))
+  const unknown = argv.filter((a, i) => a.startsWith('--') && !known.includes(a) && !(i > 0 && VALUE_FLAGS.includes(argv[i - 1])))
   if (unknown.length > 0) fail(1, 'unknown flag(s): ' + unknown.join(', ') + '\n' + USAGE)
   if (flag('--help')) {
     log(USAGE)
@@ -710,6 +799,9 @@ export function runCli(argv) {
   }
 
   if (flag('--list')) {
+    // 计划 §7.1 把 `--list` 定义为「列出**所有**发现的 target」——它刻意不是 `--target` 的
+    // 过滤器（`--target` 的语义是「只同步该目标」，对只读的 --list 不适用）。
+    // 不要为了让 `--list --target <id>` 「看起来生效」而改这里：那会改动 §7.1 的冻结语义。
     log('[sync-upstream] ' + all.length + ' target(s)：')
     for (const t of all) {
       log(
@@ -718,6 +810,15 @@ export function runCli(argv) {
           '  ' + t.url,
       )
     }
+    return
+  }
+
+  // --dry-run 必须**先于** --refresh-policy 判定：dry-run 的契约是「看计划，零写入」，
+  // 而 --refresh-policy 会写回 policy 文件。实测 `--refresh-policy --dry-run` 照样重写
+  // policy（owned 从 1 变 12），与 USAGE 与 AGENTS.md 对 dry-run 的承诺矛盾。
+  if (flag('--dry-run')) {
+    const ref = value('--ref')
+    for (const t of selected) dryRunOne(t, ref)
     return
   }
 
@@ -735,10 +836,6 @@ export function runCli(argv) {
   }
 
   const ref = value('--ref')
-  if (flag('--dry-run')) {
-    for (const t of selected) dryRunOne(t, ref)
-    return
-  }
 
   if (selected.length === 1) {
     syncOne(selected[0], ref)
