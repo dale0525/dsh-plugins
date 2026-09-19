@@ -154,15 +154,13 @@ export const inject = ['llm']
 export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
 
 /**
- * Settings namespace owning the international card's section.
+ * Settings namespace owning the international provider's section.
  *
- * One namespace per card, not one shared: the settings Plugins tab dispatches a
- * card by rendering `settings.plugin.item` with `entryKey = ns` for each
- * namespace the Host serves, and skips an entry whose key names no served
- * namespace. With a single installed section, the international card registers
- * into the slot but is never rendered — the card list is built from the Host's
- * sections, not from the slot's entries. Each card therefore needs its own
- * installed section whose namespace equals the card's slot key.
+ * One namespace per provider, not one shared: the Models page resolves a
+ * provider's `settingsNs` against the sections the Host serves, so a shared
+ * namespace would render both providers onto one card and let one card's form
+ * edit the other's settings path. Each provider therefore needs its own
+ * installed section.
  */
 export const WORKBUDDY_AI_SETTINGS_NS = 'workbuddy-ai' as SettingsNamespace
 

@@ -27,9 +27,16 @@ import { CARD_VARIANTS, type WorkBuddyCardVariant, type WorkBuddyPluginCardInjec
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddyWebProbeModel, WorkBuddyWebStatus } from '../status-paths.ts'
 
-/** Injected props; `directory` resolves the session's current model selection. */
+/**
+ * Injected props; `directory` resolves the session's current model selection.
+ *
+ * Narrowed to the read face the control actually uses (`getSnapshot` +
+ * `subscribe`): the full `SnapshotStore` also carries `update`/`set`, which
+ * this control never calls, and demanding them would force every caller —
+ * including a plain test double — to implement a write path it must not use.
+ */
 export interface WorkBuddyProbeControlProps extends WorkBuddyPluginCardInjected {
-  directory: ModelDirectory['store']
+  directory: Pick<ModelDirectory['store'], 'getSnapshot' | 'subscribe'>
 }
 
 /**
@@ -239,13 +246,16 @@ export function WorkBuddyProbeControl({ directory, t }: WorkBuddyProbeControlPro
   const subscribe = useCallback((listener: () => void) => directory.subscribe(listener), [directory])
   const snapshot = useCallback(() => directory.getSnapshot(), [directory])
   const selection = useSyncExternalStore(subscribe, snapshot, snapshot).current
-  const card = selection === undefined ? undefined : cardVariantFor(selection.provider)
+  // `current` is `ModelSelection | null` (not `undefined`): the directory reports
+  // "no model selected" as null, so a strict `=== undefined` test would let a
+  // null through and crash on `selection.provider`.
+  const card = selection === null ? undefined : cardVariantFor(selection.provider)
   // `card` identifies both the variant and its routes: a selection under either
   // provider resolves to exactly one card's status/probe pair, so the control
   // can never read one variant's state while probing the other.
-  const key = card === undefined || selection === undefined ? undefined : `${card.id}:${selection.model}`
+  const key = card === undefined || selection === null ? undefined : `${card.id}:${selection.model}`
   // A new selection gets fresh state; a late response cannot target the new model.
-  return card === undefined || selection === undefined || key === undefined
+  return card === undefined || selection === null || key === undefined
     ? null
     : <ModelProbe key={key} model={selection.model} card={card} label={useLabel(t)} t={t} />
 }

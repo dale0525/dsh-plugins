@@ -122,8 +122,12 @@ async function boot(): Promise<Context> {
   await ctx.plugin(MemorySettings)
   await ctx.plugin(FakeWebServer)
   await ctx.plugin(WorkBuddy, {})
-  await vi.waitFor(() => {
+  // Provider row and model roster are two separate steps (registration vs the
+  // credential sweep's `catalog.setVisible(true)`); waiting on the provider
+  // alone lets a later `listModels` observe an empty roster under CPU load.
+  await vi.waitFor(async () => {
     expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+    expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
   })
   return ctx
 }
@@ -170,7 +174,13 @@ describe('catalog lifecycle', () => {
       expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
     })
     expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toContain('minimax-m3')
-    expect(attempts).toBeGreaterThanOrEqual(1)
+    // Wait on the attempt itself, not on the roster: the built-in fallback
+    // already satisfies the length check above, so asserting `attempts` right
+    // after it races the fetch this test is about (under load the fetch has
+    // not been issued yet and the count is still 0).
+    await vi.waitFor(() => {
+      expect(attempts).toBeGreaterThanOrEqual(1)
+    })
 
     // Without the retry this stayed on the fallback list until a manual
     // refresh — a startup network blip should not require user action.

@@ -36,7 +36,12 @@ function credentialDocument(domain: string): string {
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
-  if (root !== undefined) await rm(root, { recursive: true, force: true })
+  // `maxRetries`: disposing the fiber stops the sweep timer, but a catalog write
+  // already in flight can still land just after it — the directory is then
+  // momentarily non-empty and a bare `rm` fails with ENOTEMPTY. Retrying is the
+  // documented handling for exactly that transient error, and keeps the failure
+  // from being reported as a product defect.
+  if (root !== undefined) await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 })
   root = undefined
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
@@ -117,9 +122,15 @@ describe('WorkBuddy Host settings integration', () => {
     await ctx.plugin(MemorySettings)
     await ctx.plugin(WorkBuddy, {})
 
-    // Registration rides on the loopback shim's listening event.
-    await vi.waitFor(() => {
+    // Registration rides on the loopback shim's listening event. The roster is
+    // a SECOND step: the provider row lands when its adapter registers, but the
+    // model list only appears once the credential sweep calls
+    // `catalog.setVisible(true)` and invalidates. Waiting on the provider alone
+    // races that sweep, and under CPU load the `listModels` below then returns
+    // an empty list.
+    await vi.waitFor(async () => {
       expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+      expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
     })
     expect(ctx.llm.listConfigurableProviders()).toContainEqual({
       provider: 'workbuddy',
@@ -220,13 +231,11 @@ describe('WorkBuddy Host settings integration', () => {
       { provider: 'workbuddy-ai', displayName: 'WorkBuddy AI', settingsNs: 'workbuddy-ai', settingsPath: [], declared: false },
     ]))
 
-    // THE DISPATCH CONTRACT. The Plugins tab renders a card by
-    // `renderSlot('settings.plugin.item', {}, { entryKey: ns })` for each
-    // namespace the Host serves, and skips an entry whose key names no served
-    // namespace — the tab builds its list from sections, never from the slot's
-    // registrations. A card whose variant id is not a served ns therefore
-    // registers but never renders, which is exactly the bug this pins: every
-    // variant id must be an installed section's namespace.
+    // THE NAMESPACE CONTRACT. The Models page resolves a provider's
+    // `settingsNs` against the sections the Host serves and renders the
+    // matching form; a namespace that names no served section leaves the
+    // provider's card unconfigured. Both variant ids are therefore required to
+    // be installed section namespaces.
     const served = new Set(ctx.settings.describe().map(entry => entry.ns))
     for (const variant of WorkBuddy.WORKBUDDY_VARIANTS) {
       expect(served, `card key "${variant.id}" must be a served settings namespace`).toContain(variant.id)

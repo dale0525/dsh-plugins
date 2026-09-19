@@ -1,22 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots'
-import { CARD_VARIANTS } from '../src/client/WorkBuddyPluginCard.tsx'
+import { WORKBUDDY_BUNDLE_NAMES, WORKBUDDY_ROW_ID } from '../src/client/index.tsx'
 
 /**
- * The plan's §7 gate: "同一 client bundle 注册两个 settings.plugin.item key…
- * 实施前以最小运行验证两个条目都可见；若插槽不支持，再定位限制，不直接复制
- * 整个插件." — i.e. register two cards from one plugin, and if the slot cannot
- * hold both, find the actual limit rather than duplicating the plugin.
+ * The row-configuration contract this plugin registers against.
  *
- * `settings.plugin.item` is a keyed slot, so whether two entries coexist is a
- * property of the real slot registry rather than of this plugin's code. These
- * tests drive the actual `SlotCore` to answer it, instead of trusting that the
- * registration shape works.
+ * DSH 0.1.6 replaced `settings.plugin.item` with `plugins.row.config`, keyed by
+ * `<bundle package name>#<row id>`. Two consequences drive these tests, and
+ * both are properties of the real slot registry rather than of this plugin's
+ * code — so they drive the actual `SlotCore` instead of trusting the
+ * registration shape:
  *
- * Only the variant ids are needed from the card module (the components
- * themselves cannot render in this Node environment), and the register calls
- * are typed loosely on purpose: the point under test is the registry's
- * behaviour, not the DSH client typings.
+ *  1. One row has exactly ONE configuration key. The plugin serves two product
+ *     cards, and a second registration under the same key throws, so the two
+ *     cards must share a single entry (`WorkBuddyPluginConfig` renders both).
+ *  2. The key is built from the bundle package name, which differs between the
+ *     aggregated install and a standalone one — both keys are registered, and
+ *     the one whose bundle is absent is simply never dispatched.
+ *
+ * The register calls are typed loosely on purpose: the point under test is the
+ * registry's behaviour, not the DSH client typings.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -28,84 +31,64 @@ const register = (core: SlotCore, options: Record<string, unknown>): unknown =>
   (core.register as any)(options, Component)
 
 /**
- * Declare `settings.plugin.item` the way DSH does: a parent entry contributes a
+ * Declare `plugins.row.config` the way DSH does: a parent entry contributes a
  * `children` table. `SlotCore` has no standalone declare method — the child
  * spec is owned by the registering entry, which is also why a slot can only be
  * claimed once.
  */
-function declarePluginItem(core: SlotCore): void {
+function declareRowConfig(core: SlotCore): void {
   register(core, {
     name: 'root',
-    children: {
-      'settings.plugin.item': {
-        kind: 'keyed',
-        keyProps: { workbuddy: {}, 'workbuddy-ai': {} },
-      },
-    },
+    children: { 'plugins.row.config': { kind: 'keyed', scope: 'root' } },
   })
 }
 
-const entries = (core: SlotCore): any[] => (core.entries as any)('settings.plugin.item')
+const entries = (core: SlotCore): any[] => (core.entries as any)('plugins.row.config')
 
-describe('settings.plugin.item holds both cards', () => {
-  it('accepts two registrations with distinct keys from one owner', () => {
+/** The keys the real client entry registers. */
+const registeredKeys = (): string[] =>
+  WORKBUDDY_BUNDLE_NAMES.map(bundle => `${bundle}#${WORKBUDDY_ROW_ID}`)
+
+describe('plugins.row.config carries the WorkBuddy row', () => {
+  it('accepts the key the real client entry builds for every bundle shape', () => {
     const core = new SlotCore()
-    declarePluginItem(core)
+    declareRowConfig(core)
     expect(() => {
-      for (const [index, variant] of CARD_VARIANTS.entries()) {
-        register(core, { name: 'settings.plugin.item', key: variant.id, priority: 30 - index })
-      }
+      for (const key of registeredKeys()) register(core, { name: 'plugins.row.config', key })
     }).not.toThrow()
-    // Both entries are live, which is exactly what the two cards need.
-    expect(entries(core)).toHaveLength(2)
+    expect(entries(core)).toHaveLength(WORKBUDDY_BUNDLE_NAMES.length)
   })
 
-  it('projects one cell per key, so both cards render', () => {
+  it('keys the entry by <bundle>#<row id>, so the page can find it', () => {
     const core = new SlotCore()
-    declarePluginItem(core)
-    for (const [index, variant] of CARD_VARIANTS.entries()) {
-      register(core, { name: 'settings.plugin.item', key: variant.id, priority: 30 - index })
-    }
-    // The projection returns the winning ENTRY per key, so the key is read off
-    // `options` — one cell each, which is what the settings page renders.
-    const cells = (core.entriesOfSlot as any)('settings.plugin.item') as { options: { key?: string } }[]
-    expect(cells).toHaveLength(2)
-    expect(cells.map(cell => cell.options.key).sort()).toEqual(['workbuddy', 'workbuddy-ai'])
+    declareRowConfig(core)
+    for (const key of registeredKeys()) register(core, { name: 'plugins.row.config', key })
+    const cells = (core.entriesOfSlot as any)('plugins.row.config') as { options: { key?: string } }[]
+    expect(cells.map(cell => cell.options.key).sort()).toEqual([...registeredKeys()].sort())
   })
 
-  it('rejects a duplicate key at the same priority, which is why priorities differ', () => {
-    // The registry throws when the SAME key is registered twice at the same
-    // priority. Distinct keys would be fine at equal priority, but the plugin
-    // still staggers them so the CN card leads in the settings list; this test
-    // documents which rule is actually enforced.
+  it('rejects a second entry for the same bundle and row', () => {
+    // This is why the two product cards share ONE entry instead of registering
+    // two keys: the row is declared once, so it has one configuration key.
     const core = new SlotCore()
-    declarePluginItem(core)
-    register(core, { name: 'settings.plugin.item', key: 'workbuddy', priority: 30 })
-    expect(() => register(core, { name: 'settings.plugin.item', key: 'workbuddy', priority: 30 }))
+    declareRowConfig(core)
+    const key = registeredKeys()[0]!
+    register(core, { name: 'plugins.row.config', key })
+    expect(() => register(core, { name: 'plugins.row.config', key }))
       .toThrow(/already has an entry for key/)
   })
 
-  it('allows distinct keys at the same priority, so staggering is presentation only', () => {
+  it('requires an explicit key', () => {
+    // The breakage the client entry's try/catch exists for.
     const core = new SlotCore()
-    declarePluginItem(core)
-    // If this ever threw, the two cards would depend on artificial priority
-    // differences to coexist — worth knowing explicitly.
-    expect(() => {
-      register(core, { name: 'settings.plugin.item', key: 'workbuddy', priority: 30 })
-      register(core, { name: 'settings.plugin.item', key: 'workbuddy-ai', priority: 30 })
-    }).not.toThrow()
-    expect(entries(core)).toHaveLength(2)
-  })
-
-  it('requires an explicit key, which is why each card passes one', () => {
-    const core = new SlotCore()
-    declarePluginItem(core)
-    // This is the rc.7 breakage the client entry's try/catch exists for.
-    expect(() => register(core, { name: 'settings.plugin.item' }))
+    declareRowConfig(core)
+    expect(() => register(core, { name: 'plugins.row.config' }))
       .toThrow(/requires options.key/)
   })
 
-  it('rejects registering into an undeclared slot', () => {
+  it('rejects registering into the undeclared legacy slot', () => {
+    // The 0.1.6 breakage this migration fixes: the old slot is gone, so a
+    // registration that still named it would throw and the card would vanish.
     const core = new SlotCore()
     expect(() => register(core, { name: 'settings.plugin.item', key: 'workbuddy' }))
       .toThrow(/not declared/)

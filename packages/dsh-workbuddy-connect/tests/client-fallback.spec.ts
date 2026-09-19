@@ -2,8 +2,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
 /**
- * The client entry degrades a slot-API breaking change (the rc.6→rc.7
- * `id`→`key` rename that caused the red "Failed to load plugins" banner)
+ * The client entry degrades a slot-API breaking change (the 0.1.5→0.1.6
+ * `settings.plugin.item`→`plugins.row.config` move that made the card vanish)
  * to a console.error, so the host provider keeps working without a banner.
  *
  * We cannot import the real client entry (it pulls browser-only DSH client
@@ -22,14 +22,15 @@ describe('client card fallback', () => {
     const errors: unknown[] = []
     const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args) })
 
-    // Simulate a DSH loader that throws on ctx.slots.inject (the rc.7
-    // "requires options.key" error). Loose `any` on purpose: we only test
-    // the try/catch boundary, not the DSH client API types.
+    // Simulate a DSH loader that throws on ctx.slots.inject (the 0.1.6
+    // "not declared" error a stale slot name produces). Loose `any` on
+    // purpose: we only test the try/catch boundary, not the DSH client API
+    // types.
     const fakeCtx: any = {
       effect: () => {},
       locale: { register: () => () => {}, bind: () => () => '' },
       slots: {
-        inject: () => { throw new Error('keyed slot "settings.plugin.item" requires options.key') },
+        inject: () => { throw new Error('slot "plugins.row.config" is not declared') },
       },
     }
 
@@ -39,7 +40,7 @@ describe('client card fallback', () => {
         const namespace = 'settings.workbuddy'
         ctx.effect(() => ctx.locale.register(namespace, { zh: {}, en: {} }), 'dsh-workbuddy-connect: settings copy')
         const t = ctx.locale.bind(namespace)
-        ctx.slots.inject('settings.plugin.item', () => {
+        ctx.slots.inject('plugins.row.config', () => {
           throw new Error('not reached')
         })
         void t
@@ -59,7 +60,7 @@ describe('client card fallback', () => {
     // The error is visible in the console for developers.
     expect(errors).toHaveLength(1)
     expect(String(errors[0])).toContain('client card failed to load')
-    expect(String(errors[0])).toContain('requires options.key')
+    expect(String(errors[0])).toContain('is not declared')
 
     spy.mockRestore()
   })

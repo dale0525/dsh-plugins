@@ -75,8 +75,16 @@ async function boot(options: {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(WorkBuddy, {})
-  await vi.waitFor(() => {
+  // Wait for the MODEL ROSTER, not just the provider row. Registration and
+  // visibility are two steps: the provider appears as soon as its adapter is
+  // registered, but the roster only lands once the credential sweep calls
+  // `catalog.setVisible(true)` and invalidates. Waiting on the provider alone
+  // races that sweep — under CPU load the first `resolveModelInfo` below then
+  // throws `has no configured model`, which is a test-precondition failure, not
+  // a product defect.
+  await vi.waitFor(async () => {
     expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
+    expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
   })
   return ctx
 }
