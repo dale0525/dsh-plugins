@@ -1,12 +1,14 @@
 {
   "_comment": [
-    "上游同步策略。scripts/sync-upstream.mjs 据此把上游新版本合进本仓库的 fork。",
-    "顺序铁律：先 checkout --theirs（全取上游）→ 再 checkout --ours（恢复 owned）→ 再 git rm（重删 deleted）。",
+    "本包的上游同步策略。scripts/sync-upstream.mjs 据此把上游新版本合进本仓库的 fork。",
+    "顺序铁律：先 checkout --theirs（全取上游）→ 再按 pull 之前的 commit 恢复 owned（非 --ours，--ours 对干净合并是空操作）→ 再 git rm（重删 deleted）。",
     "顺序反了会让我们的改造被上游覆盖。",
-    "本文件由 scripts/sync-upstream.mjs --refresh-policy 按当前 fork 状态生成；",
-    "手工改了 fork 的文件集后必须重跑，否则 deleted 清单会漏项（上游会静默复活我们删掉的代码）。"
+    "本文件由 scripts/sync-upstream.mjs --refresh-policy --target <target.id> 按当前 fork 状态生成；",
+    "手工改了本包的文件集后必须重跑，否则 deleted 清单会漏项（上游会静默复活我们删掉的代码）。",
+    "路径均为包相对（相对 target.prefix）。"
   ],
-  "upstream": {
+  "target": {
+    "id": "config-manager",
     "url": "https://github.com/xiajiajun516/dsh-config-manager",
     "prefix": "packages/dsh-config-manager",
     "baseline": "v0.1.60",

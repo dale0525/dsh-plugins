@@ -13,12 +13,16 @@ dsh-plugins/
 │   │   ├── aggregate.yml   # 手写清单（patchFrom / deps）
 │   │   ├── cordis.patch.yml# 生成物，勿手改
 │   │   └── package.json    # 生成物，勿手改
-│   └── dsh-config-manager/ # git subtree fork 自上游 v0.1.60
+│   ├── dsh-config-manager/     # 有上游 → git subtree fork
+│   ├── dsh-easyrewrite/        # 有上游 → git subtree fork
+│   ├── dsh-imagegen/           # 有上游 → git subtree fork
+│   ├── dsh-market/             # 有上游 → git subtree fork
+│   ├── dsh-workbuddy-connect/  # 有上游 → git subtree fork
+│   └── <pkg>/sync-policy.json  # 该 fork 的上游身份与同步清单（仅 fork 有）
 ├── scripts/
 │   ├── aggregate.mjs       # aggregate.yml → patch + deps
 │   ├── publish.mjs         # 按依赖边拓扑推导发布顺序（子插件 → 聚合包）
 │   └── sync-upstream.mjs   # 上游同步（policy 应用）
-├── sync-policy.json        # 声明 owned / deleted / upstream
 ├── docs/adding-a-child-plugin.md   # 新增子插件的完整步骤与验收
 └── packages/dsh-config-manager/scripts/dev-watch.mjs   # 源 → 产物自动重建（子包内）
 ```
@@ -66,21 +70,38 @@ git log --oneline --grep="git-subtree-dir: packages/<name>" | head -1
 
 **验收**：`dsh-web status` 输出 `Verdict:  OK`（作业 PID == 端口 owner PID）。
 
-## 🔀 上游同步（fork 自 dsh-config-manager）
+## 🔀 上游同步
 
-`packages/dsh-config-manager` 是 `git subtree`，保留上游历史。同步**只开 PR，绝不直接推 main**。
+每个 fork 子包自带一份 `packages/<pkg>/sync-policy.json`，声明**它自己**的上游身份与清单；
+`scripts/sync-upstream.mjs` glob 出全部 policy 并逐个同步，**policy 跟随它的包**。同步**只开 PR，绝不直接推 main**。
+
+```bash
+node scripts/sync-upstream.mjs --list                  # 列出全部目标与计数
+node scripts/sync-upstream.mjs --dry-run               # 看计划，零写入
+node scripts/sync-upstream.mjs --target <id>           # 只同步一个目标
+```
 
 policy 顺序是**铁律**（顺序反了会让我们的改造被上游覆盖）：
 
 ```
-git subtree pull --prefix=packages/dsh-config-manager <upstream> <ref>   # 产生冲突
-git checkout --theirs -- packages/dsh-config-manager                     # 1) 先全取上游
-git checkout --ours  -- <sync-policy.json 的 owned 列表>                  # 2) 再恢复我方改造
-git rm -f --ignore-unmatch <sync-policy.json 的 deleted 列表>             # 3) 重删我方删除
+git subtree pull --prefix=packages/<pkg> <target.url> <ref>   # 产生冲突
+git checkout --theirs -- packages/<pkg>                       # 1) 先全取上游
+git checkout <pull 前的 HEAD> -- <owned 列表>                  # 2) 再恢复我方改造
+git rm -f --ignore-unmatch <deleted 列表>                      # 3) 重删我方删除
 git commit
 ```
 
-用 `node scripts/sync-upstream.mjs --dry-run` 先看计划。真实价值边界：上游一天 1-2 个版本、我们砍掉了大部分代码，**这个同步不会带来「版本对齐」**，它只把上游在「我们保留的文件」里的 bug 修复拉进来。
+> **第 2 步必须按 commit 取，不能写 `git checkout --ours`**：`--ours/--theirs` 只对**未合并的
+> 索引条目**生效。git 对「双方都改、但改在不同区域」的文件会干净地三方合并 —— 既无冲突标记，
+> 索引里也没有 stage 1/2/3，此时 `--ours` 是**空操作**，我方版本会被上游内容静默污染
+> （`package.json` 的版本号、我方改过的文案都会这样丢）。以 pull **之前**的 HEAD 为唯一真源覆盖，
+> 才对冲突与非冲突路径一视同仁。脚本用 `restoreOwned()` 实现，并有针对性测试钉住这条契约。
+
+> **第 3 步的陷阱**：上游若跟踪了被我方 `.gitignore` 的路径（workbuddy / easyrewrite 的 `lib/`、
+> imagegen 的 `docs/images/`），`git rm -f` 会连**磁盘上的构建产物与 README 配图**一起删掉。
+> 脚本对这类路径改用 `git rm --cached` 并在 merge 后恢复磁盘内容；手改时同理。
+
+真实价值边界：上游一天 1-2 个版本、我们砍掉了大部分代码，**这个同步不会带来「版本对齐」**，它只把上游在「我们保留的文件」里的 bug 修复拉进来。
 
 **改了 fork 的文件集就必须重算清单**：第 2 步 `--theirs` 会取回上游全部文件，只有登记在
 `owned` 里的才会被恢复成我方版本。**新增一个我方文件却忘了登记，下一次同步就被上游版本静默覆盖**

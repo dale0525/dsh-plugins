@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "本包的上游同步策略。scripts/sync-upstream.mjs 据此把上游新版本合进本仓库的 fork。",
+    "顺序铁律：先 checkout --theirs（全取上游）→ 再按 pull 之前的 commit 恢复 owned（非 --ours，--ours 对干净合并是空操作）→ 再 git rm（重删 deleted）。",
+    "顺序反了会让我们的改造被上游覆盖。",
+    "本文件由 scripts/sync-upstream.mjs --refresh-policy --target <target.id> 按当前 fork 状态生成；",
+    "手工改了本包的文件集后必须重跑，否则 deleted 清单会漏项（上游会静默复活我们删掉的代码）。",
+    "路径均为包相对（相对 target.prefix）。"
+  ],
+  "target": {
+    "id": "easyrewrite",
+    "url": "https://github.com/Renzic-Stone/DSH-EasyRewrite",
+    "prefix": "packages/dsh-easyrewrite",
+    "baseline": "v2.5.4",
+    "baselineCommit": "ecd336ec81b6c561c3d75d7ee12ed177c404b28c"
+  },
+  "owned": [
+    ".gitignore",
+    "build.mjs",
+    "cordis.patch.yml",
+    "package.json",
+    "src/client.src.js"
+  ],
+  "deleted": [
+    "assets/logo-dark.png",
+    "assets/logo.png",
+    "docs/_removed-drop-block.txt",
+    "docs/images/bubble-edit-active.png",
+    "docs/images/bubble-edit-images.png",
+    "docs/images/bubble-edit-model-select.png",
+    "docs/images/drag-drop-dual-dropzone.png",
+    "docs/images/message-hover-actions.png",
+    "docs/images/recall-confirm-capsule.png",
+    "docs/images/recall-editing.png",
+    "docs/images/settings-panel-1.png",
+    "docs/images/settings-panel-2.png",
+    "docs/images/version-pager.png",
+    "lib/client.js",
+    "lib/index.js"
+  ],
+  "added": [
+    "src/index.js"
+  ]
+}

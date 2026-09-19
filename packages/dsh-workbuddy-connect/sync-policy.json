@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "本包的上游同步策略。scripts/sync-upstream.mjs 据此把上游新版本合进本仓库的 fork。",
+    "顺序铁律：先 checkout --theirs（全取上游）→ 再按 pull 之前的 commit 恢复 owned（非 --ours，--ours 对干净合并是空操作）→ 再 git rm（重删 deleted）。",
+    "顺序反了会让我们的改造被上游覆盖。",
+    "本文件由 scripts/sync-upstream.mjs --refresh-policy --target <target.id> 按当前 fork 状态生成；",
+    "手工改了本包的文件集后必须重跑，否则 deleted 清单会漏项（上游会静默复活我们删掉的代码）。",
+    "路径均为包相对（相对 target.prefix）。"
+  ],
+  "target": {
+    "id": "workbuddy",
+    "url": "https://github.com/corrinehu/dsh-workbuddy-connect",
+    "prefix": "packages/dsh-workbuddy-connect",
+    "baseline": "v0.5.4",
+    "baselineCommit": "edbc41c9f1f7061a3a0ddf7846d68ad8beb3ef0e"
+  },
+  "owned": [
+    ".gitignore",
+    "cordis.patch.yml",
+    "package.json",
+    "src/client/WorkBuddyPluginCard.tsx",
+    "src/client/WorkBuddyProbeControl.tsx",
+    "src/client/index.tsx",
+    "src/client/locales.ts",
+    "src/index.ts",
+    "tests/catalog-lifecycle.spec.ts",
+    "tests/client-fallback.spec.ts",
+    "tests/reasoning-merge.spec.ts",
+    "tests/settings-integration.spec.ts",
+    "tests/slot-registration.spec.ts",
+    "tsdown.config.ts"
+  ],
+  "deleted": [
+    "assets/1.png",
+    "assets/2.png",
+    "assets/3.png",
+    "assets/4.png",
+    "assets/5.png",
+    "lib/bin.d.ts",
+    "lib/bin.js",
+    "lib/client.js",
+    "lib/index.d.ts",
+    "lib/index.js",
+    "lib/variants-XUStsapF.js",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml"
+  ],
+  "added": [
+    "src/client/WorkBuddyPluginConfig.tsx"
+  ]
+}

@@ -1,37 +1,60 @@
-# 上游同步：把 dsh-config-manager 上游的新版本合进本仓库的 fork。
+# 上游同步：把各 fork 子包的上游新版本合进本仓库。
 #
-# 只开 PR，**绝不直接推 main**：上游一天 1-2 个版本，冲突需人工裁定。
+# 只开 PR，**绝不直接推 main**：上游发版频繁，冲突需人工裁定。
+#
+# 每个目标（= 一个 fork 子包）一个 matrix job，各自校验自己的
+# packages/<dir>/sync-policy.json 并只同步自己。fail-fast 关闭：
+# 一个目标失败不拖垮其余目标。
 #
 # 两个触发方式：
 #   - schedule：每天一次。上游发版频繁，但每天最多一个 PR，避免噪音；
-#   - workflow_dispatch：手动指定上游 ref（缺省 = 最新 tag）。
+#   - workflow_dispatch：手动触发。
 #
 # 冲突分类由 scripts/sync-upstream.mjs 输出：A 类真冲突（需人工裁定）/ B 类机械重删。
+# 该分类只在「应用 policy 后仍有冲突标记」时打印，随后以退出码 2 失败（不产出 PR）。
 name: sync-upstream
 
 on:
   schedule:
     # 每天 03:17 UTC（避开整点，减少 GitHub Actions 排队）
     - cron: '17 3 * * *'
+  # 没有 inputs：5 个目标各有自己的上游与 tag 命名空间（imagegen 是 v1.6.0、
+  # market 是 v1.48.0），一个全局 ref 输入对其中 4 个必然是错的，只会误导。
+  # 要同步指定 ref，本地跑 `node scripts/sync-upstream.mjs --target <id> --ref <ref>`。
   workflow_dispatch:
-    inputs:
-      ref:
-        description: '上游 ref（tag / branch / commit）；留空 = 上游最新 v* tag'
-        required: false
-        type: string
 
 permissions:
   contents: write
   pull-requests: write
 
-concurrency:
-  group: sync-upstream
-  cancel-in-progress: false
-
 jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      # 一个目标失败不拖垮其余目标
+      fail-fast: false
+      matrix:
+        include:
+          - id: config-manager
+            pkg: '@logictan/dsh-config-manager'
+            test: 'pnpm --filter @logictan/dsh-config-manager test'
+          - id: workbuddy
+            pkg: '@logictan/dsh-workbuddy-connect'
+            test: 'pnpm --filter @logictan/dsh-workbuddy-connect test'
+          - id: easyrewrite
+            pkg: '@logictan/dsh-easyrewrite'
+            test: 'pnpm --filter @logictan/dsh-easyrewrite test'
+          - id: market
+            pkg: '@logictan/dshmarket'
+            test: 'pnpm --filter @logictan/dshmarket test'
+          - id: imagegen
+            pkg: '@logictan/dsh-imagegen'
+            test: 'pnpm --filter @logictan/dsh-imagegen typecheck'
+    # 按目标区分并发组：不同目标互不阻塞，同一目标不会并发两次
+    concurrency:
+      group: sync-upstream-${{ matrix.id }}
+      cancel-in-progress: false
     steps:
       # 第三方 action 锁 commit SHA（与本仓库 publish.yml 同一策略）
       - name: Checkout
@@ -57,20 +80,47 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
+      # 每个目标只校验自己那一份 policy：在 packages/*/sync-policy.json 里找
+      # target.id === matrix.id 的唯一一份（目录名与 id 不保证同名，故不硬编码路径）。
       - name: Validate sync policy
+        id: policy
+        env:
+          TARGET_ID: ${{ matrix.id }}
         run: |
-          node -e "const p=require('./sync-policy.json'); if(!p.upstream||!p.upstream.url) { console.error('sync-policy.json: upstream.url missing'); process.exit(1) } console.log('owned='+ (p.owned||[]).length + ' deleted=' + (p.deleted||[]).length)"
+          node -e '
+            const fs = require("fs"), path = require("path");
+            const id = process.env.TARGET_ID;
+            const candidates = fs.readdirSync("packages", { withFileTypes: true })
+              .filter((d) => d.isDirectory())
+              .map((d) => path.join("packages", d.name, "sync-policy.json"))
+              .filter((f) => fs.existsSync(f))
+              .map((f) => ({ f, p: JSON.parse(fs.readFileSync(f, "utf8")) }))
+              .filter((x) => x.p && x.p.target && x.p.target.id === id);
+            if (candidates.length === 0) {
+              console.error("no packages/*/sync-policy.json declares target.id = " + id);
+              process.exit(1);
+            }
+            if (candidates.length > 1) {
+              console.error("target.id " + id + " declared by multiple policies: " + candidates.map((x) => x.f).join(", "));
+              process.exit(1);
+            }
+            const { f, p } = candidates[0];
+            const missing = ["url", "prefix", "baseline"]
+              .filter((k) => !p.target[k] || String(p.target[k]).trim() === "");
+            if (missing.length > 0) {
+              console.error(f + ": target." + missing.join(" / target.") + " missing or empty");
+              process.exit(1);
+            }
+            console.log(f + ": target.id=" + p.target.id + " url=" + p.target.url + " prefix=" + p.target.prefix + " baseline=" + p.target.baseline);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "path=" + f + "\n");
+          '
 
       - name: Apply upstream sync
         id: sync
         env:
-          REF: ${{ inputs.ref }}
+          TARGET_ID: ${{ matrix.id }}
         run: |
-          if [ -n "$REF" ]; then
-            node scripts/sync-upstream.mjs --ref "$REF"
-          else
-            node scripts/sync-upstream.mjs
-          fi
+          node scripts/sync-upstream.mjs --target "$TARGET_ID"
 
       - name: Capture applied branch
         id: branch
@@ -82,11 +132,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile=false
 
-      - name: Typecheck
-        run: pnpm --filter @logictan/dsh-config-manager typecheck
-
       - name: Test
-        run: pnpm --filter @logictan/dsh-config-manager test
+        run: ${{ matrix.test }}
 
       - name: Open pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
@@ -94,16 +141,19 @@ jobs:
           # 只推 PR 分支；本 action 从不推 base（main）
           branch: ${{ steps.branch.outputs.name }}
           base: main
-          title: 'chore: sync upstream dsh-config-manager'
-          commit-message: 'chore: sync upstream dsh-config-manager'
+          title: 'chore: sync upstream ${{ matrix.id }}'
+          commit-message: 'chore: sync upstream ${{ matrix.id }}'
           delete-branch: true
           body: |
-            自动上游同步（`scripts/sync-upstream.mjs` + `sync-policy.json`）。
+            自动上游同步（`scripts/sync-upstream.mjs --target ${{ matrix.id }}` + `${{ steps.policy.outputs.path }}`）。
 
-            **顺序**：先 `git checkout --theirs`（全取上游）→ 再 `--ours`（恢复 `owned`）→ 再 `git rm`（重删 `deleted`）。
+            **顺序**：先 `git checkout --theirs`（全取上游）→ 再按 pull **之前**的 commit 恢复 `owned` → 再 `git rm`（重删 `deleted`）。
             顺序反了会让本仓库的改造被上游覆盖。
 
+            第 2 步用 `git checkout <pull 前的 HEAD> -- <owned>` 而非 `--ours`：`--ours` 只对未合并的索引条目生效，
+            对 git 干净三方合并的文件是**空操作**，我方版本会被静默污染。
+
             合并前请人工确认：
-            - [ ] `sync-policy.json` 的 `owned` / `deleted` 清单是否仍与仓库实际状态一致（本轮新增/删除的文件可能未登记）
+            - [ ] `${{ steps.policy.outputs.path }}` 的 `owned` / `deleted` 清单是否仍与仓库实际状态一致（本轮新增/删除的文件可能未登记）
             - [ ] 上游在「我们保留的文件」里的 bug 修复是否已带入
             - [ ] 我们删掉的功能是否被上游静默复活（`deleted` 清单覆盖不到的新文件）
