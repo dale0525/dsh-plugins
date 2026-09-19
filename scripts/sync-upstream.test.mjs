@@ -599,6 +599,38 @@ test('CLI：取值 flag 后跟任何 --xxx 都算缺值（退出码 1，不把�
 })
 
 /**
+ * 用户**显式给出**的取值，若该模式不消费它，必须 fail(1)，不得静默丢掉。
+ *
+ * 实测（修复前）三条路径都是退出码 0 而用户给的 sha 一次都不出现：
+ *   `--list --baseline <sha>` / `--dry-run --baseline <sha>` / 同步（不带 --refresh-policy）
+ * 另加 `--refresh-policy --ref <tag>`（该模式不读 --ref）。
+ * 静默忽略与「缺少取值」是同一类问题的两端：用户以为命令是按那个值跑的。
+ *
+ * 例外：`--list --target <id>` 不报错 —— §7.1 把 `--list` 定义为「列出所有 target」，
+ * `--target` 对它无意义但无害，且报错会与冻结语义纠缠。
+ */
+test('CLI：模式不消费的取值 flag → 退出码 1（不静默丢掉用户给的取值）', () => {
+  const sha = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+  for (const args of [
+    ['--list', '--baseline', sha],
+    ['--list', '--ref', 'v1.5.13'],
+    ['--dry-run', '--baseline', sha],
+    ['--refresh-policy', '--ref', 'v1.5.13'],
+  ]) {
+    const r = runCli(args)
+    assert.equal(r.status, 1, args.join(' ') + ' 应退出码 1，实际 ' + r.status)
+    assert.match(r.stderr, /无意义/, args.join(' ') + ' 必须说明该取值对本模式无意义')
+    assert.ok(
+      !r.stderr.includes('node:internal'),
+      args.join(' ') + ' 不得暴露 node 内部栈：' + r.stderr.slice(0, 200),
+    )
+  }
+  // 冻结语义的例外：--list 带 --target 不报错（仍列出全部）
+  const ok = runCli(['--list', '--target', 'imagegen'])
+  assert.equal(ok.status, 0, '--list --target 不得报错（§7.1）')
+})
+
+/**
  * `--refresh-policy` 的 git 失败也必须走退出码 3（§7.3），不能裸抛 node 栈。
  *
  * 实测修复前：`--refresh-policy --target imagegen --baseline deadbeef…` → 退出码 1 +

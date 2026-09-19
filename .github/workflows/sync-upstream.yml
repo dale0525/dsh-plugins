@@ -83,7 +83,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
       # 校验走脚本自己的 discoverTargets（单一真源），不在 YAML 里重抄一份 schema。
-      # 计划 §8 原先要求的是「校验该 target 的 policy（url/prefix/baseline 非空）」；
+      # 计划 §8 要求的是「校验该 target 的 policy（url/prefix/baseline 非空）」；
       # 这里改用脚本的校验，是因为脚本还会额外要求 baselineCommit 非空（它重算清单时要用），
       # 而 discoverTargets 是那份 schema 的唯一真源 —— 两处各写一份会漂移。
       # 顺带用它打印的 target 行做人工可读的记录。

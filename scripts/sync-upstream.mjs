@@ -833,6 +833,36 @@ export function runCli(argv) {
 
   const known = ['--list', '--dry-run', '--refresh-policy', '--target', '--baseline', '--ref', '--help']
   const unknown = argv.filter((a, i) => a.startsWith('--') && !known.includes(a) && !(i > 0 && VALUE_FLAGS.includes(argv[i - 1])))
+
+  // 每个模式**真正消费**哪些带取值的 flag。其余带取值的 flag 一律 fail(1)。
+  //
+  // 为什么不能只是「不管它」：静默忽略用户**显式给出**的取值，会让他以为命令是按那个值跑的。
+  // 实测（`--baseline`）：`--list --baseline <sha>`、`--dry-run --baseline <sha>`、
+  // 以及不带 `--refresh-policy` 的同步，三条路径都是退出码 0 而该 sha 一次都不出现；
+  // `--refresh-policy --ref <tag>` 同理（该模式不读 --ref）。这是「静默丢掉输入」，
+  // 与「缺少取值就报错」是同一类问题的两端，必须一起收口。
+  //
+  // `--list` 是 §7.1 冻结的例外：它按定义列出**所有** target，`--target` 对它无意义但
+  // 也不算错（有人拿它当「我只关心这个」的注释）。不因它报错，见下方 --list 分支。
+  const CONSUMED = {
+    '--list': [],
+    '--dry-run': ['--target', '--ref'],
+    '--refresh-policy': ['--target', '--baseline'],
+    sync: ['--target', '--ref'],
+  }
+  const rejectUnconsumed = (mode) => {
+    const allowed = mode === '--list' ? ['--target'] : []
+    for (const f of VALUE_FLAGS) {
+      if (CONSUMED[mode].includes(f) || allowed.includes(f)) continue
+      const v = value(f)
+      if (v === undefined) continue
+      fail(
+        1,
+        f + ' ' + v + ' 对「' + (mode === 'sync' ? '同步' : mode) + '」无意义 —— 该模式不消费它，' +
+          '继续跑会静默丢掉你给的取值。\n' + USAGE,
+      )
+    }
+  }
   if (unknown.length > 0) fail(1, 'unknown flag(s): ' + unknown.join(', ') + '\n' + USAGE)
   if (flag('--help')) {
     log(USAGE)
@@ -847,6 +877,7 @@ export function runCli(argv) {
   }
 
   if (flag('--list')) {
+    rejectUnconsumed('--list')
     // 计划 §7.1 把 `--list` 定义为「列出**所有**发现的 target」——它刻意不是 `--target` 的
     // 过滤器（`--target` 的语义是「只同步该目标」，对只读的 --list 不适用）。
     // 不要为了让 `--list --target <id>` 「看起来生效」而改这里：那会改动 §7.1 的冻结语义。
@@ -866,23 +897,17 @@ export function runCli(argv) {
   // policy（owned 从 1 变 12），与 USAGE 与 AGENTS.md 对 dry-run 的承诺矛盾。
   if (flag('--dry-run')) {
     const ref = value('--ref')
-    // 同时给了 --refresh-policy 时，按 dry-run 处理（零写入）—— 但**不能**静默丢掉
-    // --baseline：实测修复前 `--refresh-policy --dry-run --baseline <sha>` 会退出码 0、
-    // 输出里一次都不出现用户给的 sha（dry-run 走的是 syncOne 的 printPlan，根本不读它），
-    // 用户以为「按这个基线预演过了」。这里显式说明它被忽略。
-    if (flag('--refresh-policy')) {
-      const ignored = value('--baseline')
-      log('[sync-upstream] --dry-run 优先于 --refresh-policy：不写盘。')
-      if (ignored !== undefined) {
-        log('[sync-upstream] 注意：--baseline ' + ignored + ' 在 dry-run 下**不生效**（dry-run 预演的是上游同步，不是 policy 重算）。')
-      }
-    }
+    // 同时给了 --refresh-policy 时按 dry-run 处理（零写入）。--baseline 由 rejectUnconsumed
+    // 直接拒绝（dry-run 不消费它），所以这里不必再解释「被忽略」——它根本不会走到这。
+    if (flag('--refresh-policy')) log('[sync-upstream] --dry-run 优先于 --refresh-policy：不写盘。')
+    rejectUnconsumed('--dry-run')
     for (const t of selected) dryRunOne(t, ref)
     return
   }
 
   if (flag('--refresh-policy')) {
     const baseline = value('--baseline')
+    rejectUnconsumed('--refresh-policy')
     for (const t of selected) {
       const commit = baseline ?? t.baselineCommit
       if (typeof commit !== 'string' || commit === '') {
@@ -905,6 +930,7 @@ export function runCli(argv) {
     return
   }
 
+  rejectUnconsumed('sync')
   const ref = value('--ref')
 
   if (selected.length === 1) {
