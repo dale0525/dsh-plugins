@@ -21,10 +21,11 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: '只打印发布计划，不真正发布'
+        description: '只打印发布计划，不真正发布（默认开；显式设为 false 才真发布）'
         required: false
         type: boolean
-        default: false
+        # 安全默认：手动触发先预览，要真发布须显式改 false
+        default: true
 
 # id-token: write 是 OIDC 的硬性要求；contents: read 仅用于 checkout。
 permissions:
@@ -41,25 +42,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # 第三方 action 全部锁 commit SHA 而非可变大版本 tag：
+      # 本 job 持有 id-token: write，tag 被劫持即可换取 npm 发布凭证。
+      # SHA 由 GitHub API 解析 v4 tag 得到（annotated tag 已 peel 到 commit）。
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # 必须显式给 version：本仓库没有 packageManager 字段，而 action-setup
       # 在两者都缺时会直接失败（README: "otherwise, this field is required"）。
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 12.4.1
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
+      # 发布必须可复现：锁定依赖树，禁止 CI 期间解析到新版本
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile=false
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         run: pnpm -r --if-present run typecheck
@@ -78,8 +83,10 @@ jobs:
 
       # 顺序敏感：子插件必须先上线，聚合包才能解析到它的依赖版本。
       # 逐包发布而非一次性，使某个包失败时能立刻定位，且不会发半个版本出去。
+      # 只允许两种发布来源：tag push，或 main 上的手动触发且显式 dry_run=false。
+      # 否则任何分支的 workflow_dispatch 都能换取 OIDC 凭证直接发版。
       - name: Publish packages in dependency order
-        if: ${{ github.event_name == 'push' || !inputs.dry_run }}
+        if: ${{ github.event_name == 'push' || (github.ref == 'refs/heads/main' && !inputs.dry_run) }}
         run: |
           set -euo pipefail
           node scripts/publish.mjs > /tmp/plan.txt
@@ -94,6 +101,8 @@ jobs:
             echo "::endgroup::"
           done < /tmp/plan.txt
 
+      # 用真值判定而非 == true：经 CLI/REST 触发时 inputs 是字符串 "true"，
+      # 而 == 会两侧转数字（Number("true")=NaN），'true' == true 实为 false。
       - name: Dry run notice
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: echo 'dry_run=true -- publish step skipped.'

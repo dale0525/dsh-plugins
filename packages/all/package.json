@@ -4,6 +4,11 @@
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/all"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
