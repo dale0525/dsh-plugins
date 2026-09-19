@@ -399,6 +399,7 @@ export const zh = {
   // settings card
   'settings.title': 'AI 生图（dsh-imagegen）',
   'settings.description': '配置图像生成 API 地址与密钥',
+  'settings.summary': '配置图像生成渠道、模型与插件开关',
   'settings.currentVersion': '当前版本',
   'settings.apiUrl': 'API 地址（api_url）',
   'settings.apiUrlHint': 'OpenAI 兼容接口基址，如 https://api.openai.com/v1；将自动拼接 /images/generations 与 /images/edits',
@@ -1187,6 +1188,7 @@ export const en: Record<keyof typeof zh, string> = {
   'update.release': 'View Release',
   'settings.title': 'AI Image (dsh-imagegen)',
   'settings.description': 'Configure the image generation API endpoint and key',
+  'settings.summary': 'Configure image-generation channels, models, and plugin switches',
   'settings.currentVersion': 'Current version',
   'settings.apiUrl': 'API URL (api_url)',
   'settings.apiUrlHint': 'OpenAI-compatible base URL, e.g. https://api.openai.com/v1; /images/generations and /images/edits are appended',
@@ -1977,6 +1979,7 @@ export const ru: Record<keyof typeof zh, string> = {
   'update.release': 'Открыть релиз',
   'settings.title': 'ИИ-генерация (dsh-imagegen)',
   'settings.description': 'Адрес и ключ API генерации изображений',
+  'settings.summary': 'Настройка каналов генерации изображений, моделей и переключателей плагина',
   'settings.currentVersion': 'Текущая версия',
   'settings.apiUrl': 'Адрес API (api_url)',
   'settings.apiUrlHint': 'База OpenAI-совместимого API, например https://api.openai.com/v1; /images/generations и /images/edits дописываются автоматически',

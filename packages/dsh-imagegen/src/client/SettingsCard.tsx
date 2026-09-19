@@ -2,9 +2,9 @@
  * The dsh-imagegen settings card: channel management (list rows with status
  * dots, an editor dialog with the model-catalog alias → upstream mapping, and
  * built-in provider presets), plus the prompt-enhancement model and the plugin
- * switches. Registers into the official `settings.plugin.item` slot (the
- * Settings → Plugins → Configurable tab), independent of the dsh-web-ui family
- * group, bound to the plugin's own bridge settings scope.
+ * switches. Registers as the row's configuration entry on the Plugins page
+ * (`plugins.row.config`), independent of the dsh-web-ui family group, bound to
+ * the plugin's own bridge settings scope.
  *
  * The interaction mirrors the host's model-provider page: one row per channel
  * (status dot + edit/delete), two add buttons (built-in provider / custom),
@@ -195,7 +195,7 @@ export class ImageGenSettingsCardController {
 
 /** Props the renderer binds for this card. */
 export type ImageGenSettingsCardProps =
-  PropsRuntime<'settings.plugin.item'>
+  PropsRuntime<'plugins.row.config'>
   & PropsLocale<'dsh-imagegen'>
   & InjectFace<ImageGenSettingsCardFace>
 
@@ -207,10 +207,23 @@ interface UsageCounters {
 
 /**
  * Render the card.
- * @param props - locale copy, the card snapshot, and the form actions.
- * @returns the card, or nothing while the namespace is still loading.
+ *
+ * The Plugins page renders every configuration entry twice: once as the
+ * one-liner under the row's title (`view: 'summary'`) and once as the body of
+ * the row's own page (`view: 'page'`). The page draws the row id, the module
+ * name, and the crumb itself, so this component supplies only the copy and the
+ * form. The summary branch returns before the form's hooks and state so the
+ * one-liner does no work.
+ *
+ * @param props - the view asked for, locale copy, the card snapshot, and the form actions.
+ * @returns the one-liner, the card, or nothing while the namespace is loading.
  */
 export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
+  // The summary view is the one-liner the page places under the row's title.
+  // It returns before any hook or state so it does no work: the page re-renders
+  // the entry when the active locale moves, so the copy still follows a
+  // language switch without this component subscribing to it.
+  if (props.view === 'summary') return tt('settings.summary')
   // The card renders through the plugin's own dictionary so the uiLanguage
   // override applies here too — the host-locale props.t would only follow the
   // DSH interface language.

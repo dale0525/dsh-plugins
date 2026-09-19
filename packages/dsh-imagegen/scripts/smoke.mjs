@@ -1,5 +1,5 @@
 /**
- * Standalone smoke test for the built @dickpy/dsh-imagegen artifacts:
+ * Standalone smoke test for the built @logictan/dsh-imagegen artifacts:
  *
  *  A. host half loads and exposes the plugin contract
  *  B. generate engine works against a mock OpenAI-compatible upstream
@@ -87,7 +87,7 @@ await check('A3 updater parses stable Releases and caches checks', async () => {
     calls += 1
     return new Response(JSON.stringify({
       tag_name: 'v9.9.9',
-      html_url: 'https://github.com/dickpy/dsh-imagegen/releases/tag/v9.9.9',
+      html_url: 'https://github.com/dale0525/dsh-plugins/releases/tag/v9.9.9',
       published_at: '2026-08-17T00:00:00Z',
       draft: false,
       prerelease: false,
@@ -2512,7 +2512,7 @@ await check('D1 client bundle registers via __ModuleLoader__ and exposes the can
   sandbox.window.window = sandbox.window
   vm.runInNewContext(source, sandbox, { filename: 'client.js' })
   assert.ok(handoff !== undefined, 'load() was called')
-  assert.equal(handoff.id, '@dickpy/dsh-imagegen')
+  assert.equal(handoff.id, '@logictan/dsh-imagegen')
   assert.equal(typeof handoff.factory, 'function')
   // Evaluate the factory with stubbed platform modules; only the exports
   // surface is exercised (apply never runs without a real DOM). The react
@@ -3250,6 +3250,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   assert.ok(handoff !== undefined)
 
   const registered = []
+  const registeredComponents = []
   // Locale runtime stub: register/addLanguage/subscribe + a snapshot, mirroring
   // the dsh-client-locale face the plugin bridges into.
   const localeListeners = new Set()
@@ -3266,7 +3267,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     slots: {
       // The Web UI plugin group slot is already declared.
       inject(key, callback) { callback(); return () => {} },
-      register(options) { registered.push(options); return () => {} },
+      register(options, component) { registered.push(options); registeredComponents.push(component); return () => {} },
     },
   }
   // react-dom (outer realm) reads the bare `window`/`document` globals at
@@ -3503,10 +3504,28 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     view.querySelector('[data-gallery-clear]')?.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
     await new Promise(resolve => setTimeout(resolve, 20))
     assert.equal(confirmationCalls, 2, 'gallery clear asks for confirmation')
-    // The settings card registered into the official plugin-config slot.
-    assert.equal(registered.length, 1)
-    assert.equal(registered[0].key, 'dsh-imagegen')
-    assert.equal(registered[0].name, 'settings.plugin.item')
+    // The row's configuration entry registered into the Plugins page slot,
+    // once per bundle that can declare the row.
+    assert.equal(registered.length, 2)
+    assert.deepEqual(registered.map(entry => entry.key), [
+      '@logictan/dsh-plugins-all#imagegen',
+      '@logictan/dsh-imagegen#imagegen',
+    ])
+    assert.ok(registered.every(entry => entry.name === 'plugins.row.config'))
+    // The page renders every entry twice; the summary view is the one-liner
+    // under the row title and must return localized copy without the form.
+    const { createRoot } = await import('react-dom/client')
+    const summaryHost = jsdomDocument.createElement('div')
+    jsdomDocument.body.appendChild(summaryHost)
+    const summaryRoot = createRoot(summaryHost)
+    summaryRoot.render(react.createElement(
+      registeredComponents[0],
+      { view: 'summary', ...registered[0].inject() },
+    ))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(summaryHost.textContent, '配置图像生成渠道、模型与插件开关', 'summary view renders the row one-liner')
+    summaryRoot.unmount()
+    summaryHost.remove()
 
     // The asset library must not inherit the normal generation inspiration wall.
     assert.equal(jsdomDocument.querySelector('[aria-label="灵感案例"]'), null, 'asset library hides inspiration wall')

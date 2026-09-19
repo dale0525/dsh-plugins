@@ -1,20 +1,14 @@
-node_modules/
-lib/
-*.tsbuildinfo
+# Build output — rebuilt by `pnpm build` / the package's own build script.
+/lib/
 
-# Build artifacts
+# Promotional media: README screenshots and demo videos. Kept on disk because
+# the README renders them, but this repo is a private self-use fork and does not
+# carry its upstream's marketing surface in version control. `files` in
+# package.json lists only `docs/skill-config.md`, so none of this reaches the
+# published tarball. Re-fetch from the upstream clone if a README edit needs
+# them back.
+/docs/images/
+/docs/videos/
+
+# Local packaging artifacts
 *.tgz
-*.zip
-
-# npm local cache (used by npm-cli on this machine)
-.npm-cache/
-
-# Temp files
-.tmp-*
-
-# Local dev server logs and restart helper
-.local-*
-
-# OS files
-.DS_Store
-Thumbs.db

@@ -5,8 +5,8 @@ import { PLUGIN_VERSION } from './protocol.ts'
 
 /** Keep this in sync with package.json for each published release. */
 export const CURRENT_VERSION = PLUGIN_VERSION
-export const PACKAGE_NAME = '@dickpy/dsh-imagegen'
-export const RELEASES_URL = 'https://api.github.com/repos/dickpy/dsh-imagegen/releases/latest'
+export const PACKAGE_NAME = '@logictan/dsh-imagegen'
+export const RELEASES_URL = 'https://api.github.com/repos/dale0525/dsh-plugins/releases/latest'
 
 const CHECK_TIMEOUT_MS = 10_000
 const CACHE_TTL_MS = 15 * 60_000
@@ -63,7 +63,7 @@ export async function checkForUpdate(fetchFn: typeof fetch = fetch, now = Date.n
   if (release.draft === true || release.prerelease === true) throw new Error('latest GitHub Release is not stable')
   const latestVersion = normalizedReleaseVersion(release.tag_name)
   if (latestVersion === undefined) throw new Error('latest GitHub Release has an invalid version tag')
-  const releaseUrl = typeof release.html_url === 'string' ? release.html_url : 'https://github.com/dickpy/dsh-imagegen/releases'
+  const releaseUrl = typeof release.html_url === 'string' ? release.html_url : 'https://github.com/dale0525/dsh-plugins/releases'
   const value: UpdateInfo = {
     currentVersion: CURRENT_VERSION,
     latestVersion,

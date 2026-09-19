@@ -4,9 +4,10 @@
  *
  * Registers the dsh-imagegen locale dictionaries, binds the plugin's own
  * settings scope (its bridge routes serve the namespace the official rc.6
- * allowlist would refuse), registers the settings card into the Web UI plugin
- * group slot, and mounts the two DOM surfaces: the sidebar entry row (toggles
- * the panel) and the generation studio in the center column. Failure policy:
+ * allowlist would refuse), registers the row's configuration entry onto the
+ * Plugins page's per-row configuration slot, and mounts the two DOM surfaces:
+ * the sidebar entry row (toggles the panel) and the generation studio in the
+ * center column. Failure policy:
  * DOM mounting problems are logged, never thrown — the web shell fails the
  * whole boot when a plugin apply throws, and an external plugin must not take
  * the GUI down.
@@ -33,6 +34,31 @@ import type { ConversationService } from './conversation-sync.ts'
 /** Locale namespace this plugin owns. */
 const NS = 'dsh-imagegen'
 
+/**
+ * The patch row this plugin's own `cordis.patch.yml` inserts.
+ *
+ * It equals the host half's `export const name` in `src/index.ts`, and the
+ * browser half addresses its configuration entry by
+ * `<bundle package name>#<this id>`.
+ */
+export const IMAGEGEN_ROW_ID = 'imagegen'
+
+/**
+ * Bundle package names whose row {@link IMAGEGEN_ROW_ID} this card configures.
+ *
+ * The Plugins page keys a row's configuration by the name of the package that
+ * declares the row. This plugin reaches a profile in one of two shapes, and the
+ * key differs between them: as a dependency of this repository's aggregate
+ * bundle, the declaring package is the aggregate; installed on its own, it is
+ * this package. Both keys are registered — the one whose bundle is not
+ * installed simply never renders, because the page dispatches only the keys its
+ * own bundles declare.
+ */
+export const IMAGEGEN_BUNDLE_NAMES = [
+  '@logictan/dsh-plugins-all',
+  '@logictan/dsh-imagegen',
+] as const
+
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     /** dsh-imagegen surface copy. */
@@ -41,23 +67,23 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
   interface SlotMap {
     /**
-     * The official plugin-configuration slot the Settings → Plugins →
-     * Configurable tab declares and renders. This card registers there as its
-     * own standalone card — independent of the dsh-web-ui family group — so
-     * this plugin never reads as part of that family. Spelled here with the
-     * same shape so this package can register without depending on the
-     * sibling UI package.
+     * The official plugin row-configuration slot the Plugins page declares for
+     * a row a bundle contributes (the configure control beside the row opens
+     * this entry's own page). This card registers there as its own standalone
+     * entry — independent of the dsh-web-ui family group — so this plugin never
+     * reads as part of that family. Spelled here with the same shape so this
+     * package can register without depending on the sibling UI package.
      */
-    'settings.plugin.item': { kind: 'keyed'; scope: 'root'; owner: ImageGenPluginItemOwnerProps }
+    'plugins.row.config': { kind: 'keyed'; scope: 'root'; owner: ImageGenPluginConfigOwnerProps }
     /** Image-generation results render their durable image blocks inline. */
     'tool.call.toolview': { kind: 'keyed'; scope: 'session'; owner: ImageToolViewOwnerProps }
   }
 }
 
-/** Owner share of a plugin card (the section supplies nothing). */
-export interface ImageGenPluginItemOwnerProps {
-  /** Marker field: card owner props are intentionally empty. */
-  children?: never
+/** Owner share of a plugin row's configuration entry. */
+export interface ImageGenPluginConfigOwnerProps {
+  /** The view the Plugins page asks for: the row's one-liner, or its page. */
+  readonly view: 'summary' | 'page'
 }
 
 /** Required services (fiber inject waiting — the runtime must be up first). */
@@ -125,16 +151,20 @@ export function apply(ctx: ClientContext): void {
     return () => { for (const dispose of disposers) dispose() }
   }, 'dsh-imagegen: settings scope invalidation')
 
-  // Plugin configuration card: one staged form over the `dsh-imagegen` scope,
-  // registered into the official plugin-configuration slot (Settings →
-  // Plugins → Configurable) as a standalone card.
+  // Plugin configuration entry: one staged form over the `dsh-imagegen` scope,
+  // registered onto the Plugins page's per-row configuration slot. One entry
+  // per bundle that can declare this row; the slot is key-dispatched by
+  // `<bundle>#<row id>`, so both keys are registered and the bundle that is not
+  // installed simply never dispatches its key.
   const settingsCard = new ImageGenSettingsCardController(scope)
-  ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-    name: 'settings.plugin.item',
-    key: 'dsh-imagegen',
-    locale: NS,
-    inject: () => settingsCard.inject(),
-  }, ImageGenSettingsCard))
+  for (const bundle of IMAGEGEN_BUNDLE_NAMES) {
+    ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+      name: 'plugins.row.config',
+      key: `${bundle}#${IMAGEGEN_ROW_ID}`,
+      locale: NS,
+      inject: () => settingsCard.inject(),
+    }, ImageGenSettingsCard))
+  }
 
   // The sidebar entry and studio mount once the settings scope settles; while
   // the scope is still loading, the composition default is unknown, so nothing

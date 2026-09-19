@@ -1,11 +1,11 @@
 # dsh-imagegen
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/@dickpy/dsh-imagegen"><img src="https://img.shields.io/npm/v/@dickpy/dsh-imagegen?color=cb3837&logo=npm&label=npm" alt="npm" /></a>
+  <a href="https://www.npmjs.com/package/@logictan/dsh-imagegen"><img src="https://img.shields.io/npm/v/@logictan/dsh-imagegen?color=cb3837&logo=npm&label=npm" alt="npm" /></a>
   &nbsp;
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-3b82f6.svg" alt="License" /></a>
   &nbsp;
-  <a href="https://github.com/dickpy/dsh-imagegen"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-111827" alt="Platform" /></a>
+  <a href="https://github.com/dale0525/dsh-plugins"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-111827" alt="Platform" /></a>
 </p>
 
 <div align="center">
@@ -26,7 +26,7 @@
 前置条件：已安装 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 和 Node.js 20+。
 
 ```bash
-dsh plugin --profile web add @dickpy/dsh-imagegen
+dsh plugin --profile web add @logictan/dsh-imagegen
 ```
 
 安装后重启 `dsh web`，侧边栏的“新会话”入口会变成“新会话 / 生图”双 Tab（Windows 如遇 PowerShell 脚本策略限制，请使用 `dsh.cmd`）。
@@ -43,16 +43,16 @@ dsh plugin --profile web add @dickpy/dsh-imagegen
 **让 Agent 帮你安装** —— 将下面内容直接发给 DSH、Codex 或其他 coding agent：
 
 ```text
-用 dsh plugin --profile web add @dickpy/dsh-imagegen 安装 AI 生图插件。完成后重启 dsh web，点击“新会话 / 生图”中的“生图” Tab，并打开设置中的 VisioWork 配置。
+用 dsh plugin --profile web add @logictan/dsh-imagegen 安装 AI 生图插件。完成后重启 dsh web，点击“新会话 / 生图”中的“生图” Tab，并打开设置中的 VisioWork 配置。
 ```
 
-**从 Release 安装** —— 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载目标版本的 tgz 后执行：
+**从 Release 安装** —— 从 [GitHub Releases](https://github.com/dale0525/dsh-plugins/releases) 下载目标版本的 tgz 后执行：
 
 ```bash
-dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
+dsh plugin --profile web add <下载路径>/logictan-dsh-imagegen-<版本号>.tgz
 ```
 
-**升级与回滚** —— 重复执行 `add` 命令即可更新到最新版；面板打开时也会自动检测新版本，出现顶部横幅后可在线更新，完成后重启 `dsh web` 生效。渠道配置、历史记录和画廊数据由 DSH 宿主保存，正常升级不会清空。需要固定版本时，使用 `@dickpy/dsh-imagegen@<版本号>` 或指定 Release tgz。
+**升级与回滚** —— 重复执行 `add` 命令即可更新到最新版；面板打开时也会自动检测新版本，出现顶部横幅后可在线更新，完成后重启 `dsh web` 生效。渠道配置、历史记录和画廊数据由 DSH 宿主保存，正常升级不会清空。需要固定版本时，使用 `@logictan/dsh-imagegen@<版本号>` 或指定 Release tgz。
 
 </details>
 
@@ -378,9 +378,9 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
   <img src="docs/images/community-qq.png" alt="扫码加入 dsh-imagegen QQ 交流群" width="360" />
 </p>
 
-- 发现问题请提交 [Bug 报告](https://github.com/dickpy/dsh-imagegen/issues/new?template=bug_report.yml)，附带插件版本、DSH 版本和复现步骤。请勿粘贴 API 密钥。
-- 有改进想法请提交 [功能建议](https://github.com/dickpy/dsh-imagegen/issues/new?template=feature_request.yml)。
-- 查看全部 [Release](https://github.com/dickpy/dsh-imagegen/releases) 和 [Issue](https://github.com/dickpy/dsh-imagegen/issues)。
+- 发现问题请提交 [Bug 报告](https://github.com/dale0525/dsh-plugins/issues)，附带插件版本、DSH 版本和复现步骤。请勿粘贴 API 密钥。
+- 有改进想法请提交 [功能建议](https://github.com/dale0525/dsh-plugins/issues)。
+- 查看全部 [Release](https://github.com/dale0525/dsh-plugins/releases) 和 [Issue](https://github.com/dale0525/dsh-plugins/issues)。
 - 如果这个插件对你有帮助，欢迎 Star。
 
 <details>
@@ -396,8 +396,8 @@ node scripts/smoke.mjs
 改完源码后要装进本机 GUI 验收，打一个本地 tgz 再覆盖安装即可（面板不会热更新宿主半，装完重启 `dsh web`）：
 
 ```bash
-pnpm pack --pack-destination .        # 生成 dickpy-dsh-imagegen-<版本>.tgz
-dsh plugin --profile web add ./dickpy-dsh-imagegen-<版本>.tgz
+pnpm pack --pack-destination .        # 生成 logictan-dsh-imagegen-<版本>.tgz
+dsh plugin --profile web add ./logictan-dsh-imagegen-<版本>.tgz
 ```
 
 </details>
