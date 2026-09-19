@@ -16,12 +16,19 @@ dsh-plugins/
 │   └── dsh-config-manager/ # git subtree fork 自上游 v0.1.60
 ├── scripts/
 │   ├── aggregate.mjs       # aggregate.yml → patch + deps
+│   ├── publish.mjs         # 按依赖边拓扑推导发布顺序（子插件 → 聚合包）
 │   └── sync-upstream.mjs   # 上游同步（policy 应用）
 ├── sync-policy.json        # 声明 owned / deleted / upstream
+├── docs/adding-a-child-plugin.md   # 新增子插件的完整步骤与验收
 └── packages/dsh-config-manager/scripts/dev-watch.mjs   # 源 → 产物自动重建（子包内）
 ```
 
 **单一真源**：每个子插件自己的 `cordis.patch.yml` 决定它的 patch 行（id / name / config）；聚合 patch 由 `scripts/aggregate.mjs` 逐字拼接，**绝不改写行**。改行名改子包自己的 patch 文件，然后跑 `node scripts/aggregate.mjs`。
+
+**patch 行 `id` 必须全仓库唯一**，且等于该插件宿主半边的 `export const name`。撞车时宿主启动硬崩
+（`cordis-plugin-loader`：`duplicate loader entry id: <id>`），而 `aggregate.mjs --check` **不校验**
+行 id 唯一性（只校验 `deps` 重复包名）—— 新增子插件时须人工比对。完整步骤见
+`docs/adding-a-child-plugin.md`。
 
 **构建产物不入版本控制**：每个 `packages/<name>/lib/` 由各自 `.gitignore` 忽略；安装时靠 `prepare` 脚本构建。
 
@@ -60,6 +67,11 @@ git commit
 
 用 `node scripts/sync-upstream.mjs --dry-run` 先看计划。真实价值边界：上游一天 1-2 个版本、我们砍掉了大部分代码，**这个同步不会带来「版本对齐」**，它只把上游在「我们保留的文件」里的 bug 修复拉进来。
 
+**改了 fork 的文件集就必须重算清单**：第 2 步 `--theirs` 会取回上游全部文件，只有登记在
+`owned` 里的才会被恢复成我方版本。**新增一个我方文件却忘了登记，下一次同步就被上游版本静默覆盖**
+（`env-lock.ts` 的修复就差点这样丢掉）。跑 `node scripts/sync-upstream.mjs --refresh-policy`
+按当前 fork 状态重算 `owned` / `deleted` / `added`。
+
 ## 📤 发布（OIDC，无长期 token）
 
 推 `v*` tag → `.github/workflows/publish.yml`。认证走 **trusted publishing (OIDC)**，
@@ -96,6 +108,11 @@ pnpm --filter @logictan/dsh-config-manager test
 > `tests/cli/*` 建真实符号链接，而 macOS 的 `/var/folders/...` 是 `/private/var/...` 的
 > 符号链接 —— `realpath` 会把 home 解析到 `/private/...`，导致「home 内」判定失败。
 > 跑测试前先 `mkdir -p /private/tmp/realhome` 并 `TMPDIR=/private/tmp/realhome/ node --test ...`。
+
+> **平台专属路径只在 CI 覆盖**：`src/utils/env-lock.ts` 的进程身份探测**只有 Linux 真正实现**
+> （读 `/proc/<pid>/stat` 的 starttime）；darwin / win32 的默认 probe 返回 `null`（不校验 PID 复用，
+> 留待宿主注入）。**Linux 分支在 macOS 上完全不走**，本地全绿不代表它正确。改到该文件或任何
+> 平台分支代码后，必须让 CI 在 ubuntu 上跑过一次再判定通过。
 
 ## 🧭 边界
 

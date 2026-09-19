@@ -8,8 +8,13 @@ DSH 插件 monorepo：一次安装装上全部插件。
 dsh plugin --profile web add @logictan/dsh-plugins-all@latest
 ```
 
-根包（`dsh-plugins`）是聚合载体：它的 `dsh.bundle.patch` 指向 `packages/all/cordis.patch.yml`，
-该 patch 由各子插件自己的 patch 逐字拼接而成。
+被安装的入口是**聚合包** `@logictan/dsh-plugins-all`：它的 `dsh.bundle.patch` 指向自己的
+`cordis.patch.yml`，该 patch 由各子插件自己的 patch 逐字拼接而成，子插件再由它的
+`dependencies` 带进 profile。
+
+根包 `dsh-plugins` 是工作区壳（`private: true`，**不发布**）：它同样声明 `dsh.bundle.patch`
+指向 `packages/all/cordis.patch.yml`，但仓库内开发用。注意 npm 上已存在一个**无关的**
+同名包 `dsh-plugins`（另一个作者），`private: true` 保证本仓库的根包不会与它冲突。
 
 ## 仓库结构
 
@@ -22,6 +27,7 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest
 | `scripts/sync-upstream.mjs` | 按 `sync-policy.json` 把上游改动合进来（只开 PR） |
 | `packages/dsh-config-manager/scripts/dev-watch.mjs` | 改源码 → 自动重建产物（客户端半边不刷新即生效） |
 | `sync-policy.json` | 上游同步的三类清单：`owned` / `deleted` / `upstream` |
+| `docs/adding-a-child-plugin.md` | 新增子插件的完整步骤、验收与雷区 |
 
 ## 开发
 
@@ -32,6 +38,7 @@ node scripts/aggregate.mjs             # 重新生成
 ```
 
 改子插件的 patch 行：编辑该子包自己的 `cordis.patch.yml`，再跑 `node scripts/aggregate.mjs`。
+新增一个子插件见 `docs/adding-a-child-plugin.md`。
 
 ## 发布
 

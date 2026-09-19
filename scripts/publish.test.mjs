@@ -8,7 +8,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -29,11 +29,23 @@ async function fixture(spec) {
 test('真实仓库：子插件先于聚合包发布', () => {
   const plan = resolvePublishPlan(REPO_ROOT)
   const names = plan.map((p) => p.name)
-  assert.deepEqual(
-    names,
-    ['@logictan/dsh-config-manager', '@logictan/dsh-plugins-all'],
-    '聚合包依赖子插件，顺序必须是 子插件 → 聚合包',
+  const position = new Map(names.map((name, index) => [name, index]))
+
+  // 断言不变量而非写死清单：聚合包依赖谁，谁就必须排在它前面。新增子插件时
+  // 本测试无需改动（清单会变，但「依赖方排在被依赖方之后」永远成立）。
+  const aggregate = names.indexOf('@logictan/dsh-plugins-all')
+  assert.ok(aggregate >= 0, '聚合包必须进入发布计划')
+  const aggregateManifest = JSON.parse(
+    readFileSync(join(REPO_ROOT, 'packages', 'all', 'package.json'), 'utf8'),
   )
+  const internalDeps = Object.keys(aggregateManifest.dependencies ?? {})
+  assert.ok(internalDeps.length > 0, '聚合包必须至少依赖一个子插件')
+  for (const dep of internalDeps) {
+    const depIndex = position.get(dep)
+    assert.ok(depIndex !== undefined, `聚合包的依赖 ${dep} 必须出现在发布计划里`)
+    assert.ok(depIndex < aggregate, `${dep} 必须先于聚合包发布（子插件 → 聚合包）`)
+  }
+
   for (const p of plan) {
     assert.ok(p.version.length > 0, p.name + ' 必须有 version')
     assert.ok(p.dir.startsWith(join(REPO_ROOT, 'packages')), p.dir + ' 必须在 packages/ 下')

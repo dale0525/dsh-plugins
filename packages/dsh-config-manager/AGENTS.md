@@ -174,3 +174,7 @@ npm run smoke                    # 仅 core 冒烟
 - **journal step 的 `skipped` 只能表示「用户主动跳过」**：`warning`（非致命失败）与 `failed` 都必须记 `attention`。
 - 根目录勿提交：`lib/`、`dist/`、`node_modules/` 均已 gitignore。
 - **同步凭据走 DSH credentials 槽位引用**，`passwordConfigured` 仅布尔标记。
+- **只读核验不得用 POST 路由**：`/api/dsh-config-manager/sync/selection` 是**写**接口
+  （`guard(req, res, 'POST')` + 落盘 `sync-selection.json`），拿它「读当前值」会把用户的通道选择
+  重置成请求体里的值。核验选择状态直接读 `$DSH_HOME/dsh-config-manager/sync/sync-selection.json`。
+  其余 `POST` 路由同样按写操作对待。
