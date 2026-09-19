@@ -60,6 +60,29 @@ git commit
 
 用 `node scripts/sync-upstream.mjs --dry-run` 先看计划。真实价值边界：上游一天 1-2 个版本、我们砍掉了大部分代码，**这个同步不会带来「版本对齐」**，它只把上游在「我们保留的文件」里的 bug 修复拉进来。
 
+## 📤 发布（OIDC，无长期 token）
+
+推 `v*` tag → `.github/workflows/publish.yml`。认证走 **trusted publishing (OIDC)**，
+不存 npm token：npm 正在移除 bypass-2FA token 的直接发布能力（官方 targeting 2027-01），
+且 write token 需定期轮换。
+
+**顺序铁律**：子插件必须先上线，聚合包才能解析到它的依赖版本。顺序由
+`scripts/publish.mjs` 从各包 `dependencies` 边**拓扑推导**，不写死包名 ——
+新增子插件/聚合包无需改脚本。跑 `npm run publish:plan` 预览。
+
+**每个新包都要人工配一次 trusted publisher**（否则 CI 发布被拒）：
+
+```sh
+npm trust github <pkg> --file publish.yml --repo dale0525/dsh-plugins --allow-publish
+```
+
+> `--allow-publish` **不可省**：2026-09-03 之后创建的配置默认只允许 `npm stage publish`，
+> 不给这个 flag 时 CI 直接发布会被拒。
+
+**首次发布只能人工**（两个独立原因，均来自 npm 官方文档）：trusted publisher 配在
+**已存在包**的设置页上；staged publishing 明确排除全新包（"you cannot stage a brand-new
+package"）。新包流程：人工 `npm publish --access public` → 配 trusted publisher → 之后交给 CI。
+
 ## ✅ 验证命令
 
 ```bash

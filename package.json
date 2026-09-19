@@ -19,8 +19,9 @@
   "scripts": {
     "aggregate": "node scripts/aggregate.mjs",
     "aggregate:check": "node scripts/aggregate.mjs --check",
+    "publish:plan": "node scripts/publish.mjs",
     "build": "pnpm -r --if-present run build",
-    "test": "pnpm -r --if-present run test",
+    "test": "node --test scripts/*.test.mjs && pnpm -r --if-present run test",
     "typecheck": "pnpm -r --if-present run typecheck"
   },
   "engines": {
