@@ -30,7 +30,6 @@ import { zhUiT, type UiT } from '../../ui/i18n.ts';
 
 /** 同步端点常量（与 Host 半 src/index.ts API 常量保持一致） */
 export const SYNC_API = {
-  base: '/api/dsh-config-manager/sync',
   status: '/api/dsh-config-manager/sync/status',
   push: '/api/dsh-config-manager/sync/push',
   pull: '/api/dsh-config-manager/sync/pull',

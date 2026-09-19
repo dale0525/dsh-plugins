@@ -84,7 +84,7 @@ import { makeMsg, msgOf, zhMsg } from './core/messages.ts'
 import type { MsgFunc } from './core/messages.ts'
 import {
   cleanupAbortedInstall, hasDshBundlePatch, installErrorFor, installSpecFor, listInstalledPlugins,
-  resolveProfileDir, resolveProfileNameFromArgv, readProfileManifest, runDshPlugin, validateProfileName,
+  resolveProfileDir, resolveProfileNameFromArgv, runDshPlugin, validateProfileName,
 } from './core/plugin-cli.ts'
 import type {
   ConfigAdapter, CredentialsFacade, FileSystemFacade, HostContext, ImportDecisions,
@@ -1423,44 +1423,6 @@ function parseMeForm(raw: unknown): { name: string; id?: string; description?: s
  */
 export function isGitHubAuthMissing(error: unknown): boolean {
   return error instanceof GitHubAuthError && (error.code === 'unauthorized' || error.code === 'no_token')
-}
-
-/** /status 的插件诊断位（issue #28）。仅回非敏感元信息：目录、profile 名、计数。 */
-export interface PluginDiagnostics {
-  homeDir: string
-  profile: string
-  /** profile 目录的 package.json 是否可读（不可读 → 清单必然为空） */
-  profileManifestReadable: boolean
-  /** 插件清单来源 = package.json 的 dependencies 里非 in-box 的包 */
-  installedPluginCount: number
-  installedPluginNames: string[]
-  /** dsh.profile.bundles 声明（非空即「替换默认插件栈」） */
-  bundles: string[]
-}
-
-/**
- * 读取插件诊断信息（issue #28）：把「插件到底读了哪个目录 / 哪个 profile / 看到什么」变成
- * 用户可自查的数据——此前只存在于宿主内部，导致「装了插件却识别不到」无从定位。
- * best-effort：失败不抛出（诊断位缺失不应拖垮 /status）。
- */
-async function readPluginDiagnostics(host: HostContext): Promise<Partial<PluginDiagnostics>> {
-  try {
-    const profileDir = resolveProfileDir(host.homeDir, host.profile ?? 'web')
-    const manifest = readProfileManifest(profileDir)
-    const installed = await host.plugins.listInstalled()
-    const bundles = manifest?.dsh?.profile?.bundles
-    return {
-      homeDir: host.homeDir,
-      profile: host.profile ?? 'web',
-      profileManifestReadable: manifest !== null,
-      installedPluginCount: installed.length,
-      installedPluginNames: installed.map((p) => p.name),
-      bundles: Array.isArray(bundles) ? bundles : [],
-    }
-  } catch (err) {
-    host.log.warn(`plugin diagnostics unavailable: ${err instanceof Error ? err.message : String(err)}`)
-    return {}
-  }
 }
 
 /** Build the /api/dsh-config-manager route family. */
