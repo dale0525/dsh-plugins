@@ -1,0 +1,111 @@
+# CI: typecheck (tsc checkJs against the real dsh closure) + tests + a
+# real-host boot smoke, on every push to main and every pull request.
+#
+# The dsh host line is the ROLLING RC/STABLE LINE — the newest of the
+# `latest` (stable) and `next` (rc) dist-tags, never hand-pinned and never
+# alpha (the alpha line is retired per the 2026-09-03 policy; a hand-pinned
+# version rots — the rc.8 lesson from dsh-cron). The closure linker re-points
+# every `node_modules/@deepseek-ai/*` entry at the installed CLI's own
+# packages so typecheck and tests run against exactly ONE copy of the host
+# graph.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Typecheck & Test (dsh rc/stable closure)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        # The shipped engines floor plus current LTS.
+        node-version: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          # pnpm-lock.yaml is committed and MUST be regenerated in the same
+          # commit as any package.json change — CI installs frozen and fails
+          # fast otherwise (the dsh-tui-pi v1.0.5 lesson).
+          version: 10
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Install dsh CLI (rolling rc/stable line — newest of latest/next, never alpha)
+        run: |
+          # Policy (2026-09-03): the alpha line is retired for CI. Resolve the
+          # newest of the `latest` (stable) and `next` (rc) dist-tags at
+          # runtime, never hand-pinned — when a stable 0.1.2+ lands on
+          # `latest` it wins over the rc by plain semver compare.
+          STABLE="$(npm view @deepseek-ai/dsh@latest version)"
+          RC="$(npm view @deepseek-ai/dsh@next version 2>/dev/null || true)"
+          DSH_VERSION="$STABLE"
+          if [ -n "$RC" ] && [ "$(printf '%s\n' "$STABLE" "$RC" | sort -V | tail -1)" = "$RC" ]; then
+            DSH_VERSION="$RC"
+          fi
+          echo "dsh closure: ${DSH_VERSION}"
+          npm install -g "@deepseek-ai/dsh@${DSH_VERSION}" --no-audit --no-fund
+
+      - name: Link the dsh closure over the installed @deepseek-ai packages
+        run: node scripts/link-dsh-closure.mjs
+
+      - name: Typecheck
+        run: pnpm check
+
+      - name: Test
+        run: pnpm test
+
+  smoke:
+    name: Boot smoke (real dsh host)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Install dsh CLI (rolling rc/stable line — newest of latest/next, never alpha)
+        run: |
+          # Policy (2026-09-03): the alpha line is retired for CI. Resolve the
+          # newest of the `latest` (stable) and `next` (rc) dist-tags at
+          # runtime, never hand-pinned — when a stable 0.1.2+ lands on
+          # `latest` it wins over the rc by plain semver compare.
+          STABLE="$(npm view @deepseek-ai/dsh@latest version)"
+          RC="$(npm view @deepseek-ai/dsh@next version 2>/dev/null || true)"
+          DSH_VERSION="$STABLE"
+          if [ -n "$RC" ] && [ "$(printf '%s\n' "$STABLE" "$RC" | sort -V | tail -1)" = "$RC" ]; then
+            DSH_VERSION="$RC"
+          fi
+          echo "dsh closure: ${DSH_VERSION}"
+          npm install -g "@deepseek-ai/dsh@${DSH_VERSION}" --no-audit --no-fund
+
+      # Packs the repo, mounts it into a scratch profile through the
+      # cordis.patch.yml layer (scripts/setup.mjs mechanism), and boots the
+      # real host under a timeout. Needs no repo node_modules.
+      - name: Boot smoke (npm pack → scratch profile → real boot)
+        run: node scripts/smoke-boot.mjs

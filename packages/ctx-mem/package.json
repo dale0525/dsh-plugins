@@ -1,0 +1,156 @@
+{
+  "name": "@aiwayds/dsh-dcp",
+  "version": "0.5.1",
+  "description": "Deterministic context-pruning compaction backend for dsh (DeepSeek Harness) — zero-LLM summaries, /dcp command, works out of the box. Design references Opencode-DCP/opencode-dynamic-context-pruning.",
+  "type": "module",
+  "main": "lib/index.js",
+  "bin": {
+    "dsh-dcp-setup": "scripts/setup.mjs"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./summarizer": "./lib/summarizer.js",
+    "./config": "./lib/config.js",
+    "./setup": "./lib/setup.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "scripts",
+    "skills",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "setup": "node scripts/setup.mjs",
+    "link:closure": "node scripts/link-dsh-closure.mjs",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "smoke": "node scripts/smoke-boot.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "compaction",
+    "context-pruning",
+    "dcp"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fan56/dsh-dcp.git"
+  },
+  "homepage": "https://github.com/fan56/dsh-dcp",
+  "bugs": {
+    "url": "https://github.com/fan56/dsh-dcp/issues"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-brand": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-commands": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-compaction": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-compaction-basic": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-compaction-tool-result-pruner": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-invariants": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-session": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-skill": ">=0.1.5-rc.2",
+    "@deepseek-ai/dsh-token-meter": ">=0.1.5-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-brand": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-commands": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction-basic": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-compaction-tool-result-pruner": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-invariants": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-skill": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-token-meter": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-brand": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-commands": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-compaction": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-compaction-basic": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-compaction-tool-result-pruner": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-invariants": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-session": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-token-meter": "0.1.5-rc.2",
+    "@deepseek-ai/schemastery": "3.18.2",
+    "typescript": "~5.9.0"
+  },
+  "overrides": {
+    "@deepseek-ai/dsh-agent": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-brand": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-commands": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-compaction": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-compaction-tool-result-pruner": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-invariants": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-session": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-token-meter": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-scope": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-attachment": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-session-projection": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-llm-retry": "0.1.5-rc.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "pnpm": {
+    "overrides": {
+      "@deepseek-ai/dsh-scope": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-attachment": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-session-projection": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-system-prompt": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-llm-retry": "0.1.5-rc.2"
+    }
+  }
+}
