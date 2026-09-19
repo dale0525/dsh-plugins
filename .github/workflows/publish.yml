@@ -60,8 +60,10 @@ jobs:
       - name: Typecheck
         run: pnpm -r --if-present run typecheck
 
+      # 必须用根脚本（pnpm test），不能用 'pnpm -r run test'：
+      # -r 只覆盖 workspace 子项目，会跳过根包自己的 scripts/*.test.mjs。
       - name: Test
-        run: pnpm -r --if-present run test
+        run: pnpm test
 
       - name: Verify aggregate patch is up to date
         run: node scripts/aggregate.mjs --check
