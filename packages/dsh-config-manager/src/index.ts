@@ -220,6 +220,8 @@ export interface Config {
 
 /** Route family — must match the browser half's CONFIG_MANAGER_API exactly. */
 const API = {
+  // 设置页页脚版本行（pluginVersion / dshVersion）。只读，loopback fence。
+  status: '/api/dsh-config-manager/status',
   // P2-⑫：导出前只读预览（不落盘 ZIP；返回各分区 counts + 估算大小）
   // P1-⑧：快照管理（手动删除 + 置顶豁免自动清理）
   // m-backup-schedule：定时全量备份（读/存 backup-schedule.json + 立即执行一次）
@@ -1856,6 +1858,21 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
 
   const routesList: WebRoute[] = [
     // ------------------------------------------------------------- status
+    // 设置页页脚版本行：插件版本 + DSH 版本。只读、无 secret，loopback fence。
+    {
+      kind: 'exact',
+      path: API.status,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'GET')) return
+        writeJson(res, 200, {
+          ready: true,
+          pluginVersion: PLUGIN_VERSION,
+          dshVersion: host.dshVersion,
+          platform: host.platform,
+          arch: host.arch,
+        })
+      },
+    },
     // ------------------------------------------------------------- export
     // ---------------------------------------------------- export-preview
     // P2-⑫：导出前只读预览（不落盘 ZIP）：对选中分区逐个 adapter.export 收集 counts

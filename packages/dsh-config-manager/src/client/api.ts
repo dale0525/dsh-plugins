@@ -4,19 +4,13 @@
  */
 import { zhUiT, type UiT } from '../ui/i18n.ts'
 
-/** Host 半健康检查响应（plugin 版本 / DSH 版本 / 平台，用于主页横幅与兼容性说明） */
+/** Host 半状态响应（plugin 版本 / DSH 版本 / 平台，用于设置页页脚版本行） */
 export interface ServiceStatus {
   ready: boolean
   pluginVersion: string
   dshVersion: string
   platform: string
   arch: string
-  homeDir?: string
-  profile?: string
-  profileManifestReadable?: boolean
-  installedPluginCount?: number
-  installedPluginNames?: string[]
-  bundles?: string[]
 }
 
 export const CONFIG_MANAGER_API = {
