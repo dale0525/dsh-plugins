@@ -1,0 +1,23 @@
+# dsh-fakeip-fetch bundle patch layer.
+#
+# Two entries, both required:
+#
+# 1. The upstream `web-fetch-http` row is disabled. That plugin registers the
+#    fetch provider id `http`, and so does this one (deliberately: it keeps the
+#    `web` row's `fetchProvider: http` config untouched, so this package never
+#    has to restate — and never drifts from — `dsh-base`'s web row). Registering
+#    the same id twice throws `WEB_DUPLICATE_PROVIDER`, so the original row must
+#    stand down. Disabling (rather than editing) it also means re-enabling is a
+#    one-line revert in the profile patch, and that `dsh-base` stays unmodified.
+#
+# 2. This plugin's own row is inserted.
+#
+# Row id `fakeip-fetch` equals the host half's `export const name` in
+# src/index.js. It is distinct from the provider id `http` on purpose: the row
+# id names the loader entry, the provider id names the web seam registration.
+- id: web-fetch-http
+  disabled: true
+
+- insert:
+    - id: fakeip-fetch
+      name: '@logictan/dsh-fakeip-fetch'
