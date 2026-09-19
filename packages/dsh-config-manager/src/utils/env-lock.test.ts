@@ -22,6 +22,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   EnvironmentLockManager,
   EnvironmentLockIOError,
+  parseLinuxProcStartTime,
   EnvironmentLockOwnedByAnotherError,
   EnvironmentLockUnavailableError,
   runWithMutationLock,
@@ -279,6 +280,34 @@ process.exit(1); // 期望被拒：非 0 指示「未获得锁」；父进程根
   const st = h.getStdout().match(/RESULT (\S+)/)?.[1];
   assert.ok(st === 'LOCKED' || st === 'UNKNOWN_STATE', `child 被挡状态: ${st}`);
   await parent.release(pres.token!);
+});
+
+test('parseLinuxProcStartTime：取字段 22（starttime），不得取字段 24（rss）', () => {
+  // 真实 /proc/<pid>/stat 形状；comm 含空格与括号（按最后一个 ')' 切片才正确）。
+  // 字段：pid (comm) state ppid pgrp session tty_nr tpgid flags minflt cminflt majflt
+  //       cmajflt utime stime cutime cstime priority nice num_threads itrealvalue
+  //       starttime vsize rss ...
+  const line =
+    '12345 (node (worker)) S 1 12345 12345 0 -1 4194560 1000 0 0 0 5 3 0 0 20 0 11 0 999999 123456789 456 ' +
+    '18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0';
+  assert.equal(
+    parseLinuxProcStartTime(line),
+    '999999',
+    'starttime 是字段 22；切片后 index 0 = 字段 3，故 index = 22-3 = 19。' +
+      '取 index 21 会得到字段 24（rss）—— 该值随进程内存占用变化，' +
+      '会让同一进程的两次读取得到不同身份，被误判为 PID 复用（STALE_LOCK_DETECTED）。',
+  );
+});
+
+test('parseLinuxProcStartTime：comm 含 ")" 时仍取最后一个 ")" 之后的字段', () => {
+  const line = '7 (a)b)c) R 1 7 7 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 424242 100 200';
+  assert.equal(parseLinuxProcStartTime(line), '424242');
+});
+
+test('parseLinuxProcStartTime：畸形输入返回 null（不得抛出，也不得编造身份）', () => {
+  assert.equal(parseLinuxProcStartTime(''), null);
+  assert.equal(parseLinuxProcStartTime('no-parens-here'), null);
+  assert.equal(parseLinuxProcStartTime('1 (x) S'), null, '字段不足 → null');
 });
 
 test('§11.1-c4 release：close→unlink；unlink 失败抛 EnvironmentLockIOError 且保留 activeToken（可重试）', async (t) => {

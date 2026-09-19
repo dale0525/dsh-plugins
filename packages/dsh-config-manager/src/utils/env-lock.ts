@@ -322,16 +322,37 @@ function defaultIo(): EnvLockIo {
   }
 }
 
+/**
+ * 从 /proc/<pid>/stat 文本提取进程创建身份（starttime，字段 22）。
+ *
+ * 字段布局（man 5 proc_pid_stat）：1 pid, 2 comm, 3 state, …, 22 starttime, 23 vsize, 24 rss。
+ * comm 可能含空格与括号，故必须按**最后一个** ')' 切片；切片后 index 0 对应字段 3，
+ * 于是字段 N 的索引是 N-3 —— **starttime 的索引是 19**。
+ *
+ * 历史缺陷：此处曾取 index 21（= 字段 24 rss）。rss 随进程内存占用变化，
+ * 使同一进程的两次读取得到不同身份，被误判为「PID 复用」→ STALE_LOCK_DETECTED，
+ * 进而可能让 recoverStaleLock() 捕获一个**仍存活**的持有者的锁。
+ * 该路径仅在 Linux 生效（macOS/Windows 无 /proc），故只在 Linux CI 上暴露。
+ *
+ * @param statText /proc/<pid>/stat 全文
+ * @returns starttime 字符串；畸形/字段不足 → null（不抛错，也不编造身份）
+ */
+export function parseLinuxProcStartTime(statText: string): string | null {
+  const close = statText.lastIndexOf(')')
+  if (close < 0) return null
+  const fields = statText.slice(close + 1).trim().split(/\s+/)
+  const starttime = fields[19]
+  return typeof starttime === 'string' && starttime !== '' ? starttime : null
+}
+
 /** 默认进程探测（跨平台 best-effort；OS identity 能力由平台决定） */
 function defaultProbe(): ProcessIdentityProbe {
   const selfOsIdentity = (() => {
     try {
       if (process.platform === 'linux') {
-        // /proc/<pid>/stat 第 22 字段 = starttime（tick 数）
         const l = fssync.readFileSync(`/proc/${process.pid}/stat`, 'utf8').toString()
-        const afterComm = l.slice(l.lastIndexOf(')') + 1).trim().split(/\s+/)
-        // 格式: state ppid ... starttime：comm 后第一字段是 state，starttime 是第 22 个（index 21 起）
-        return `linux:${afterComm[21] ?? 'unknown'}`
+        const starttime = parseLinuxProcStartTime(l)
+        return starttime === null ? null : `linux:${starttime}`
       }
       if (process.platform === 'darwin') return `darwin:${process.pid}:${Date.now()}` // 不可靠 → 保守返回占位
       if (process.platform === 'win32') {
@@ -377,8 +398,8 @@ function defaultProbe(): ProcessIdentityProbe {
       if (process.platform === 'linux') {
         try {
           const l = fssync.readFileSync(`/proc/${pid}/stat`, 'utf8').toString()
-          const afterComm = l.slice(l.lastIndexOf(')') + 1).trim().split(/\s+/)
-          osIdentity = `linux:${afterComm[21] ?? 'unknown'}`
+          const starttime = parseLinuxProcStartTime(l)
+          osIdentity = starttime === null ? null : `linux:${starttime}`
         } catch { osIdentity = null }
       } else if (process.platform === 'win32') {
         // best-effort：Node 无法直接读其它进程 creation time；留给注入实现。这里返回 null = 无法验证。
