@@ -7,9 +7,19 @@ patchFrom:
   - ../dsh-easyrewrite
   - ../dsh-market
   - ../dsh-imagegen
+  - ../dsh-fakeip-fetch
+  - ../ctx-mem
 deps:
   - ../dsh-config-manager
   - ../dsh-workbuddy-connect
   - ../dsh-easyrewrite
   - ../dsh-market
   - ../dsh-imagegen
+  - ../dsh-fakeip-fetch
+  # ctx-mem's ENGINE row is disabled (its backend is a `compaction` SERVICE
+  # replacement, which only a preset's isolate realm can mount), but the package
+  # must still be INSTALLED: the bridge row names `@logictan/dsh-ctx-mem/bridge`,
+  # and the row the bridge injects names `@logictan/dsh-ctx-mem` — both resolve
+  # by package name from the profile root. patchFrom alone would ship rows whose
+  # packages are absent from a fresh profile.
+  - ../ctx-mem
