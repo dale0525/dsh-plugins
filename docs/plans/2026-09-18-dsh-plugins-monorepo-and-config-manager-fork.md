@@ -829,9 +829,15 @@ Error: dsh: plugin tree failed to load: failed to apply loader entry include
 
 ```sh
 dsh plugin --profile web remove dsh-config-manager
-dsh plugin --profile web add @logictan/dsh-config-manager@latest   # 或 add link:<本仓库路径>
-dsh-web restart
+dsh plugin --profile web add @logictan/dsh-plugins-all@latest   # 或 add link:<本仓库路径>
 ```
+
+> **不需要重启**（§14.10.3 实测修正）：`dsh plugin` 增删后 `plugin-manager` 会主动
+> reconcile（`reload()`），宿主 PID 全程不变即完成切换。上句初稿写的 `dsh-web restart` 是多余动作。
+>
+> **但「并存」的两种后果不同**：全新启动时并存 → **硬崩**（`duplicate loader entry id`）；
+> 运行中并存 → 宿主**存活**但只有先加载的那个在服务（实测仍是 fork）。
+> 无论哪种都不要并存 —— 启动失败是更难排查的故障形态。
 
 > 依赖安装本身走的是 profile 目录的 pnpm（`dsh plugin` 转发），**不需要**改本仓库的
 > workspace 配置；本仓库的 `packages/*` workspace 只服务于本仓库内开发。
@@ -868,6 +874,79 @@ dsh-web restart
 **仍缺的一项**：让本 fork 在 GUI 里真正跑起来（改 profile 依赖 → 重启宿主）会中断当前会话，
 故留给用户执行；重启后按 §7.3.7 验收 2 检查「设置页只剩同步一个标签」即可。
 （**此项已在 §14.6.2 用隔离 profile + :10099 补做**，上句所述的取舍已不再必要。）
+
+---
+
+### 14.10 发布落地与 live profile 切换（用户执行 + Root 收尾）
+
+#### 14.10.1 两包已上线
+
+| 包 | 版本 | gitHead |
+|---|---|---|
+| `@logictan/dsh-config-manager` | 0.1.60 | `32302ba` |
+| `@logictan/dsh-plugins-all` | 0.2.0 | `32302ba` |
+
+**排查中的一次误判（记录以免重犯）**：首发后用 `registry.npmjs.org/<pkg>` 查询聚合包得到 404，
+一度判定「聚合包没发出去」。实为 **CDN 缓存**：加 `Cache-Control: no-cache` + 时间戳查询串后
+立即返回 `{"dist-tags":{"latest":"0.2.0"}}`；npm 自己的日志也显示 `PUT 200` + `exit 0`。
+**教训：registry 的 404 在发布后短时间内不可作为「未发布」的证据。**
+
+**发布 tarball 内容复验**（下载线上 tarball 解包核对，而非只看本地构建）：
+`SYNC_SELECTION_SCHEMA_VERSION = 2`、`defaultIncluded` 出现 6 次、
+`portability === 'portable'` **0 次** —— §14.8 的三个修复确实在线上产物里。
+
+#### 14.10.2 安装链（从 registry 全新装）
+
+干净 `DSH_HOME` + `dsh plugin --profile web add @logictan/dsh-plugins-all@latest`：
+依赖链 `+4`（根聚合 → 子插件）、子插件 `lib/index.js` 与 `lib/client.js` 均就位
+（`prepare` 在安装时构建）、patch 行 `name: '@logictan/dsh-config-manager'` 从 profile 根可解析。
+
+#### 14.10.3 live profile 已切到本 fork（**未重启**）
+
+按 §14.6.4 的雷区提示，**先删上游再加 fork**：
+
+```sh
+dsh plugin --profile web remove dsh-config-manager
+dsh plugin --profile web add @logictan/dsh-plugins-all@latest
+```
+
+| 验收 | 结果 |
+|---|---|
+| 宿主 PID | **63404 全程未变**（切换前后同一进程）—— 即 **热切换，无需重启** |
+| `sync/status` 分区目录 | 14 项（上游为 9）→ 确认 **fork 在服务** |
+| `--dump-config` | `- id: config-manager / name: '@logictan/dsh-config-manager'` |
+| 真实 GUI | 设置面板出现「配置同步」入口；内层仅「远程同步」一个 tab；通道显示「已配置」 |
+| 高级模式分区列表 | 14 项全可勾选，含 Sessions（§14.8 缺陷 3 的修复在线上生效） |
+| profile 依赖 diff | 仅 `-dsh-config-manager` / `+@logictan/dsh-plugins-all`，无其他漂移 |
+| 其余 180 个 entry | 无加载错误；pinned link 完好 |
+
+**用户数据完好性**：切换后 `sync-selection.json` 与切换前**逐字节一致**，
+通道配置（`repoUrl`、`lastSyncAt`）与同步历史均保留 —— 这正是 §14.8「升级路径」修复的意义：
+若未修，schema 撞号会让用户的 git 7 个 / webdav 8 个分区勾选在切换瞬间被静默重置。
+
+> **一次真实操作失误（如实记录）**：验证「选择是否保留」时，我对 `/sync/selection` 发了
+> `POST` 去读当前值 —— 该路由是 **写** 接口，把用户的 git 通道从 advanced/7 分区改成了
+> default/空。发现后立刻用原值 POST 还原，并按 mode+sections 逐通道核对为 RESTORED
+> （仅两个已废弃字段 `encrypt`/`includeSecrets` 按设计不再写回）。
+> **教训：只读核验不得使用 POST 路由；应直接读磁盘文件。**
+
+#### 14.10.4 发布 CI/CD（OIDC）
+
+`.github/workflows/publish.yml`：推 `v*` tag 触发，`permissions: id-token: write`，
+不存任何 npm token。发布顺序由 `scripts/publish.mjs` 从 `dependencies` 边**拓扑推导**
+（7 条契约测试），新增包无需改脚本。
+
+**为什么不用 token**：npm 官方（2026-07-31 changelog）已让 bypass-2FA GAT 失去敏感管理操作，
+并 **targeting 2027-01 移除直接发布能力**，发布面收窄为「读私有包 + stage，维护者 2FA 批准」。
+OIDC 每次换取短时、工作流专属、不可导出的凭证，且自动生成 provenance。
+
+**两个硬约束（均已写入 README/AGENTS.md）**：
+
+1. **`--allow-publish` 不可省**：2026-09-03 之后创建的 trusted publisher 默认只允许
+   `npm stage publish`，不勾选则 CI 直接发布被拒。
+2. **首次发布只能人工**：trusted publisher 配在**已存在包**的设置页上，且 staged publishing
+   明确排除全新包（官方原文 "you cannot stage a brand-new package"）。
+   故新包流程 = 人工 `npm publish` → 配 trusted publisher → 之后交给 CI。
 
 ---
 
