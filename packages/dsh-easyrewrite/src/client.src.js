@@ -6,7 +6,7 @@
  * 改图标：替换 assets/edit.png、assets/recall.png → 执行 npm run build。
  */
 window.__ModuleLoader__.load({
-  id: "dsh-easyrewrite",
+  id: "@logictan/dsh-easyrewrite",
   factory: function (require) {
     var React = require("react");
     var Primitives = require("@deepseek-ai/dsh-client-ui-primitives");
@@ -1506,6 +1506,7 @@ window.__ModuleLoader__.load({
       zh: {
         title: "EasyRewrite",
         subtitle: "简单易用的撤回重编辑",
+        cardSummary: "撤回、重编辑与版本历史",
         expand: "展开",
         collapse: "收起",
         rewrite: "气泡框编辑（点击气泡原位修改）",
@@ -1599,6 +1600,7 @@ window.__ModuleLoader__.load({
       en: {
         title: "EasyRewrite",
         subtitle: "Simple & easy recall and re-edit",
+        cardSummary: "Recall, re-edit and version history",
         expand: "Expand",
         collapse: "Collapse",
         rewrite: "Bubble edit (click bubble to edit in place)",
@@ -1692,6 +1694,7 @@ window.__ModuleLoader__.load({
       ja: {
         title: "EasyRewrite",
         subtitle: "簡単で使いやすい撤回・再編集",
+        cardSummary: "撤回・再編集とバージョン履歴",
         expand: "展開",
         collapse: "折りたたむ",
         rewrite: "バブル編集（クリックでその場編集）",
@@ -1814,9 +1817,11 @@ window.__ModuleLoader__.load({
       );
       return SETTINGS_I18N[active] || SETTINGS_I18N.zh;
     }
-    /** 设置卡片：注册进 settings.plugin.item（设置 → 插件 → 插件配置）。 */
+    /** 设置卡片：注册进 plugins.row.config（设置 → 插件 → 插件配置）。
+     *  插件页对每个配置项渲染两次：view==='summary' 取行标题下的一行摘要，view==='page' 取完整表单。 */
     function EasyRewriteSettingsCard(props) {
       var L = useUILocaleDict();
+      if (props && props.view === "summary") return L.cardSummary;
       var openState = React.useState(false);
       var open = openState[0];
       var setOpen = openState[1];
@@ -4198,22 +4203,26 @@ window.__ModuleLoader__.load({
           }, RecallBanner);
         });
         if (typeof d3 === "function") disposers.push(d3);
-        // 设置卡片（设置 → 插件 → 插件配置）
-        var d4 = ctx.slots.inject("settings.plugin.item", function () {
-          return ctx.slots.register({
-            name: "settings.plugin.item",
-            key: "dsh-easyrewrite",
-            id: "dsh-easyrewrite",
-            order: 30,
-            inject: function () {
-              return {
-                openSession: function (id) { ctx.sessions.open(id); },
-                ctxSessions: ctx.sessions
-              };
-            }
-          }, EasyRewriteSettingsCard);
+        // 设置卡片（设置 → 插件 → 插件配置）：plugins.row.config 按 `<bundle 包名>#<行 id>` 分派。
+        // 行 id 等于宿主半边 export const name；bundle 包名随安装形态而变——经本仓库聚合包安装时
+        // 是聚合包，独立安装时是本包。两个 key 都注册：未安装的那个 bundle 不会被页面分派。
+        var ROW_ID = "dsh-easyrewrite";
+        var BUNDLE_NAMES = ["@logictan/dsh-plugins-all", "@logictan/dsh-easyrewrite"];
+        var d4s = BUNDLE_NAMES.map(function (bundle) {
+          return ctx.slots.inject("plugins.row.config", function () {
+            return ctx.slots.register({
+              name: "plugins.row.config",
+              key: bundle + "#" + ROW_ID,
+              inject: function () {
+                return {
+                  openSession: function (id) { ctx.sessions.open(id); },
+                  ctxSessions: ctx.sessions
+                };
+              }
+            }, EasyRewriteSettingsCard);
+          });
         });
-        if (typeof d4 === "function") disposers.push(d4);
+        d4s.forEach(function (d) { if (typeof d === "function") disposers.push(d); });
         // 版本翻页器 < X >：assistant 消息操作区（最后回答底部）
         var d5 = ctx.slots.inject("conversation.chat.assistant-actions", function () {
           return ctx.slots.register({

@@ -183,8 +183,8 @@ async function readDshVersion() {
 
 async function fetchLatestVersion() {
   try {
-    const resp = await fetch('https://registry.npmjs.org/dsh-easyrewrite/latest', {
-      headers: { 'user-agent': 'dsh-easyrewrite-update-check', accept: 'application/json' }
+    const resp = await fetch('https://registry.npmjs.org/@logictan%2Fdsh-easyrewrite/latest', {
+      headers: { 'user-agent': '@logictan/dsh-easyrewrite-update-check', accept: 'application/json' }
     });
     if (!resp.ok) return null;
     const data = await resp.json();
@@ -201,7 +201,7 @@ async function findPluginHomeDir() {
       const pkgPath = join(profilesRoot, name, 'package.json');
       try {
         const raw = await readFile(pkgPath, 'utf8');
-        if (raw.includes('dsh-easyrewrite')) return join(profilesRoot, name);
+        if (raw.includes('@logictan/dsh-easyrewrite')) return join(profilesRoot, name);
       } catch (e) { /* skip */ }
     }
   } catch (e) { /* ignore */ }
@@ -529,7 +529,7 @@ export function apply(ctx) {
         if (!profileDir) { sendJson(res, 200, { ok: false, error: 'profile-not-found' }); return; }
         writeLog('info', 'host', 'update-plugin 开始', { profileDir });
         const output = await new Promise((resolve) => {
-          execFile('pnpm', ['up', 'dsh-easyrewrite'], { cwd: profileDir, timeout: 90000, windowsHide: true }, (err, stdout, stderr) => {
+          execFile('pnpm', ['up', '@logictan/dsh-easyrewrite'], { cwd: profileDir, timeout: 90000, windowsHide: true }, (err, stdout, stderr) => {
             resolve({ err: err ? String(err.message || err) : null, stdout: String(stdout || '').slice(-1500), stderr: String(stderr || '').slice(-1500) });
           });
         });
