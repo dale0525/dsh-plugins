@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -19,6 +19,10 @@
     "cordis.patch.yml"
   ],
   "dependencies": {
-    "@logictan/dsh-config-manager": "^0.1.60"
+    "@logictan/dsh-config-manager": "^0.1.60",
+    "@logictan/dsh-easyrewrite": "^2.5.4",
+    "@logictan/dsh-imagegen": "^1.5.13",
+    "@logictan/dsh-workbuddy-connect": "^0.5.4",
+    "@logictan/dshmarket": "^1.48.0"
   }
 }

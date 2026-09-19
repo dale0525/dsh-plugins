@@ -3,5 +3,13 @@
 # deps: 该子包以普通 semver range 写进本包 dependencies（版本取自子包 package.json）。
 patchFrom:
   - ../dsh-config-manager
+  - ../dsh-workbuddy-connect
+  - ../dsh-easyrewrite
+  - ../dsh-market
+  - ../dsh-imagegen
 deps:
   - ../dsh-config-manager
+  - ../dsh-workbuddy-connect
+  - ../dsh-easyrewrite
+  - ../dsh-market
+  - ../dsh-imagegen

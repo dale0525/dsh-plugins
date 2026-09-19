@@ -25,3 +25,49 @@
 - insert:
     - id: config-manager
       name: '@logictan/dsh-config-manager'
+
+# from ../dsh-workbuddy-connect
+# Register the WorkBuddy provider without changing the profile's current
+# default model. The plugin reuses the WorkBuddy desktop app's sign-in; no
+# separate OAuth flow is started.
+#
+# Row id stays `llm-workbuddy`: it equals the host half's `export const name`
+# in src/index.ts, and the browser half keys its configuration entry on
+# `<bundle package name>#llm-workbuddy` for this same id.
+- insert:
+    - id: llm-workbuddy
+      name: '@logictan/dsh-workbuddy-connect'
+
+# from ../dsh-easyrewrite
+# dsh-easyrewrite bundle patch layer —— 把本插件挂载进 profile 树。
+#
+# 行 id 保持 `dsh-easyrewrite`：它等于宿主半边 src/index.js 的 `export const name`，
+# 浏览器半边则以 `<bundle 包名>#dsh-easyrewrite` 作为自己的配置项 key。
+# name 为发布包名（@logictan 作用域）。
+- insert:
+    - id: dsh-easyrewrite
+      name: '@logictan/dsh-easyrewrite'
+
+# from ../dsh-market
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+#
+# Row id stays `dsh-market`: it equals the host half's `export const name`
+# in src/index.ts, and the browser half keys its configuration entry on
+# `<bundle package name>#dsh-market` for this same id.
+- insert:
+    - id: dsh-market
+      name: '@logictan/dshmarket'
+
+# from ../dsh-imagegen
+# dsh-imagegen bundle patch: inserts the plugin row into the web profile
+# roster. The row is a bare plugin by package name: the node half (exports ".")
+# runs in the host process (settings bridge + image-generation proxy routes),
+# and the `dsh.client` declaration in package.json makes the browser half
+# (exports "./client", served at /plugins/<id>/client.js) load in the web GUI.
+#
+# Row id stays `imagegen`: it equals the host half's `export const name` in
+# src/index.ts, and the browser half keys its configuration entry on
+# `<bundle package name>#imagegen` for this same id.
+- insert:
+    - id: imagegen
+      name: '@logictan/dsh-imagegen'

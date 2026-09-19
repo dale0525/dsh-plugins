@@ -4,4 +4,18 @@ packages:
 # 根包（private）只是工作区壳；聚合包 @logictan/dsh-plugins-all 的 dependencies
 # 写普通 semver range，仓库内开发时链接到 workspace 工程（版本同源），
 # profile 里从 npm registry 安装时按该 range 解析。
+#
+# 这两个包只出现在 devDependencies 的传递依赖里（workbuddy → @earendil-works/pi-ai），
+# 它们的 install 脚本对构建/测试/运行都不是必需的，显式拒绝执行以免 CI 静默跑第三方脚本。
+allowBuilds:
+  '@google/genai': false
+  protobufjs: false
+
 linkWorkspacePackages: true
+
+# 一个真实 profile 里每个 @deepseek-ai 包只存在一份物理实例，插件通过宿主提供的
+# 服务（如 `ctx.get('attachments')`）拿到的就是那一份。工作区里各子插件自带的旧
+# 世代副本会被 pnpm 各留一份，声明合并（Context / SlotMap）因此落进不同模块，类型
+# 互不兼容。这里把参与声明合并的宿主包收敛到宿主当前世代，与运行时形态一致。
+overrides:
+  '@deepseek-ai/dsh-attachment': 0.1.6-alpha.2
