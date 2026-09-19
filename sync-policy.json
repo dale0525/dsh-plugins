@@ -222,6 +222,7 @@
   ],
   "added": [
     "scripts/dev-watch.mjs",
-    "tests/fixtures/legacy-snapshot-crypto.ts"
+    "tests/fixtures/legacy-snapshot-crypto.ts",
+    "tests/route/client-host-route-parity.test.ts"
   ]
 }
