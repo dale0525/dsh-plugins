@@ -40,6 +40,7 @@ import { codeloadAllowBuildsKey, findCatalogEntryForLocal, findInstalledAlias, g
 import { failureDetail, groupConflictsByOwner, isStaleUpdate, parseIgnoredBuilds, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, RELEASE_AGE_OVERRIDE, retargetCollections, validateAddedPlugins, withHoistRecovery } from './install.ts'
 import { classifyPnpmFailure } from './pnpm-compat.ts'
 import { asChannel, CHANNELS, DIST_TAG, resolveChannel, type Channel } from './channels.ts'
+import { isMarketSelfName, MARKET_SELF_NAMES, selfNameIn } from './self-names.ts'
 import {
   asRegion, githubProxyManaged, normalizeGithubProxy, REGIONS, routesFor, setActiveRegion,
   setCustomGithubProxy, type Region,
@@ -141,7 +142,7 @@ export function marketVersion(): string {
 }
 
 /** The market's own package names, as they appear in a profile manifest. */
-const SELF_NAMES = new Set(['dshmarket', 'dsh-market'])
+const SELF_NAMES = new Set<string>(MARKET_SELF_NAMES)
 
 /**
  * Rebuild a GitHub target for an update.
@@ -2152,7 +2153,7 @@ export function mountMarketRoutes(
             const body = (await readJsonBody(request)) as { name?: unknown; enabled?: unknown }
             const name = typeof body.name === 'string' ? body.name : ''
             const enabled = body.enabled === true
-            if (name === 'dsh-market' || name === 'dshmarket') {
+            if (isMarketSelfName(name)) {
               sendJson(response, 400, { error: 'the market cannot be disabled from its own page; use the dsh CLI' })
               return
             }
@@ -2519,7 +2520,7 @@ export function mountMarketRoutes(
           // "no restart button" is the state #229 reported as broken.
           supervisor: detectedSupervisor(),
           debugger: detectedDebugger(),
-          selfManaged: installed.dshmarket !== undefined || installed['dsh-market'] !== undefined,
+          selfManaged: selfNameIn(installed) !== undefined,
           installed,
         })
       },
@@ -3815,7 +3816,7 @@ sendJson(response, 200, { updates })
               return
             }
             const installed = readInstalled(config.profile, activeProfileDir)
-            const selfName = ['dshmarket', 'dsh-market'].find(candidate => installed[candidate] !== undefined)
+            const selfName = selfNameIn(installed)
             if (selfName === undefined) {
               sendJson(response, 400, { error: 'the market is not an installed dependency of this profile' })
               return
@@ -4096,7 +4097,7 @@ sendJson(response, 200, { updates })
             // has a concrete thing to go fix, so an override would only help
             // them break their next boot.
             const force = body.force === true
-            if (name === 'dsh-market' || name === 'dshmarket') {
+            if (isMarketSelfName(name)) {
               sendJson(response, 400, { error: 'the market cannot uninstall itself; use the dsh CLI' })
               return
             }

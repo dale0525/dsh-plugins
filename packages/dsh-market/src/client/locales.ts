@@ -3,6 +3,7 @@
 export const zh = {
   nav: '插件市场',
   setCardDesc: '查看插件市场版本与设置。',
+  setCardSummary: '插件市场的版本、更新、下载区域与卸载。',
   setSelfUpToDate: '已是最新版本',
   setSelfUpdateReady: '有新版本',
   setSelfUpdateHint: '更新会下载新版本，重启后生效。',
@@ -72,7 +73,7 @@ export const zh = {
   installing: '安装中…',
   installedBadge: '✓ 已安装',
   alreadyInstalled: '✓ 已安装',
-  restartBanner: '项变更完成，重启 DeepSeek Harness 后生效',
+  restartBanner: '项变更需重启 DeepSeek Harness 后生效',
   uninstall: '卸载',
   confirmRemove: '确认卸载？',
   uninstalling: '卸载中…',
@@ -544,6 +545,7 @@ export type MarketKey = keyof typeof zh
 export const en: Record<MarketKey, string> = {
   nav: 'Plugin Market',
   setCardDesc: 'View the plugin market version and settings.',
+  setCardSummary: 'Version, updates, download region, and removal for the plugin market.',
   setSelfUpToDate: 'Up to date',
   setSelfUpdateReady: 'New version available:',
   setSelfUpdateHint: 'Updating downloads the new version; it takes effect after a restart.',
@@ -613,7 +615,7 @@ export const en: Record<MarketKey, string> = {
   installing: 'Installing…',
   installedBadge: '✓ Installed',
   alreadyInstalled: '✓ Installed',
-  restartBanner: 'change(s) done — restart DeepSeek Harness to apply',
+  restartBanner: 'change(s) pending restart — restart DeepSeek Harness to apply',
   uninstall: 'Uninstall',
   confirmRemove: 'Uninstall?',
   uninstalling: 'Uninstalling…',

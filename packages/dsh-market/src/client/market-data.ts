@@ -5,6 +5,7 @@
 
 import type { DiagnosticReportV1 } from '../diagnostics.ts'
 import { findCatalogEntryForLocal } from '../catalog-local-match.ts'
+import { isMarketSelfName } from '../self-names.ts'
 export type { SharedHostPackageDependencyFinding } from '../diagnostics.ts'
 
 /** Localized text keyed by language ('zh' / 'en'). */
@@ -353,9 +354,14 @@ export interface ListQuery {
  * it — nothing about the data changes, and the Installed tab still shows it
  * — this is purely "a store has no reason to sell itself to someone already
  * standing in it."
+ *
+ * `npm` is the entry's PUBLISHED package name, so both spellings of the
+ * market's own package are recognised: upstream's unscoped `dshmarket` and
+ * this fork's `@logictan/dshmarket`. `name` stays a separate check because a
+ * catalog row can carry the display name with no npm package at all.
  */
 export function isMarketItself(plugin: Pick<RegistryPlugin, 'name' | 'npm'>): boolean {
-  return plugin.name === 'dsh-market' || plugin.npm === 'dshmarket'
+  return plugin.name === 'dsh-market' || (typeof plugin.npm === 'string' && isMarketSelfName(plugin.npm))
 }
 
 /**

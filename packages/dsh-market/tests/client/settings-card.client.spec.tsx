@@ -27,6 +27,8 @@ function stubFetch(options: {
   channel?: string; channelSwitch?: string; channelError?: string
   region?: string; regionAuto?: boolean; regionError?: string; githubProxy?: string | null
   githubProxyCustom?: string | null; githubProxyManaged?: boolean; githubProxyError?: string
+  /** Which self name the profile carries; the card must echo it back on update. */
+  installedName?: string
 } = {}): void {
   calls = []
   let githubProxyCustom = options.githubProxyCustom ?? null
@@ -53,6 +55,9 @@ function stubFetch(options: {
         githubProxyCustom,
         githubProxyManaged: options.githubProxyManaged === true,
         selfManaged: options.selfManaged !== false,
+        // The card resolves which package to update from this map, so the
+        // stub has to carry the dependency row the profile really holds.
+        installed: { [options.installedName ?? 'dshmarket']: '^1.0.0' },
       })
     }
     if (path.includes('/dsh-market/updates')) {
@@ -482,5 +487,57 @@ describe('SettingsCard — a channel switch is not an update', () => {
     await open()
     await waitFor(() => { expect(screen.getByText(`${t('setSelfUpdateReady')} 1.14.0`)).toBeTruthy() })
     expect(screen.getByRole('button', { name: t('setSelfUpdate') })).toBeTruthy()
+  })
+
+  /**
+   * The `plugins.row.config` slot renders every entry TWICE — once as the
+   * one-liner under the row title (`view: 'summary'`) and once as the row's
+   * own page (`view: 'page'`). The summary must be copy only: the page draws
+   * the row chrome, and a summary that mounted the card would put a second
+   * disclosure button on the row and pay for a status/update round trip per
+   * row on every visit to the page.
+   */
+  it('renders a one-liner and nothing else for view="summary"', () => {
+    render(<SettingsCard t={t} view="summary" />)
+    expect(screen.getByText(t('setCardSummary'))).toBeTruthy()
+    // No card chrome, no disclosure, and — the part that costs real money on
+    // a page listing every plugin — no probe.
+    expect(screen.queryByRole('button', { expanded: false })).toBeNull()
+    expect(calls).toEqual([])
+  })
+
+  it('renders the full card for view="page"', async () => {
+    render(<SettingsCard t={t} view="page" />)
+    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    await waitFor(() => { expect(screen.getByText(t('setSelfRemove'), { selector: 'div' })).toBeTruthy() })
+    expect(screen.queryByText(t('setCardSummary'))).toBeNull()
+  })
+
+  /**
+   * The update POST names the package `plugin update` must address, and the
+   * profile's dependency key is whichever self name was installed. Sending
+   * the wrong spelling resolves nothing and reports a no-op, so the card
+   * takes the name from the status payload rather than assuming one.
+   */
+  it('names the installed self package in the update POST, not a fixed spelling', async () => {
+    stubFetch({ latest: '1.13.0', installedName: '@logictan/dshmarket' })
+    await open()
+    await waitFor(() => { expect(screen.getByRole('button', { name: t('setSelfUpdate') })).toBeTruthy() })
+    fireEvent.click(screen.getByRole('button', { name: t('setSelfUpdate') }))
+    await waitFor(() => {
+      expect(calls.find(call => call.path.endsWith('/dsh-market/update'))?.body)
+        .toEqual({ name: '@logictan/dshmarket' })
+    })
+  })
+
+  it('still names upstream dshmarket for a profile that carries it', async () => {
+    stubFetch({ latest: '1.13.0', installedName: 'dshmarket' })
+    await open()
+    await waitFor(() => { expect(screen.getByRole('button', { name: t('setSelfUpdate') })).toBeTruthy() })
+    fireEvent.click(screen.getByRole('button', { name: t('setSelfUpdate') }))
+    await waitFor(() => {
+      expect(calls.find(call => call.path.endsWith('/dsh-market/update'))?.body)
+        .toEqual({ name: 'dshmarket' })
+    })
   })
 })

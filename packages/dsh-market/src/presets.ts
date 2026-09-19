@@ -18,18 +18,16 @@ import { applyBundleOrder, mergeOrder, readBundleRules, readBundleStack, validat
 import { createProfileSnapshot, DEFAULT_MAX_SNAPSHOTS } from './snapshot.ts'
 import { trialValidate, type TrialDiff, type TrialIssue } from './trial.ts'
 import { logEvent } from './log.ts'
+// The market's own package names, from their single home. The toggle route
+// refuses to disable them; a preset must never carry them in its disabled
+// list either — otherwise applying a preset (or importing one) could disable
+// the very page doing the applying (issue #98 analysis: applyPreset
+// self-disable guard). They are filtered at save/import time and again at
+// apply time (defense in depth).
+import { MARKET_SELF_NAMES } from './self-names.ts'
 
 /** Group-style name rule: letters/digits (incl. CJK), spaces, _, -; ≤ 40 chars, at least one non-space. */
 const PRESET_NAME_RE = /^[\p{L}\p{N}_ -]{1,40}$/u
-
-/**
- * The market's own package names. The toggle route refuses to disable them;
- * a preset must never carry them in its disabled list either — otherwise
- * applying a preset (or importing one) could disable the very page doing the
- * applying (issue #98 analysis: applyPreset self-disable guard). They are
- * filtered at save/import time and again at apply time (defense in depth).
- */
-const MARKET_SELF_NAMES = new Set(['dsh-market', 'dshmarket'])
 
 /** Maximum presets stored per profile (quota — issue #98 analysis). */
 export const MAX_PRESETS = 50

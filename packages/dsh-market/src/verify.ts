@@ -66,8 +66,9 @@ interface PkgDsh {
  *
  * The live set (see `liveNames` in routes.ts) holds loader entry names — the
  * `name:` field of each bundle patch row. Bundles usually name the bare
- * package (`dshmarket`, `@scope/pkg`), but may point at a subpath entry
- * (`@vectorize-io/hindsight-coding-agents/dsh`, `aegis/extensions/dsh/index.js`).
+ * package (`@logictan/dshmarket`, `@scope/pkg`), but may point at a subpath
+ * entry (`@vectorize-io/hindsight-coding-agents/dsh`,
+ * `aegis/extensions/dsh/index.js`).
  * Either form means the package's fiber is up and it must read as live;
  * a different package sharing a name prefix (`@scope/pkg2` vs `@scope/pkg`)
  * must not — the `/` bound keeps the match a real subpath.

@@ -10,6 +10,8 @@
  * each mutation and applies the live toggles for the batch action.
  */
 
+import { isMarketSelfName } from './self-names.ts'
+
 export type GroupAction = 'create' | 'rename' | 'delete' | 'set-members' | 'toggle'
 
 /** The slices of market state group CRUD touches (routes.ts owns the rest). */
@@ -89,7 +91,7 @@ export function setGroupMembers(
   for (const member of members) {
     if (typeof member !== 'string' || member === '' || seen.has(member)) continue
     // The market itself never participates in groups (#60 assumptions).
-    if (member === 'dsh-market' || member === 'dshmarket') continue
+    if (isMarketSelfName(member)) continue
     seen.add(member)
     if (installed.has(member)) kept.push(member)
   }

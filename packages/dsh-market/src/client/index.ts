@@ -39,13 +39,15 @@ export function missingPrimitives(mod: Record<string, unknown>, required: readon
  * package — but `settingsScope` stays as the INJECTION KEY, because its
  * presence is what distinguishes a host that has the plugin configuration
  * page from one that does not. The market's namespace (registered in
- * settings.ts) is likewise still required: the page dispatches a card keyed
- * by a namespace it serves, so dropping it would take the card with it.
+ * settings.ts) is still registered for the section, but the CARD is no
+ * longer keyed by it: `plugins.row.config` dispatches on
+ * `<bundle package name>#<row id>`.
  */
 interface SettingsScopeHost {
   slots: {
     inject(name: string, register: () => unknown): void
-    register(options: Record<string, unknown>, render: () => unknown): unknown
+    /** `render` receives the slot's props — notably `view`. */
+    register(options: Record<string, unknown>, render: (props: { view?: 'summary' | 'page' }) => unknown): unknown
   }
 }
 
@@ -79,6 +81,35 @@ interface MarketClientContext {
   slots: SlotsService
   theme: ThemeService
 }
+
+/**
+ * The patch row this plugin's own `cordis.patch.yml` inserts.
+ *
+ * It equals the host half's `export const name` in `src/index.ts`, and the
+ * browser half addresses its configuration page by
+ * `<bundle package name>#<this id>`.
+ */
+export const MARKET_ROW_ID = 'dsh-market'
+
+/**
+ * Bundle package names whose row {@link MARKET_ROW_ID} this card configures.
+ *
+ * The Plugins page keys a row's configuration by the name of the package
+ * that declares the row. This plugin reaches a profile in one of two shapes,
+ * and the key differs between them: as a dependency of this repository's
+ * aggregate bundle, the declaring package is the aggregate; installed on its
+ * own, it is this package. Both keys are registered — the one whose bundle
+ * is not installed simply never renders, because the page dispatches only
+ * the keys its own bundles declare.
+ *
+ * Both are registered deliberately. Collapsing this to one entry would break
+ * whichever installation shape the surviving name does not describe, and the
+ * cost of the extra registration is one dispatch that never fires.
+ */
+export const MARKET_BUNDLE_NAMES = [
+  '@logictan/dsh-plugins-all',
+  '@logictan/dshmarket',
+] as const
 
 export const name = 'dsh-market'
 // 'theme' is safe to require: ui-layout (mandatory in every web composition)
@@ -176,16 +207,27 @@ export function apply(ctx: MarketClientContext): void {
   // would keep this whole plugin unmounted on any host without that
   // service — the market's own page would vanish on rc.6 to gain a card
   // rc.6 cannot render. Nested, the card simply never appears there.
+  //
+  // The slot is `plugins.row.config`, keyed by `<bundle>#<row id>`. It
+  // replaced `settings.plugin.item`, which DSH 0.1.6-alpha.2 no longer
+  // declares — a registration into an undeclared slot throws, so keeping the
+  // old name here would take the card down with it.
   const settingsCtx = ctx as unknown as {
     inject(services: string[], callback: (scoped: SettingsScopeHost) => void): void
   }
   settingsCtx.inject(['settingsScope'], (scoped) => {
-    scoped.slots.inject('settings.plugin.item', () => scoped.slots.register({
-      name: 'settings.plugin.item',
-      key: NS,
-      locale: NS,
-      inject: () => ({ t }),
-    }, () => h(SettingsCard, { t, onRemoved: () => { sectionGate.retire() } })))
+    for (const bundle of MARKET_BUNDLE_NAMES) {
+      scoped.slots.inject('plugins.row.config', () => scoped.slots.register({
+        name: 'plugins.row.config',
+        key: `${bundle}#${MARKET_ROW_ID}`,
+        locale: NS,
+        inject: () => ({ t }),
+      }, (props: { view?: 'summary' | 'page' } = {}) => h(SettingsCard, {
+        t,
+        view: props.view,
+        onRemoved: () => { sectionGate.retire() },
+      })))
+    }
   })
 
   const Toast = () => h(InstallToast, { t })

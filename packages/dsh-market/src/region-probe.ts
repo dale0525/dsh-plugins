@@ -28,10 +28,17 @@ import { REGIONS, routesFor, type Region } from './regions.ts'
 /**
  * What to ask each registry for.
  *
- * The market's own package: present on every npm mirror worth using, and
- * small — the `latest` document is a few KB, against ~320KB for the full
+ * Upstream's `dshmarket` package: present on every npm mirror worth using,
+ * and small — the `latest` document is a few KB, against ~320KB for the full
  * packument. A probe that downloads a third of a megabyte to answer "which
  * of these is closer" has spent more than the answer is worth.
+ *
+ * Deliberately NOT this fork's `@logictan/dshmarket`. The probe measures
+ * reachability, not identity: it must be answerable by every mirror a user
+ * could be routed through, and upstream's name has been published on all of
+ * them for far longer. Naming the package that is running the probe would
+ * make the probe fail exactly where it matters most — a mirror that has
+ * never heard of this fork.
  */
 const PROBE_PATH = 'dshmarket/latest'
 

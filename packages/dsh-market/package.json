@@ -1,5 +1,5 @@
 {
-  "name": "dshmarket",
+  "name": "@logictan/dshmarket",
   "description": "Visual plugin market inside DeepSeek Harness — browse, search, and one-click install community plugins. · DSH 可视化插件市场：逛一逛，点一下，装好。",
   "version": "1.48.0",
   "type": "module",
@@ -8,7 +8,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dsh-market/dsh-market.git"
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-market"
   },
   "homepage": "https://dshmarket.com",
   "keywords": [

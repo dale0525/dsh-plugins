@@ -293,14 +293,14 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
     return {
       code: 'adding-to-root',
       recoverable: false,
-      message: 'pnpm 拒绝在 workspace 根目录安装（缺少 -w）。这是市场的 bug，请升级 dshmarket 到最新版 / pnpm refused to add at a workspace root (missing -w); this is a market bug — please update dshmarket',
+      message: 'pnpm 拒绝在 workspace 根目录安装（缺少 -w）。这是市场的 bug，请升级插件市场到最新版 / pnpm refused to add at a workspace root (missing -w); this is a market bug — please update the plugin market to its latest version',
     }
   }
   if (/--workspace-root may only be used inside a workspace/i.test(output)) {
     return {
       code: 'not-a-workspace',
       recoverable: false,
-      message: 'profile 目录不是 pnpm workspace，却传入了 -w。这是市场的 bug，请升级 dshmarket 到最新版 / -w was passed but the profile is not a pnpm workspace; this is a market bug — please update dshmarket',
+      message: 'profile 目录不是 pnpm workspace，却传入了 -w。这是市场的 bug，请升级插件市场到最新版 / -w was passed but the profile is not a pnpm workspace; this is a market bug — please update the plugin market to its latest version',
     }
   }
   // #39: once a release younger than minimumReleaseAge is in the lockfile

@@ -20,9 +20,12 @@
  *
  * The host's own contract is that "a plugin that ships a browser half owns
  * its own card" — the plugins tab only lays out a flex column and dispatches
- * `settings.plugin.item`. So the container IS ours to draw, and a value
- * import from `dsh-client-ui-settings-plugins` would fail the client
- * bundle-purity gate anyway.
+ * `plugins.row.config`, keyed by `<bundle package name>#<row id>`. So the
+ * container IS ours to draw, and a value import from
+ * `dsh-client-ui-plugin-manager` would fail the client bundle-purity gate
+ * anyway. That is also why the `view` field below is spelled out here rather
+ * than imported from the slot package: this component needs to KNOW about
+ * the two views, not to depend on the module that declares them.
  *
  * What the first version got wrong was drawing something of its own
  * invention: a flat, always-expanded box next to rows that collapse and
@@ -40,12 +43,27 @@ import css from './Market.module.css'
 import { api, applyGithubRouting } from './market-data.ts'
 import type { MarketStatus } from './market-data.ts'
 import type { Translate } from './market-data.ts'
+import { MARKET_SELF_NAMES, selfNameIn, DEFAULT_SELF_NAME } from '../self-names.ts'
 
 /** Keys the market leaves in the browser; cleared when the user purges. */
 const BROWSER_KEYS = ['dshm-webdav', 'dshm-gist-id'] as const
 
 export interface SettingsCardProps {
   t: Translate
+  /**
+   * Which of the two renders the host is asking for.
+   *
+   * The plugin configuration page draws every entry TWICE: once as the
+   * one-liner under the row's title (`'summary'`) and once as the body of
+   * the row's own page (`'page'`). Declared here as a plain union rather
+   * than imported from `dsh-client-ui-plugin-manager`, because importing
+   * that package would fail the client bundle-purity gate — the same reason
+   * the chrome is hand-built.
+   *
+   * Defaults to `'page'` so the existing callers and specs, which render the
+   * card directly, keep getting the full card.
+   */
+  view?: 'summary' | 'page'
   /**
    * Retire the market's own entry in the left settings menu.
    *
@@ -95,6 +113,8 @@ interface StatusBody {
   githubProxyCustom?: string | null
   githubProxyManaged?: boolean
   selfManaged?: boolean
+  /** The profile's dependency map, used to name the package an update targets. */
+  installed?: Record<string, string>
 }
 
 /** What api('/dsh-market/updates') says about the market's own row. */
@@ -113,6 +133,24 @@ type Phase = 'idle' | 'confirming' | 'working' | 'removed' | 'updated' | 'failed
 
 /** The market's own row as api('/dsh-market/updates') sends it. */
 interface RawUpdate { updateAvailable?: boolean; latest?: string; channelSwitch?: string; restoreRequired?: boolean; kind?: string }
+
+/**
+ * Read the market's own row out of an `/updates` payload.
+ *
+ * The payload is keyed by the package name the PROFILE holds, which is one
+ * of the market's self names and depends on which spelling was installed.
+ * Scanning the whole set is what keeps a profile still carrying upstream's
+ * `dshmarket` working after the fork was renamed, without a second copy of
+ * the name list here.
+ */
+function ownUpdate(updates: Record<string, RawUpdate> | undefined): RawUpdate | undefined {
+  if (updates === undefined) return undefined
+  for (const name of MARKET_SELF_NAMES) {
+    const row = updates[name]
+    if (row !== undefined) return row
+  }
+  return undefined
+}
 
 const CHANNELS: Channel[] = ['stable', 'beta', 'dev']
 const asChannel = (value: unknown): Channel | null =>
@@ -189,7 +227,7 @@ export function clearBrowserState(storage: Pick<Storage, 'removeItem'>): void {
   }
 }
 
-export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement | null {
+export function SettingsCard({ t, onRemoved, view = 'page' }: SettingsCardProps): ReactElement | null {
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<SelfStatus | null>(null)
   const [update, setUpdate] = useState<SelfUpdate | null>(null)
@@ -200,6 +238,15 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
   const [proxyEditing, setProxyEditing] = useState(false)
   const [proxyDraft, setProxyDraft] = useState('')
   const [proxySaving, setProxySaving] = useState(false)
+  /**
+   * The self name the PROFILE actually carries, captured from `/status`.
+   *
+   * The update POST has to name the installed package: a profile still on
+   * upstream's `dshmarket` and one on this fork's `@logictan/dshmarket` are
+   * the same product to this card but different rows to `plugin update`.
+   * Null until the first status read; `selfNameIn` is what resolves it.
+   */
+  const [selfName, setSelfName] = useState<string | null>(null)
   /**
    * The last self-update was refused by pnpm's fresh-release safety wait
    * (#39). Only the market's own card can update the market, so without a
@@ -225,7 +272,13 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
       try {
         const response = await fetch(api('/dsh-market/status'), { cache: 'no-store' })
         const body = (await response.json()) as StatusBody
-        if (live) setStatus(readStatus(body))
+        if (live) {
+          setStatus(readStatus(body))
+          // The server sends the whole dependency map, so the card can name
+          // the exact row `plugin update` must be pointed at instead of
+          // guessing a spelling that may not be installed.
+          setSelfName(selfNameIn(body.installed ?? {}) ?? null)
+        }
         applyGithubRouting(body)
       } catch {
         if (live) {
@@ -239,7 +292,7 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
       try {
         const response = await fetch(api('/dsh-market/updates'), { cache: 'no-store' })
         const body = (await response.json()) as { updates?: Record<string, RawUpdate> }
-        const own = body.updates?.['dshmarket'] ?? body.updates?.['dsh-market']
+        const own = ownUpdate(body.updates)
         if (live && own !== undefined) setUpdate(readUpdate(own))
       } catch { /* an update check that fails leaves the row without an offer */ }
     })()
@@ -263,7 +316,12 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
     void (async () => {
       try {
         const body = await post(api('/dsh-market/update'), {
-          name: 'dshmarket',
+          // The name the profile actually holds. `plugin update` addresses a
+          // dependency row, so a fork name sent to a profile still carrying
+          // upstream's `dshmarket` (or the reverse) would resolve nothing and
+          // report a no-op. The fallback only applies before the first status
+          // read, when no update button can be on screen yet.
+          name: selfName ?? DEFAULT_SELF_NAME,
           ...(update?.restoreRequired === true ? { restore: true } : {}),
           ...(force ? { force: true } : {}),
         }) as {
@@ -280,7 +338,7 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
         setPhase('failed')
       }
     })()
-  }, [post, t, update?.restoreRequired])
+  }, [post, t, update?.restoreRequired, selfName])
 
   const onRemove = useCallback(() => {
     setPhase('working')
@@ -310,7 +368,7 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
   const refreshUpdate = useCallback(async (): Promise<void> => {
     const response = await fetch(api('/dsh-market/updates') + '?force=1', { cache: 'no-store' })
     const body = (await response.json()) as { updates?: Record<string, RawUpdate> }
-    const own = body.updates?.['dshmarket'] ?? body.updates?.['dsh-market']
+    const own = ownUpdate(body.updates)
     setUpdate(own === undefined ? null : readUpdate(own))
   }, [])
 
@@ -396,6 +454,11 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
       ),
       action,
     )
+
+  // The row's one-liner. Nothing above this point touches the network: the
+  // summary render must not pay for a status or update round trip, and the
+  // probe effect stays keyed on `open`, which a summary never sets.
+  if (view === 'summary') return h(Fragment, null, t('setCardSummary'))
 
   // The end state REPLACES the controls rather than sitting beside them: the
   // package is gone from disk, so an update button next to "removed" would

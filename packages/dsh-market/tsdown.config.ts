@@ -1,7 +1,7 @@
 /**
- * Browser client bundle for the dshmarket plugin, mirroring the DeepSeek
- * Harness client preset (packages/client/tsdown.client.ts) for an external
- * package: a closure-factory artifact that calls
+ * Browser client bundle for the @logictan/dshmarket plugin, mirroring the
+ * DeepSeek Harness client preset (packages/client/tsdown.client.ts) for an
+ * external package: a closure-factory artifact that calls
  * window.__ModuleLoader__.load({ id, factory }) and resolves externals
  * through the injected require (loader module table). CSS Modules compile via
  * lightningcss inside the bundle: importing `x.module.css` yields the hashed
@@ -9,14 +9,17 @@
  * factory execution (the loader removes plugin-owned tags on unload).
  *
  * scripts/preflight.mjs asserts the emitted client/client.js starts with the
- * exact `window.__ModuleLoader__.load({ id: "dshmarket"` prefix.
+ * exact `window.__ModuleLoader__.load({ id: "@logictan/dshmarket"` prefix.
  */
 import { readFile } from 'node:fs/promises'
 import { basename, dirname, relative, resolve as resolvePath } from 'node:path'
 import { defineConfig } from 'tsdown'
 import { transform } from 'lightningcss'
 
-const id = 'dshmarket'
+// MUST equal package.json's `name`: the host resolves the browser half's
+// module table entry by the loader id, so a mismatch here makes the bundle
+// unloadable rather than merely mislabelled.
+const id = '@logictan/dshmarket'
 
 /**
  * Externals resolved from the loader module table at runtime. Only the
@@ -46,20 +49,14 @@ export default defineConfig({
   dts: false,
   // No sourcemap, and the reason is the repository rather than the browser.
   //
-  // `client.js` is committed (the market must install where build scripts are
-  // blocked) and CI enforces that it matches the source. That is fine for the
-  // bundle itself: 11k unminified lines with real identifiers, which git
-  // merges line by line like any other file — measured across a run of
-  // front-end PRs, it did not conflict once.
-  //
-  // The map is one 789KB line. Every change to it is a whole-file conflict,
-  // for every contributor, every time another front-end PR lands first
-  // (#533 by @liuwenji007, who was hitting it on three stacked PRs). It also
-  // rode along in the published package, where nothing consumed it.
+  // `client.js` is a build artifact, gitignored here and rebuilt by
+  // `prepare`/`prepack` (see the package's .gitignore). The map would still
+  // be a 789KB single line: unreadable in review, whole-file conflicts on
+  // every rebuild, and it rode along in the published package where nothing
+  // consumed it.
   //
   // The debugging it bought was small, because the bundle it maps is already
-  // readable — a stack trace against it names the real functions. Not worth a
-  // permanent tax on everyone who touches the client.
+  // readable — a stack trace against it names the real functions.
   sourcemap: false,
   clean: false,
   external: [...CLIENT_EXTERNALS],
