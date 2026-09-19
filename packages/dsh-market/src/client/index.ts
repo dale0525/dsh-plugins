@@ -1,0 +1,239 @@
+/**
+ * dsh-market client: registers a "Market" settings section rendering the
+ * plugin market UI, plus the post-install toast in the shell overlay layer.
+ * Built by tsdown into the __ModuleLoader__ factory bundle at
+ * client/client.js; the only externals are the loader module table's react
+ * entries.
+ */
+import { createElement as h } from 'react'
+import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
+import { en, zh } from './locales.ts'
+import { InstallToast } from './InstallToast.tsx'
+import { MarketErrorBoundary } from './ErrorBoundary.tsx'
+import { MarketSection } from './MarketSection.tsx'
+import { marketElement } from './market-element.ts'
+import { createSectionGate } from './section-gate.ts'
+import { exportMarketLog } from './self-check.ts'
+import { SettingsCard } from './SettingsCard.tsx'
+import type { ThemeSnapshot, Translate } from './market-data.ts'
+
+const NS = 'dsh-market'
+
+/**
+ * Primitives this bundle relies on that did not exist before rc.6. The
+ * primitives module is host-injected (external at build time), so on an
+ * older host the module resolves but these named exports are undefined —
+ * rendering would throw and blank the whole settings dialog. Returning the
+ * gaps lets apply() skip registration for a clean downgrade instead.
+ */
+export const REQUIRED_PRIMITIVES = ['Menu', 'DisclosureRow', 'Tooltip', 'Toast'] as const
+
+export function missingPrimitives(mod: Record<string, unknown>, required: readonly string[] = REQUIRED_PRIMITIVES): string[] {
+  return required.filter(name => mod[name] === undefined)
+}
+
+/**
+ * The host surface the settings card needs, present only on rc.7+.
+ *
+ * The card no longer reads or writes settings — it manages the market's own
+ * package — but `settingsScope` stays as the INJECTION KEY, because its
+ * presence is what distinguishes a host that has the plugin configuration
+ * page from one that does not. The market's namespace (registered in
+ * settings.ts) is still registered for the section, but the CARD is no
+ * longer keyed by it: `plugins.row.config` dispatches on
+ * `<bundle package name>#<row id>`.
+ */
+interface SettingsScopeHost {
+  slots: {
+    inject(name: string, register: () => unknown): void
+    /** `render` receives the slot's props — notably `view`. */
+    register(options: Record<string, unknown>, render: (props: { view?: 'summary' | 'page' }) => unknown): unknown
+  }
+}
+
+/** The subset of the theme service this plugin touches. */
+interface ThemeService {
+  getTheme(): ThemeSnapshot | null
+  setTheme(id: string): void
+}
+
+/** The subset of the locale service this plugin touches. */
+interface LocaleService {
+  register(namespace: string, dicts: { zh: Record<string, string>; en: Record<string, string> }): unknown
+  bind(namespace: string): Translate
+  subscribe(callback: () => void): () => void
+  getSnapshot(): { active: string }
+}
+
+/** The subset of the slots service this plugin touches. */
+interface SlotsService {
+  inject(slot: string, register: () => unknown): void
+  register(meta: Record<string, unknown>, component: () => unknown): unknown
+}
+
+/** The client cordis context shape this plugin relies on (structural: the
+ * host provides the real Context; typing the touched surface keeps this
+ * external package free of monorepo-internal type dependencies). */
+interface MarketClientContext {
+  effect(callback: () => unknown, label?: string): void
+  on(event: string, callback: () => void): () => void
+  locale: LocaleService
+  slots: SlotsService
+  theme: ThemeService
+}
+
+/**
+ * The patch row this plugin's own `cordis.patch.yml` inserts.
+ *
+ * It equals the host half's `export const name` in `src/index.ts`, and the
+ * browser half addresses its configuration page by
+ * `<bundle package name>#<this id>`.
+ */
+export const MARKET_ROW_ID = 'dsh-market'
+
+/**
+ * Bundle package names whose row {@link MARKET_ROW_ID} this card configures.
+ *
+ * The Plugins page keys a row's configuration by the name of the package
+ * that declares the row. This plugin reaches a profile in one of two shapes,
+ * and the key differs between them: as a dependency of this repository's
+ * aggregate bundle, the declaring package is the aggregate; installed on its
+ * own, it is this package. Both keys are registered — the one whose bundle
+ * is not installed simply never renders, because the page dispatches only
+ * the keys its own bundles declare.
+ *
+ * Both are registered deliberately. Collapsing this to one entry would break
+ * whichever installation shape the surviving name does not describe, and the
+ * cost of the extra registration is one dispatch that never fires.
+ */
+export const MARKET_BUNDLE_NAMES = [
+  '@logictan/dsh-plugins-all',
+  '@logictan/dshmarket',
+] as const
+
+export const name = 'dsh-market'
+// 'theme' is safe to require: ui-layout (mandatory in every web composition)
+// already hard-depends on it. This cordis's object-form inject means
+// intercept config, NOT {required,optional} — do not use it here.
+export const inject = ['slots', 'locale', 'theme']
+export function apply(ctx: MarketClientContext): void {
+  // Older hosts resolve the primitives module but lack the rc.6 exports the
+  // market renders with. Skip registration (market simply absent from the
+  // settings list) rather than throwing mid-render and blanking the dialog.
+  const gaps = missingPrimitives(primitives as unknown as Record<string, unknown>)
+  if (gaps.length > 0) {
+    console.warn('[dsh-market] host ui-primitives missing ' + gaps.join(', ') + ' — market section disabled (dsh web >= 0.1.0-rc.6 required)')
+    return
+  }
+
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-market: dictionaries')
+  const t = ctx.locale.bind(NS)
+
+  // One gate owns both questions about this entry — whether the HOST wants
+  // it (#602: a shell that renders the market itself does not want a
+  // duplicate nav item) and whether this package is being removed. See
+  // section-gate.ts for why the orderings, not the booleans, are the work.
+  /**
+   * The market's own panel, as an element — one builder for the settings
+   * section this package registers and for `market.render()` (#602). Built
+   * per call: the props are live (locale, theme, the host's preferred
+   * subsection), and a cached element would freeze the first caller's.
+   */
+  const buildMarketElement = (ownerProps: { preferredSubsectionId?: string } = {}): unknown => marketElement({
+    t,
+    locale: ctx.locale,
+    theme: ctx.theme,
+    themeStore: {
+      subscribe: (cb: () => void) => ctx.on('theme/change', cb),
+      getSnapshot: () => ctx.theme.getTheme(),
+    },
+    crashText: {
+      title: t('crashTitle'),
+      hint: t('crashHint'),
+      reload: t('crashReload'),
+      details: t('crashDetails'),
+    },
+    exportLog: () => { void exportMarketLog().catch(() => {}) },
+    preferredSubsectionId: ownerProps.preferredSubsectionId,
+  })
+
+  const sectionGate = createSectionGate(() => {
+    const off = ctx.slots.register({
+      name: 'settings.section',
+      id: 'market',
+      order: 40,
+      label: () => t('nav'),
+      locale: NS,
+      inject: () => ({ t }),
+    }, (ownerProps: { preferredSubsectionId?: string } = {}) => buildMarketElement(ownerProps))
+    // `slots.register` may not hand back a disposer on every host; the gate
+    // needs one regardless, so the absence becomes a no-op rather than a
+    // silently unretractable entry.
+    return typeof off === 'function' ? off as () => void : () => {}
+  })
+
+  ctx.slots.inject('settings.section', () => { sectionGate.available() })
+
+  // The control surface a host uses instead of reaching into our internals.
+  // Published as a service rather than a page global so it is discoverable
+  // and typed like every other client-side capability. Deliberately small:
+  // only what genuinely has to happen IN THE PAGE. Update counts are an HTTP
+  // concern and live in the v1 API, where a client with no market UI loaded
+  // can still ask for them.
+  const marketControl = {
+    version: 1 as const,
+    setSettingsVisible: (visible: boolean): void => { sectionGate.setVisible(visible) },
+    settingsVisible: (): boolean => sectionGate.visible(),
+    /**
+     * The market's panel as an element, for a host that renders it inside
+     * its own container. Same page, same React instance — this package's
+     * bundle resolves react through the host's module table, so an element
+     * returned here mounts anywhere in that tree.
+     *
+     * What it is NOT: a way to rearrange the market. It hands over the whole
+     * panel, chrome included. Cutting the market into host-fillable regions
+     * is a different design and has not been asked for by a second host yet.
+     */
+    render: (props: { preferredSubsectionId?: string } = {}): unknown => buildMarketElement(props),
+  }
+  // Guarded: `provide` is cordis's, and a host old enough to be missing it
+  // should lose the control surface, not the whole market.
+  if (typeof (ctx as { provide?: unknown }).provide === 'function') {
+    ;(ctx as unknown as { provide: (name: string, value: unknown) => void }).provide('market', marketControl)
+  }
+
+  // The settings card (dsh >= 0.1.0-rc.7). Registered through a NESTED
+  // inject on purpose: naming settingsScope in the module-level `inject`
+  // would keep this whole plugin unmounted on any host without that
+  // service — the market's own page would vanish on rc.6 to gain a card
+  // rc.6 cannot render. Nested, the card simply never appears there.
+  //
+  // The slot is `plugins.row.config`, keyed by `<bundle>#<row id>`. It
+  // replaced `settings.plugin.item`, which DSH 0.1.6-alpha.2 no longer
+  // declares — a registration into an undeclared slot throws, so keeping the
+  // old name here would take the card down with it.
+  const settingsCtx = ctx as unknown as {
+    inject(services: string[], callback: (scoped: SettingsScopeHost) => void): void
+  }
+  settingsCtx.inject(['settingsScope'], (scoped) => {
+    for (const bundle of MARKET_BUNDLE_NAMES) {
+      scoped.slots.inject('plugins.row.config', () => scoped.slots.register({
+        name: 'plugins.row.config',
+        key: `${bundle}#${MARKET_ROW_ID}`,
+        locale: NS,
+        inject: () => ({ t }),
+      }, (props: { view?: 'summary' | 'page' } = {}) => h(SettingsCard, {
+        t,
+        view: props.view,
+        onRemoved: () => { sectionGate.retire() },
+      })))
+    }
+  })
+
+  const Toast = () => h(InstallToast, { t })
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay',
+    id: 'dsh-market-toast',
+    label: () => 'dsh-market',
+  }, Toast))
+}

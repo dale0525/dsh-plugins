@@ -1,0 +1,8 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+#
+# Row id stays `dsh-market`: it equals the host half's `export const name`
+# in src/index.ts, and the browser half keys its configuration entry on
+# `<bundle package name>#dsh-market` for this same id.
+- insert:
+    - id: dsh-market
+      name: '@logictan/dshmarket'
