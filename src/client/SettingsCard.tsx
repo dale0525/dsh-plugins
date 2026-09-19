@@ -2,9 +2,9 @@
  * The dsh-imagegen settings card: channel management (list rows with status
  * dots, an editor dialog with the model-catalog alias → upstream mapping, and
  * built-in provider presets), plus the prompt-enhancement model and the plugin
- * switches. Registers into the official `settings.plugin.item` slot (the
- * Settings → Plugins → Configurable tab), independent of the dsh-web-ui family
- * group, bound to the plugin's own bridge settings scope.
+ * switches. Registers as the Image settings page in the Settings dialog's
+ * left navigation, independent of the dsh-web-ui family group, and binds to
+ * the plugin's own bridge settings scope.
  *
  * The interaction mirrors the host's model-provider page: one row per channel
  * (status dot + edit/delete), two add buttons (built-in provider / custom),
@@ -14,6 +14,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { CardForm, booleanField, secretField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import { ChannelsForm, type ChannelDraft, type ChannelsFormActions, type ChannelsFormState } from './channels-form.ts'
@@ -193,9 +194,9 @@ export class ImageGenSettingsCardController {
   }
 }
 
-/** Props the renderer binds for this card. */
-export type ImageGenSettingsCardProps =
-  PropsRuntime<'settings.plugin.item'>
+/** Props the renderer binds for this Settings navigation section. */
+export type ImageGenSettingsSectionProps =
+  PropsRuntime<'settings.section'>
   & PropsLocale<'dsh-imagegen'>
   & InjectFace<ImageGenSettingsCardFace>
 
@@ -210,14 +211,14 @@ interface UsageCounters {
  * @param props - locale copy, the card snapshot, and the form actions.
  * @returns the card, or nothing while the namespace is still loading.
  */
-export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
+export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   // The card renders through the plugin's own dictionary so the uiLanguage
   // override applies here too — the host-locale props.t would only follow the
   // DSH interface language.
   const t = tt
   useImageGenLanguageTick()
   const state = props.useImageGenSettingsCard(snapshot => snapshot)
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(true)
   // Global-section local states (prompt enhancement etc.).
   const [promptModels, setPromptModels] = useState<string[]>([])
   const [loadingPromptModels, setLoadingPromptModels] = useState(false)
@@ -263,7 +264,7 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
 
   if (!state.exposed) {
     return (
-      <li className={css.card}>
+      <section className={css.card} data-dsh-imagegen-settings-panel>
         <button
           type="button"
           className={css.header}
@@ -284,7 +285,7 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
             </div>
           )
           : null}
-      </li>
+      </section>
     )
   }
 
@@ -292,7 +293,7 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
   const editing = editingId === null ? undefined : channels.find(channel => channel.id === editingId)
 
   return (
-    <li className={css.card}>
+    <section className={css.card} data-dsh-imagegen-settings-panel>
       <button
         type="button"
         className={css.header}
@@ -801,7 +802,7 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
         />
       ) : null}
 
-    </li>
+    </section>
   )
 }
 

@@ -49,7 +49,7 @@ export class ImageGenerationRuntime {
       ?? view.channels.find(candidate => candidate.id === view.defaultChannelId)
       ?? view.channels[0]
     if (channel === undefined) {
-      throw new ImageGenError('尚未配置任何渠道：请先在「设置 → 插件 → AI 生图」添加渠道并填写 API 地址与密钥', 'no-channels')
+      throw new ImageGenError('尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥', 'no-channels')
     }
     const upstream: UpstreamConfig = { apiUrl: channel.apiUrl, apiKey: channel.apiKey }
     const result = await generateImage(upstream, request, { signal })

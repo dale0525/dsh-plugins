@@ -33,7 +33,7 @@ dsh plugin --profile web add @dickpy/dsh-imagegen
 
 首次使用：
 
-1. 打开“设置 → 插件 → VisioWork”，添加一个提供方，填入 API 地址和密钥，点击“检测可用模型”，勾选生图模型后保存。
+1. 打开「设置 → 生图配置」，添加一个提供方，填入 API 地址和密钥，点击“检测可用模型”，勾选生图模型后保存。
 2. 点击“生图”Tab，输入一句提示词，生成第一张图。
 3. 想让 Agent 也能画图？保持“允许 Agent 调用生图”开启即可（默认开启）。
 
@@ -43,7 +43,7 @@ dsh plugin --profile web add @dickpy/dsh-imagegen
 **让 Agent 帮你安装** —— 将下面内容直接发给 DSH、Codex 或其他 coding agent：
 
 ```text
-用 dsh plugin --profile web add @dickpy/dsh-imagegen 安装 AI 生图插件。完成后重启 dsh web，点击“新会话 / 生图”中的“生图” Tab，并打开设置中的 VisioWork 配置。
+用 dsh plugin --profile web add @dickpy/dsh-imagegen 安装 AI 生图插件。完成后重启 dsh web，点击“新会话 / 生图”中的“生图” Tab，并在「设置 → 生图配置」中管理渠道。
 ```
 
 **从 Release 安装** —— 从 [GitHub Releases](https://github.com/dickpy/dsh-imagegen/releases) 下载目标版本的 tgz 后执行：
@@ -150,7 +150,7 @@ dsh plugin --profile web add <下载路径>/dickpy-dsh-imagegen-<版本号>.tgz
 
 #### 相关设置
 
-「设置 → 插件 → AI 生图」新增**无限画布技能**分组：
+「设置 → 生图配置」新增**无限画布技能**分组：
 
 - **画布技能**：总开关，关闭后节点上不再出现技能菜单。
 - **允许重任务技能**：关闭后只保留轻量技能（不会启动无头 Agent）。
@@ -258,7 +258,7 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 | `get_image_generation_task` | 查询任务状态；完成时显示图片并返回下一步编辑所需的引用。 |
 | `cancel_image_generation_task` | 取消排队中或正在执行的任务。 |
 
-> 配置了多个生图模型时，Agent 会先询问你想用哪个，而不是擅自选择；未配置 API 地址、密钥或模型时，会明确引导到“设置 → 插件 → VisioWork”，不会静默失败。
+> 配置了多个生图模型时，Agent 会先询问你想用哪个，而不是擅自选择；未配置 API 地址、密钥或模型时，会明确引导到「设置 → 生图配置」，不会静默失败。
 
 </details>
 
@@ -318,11 +318,11 @@ Agent 会把上一轮图片作为参考图提交图生图任务，因此第二�
 <a id="configuration"></a>
 ## 配置模型
 
-打开 DSH 的“设置 → 插件”，展开 **VisioWork（dsh-imagegen）**。每个提供方都有独立的 API 地址、密钥和模型目录，可同时配置多个服务；预置了 OpenAI、智谱、xAI、字节火山方舟（Seedream）、阿里云百炼（Qwen-Image）、MiniMax（image-01）等常用渠道，也可添加任意自定义 OpenAI 兼容渠道。
+打开「设置 → 生图配置」。每个提供方都有独立的 API 地址、密钥和模型目录，可同时配置多个服务；预置了 OpenAI、智谱、xAI、字节火山方舟（Seedream）、阿里云百炼（Qwen-Image）、MiniMax（image-01）等常用渠道，也可添加任意自定义 OpenAI 兼容渠道。
 
 <div align="center">
   <img src="docs/images/plugin-settings.png" alt="DSH 设置页中的 VisioWork 插件配置" width="72%" />
-  <p><sub>设置 → 插件 → VisioWork（dsh-imagegen）</sub></p>
+  <p><sub>「设置 → 生图配置」</sub></p>
 </div>
 
 | 配置项 | 说明 |

@@ -49,6 +49,15 @@ async function waitForSelectorCount(root, selector, count, timeout = 1200) {
   assert.ok(root.querySelectorAll(selector).length >= count, `expected ${count} matches: ${selector}`)
 }
 
+/** Wait until a synchronous predicate becomes true. */
+async function waitUntil(predicate, timeout = 1200) {
+  const deadline = Date.now() + timeout
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+  }
+  return predicate()
+}
+
 // ---------------------------------------------------------------- A. host half
 const host = await import(new URL('lib/index.js', root).href)
 const hostLocale = await import(new URL('lib/locale-tables.js', root).href)
@@ -1532,7 +1541,7 @@ await check('C9 Agent tools wait for results, keep images in the UI view, edit, 
     enabled = false
     await assert.rejects(
       tools.get('generate_image').execute({ prompt: 'a cat' }, {}),
-      /disabled in Settings/,
+      /disabled in Settings → Image settings/,
     )
   } finally {
     dispose()
@@ -2796,6 +2805,179 @@ await check('D2 the client bundle ships the canvas skill + file-node surface', (
   assert.ok(source.includes('canvas.skills.batchTooMany'))
 })
 
+// ------------------------------- D3 sidebar entry adapters across shell layouts
+await check('D3 sidebar entry mounts inside desktop and unknown sidebar shells, and reports one it cannot reach (#20)', async () => {
+  const { JSDOM } = await import('jsdom')
+  const dom = new JSDOM(
+    '<!doctype html><html lang="zh-CN"><head></head><body>'
+    // DSH Desktop renders the upstream sidebar inside a surface of its own, so
+    // the web shell markers the entry used to look for are nowhere on the path
+    // and the mount silently bailed out (#20).
+    + '<aside class="dshDesktopSidebarSurface">'
+    + '<div class="dshDesktopUpstreamSidebar">'
+    + '<div class="xUkysG_root">'
+    + '<div class="xUkysG_logoRow"><button class="xUkysG_brandButton" aria-label="DSH">DSH</button></div>'
+    + '<button class="xUkysG_newSession" aria-label="New session">New session</button>'
+    + '<div class="xUkysG_regionArea"></div>'
+    + '</div>'
+    + '</div>'
+    + '</aside>'
+    + '</body></html>',
+    { pretendToBeVisual: true },
+  )
+  const jsdomWindow = dom.window
+  const jsdomDocument = jsdomWindow.document
+  // The "stayed unmounted" watchdog is a five second timer; shrink it so the
+  // check does not idle for real seconds.
+  const realSetTimeout = jsdomWindow.setTimeout.bind(jsdomWindow)
+  jsdomWindow.setTimeout = (fn, delay, ...args) => realSetTimeout(fn, Math.min(Number(delay) || 0, 20), ...args)
+  const warnings = []
+  const sandbox = {
+    window: jsdomWindow,
+    document: jsdomDocument,
+    MutationObserver: jsdomWindow.MutationObserver,
+    HTMLElement: jsdomWindow.HTMLElement,
+    console: {
+      log: (...args) => console.log(...args),
+      warn: (...args) => { warnings.push(args.join(' ')) },
+      error: (...args) => console.error(...args),
+      info: (...args) => console.info(...args),
+      debug: (...args) => console.debug(...args),
+    },
+  }
+  // Same stub set as D1: the entry is reached through the bundle export surface.
+  const stubs = {
+    'react': {
+      Fragment: 'Fragment',
+      createContext: (value) => ({ Provider: () => null, Consumer: () => null, _currentValue: value }),
+      createElement: () => null,
+      forwardRef: (render) => ({ $$typeof: Symbol.for('react.forward_ref'), render }),
+      memo: (fn) => ({ $$typeof: Symbol.for('react.memo'), type: fn }),
+      useContext: () => ({}),
+      useMemo: (factory) => factory(),
+      useRef: () => ({ current: null }),
+      useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
+    },
+    'react/jsx-runtime': { jsx: () => null, jsxs: () => null },
+    'react-dom': {},
+    'react-dom/client': { createRoot: () => ({ render: () => {}, unmount: () => {} }) },
+    '@deepseek-ai/dsh-client-ui-primitives': {},
+    '@deepseek-ai/dsh-client-store': { createSnapshotStore: (initial) => ({
+      getSnapshot: () => initial,
+      set: () => {},
+      update: () => {},
+      subscribe: () => () => {},
+    }) },
+  }
+  let handoff
+  sandbox.window.__ModuleLoader__ = { load: (h) => { handoff = h } }
+  const source = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+  vm.runInNewContext(source, sandbox, { filename: 'client.js' })
+  const exportsOf = handoff.factory((spec) => {
+    const stub = stubs[spec]
+    if (stub === undefined) throw new Error(`unexpected require: ${spec}`)
+    return stub
+  })
+  const { findSidebarRoot, mount } = exportsOf.sidebarEntryTestHooks
+  assert.equal(typeof findSidebarRoot, 'function')
+  assert.equal(typeof mount, 'function')
+
+  const calls = []
+  const listeners = new Set()
+  let panelOpen = false
+  const controller = {
+    getSnapshot: () => ({ panelOpen }),
+    open: () => { calls.push('open') },
+    close: () => { calls.push('close') },
+    subscribe: (fn) => { listeners.add(fn); return () => { listeners.delete(fn) } },
+  }
+
+  // --- desktop shell: the wrapper owning the shell button is the mount point,
+  // and the brand row on the same ancestor must stay untouched.
+  const desktopRoot = findSidebarRoot()
+  assert.equal(desktopRoot?.className, 'xUkysG_root', 'the desktop sidebar surface resolves to the wrapper that owns the shell button')
+  const disposeDesktop = mount(controller, 'New session', 'Start a new session', 'Image', 'Open the image studio')
+  const tabs = jsdomDocument.querySelector('[data-dsh-imagegen-session-tabs]')
+  assert.ok(tabs !== null, 'the two tabs mount in the desktop shell')
+  assert.equal(tabs.parentElement.className, 'xUkysG_root', 'the tabs land where the shell button sits')
+  assert.equal(tabs.getAttribute('role'), 'tablist')
+  assert.deepEqual(
+    [...tabs.querySelectorAll('[data-dsh-imagegen-tab]')].map(tab => tab.getAttribute('data-dsh-imagegen-tab')),
+    ['new-session', 'image'],
+  )
+  const shellButton = jsdomDocument.querySelector('.xUkysG_newSession')
+  assert.equal(shellButton.style.display, 'none', 'the shell button is replaced by the tabs')
+  assert.equal(shellButton.getAttribute('aria-hidden'), 'true')
+  assert.equal(shellButton.tabIndex, -1)
+  const brandButton = jsdomDocument.querySelector('.xUkysG_brandButton')
+  assert.equal(brandButton.style.display, '', 'the brand button is never hidden')
+  assert.equal(brandButton.hasAttribute('aria-hidden'), false)
+  assert.equal(brandButton.tabIndex, 0)
+  const historyHost = jsdomDocument.querySelector('[data-dsh-imagegen-history-host]')
+  assert.ok(historyHost !== null, 'the history host mounts inside the desktop sidebar')
+  assert.equal(historyHost.parentElement.className, 'xUkysG_regionArea')
+  assert.equal(desktopRoot.getAttribute('data-dsh-imagegen-sidebar-root'), '', 'the resolved shell root is marked')
+
+  // Tab clicks drive the panel, and the active state follows the panel store.
+  tabs.querySelector('[data-dsh-imagegen-tab="image"]').dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+  tabs.querySelector('[data-dsh-imagegen-tab="new-session"]').dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
+  assert.equal(calls.join(','), 'open,close', 'the image tab opens the studio and the new-session tab closes it')
+  panelOpen = true
+  for (const listener of [...listeners]) listener()
+  assert.equal(tabs.querySelector('[data-dsh-imagegen-tab="image"]').hasAttribute('data-active'), true, 'the open panel marks the image tab')
+  assert.equal(tabs.querySelector('[data-dsh-imagegen-tab="new-session"]').hasAttribute('data-active'), false)
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(warnings.length, 0, `a mounted sidebar entry logs nothing: ${warnings.join(' | ')}`)
+
+  disposeDesktop()
+  assert.equal(jsdomDocument.querySelector('[data-dsh-imagegen-session-tabs]'), null, 'the disposer takes the tabs back out')
+  assert.equal(jsdomDocument.querySelector('[data-dsh-imagegen-history-host]'), null, 'the disposer takes the history host back out')
+  assert.equal(shellButton.style.display, '', 'the disposer restores the shell button')
+  assert.equal(shellButton.hasAttribute('aria-hidden'), false)
+  assert.equal(shellButton.hasAttribute('tabindex'), false)
+  assert.equal(desktopRoot.hasAttribute('data-dsh-imagegen-sidebar-root'), false, 'the root marker is cleared on unload')
+
+  // --- unknown shell: no marker class and no data hook anywhere, only the brand
+  // row plus the shell button's accessible name.
+  jsdomDocument.body.innerHTML =
+    '<div class="zzzShell">'
+    + '<div class="zzz_logoRow"><button class="zzz_brand">brand</button></div>'
+    + '<button aria-label="New session">+</button>'
+    + '<div class="zzz_regionArea"></div>'
+    + '</div>'
+  const unknownRoot = findSidebarRoot()
+  assert.equal(unknownRoot?.className, 'zzzShell', 'a shell without our markers resolves through the brand row and the button name')
+  const disposeUnknown = mount(controller, 'New session', 'Start a new session', 'Image', 'Open the image studio')
+  const unknownTabs = jsdomDocument.querySelector('[data-dsh-imagegen-session-tabs]')
+  assert.ok(unknownTabs !== null, 'the tabs mount in a shell we have never seen')
+  assert.equal(unknownTabs.parentElement.className, 'zzzShell')
+  assert.equal(jsdomDocument.querySelector('.zzzShell > button[aria-label="New session"]').style.display, 'none')
+  assert.equal(jsdomDocument.querySelector('[data-dsh-imagegen-history-host]').parentElement.className, 'zzz_regionArea')
+  disposeUnknown()
+  assert.equal(jsdomDocument.querySelector('[data-dsh-imagegen-session-tabs]'), null)
+
+  // --- a shell with no New Session affordance must not be mistaken for one: no
+  // tabs, no hidden brand button, and one explicit warning, because the silent
+  // return is exactly what made #20 hard to diagnose.
+  jsdomDocument.body.innerHTML =
+    '<div data-pane="sidebar">'
+    + '<div class="logoRow"><button class="brandButton" aria-label="Collapse sidebar">SESSION-TITLE-MUST-NOT-BE-LOGGED</button></div>'
+    + '<div class="regionArea"></div>'
+    + '</div>'
+  const disposeUnmounted = mount(controller, 'New session', 'Start a new session', 'Image', 'Open the image studio')
+  assert.equal(jsdomDocument.querySelector('[data-dsh-imagegen-session-tabs]'), null, 'no tabs mount without a shell button to replace')
+  assert.equal(jsdomDocument.querySelector('[data-dsh-imagegen-history-host]'), null, 'no history host mounts either')
+  assert.equal(jsdomDocument.querySelector('.brandButton').style.display, '', 'the brand button is not mistaken for the new-session control')
+  await new Promise(resolve => setTimeout(resolve, 60))
+  const warning = warnings.find(line => line.includes('sidebar entry stayed unmounted'))
+  assert.ok(warning !== undefined, `an unreachable shell is reported instead of failing silently: ${warnings.join(' | ')}`)
+  assert.match(warning, /new-session button not found/)
+  assert.match(warning, /body>div/, 'the warning carries a shell probe for bug reports')
+  assert.equal(warning.includes('SESSION-TITLE-MUST-NOT-BE-LOGGED'), false, 'the probe never dumps sidebar content')
+  disposeUnmounted()
+  jsdomWindow.setTimeout = realSetTimeout
+})
+
 // --------------- E. full client apply in jsdom (mounts the sidebar entry)
 await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async () => {
   const { JSDOM } = await import('jsdom')
@@ -3256,7 +3438,10 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   const ctx = {
     effect(fn) { return fn() },
     on() { return () => {} },
-    get(name) { return name === 'connection' ? { isLoopback: true } : undefined },
+    get(name) {
+      if (name === 'connection') return { isLoopback: true }
+      return undefined
+    },
     locale: {
       register() {},
       addLanguage() { return () => {} },
@@ -3330,6 +3515,28 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
   })
 
   exportsOf.apply(ctx)
+  // In-app prompts must open Settings through its rendered dialog affordances
+  // and select the image-generation section.
+  const settingsTrigger = jsdomDocument.createElement('button')
+  settingsTrigger.setAttribute('aria-haspopup', 'dialog')
+  settingsTrigger.setAttribute('aria-label', '设置')
+  const settingsNavButton = jsdomDocument.createElement('button')
+  settingsNavButton.textContent = '生图配置'
+  let settingsSectionClicks = 0
+  settingsNavButton.addEventListener('click', () => { settingsSectionClicks += 1 })
+  settingsTrigger.addEventListener('click', () => {
+    const dialog = jsdomDocument.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    const nav = jsdomDocument.createElement('nav')
+    nav.append(settingsNavButton)
+    dialog.append(nav)
+    jsdomDocument.body.append(dialog)
+  })
+  jsdomDocument.body.append(settingsTrigger)
+  jsdomWindow.dispatchEvent(new jsdomWindow.CustomEvent('dsh-imagegen:open-config'))
+  assert.ok(await waitUntil(() => settingsSectionClicks === 1), 'in-app configure prompts select the settings.section entry')
+  jsdomDocument.querySelector('[role="dialog"]')?.remove()
+  settingsTrigger.remove()
   // Wait for the bridge fetch + scope settle + React render.
   await waitForSelectorCount(jsdomDocument, '[data-comparison]', 1)
 
@@ -3503,10 +3710,16 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     view.querySelector('[data-gallery-clear]')?.dispatchEvent(new jsdomWindow.MouseEvent('click', { bubbles: true }))
     await new Promise(resolve => setTimeout(resolve, 20))
     assert.equal(confirmationCalls, 2, 'gallery clear asks for confirmation')
-    // The settings card registered into the official plugin-config slot.
-    assert.equal(registered.length, 1)
-    assert.equal(registered[0].key, 'dsh-imagegen')
-    assert.equal(registered[0].name, 'settings.plugin.item')
+    // The configuration entry registers exactly one Settings navigation section.
+    const sectionRegistrations = registered.filter(item => item.name === 'settings.section')
+    assert.equal(sectionRegistrations.length, 1)
+    const sectionRegistration = sectionRegistrations[0]
+    assert.equal(sectionRegistration?.id, 'dsh-imagegen')
+    assert.equal(sectionRegistration?.order, 16)
+    assert.equal(typeof sectionRegistration?.label, 'function')
+    assert.equal(sectionRegistration?.label(), '生图配置')
+    assert.equal(typeof sectionRegistration?.inject, 'function')
+    assert.equal(registered.some(item => item.name === 'main' || item.name === 'sidebar.panellist'), false)
 
     // The asset library must not inherit the normal generation inspiration wall.
     assert.equal(jsdomDocument.querySelector('[aria-label="灵感案例"]'), null, 'asset library hides inspiration wall')
@@ -3551,7 +3764,7 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // The redacted wire view never returns the key, so the form judges the
     // write by the secrets sidecar; a save that landed must not show failure
     // (this exact bug surfaced as "保存失败" while values were actually stored).
-    const face = registered[0].inject()
+    const face = sectionRegistration.inject()
     face.channels.setChannelKey('default', 'sk-new')
     await face.channels.commit()
     await new Promise(resolve => setTimeout(resolve, 100))

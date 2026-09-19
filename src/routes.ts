@@ -541,7 +541,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   const resolveChannelRequest = (request: GenerateRequest): { ok: true; request: GenerateRequest } | { ok: false; code: string; message: string } => {
     const view = channelViewOf()
     if (view.channels.length === 0) {
-      return { ok: false, code: 'no-channels', message: '尚未配置任何渠道：请先在「设置 → 插件 → AI 生图」添加渠道并填写 API 地址与密钥' }
+      return { ok: false, code: 'no-channels', message: '尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥' }
     }
     const explicit = view.channels.find(candidate => candidate.id === request.channelId)
     const defaults = view.channels.find(candidate => candidate.id === view.defaultChannelId) ?? view.channels[0]

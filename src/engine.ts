@@ -956,8 +956,8 @@ async function generateMiniMaxImage(
  */
 export async function generateImage(upstream: UpstreamConfig, request: GenerateRequest, options: { signal?: AbortSignal } = {}): Promise<GenerateResult> {
   const baseUrl = upstream.apiUrl.trim().replace(/\/+$/, '')
-  if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
-  if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
+  if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
+  if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
   if (isQwenImage(wireModel(request))) return generateQwenImage(baseUrl, upstream, request, options)
   if (isMiniMaxImage(wireModel(request))) return generateMiniMaxImage(baseUrl, upstream, request, options)
   if (request.mode === 'edit' && isZhipuImage(wireModel(request))) {

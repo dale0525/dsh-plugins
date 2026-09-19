@@ -16,6 +16,7 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ImageGenApi } from './api.ts'
 import { errorMessage, tt } from './helpers.ts'
+import { openImageGenConfig } from './config-entry.tsx'
 import { TemplateLibrary } from './TemplateLibrary.tsx'
 import { GooeyNav } from './GooeyNav.tsx'
 import { InspirationGallery } from './InspirationGallery.tsx'
@@ -816,17 +817,7 @@ export function ImageGenPanel(props: {
 
   const openSettingsGuide = (kind: 'generation' | 'enhancement' | 'disabled'): void => {
     setConfigGuide(kind)
-    const openPluginSettings = (): void => {
-      const pluginButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => /^(插件|Plugins)$/.test(button.textContent?.trim() ?? ''))
-      pluginButton?.click()
-      window.setTimeout(() => {
-        const imageGenButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => /dsh-imagegen/i.test(button.textContent ?? ''))
-        if (imageGenButton?.getAttribute('aria-expanded') !== 'true') imageGenButton?.click()
-      }, 0)
-    }
-    const settingsButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => /^(设置|Settings)$/.test(button.textContent?.trim() ?? ''))
-    if (settingsButton?.getAttribute('aria-expanded') !== 'true') settingsButton?.click()
-    window.setTimeout(openPluginSettings, 0)
+    openImageGenConfig()
   }
 
   const enhanceCurrentPrompt = async (): Promise<void> => {
