@@ -948,6 +948,39 @@ OIDC 每次换取短时、工作流专属、不可导出的凭证，且自动生
    明确排除全新包（官方原文 "you cannot stage a brand-new package"）。
    故新包流程 = 人工 `npm publish` → 配 trusted publisher → 之后交给 CI。
 
+#### 14.10.5 发布/CI 的两轮独立审查（§3.3 盲审 + §3.4 高风险审查）
+
+两个席位首轮都停在「等测试跑完」不给结论，按协议向**同一席位**重发一次后正常交付。
+本轮共 7 条，逐条亲验后**采纳 6 条、推翻 1 条**（该条经辩论轮以席位让步闭环）。
+
+**安全审查席位（4 条）**：
+
+| # | 条目 | Root 复验 | 裁定 |
+|---|---|---|---|
+| 1 | 手动触发默认即真发布（`dry_run` 默认 false + 无分支约束） | 实读 workflow：`!false` = true → 任何分支的 dispatch 都能换 OIDC 凭证发版 | **采纳** |
+| 2 | 第三方 action 未锁 SHA，而本 job 持有 `id-token: write` | 实读：4 处均为 `@v4` 可变 tag | **采纳** |
+| 3 | tag 与包版本无绑定校验，可能连带静默发布 | 确认无 `GITHUB_REF` 校验 | **采纳**（见下「部分处理」） |
+| 4 | `--frozen-lockfile=false` 使发布不可复现 | 本地实测 frozen 安装通过（EXIT=0） | **采纳** |
+
+**盲审席位（3 条）**：
+
+| # | 条目 | Root 复验 | 裁定 |
+|---|---|---|---|
+| 1 | `setup-node` 传 `registry-url` 会让 OIDC 失效报 ENEEDAUTH | **推翻**：npm 官方 trusted-publishing 示例逐字包含 `registry-url: 'https://registry.npmjs.org'`；且直接调用 npm 源码 `npm-registry-fetch/lib/auth.js` 的 `getAuth` 实测——空 token（setup-node 在 `NODE_AUTH_TOKEN` 未设时写出的形态）返回 **null（无 token）**，OIDC 路径不受阻 | **不采纳** → 辩论轮 → **席位让步并撤回** |
+| 2 | 聚合包缺 `repository` → provenance 生成被拒 | 官方原文 "package.json is configured with a public repository that matches..."；实读 `packages/all` 确缺；线上 0.2.0 的 registry 元数据亦无 repository | **采纳** |
+| 3 | dry-run 提示步骤 `== true` 弱类型，CLI/REST 传字符串 "true" 时判 false | GitHub 官方表达式规则：`==` 两侧转数字，`Number("true")=NaN` | **采纳** |
+
+**辩论轮记录（条目 1）**：Root 提交原判 + 反驳证据（官方示例原文、npm 源码 `getAuth` 实测）+ 席位当时未获得的事实（npm CLI 的 OIDC 优先于 token 回退）。席位答复「**条目1：让步**」，并自行补证：官方文档源仓库 `trusted-publishers.mdx` 确有 `registry-url`；`lib/utils/oidc.js` 在换得 token 后 `config.set(authTokenKey, response.token, 'user')` 会原位覆盖 `.npmrc` 配置；其前次误判源于**在无 OIDC 环境变量的本机构造 `.npmrc`** 复现，属假阳性。
+→ 全部条目处于「采纳」或「让步」，**共识成立**，无需再开轮。
+
+**条目 3 的部分处理（如实说明）**：加「tag 与版本绑定」校验需要先确定 tag 语义
+（单包 tag 还是整仓 tag），这属于尚未冻结的产品决策，不在本轮范围。
+当前缓解是 workflow 的**幂等跳过**（已发布版本直接跳过），故误发风险限于「确实 bump 了版本但打错 tag」，
+不会静默重发同一版本。登记为后续项，不擅自扩范围。
+
+**另一处登记未改**：`sync-upstream.yml` 的 `--frozen-lockfile=false` 是**刻意**的
+（subtree pull 会带入上游依赖变更，冻结会直接失败），已在文件内注明与 `publish.yml` 的差异。
+
 ---
 
 ### 14.8 GUI 验证中发现的三个缺陷（改造一引入，均已修复）
