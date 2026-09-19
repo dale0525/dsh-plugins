@@ -1,0 +1,17 @@
+# dependencies
+node_modules/
+
+# build & publish artifacts
+*.tgz
+lib/*.map
+
+# logs & local state
+*.log
+backups/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# local raw assets
+展示图包/
