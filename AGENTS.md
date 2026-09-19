@@ -32,6 +32,21 @@ dsh-plugins/
 
 **构建产物不入版本控制**：每个 `packages/<name>/lib/` 由各自 `.gitignore` 忽略；安装时靠 `prepare` 脚本构建。
 
+**子插件的来源决定它要不要 fork**：`packages/<name>/` 有两种合法形态，选哪种由**它有没有上游**决定。
+
+- **改造自别人的上游仓库** → 必须是该上游的 `git subtree` fork。不能是「把安装副本拷进来」的普通目录：没有 subtree 祖先就没有三方合并基准，该插件**永久无法自动同步**，且我方改造在每次人工重拷时都会丢失。
+- **我们自制的插件**（无上游）→ **不 fork，也不该硬套**。直接把目录放进 `packages/<name>/` 即可，不需要 `sync-policy.json`，也不参与上游同步。
+
+判断有无上游：该插件是否发布自、或改造自一个**独立的外部仓库**。有则走 fork，没有则走自制。
+
+**fork 的判据**（自制插件不适用；fork 场景下空输出即未收养，**不要继续下一步**）：
+
+```bash
+git log --oneline --grep="git-subtree-dir: packages/<name>" | head -1
+```
+
+收养必须在**目录还不存在**时做；已用普通提交导入的上游目录补不回来（`git subtree pull` 报 `fatal: refusing to merge unrelated histories`），只能整套收养。命令、配方与验收见 `docs/adding-a-child-plugin.md`。
+
 ## 🚀 生效门禁（哪类改动需要重启）
 
 **实测结论（2026-09-18，dsh-web PID 未变的前提下逐条验证）**：

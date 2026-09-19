@@ -19,7 +19,44 @@ dsh plugin add @logictan/dsh-plugins-all        # 用户安装的入口（聚合
 
 ## 步骤
 
-### 1. 放进 `packages/<name>/`
+### 1. 有上游就先收养为 `git subtree`
+
+子插件有两种来源，**先判断有没有上游**：
+
+| 来源 | 做法 |
+|---|---|
+| **改造自别人的上游仓库** | 走本节：收养成 `git subtree` fork |
+| **我们自制的插件**（无上游） | **跳过本节**，直接进第 2 步。不需要 fork，也不需要 `sync-policy.json` |
+
+判断有无上游：该插件是否发布自、或改造自一个**独立的外部仓库**。没有就别硬套 subtree。
+
+对**有上游**的：`packages/<name>/` 必须是它上游仓库的 `git subtree` fork，不是「把安装副本拷进来」。没有 subtree 祖先就没有三方合并的基准，该插件将**永久无法自动同步**，且我方改造在每次人工重拷时都会丢失。
+
+收养在**目录还不存在**时做最省事（一个命令）：
+
+```bash
+git subtree add --prefix=packages/<name> <上游仓库 URL> <基线 tag>
+```
+
+**判据**（可执行，不是提醒）：
+
+```bash
+git log --oneline --grep="git-subtree-dir: packages/<name>" | head -1   # 必须有输出
+```
+
+等价判据：`git subtree pull --prefix=packages/<name> <url> <tag>` **不报**
+`fatal: refusing to merge unrelated histories`。**空输出 / 报该错即未收养。**
+
+已经用普通提交导入了目录再想补，不能只跑一次 `pull`（会报 `unrelated histories`）——
+必须整套收养：备份 → `git rm -r` → `git subtree add` → 恢复我方文件 → 重删上游专有文件。
+配方见 `plans/2026-09-19-multi-upstream-subtree-sync.md` §5。
+
+收养后建 `packages/<name>/sync-policy.json`（声明 `target` / `owned` / `deleted` / `added`），
+并把该上游登记进上述计划 §2.1 的上游表。同步机制见 `../AGENTS.md`「🔀 上游同步」。
+
+> 判据不通过就不要继续下一步：登记进聚合包只会让一个无法同步的 fork 更难被发现。
+
+### 2. 放进 `packages/<name>/`
 
 子插件自带 `cordis.patch.yml`，它决定该插件在 profile 里的那一行（`id` / `name` / `config`）。
 聚合 patch 由 `scripts/aggregate.mjs` **逐字拼接、不改写行** —— 改行名改子插件自己的 patch 文件。
@@ -34,7 +71,7 @@ dsh plugin add @logictan/dsh-plugins-all        # 用户安装的入口（聚合
 > `aggregate.mjs` 只校验 `deps` 的重复包名，**不校验** patch 行 `id` 的唯一性。
 > 新子插件的行 `id` 撞上已有插件时，`--check` 仍会通过，故障要到宿主启动才暴露。
 
-### 2. 在 `packages/all/aggregate.yml` 登记
+### 3. 在 `packages/all/aggregate.yml` 登记
 
 ```yaml
 patchFrom:
@@ -45,14 +82,14 @@ deps:
 
 两节是两件事：`patchFrom` 决定 profile 里出现哪些行，`deps` 决定装哪些包。只登记其一即失效。
 
-### 3. 生成并校验
+### 4. 生成并校验
 
 ```bash
 node scripts/aggregate.mjs           # 生成 packages/all/cordis.patch.yml 与 package.json
 node scripts/aggregate.mjs --check   # 校验生成物与清单一致（CI 会跑）
 ```
 
-### 4. 首发走人工，之后交给 CI
+### 5. 首发走人工，之后交给 CI
 
 新包**不能**交给 CI 首发（缘由见 `../AGENTS.md` 发布节），顺序固定为：
 
@@ -69,6 +106,8 @@ git tag v<x.y.z> && git push origin v<x.y.z>         # 之后交给 CI
 
 | 检查 | 判据 |
 |---|---|
+| **上游祖先已建立**（仅限有上游的） | `git log --oneline --grep="git-subtree-dir: packages/<name>"` 有输出（§1）；自制插件此条不适用 |
+| **该包有 sync-policy**（仅限有上游的） | `packages/<name>/sync-policy.json` 存在且 `target` / `owned` / `deleted` / `added` 齐备；自制插件不需要 |
 | 聚合生成物与清单一致 | `node scripts/aggregate.mjs --check` 无 drift |
 | patch 行 `id` 未撞车 | 人工比对全仓库 `cordis.patch.yml` 的行 `id`（无自动检查） |
 | 发布顺序正确 | `npm run publish:plan` 中该子插件在聚合包之前 |
