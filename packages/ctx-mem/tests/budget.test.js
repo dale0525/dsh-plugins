@@ -16,6 +16,7 @@ import { Context } from '@deepseek-ai/cordis';
 import CtxMemEngine from '../src/index.js';
 import { estimateMessage } from './frame-price.js';
 import { framePrice } from './frame-price.js';
+import { renderCheckpoint } from '../src/render.js';
 
 /* --------------------------------------------------------------- fixtures */
 
@@ -262,6 +263,35 @@ test('a degenerate region still renders the floor rather than throwing', async (
 
   assert.ok(text.startsWith('## Extracted Facts'));
   assert.ok(text.includes('/repo/src/module-0/index.js'), 'intents and files survive even at the floor');
+})
+
+test('A13 — a smaller budget never yields more commands (the causal competition)', () => {
+  // The causal section sits inside the guarded price, so a longer causal section
+  // means a smaller skeleton budget (the engine subtracts the causal price it
+  // actually measured — see `frameEstimator`). What the renderer must guarantee
+  // is that a smaller budget never yields MORE commands, or the two would not be
+  // competing for the same denominator at all.
+  //
+  // This is asserted at the renderer, where it is deterministic. The engine-level
+  // wiring — that the causal price really is subtracted — is pinned by the A12
+  // test above (framed price < denominator with a real causal section) and by the
+  // archive replay (causal 0→8000 chars ⇒ 429→385 commands, monotone).
+  const facts = {
+    intents: ['build the thing'],
+    files: ['/repo/src/a.js'],
+    commands: Array.from({ length: 60 }, (_, i) => `cat > /repo/cfg-${i}.yml <<'EOF'\n${'x'.repeat(3000)}\nEOF`),
+    errors: ['boom'],
+  };
+
+  const counts = [];
+  for (const budget of [24000, 3000, 900, 600, 400, 250]) {
+    counts.push(renderCheckpoint(facts, budget, framePrice).commands.length);
+  }
+
+  for (let i = 1; i < counts.length; i += 1) {
+    assert.ok(counts[i] <= counts[i - 1], `budget #${i}: commands must not grow, got ${JSON.stringify(counts)}`);
+  }
+  assert.ok(counts[counts.length - 1] < counts[0], `a tight budget must cost commands, got ${JSON.stringify(counts)}`);
 })
 
 test('with no tokenMeter the engine still produces a checkpoint', async () => {
