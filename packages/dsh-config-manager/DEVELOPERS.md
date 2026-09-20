@@ -1,7 +1,7 @@
 # 🛠️ DSH Config Manager — 开发者 / 维护者文档
 
 > 面向开发者与维护者。**用户请看 [README.md](README.md)。**
-> 仓库级约定（聚合、生效门禁、上游同步）见仓库根 `../AGENTS.md`。
+> 仓库级约定（聚合、生效门禁）见仓库根 `../AGENTS.md`。
 
 ---
 
@@ -52,8 +52,7 @@ React 无组件测试框架，因此组件逻辑必须提炼到 `src/ui/`。
 
 ## 🚀 发布
 
-本 fork 由 `dsh-plugins` monorepo 统一发布（见仓库根 `AGENTS.md`），
-不在本包内单独打 tag —— 上游的 `.github/workflows/publish.yml` 已随 fork 删除。
+本包由 `dsh-plugins` monorepo 统一发布（见仓库根 `AGENTS.md`），不在包内单独打 tag。
 
 ## 📋 技术限制
 

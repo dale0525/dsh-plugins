@@ -1,7 +1,7 @@
-# AGENTS.md — dsh-config-manager（fork）
+# AGENTS.md — dsh-config-manager
 
-> 本包是 `dsh-plugins` monorepo 的成员，git subtree fork 自上游 `xiajiajun516/dsh-config-manager` v0.1.60。
-> 仓库级约定（聚合、生效门禁、上游同步）见仓库根 `../AGENTS.md`；本文件只写本包特有的约定。
+> 本包是 `dsh-plugins` monorepo 的成员，**自制插件**：自 `xiajiajun516/dsh-config-manager` v0.1.60 衍生后已重写为主体，**不再 fork、不再参与上游同步**。
+> 仓库级约定（聚合、生效门禁）见仓库根 `../AGENTS.md`；本文件只写本包特有的约定。
 
 ## 🌐 语言
 
@@ -31,7 +31,7 @@ src/ui/        框架无关 UI 逻辑（纯函数，node 可测）  ← 业务�
 src/utils/     paths / zip / hashing / json / logger / atomic-write / env-lock / recursive-walk
 src/client/    React 壳（浏览器半）  ← 只做装配
 tests/         集成测试（node --test）
-docs/design/   上游设计依据（写给本仓库）
+docs/design/   设计依据（写给本仓库）
 docs/spec/     对外契约（写给第三方实现者）
 ```
 
@@ -83,7 +83,7 @@ bump 后跑 `npm run typecheck` 确认。
   **静默丢掉整块内容**且备份仍报成功。
 - **client bundle 是 cjs + `window.__ModuleLoader__.load`**（`tsdown.config.ts`）；改 format/入口会破坏加载器；CSS Modules 只认 `.module.css`。
 - **`src/client/` 不 import node 模块**。
-- 设计决策看 `docs/design/`（上游依据）；对外契约看 `docs/spec/`。**改格式行为必须同步 `docs/spec/`，并重跑 `tests/conformance/`。**
+- 设计决策看 `docs/design/`；对外契约看 `docs/spec/`。**改格式行为必须同步 `docs/spec/`，并重跑 `tests/conformance/`。**
 
 ## 🛠️ 开发规范
 
