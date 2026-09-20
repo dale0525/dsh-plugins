@@ -18,8 +18,8 @@ on:
   schedule:
     # 每天 03:17 UTC（避开整点，减少 GitHub Actions 排队）
     - cron: '17 3 * * *'
-  # 没有 inputs：5 个目标各有自己的上游与 tag 命名空间（imagegen 是 v1.6.0、
-  # market 是 v1.48.0），一个全局 ref 输入对其中 4 个必然是错的，只会误导。
+  # 没有 inputs：7 个目标各有自己的上游与 tag 命名空间（imagegen 是 v1.6.0、
+  # market 是 v1.48.0），一个全局 ref 输入对其中 6 个必然是错的，只会误导。
   # 要同步指定 ref，本地跑 `node scripts/sync-upstream.mjs --target <id> --ref <ref>`。
   workflow_dispatch:
 
@@ -56,6 +56,9 @@ jobs:
           - id: ctx-mem
             pkg: '@logictan/dsh-ctx-mem'
             test: 'pnpm --filter @logictan/dsh-ctx-mem test'
+          - id: agy-link
+            pkg: '@logictan/dsh-agy-link'
+            test: 'pnpm --filter @logictan/dsh-agy-link test'
     # 按目标区分并发组：不同目标互不阻塞，同一目标不会并发两次
     concurrency:
       group: sync-upstream-${{ matrix.id }}

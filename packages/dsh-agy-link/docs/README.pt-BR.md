@@ -23,7 +23,7 @@ Substitua a porta pelo proxy local correto. Também é possível configurar um p
 
 ```bash
 # Instale o plugin no profile web
-dsh plugin --profile web add dsh-agy-link
+dsh plugin --profile web add @logictan/dsh-agy-link
 
 # Inicie o DSH Web
 dsh web

@@ -38,7 +38,7 @@ const portalToBody = (node: unknown) => {
 	return node;
 };
 
-export const name = 'dsh-agy-link-client';
+export const name = 'agy-link-client';
 // Cordis inject entries are hard dependencies: accessing a service not listed
 // here throws ("cannot get property X without inject"). locale must be declared
 // for ctx.locale to be readable (issue #24). dsh-web-app ships dsh-client-locale.

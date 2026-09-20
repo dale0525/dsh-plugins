@@ -23,7 +23,7 @@ Replace the port with the correct local proxy port. An HTTP(S) or SOCKS proxy ca
 
 ```bash
 # Install into the web profile
-dsh plugin --profile web add dsh-agy-link
+dsh plugin --profile web add @logictan/dsh-agy-link
 
 # Start DSH Web
 dsh web

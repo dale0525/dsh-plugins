@@ -36,7 +36,7 @@
 
 **不做什么**（已按裁定冻结）：
 
-- **不**收编 profile 里其它未入库的插件（`dsh-agy-link` / `dsh-pet` / `dsh-global-rules` / `dsh-better-reasoning-effort` / `dsh-plugin-sandbox-escalation-fix` / `@openviking/dsh-memory-plugin`）。它们各自有上游（§13 附录 A 已列），但**不在本仓库 `packages/` 内**，属另一个议题。
+- **不**收编 profile 里其它未入库的插件（`dsh-pet` / `dsh-global-rules` / `dsh-better-reasoning-effort` / `dsh-plugin-sandbox-escalation-fix` / `@openviking/dsh-memory-plugin`）。它们各自有上游（§13 附录 A 已列），但**不在本仓库 `packages/` 内**，属另一个议题。（`dsh-agy-link` 曾在此列，后已单独收养，见附录 A 注。）
 - **不**改各包的对外行为、不改 `name` / patch 行 `id` / 路由 / settings 命名空间（既有改名不变量，见仓库 `AGENTS.md`）。
 - **不**重写 Git 历史（§2 禁区）。收养只**新增**提交。
 
@@ -455,7 +455,6 @@ concurrency:
 
 | profile 依赖 | 上游仓库 |
 |---|---|
-| `dsh-agy-link` | `amlyczz/dsh-agy-link` |
 | `dsh-pet` | `PC2005-cloud/dsh-pet` |
 | `dsh-global-rules` | `badai147/dsh-global-rules` |
 | `dsh-better-reasoning-effort` | `HaoyueQin/dsh-better-reasoning-effort` |
@@ -463,6 +462,8 @@ concurrency:
 | `@openviking/dsh-memory-plugin` | `volcengine/OpenViking` |
 
 若「所有插件」包含这一批，需另立计划（它们要先入库成 `packages/<name>/`，才谈得上 subtree 收养）。
+
+> **注**：`dsh-agy-link`（上游 `amlyczz/dsh-agy-link`）原在本表，已于后续会话**单独收养**为 `packages/dsh-agy-link/`（subtree，`target.id: agy-link`，policy `owned=13 deleted=7 added=1`），并已接入 `sync-upstream.yml` matrix 与聚合包。该次收养沿用本计划的配方与 §11.1 验收，故本计划的范围裁定**未被推翻**，只是表内条目已履行。
 
 ## 14. 自审记录（本文写作过程中发现并修正的问题）
 

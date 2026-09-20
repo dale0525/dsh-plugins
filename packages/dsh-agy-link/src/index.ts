@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import { join } from 'node:path'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { dshHome, overridesPath, readOverrides, resolveConfig, stateDir } from './common/config.ts'
-import { PLUGIN_ID, PROVIDER_ID, type PluginConfig } from './common/types.ts'
+import { PROVIDER_ID, type PluginConfig } from './common/types.ts'
 import type { ManagedAccount } from './common/pool-types.ts'
 import { AgyAdapter } from './host/adapter.ts'
 import { defineAgyAskTool } from './host/ask-tool.ts'
@@ -28,7 +28,7 @@ import { defaultMediaDir, sweepDir, type ImageRefLike } from './host/media.ts'
 import { startMcpBridge, writeMcpConfig, type McpBridge, type ToolsServiceLike } from './host/mcp-bridge.ts'
 import { fileURLToPath } from 'node:url'
 
-export const name = 'dsh-agy-link'
+export const name = 'agy-link'
 // webServer and tools are optional: the plugin loads headless too.
 export const inject = ['llm', 'commands']
 
@@ -390,7 +390,7 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
         const cfg = getConfig()
         const cat = catalog.get()
         sendJson(res as RawRes, 200, {
-          plugin: 'dsh-agy-link',
+          plugin: 'agy-link',
           bin: bin(),
           version: versionCache,
           dormantReason,

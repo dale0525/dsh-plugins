@@ -9,6 +9,7 @@ patchFrom:
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch
   - ../ctx-mem
+  - ../dsh-agy-link
 deps:
   - ../dsh-config-manager
   - ../dsh-workbuddy-connect
@@ -23,3 +24,4 @@ deps:
   # by package name from the profile root. patchFrom alone would ship rows whose
   # packages are absent from a fresh profile.
   - ../ctx-mem
+  - ../dsh-agy-link

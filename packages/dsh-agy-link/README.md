@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/dsh-agy-link"><img src="https://img.shields.io/npm/v/dsh-agy-link?color=cb3837&label=npm&logo=npm" alt="npm"/></a>
-  <a href="https://github.com/amlyczz/dsh-agy-link/actions/workflows/ci.yml"><img src="https://github.com/amlyczz/dsh-agy-link/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
+  <a href="https://www.npmjs.com/package/@logictan/dsh-agy-link"><img src="https://img.shields.io/npm/v/@logictan/dsh-agy-link?color=cb3837&label=npm&logo=npm" alt="npm"/></a>
+  <a href="https://github.com/dale0525/dsh-plugins"><img src="https://img.shields.io/badge/platform-DeepSeek%20Harness-111827" alt="Platform"/></a>
   <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="MIT"/>
   <img src="https://img.shields.io/badge/node-%3E%3D24-green" alt="node"/>
 </p>
@@ -105,10 +105,10 @@
 export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890
 
 # 1. 安装插件（npm 官方包，无需编译构建）：
-dsh plugin --profile web add dsh-agy-link
+dsh plugin --profile web add @logictan/dsh-agy-link
 
 # 升级到最新版：
-# dsh plugin --profile web add dsh-agy-link@latest --registry https://registry.npmjs.org
+# dsh plugin --profile web add @logictan/dsh-agy-link@latest --registry https://registry.npmjs.org
 
 # 2. 启动 DSH Web GUI，在输入框中检查状态：
 #   /agy status
@@ -244,10 +244,10 @@ Have multiple Google Antigravity / Gemini accounts? **dsh-agy-link makes multi-a
 export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890
 
 # 1. Install plugin:
-dsh plugin --profile web add dsh-agy-link
+dsh plugin --profile web add @logictan/dsh-agy-link
 
 # Upgrade to latest:
-# dsh plugin --profile web add dsh-agy-link@latest --registry https://registry.npmjs.org
+# dsh plugin --profile web add @logictan/dsh-agy-link@latest --registry https://registry.npmjs.org
 
 # 2. Start DSH Web GUI, test status:
 #   /agy status

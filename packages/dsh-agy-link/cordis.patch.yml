@@ -1,9 +1,9 @@
 # dsh-agy-link bundle patch — inserts the antigravity (agy CLI) provider
 # plugin entry into the composition. Users install via:
-#   dsh plugin --profile web add dsh-agy-link
+#   dsh plugin --profile web add @logictan/dsh-plugins-all
 - insert:
     - id: agy-link
-      name: 'dsh-agy-link'
+      name: '@logictan/dsh-agy-link'
       config:
         enabled: !!js "process.env.DSH_AGY_ENABLED ?? 'true'"
         agyBin: !!js "process.env.DSH_AGY_BIN ?? ''"

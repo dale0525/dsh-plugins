@@ -4,7 +4,6 @@
 
 export const PROVIDER_ID = 'antigravity'
 export const PLUGIN_ID = 'agy-link'
-export const PKG_NAME = 'dsh-agy-link'
 
 export type PermissionMode = 'skip' | 'plan' | 'accept-edits'
 
