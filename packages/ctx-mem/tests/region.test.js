@@ -161,7 +161,7 @@ test('A8 regression: dispatches between the region seqs are still attributed by 
   );
 });
 
-test('seqs is sorted ascending and deduped; startSeq/endSeq are min/max', () => {
+test('A9 — seqs is sorted ascending and deduped; startSeq/endSeq are min/max', () => {
   const m0 = msg('user', 'm0');
   const m2 = msg('tool', 'm2');
   const m5 = msg('assistant', 'm5');

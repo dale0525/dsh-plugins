@@ -121,7 +121,7 @@ test('A3b — embedded newline: an item keeps its newline instead of being split
   assert.equal(bulletLines(text).length, 1, 'one item stays one bullet');
 });
 
-test('A9 — no cascade decay: rendering is a pure function of the raw facts', () => {
+test('no cascade decay: rendering is a pure function of the raw facts', () => {
   const facts = fullFacts();
   const first = buildSkeleton(facts);
   const second = buildSkeleton(facts);
