@@ -585,7 +585,7 @@ skeletonBudget = denominator − causalPrice − FRAME_RESERVE
 断言 `compaction/end` 无 `error`，且 `compaction/summary` 的
 `shadowedTokenCount > price(summary)`，余量 ≥ reserve。
 
-**回归**：`pnpm --filter @logictan/dsh-ctx-mem test` 全绿（当前 135 测试）；
+**回归**：`pnpm --filter @logictan/dsh-ctx-mem test` 全绿（当前 142 测试）；
 `node scripts/aggregate.mjs --check` 输出 `check OK`。
 
 ## 7. 风险
@@ -766,7 +766,10 @@ A15 要模拟「背靠背退化折」，关键是每轮的分母怎么递推。�
   改为：保真阶梯**只有 T1 → T2**，T3 移进「截断循环」参与比较。
 - **`break` on first non-empty** 让 T3 不可达：探测命令洪泛时，
   T2 截断后仍非空就停住，永远不会去 T3 找回更早的 `write` 类命令。
-  改为 `writeLikeCount` + `prefer`：先比「保住的 write 类命令条数」，再比总条数。
+  改为 `writeLikeCount` + `prefer`：先比「保住的 write 类命令条数」，平局时偏好
+  **更高保真档**（`TIER_RANK`）——不是偏好总条数。低保真档的单条上限更小，同样预算下
+  装得下更多但更差的条目，「条数更多者胜」会系统性地挑中退化档。
+  计数对象是**原始事实**而非渲染文本（见 §10.6 自审 12）。
 
 **自审 9：`maxCheckpointTokens` 不是硬保证——保底档可以超上限，这是有意的。**
 
@@ -821,7 +824,7 @@ const firstIdx = systemHead(session, surfaceNodes[0]) === void 0 ? 0 : 1;
 | A13 因果 0→8000 字符 | 命令 429→385，单调不增 **PASS** |
 | A14 超大分母 | 帧价 23,829 ≤ 24,000 + 102 **PASS** |
 | A15 忠实链 12 轮 | 不触地板、最低保留率 92.0%（20 轮 87.4%）**PASS** |
-| 单元测试 | **135/135**（S1 前为 106） |
+| 单元测试 | **142/142**（S1 前为 106） |
 
 退化链的失败机制值得记下：**旧渲染的帧价单调增长，而分母在震荡**（低至 24,542）。
 两者必然相交——这正是生产上 27 次 guard 失败（超出 59–2,287 token）的成因，
@@ -855,9 +858,58 @@ const firstIdx = systemHead(session, surfaceNodes[0]) === void 0 ? 0 : 1;
 - **A17**（真实 Web GUI 里跑一次压缩、断言 `compaction/end` 无 error）—— **未验收**，
   且在当前 profile 下**不可能验收**：GUI 里跑的仍是旧 ctx-mem 0.1.0。
 
-**S1 的核心结论不受此影响**：预算驱动渲染的正确性由归档重放与 135 条单元测试独立证明
+**S1 的核心结论不受此影响**：预算驱动渲染的正确性由归档重放与 142 条单元测试独立证明
 （§10.4 实测总账），不依赖是否已发布。但「guard 在生产上不再失败」这句话，
 要等新版发布并进入用户 profile 之后才谈得上验证。
 
 **后续动作（需用户授权）**：`packages/all` 升 0.4.0 → 0.5.0、`packages/ctx-mem` 升
 0.1.0 → 0.2.0（S1/S2 改了对外行为与配置键），然后走 `scripts/publish.mjs` 的拓扑顺序发布。
+
+### 10.6 里程碑盲审（S1/S2/S3/S5 收尾，9 条）
+
+触发条件成立（新增行为 + 收尾可独立验收的交付单元），席位 `antigravity/gemini-3.8-flash`，
+只给路径与四个审查维度（重复 / 冲突 / 矛盾 / 遗漏 / 过度设计），未给背景。
+返回 **9 条**，逐条由 Root 用独立探针复验后才裁定。
+
+#### 采纳并已修（7 条）
+
+| # | 条目 | 复验证据 | 处置 |
+|---|---|---|---|
+| 1 | T3 把写类命令压成首行，状态变更标记若不在首行就丢失，渲染文本不再像写类命令，被更新的探针洪水挤掉 | 夹具 `echo setup\ngit commit -m "w×4000"` + 200 探针：修前 T2/54 条/写类 0，修后 T3/1 条/写类 1 | 新增 `capWriteFirstLine`，保留首行**和**标记行 |
+| 2 | `prefer` 平局用「条目数更多者胜」，而低保真档单条上限更小，同样预算装得下更多更差条目，系统性偏好退化档 | 424/1920 个夹具在两种平局规则下结论不同；`grep -n needle×100` + `git commit` 夹具：修前 T2/51 条，修后 T1/33 条 | 平局改用 `TIER_RANK` 偏好高保真档 |
+| 3 | `isDecorationLine` 的形状判据吞掉真实测试框架失败行 | 修前 `go test` 的 `--- FAIL: TestAdd (0.00s)`、`jest` 的 `--- FAIL ./sum.test.js ---` 被丢；`pytest` 的 `=== FAILURES ===` 只是**碰巧**含 `failure` 子串而活着 | 新增 `FAILURE_KEYWORD` 豁免（命名了失败的行不是装饰） |
+| 4 | `src/frame.js` 的 docblock 声称测试钉住了它的算术，实际三个常量无任何断言 | 把 `SUMMARY_OPEN_TAG` 改成 `<MUTATED-TAG>`、替换前言正文，**135/135 全绿** | 新增 2 条测试，期望值从宿主源码正则取出并 `JSON.parse` 解码 |
+| 5 | `render.js` 的 `coerceList`/`normalize` 与 `skeleton.js` 的 `copyList`/`copyFacts` 逐字重复 | 函数体逐字节相等（`copyFacts` 仅递归调用名不同） | `skeleton.js` 导出 `copyFacts` 作单一真源 |
+| 6 | `denominator − CAUSAL_ALLOWANCE − FRAME_RESERVE` 三处逐字重复 | `grep -c` 确认 3 处 + 1 处不扣因果的最终遍 | 收成 `budgetFor(withCausal)` |
+| 8 | `ctxMemConfig` 的 JSDoc 漏 `maxCheckpointTokens` | 该键在 `config.js` 的 `OWN_CONFIG_KEYS` 与 schema 里都有，只有 JSDoc 没列 | 补齐并指向 `splitConfig` |
+
+#### 不采纳（2 条，经 1 轮辩论后席位让步）
+
+| # | 条目 | 原判 | Root 反驳与证据 | 结论 |
+|---|---|---|---|---|
+| 7 | `frameEstimator` 无 meter 时返回 `() => undefined`（是函数），故 `render.js` 的 `typeof estimate !== 'function'` 分支在生产上不可达 | 不采纳 | 席位漏看了调用点的二次调用：`renderCheckpoint(…, framed(undefined))` 传的是**结果**。实测同一区域无 meter 40 条命令全量渲染、有 meter 截到 27 条 | 席位**让步**，撤回原判 |
+| 9 | `render.js` 的 no-estimator 分支无生产调用者（与条目 7 合并） | 不采纳 | 同上，`framed(undefined)` 即其生产调用者 | 席位**让步**，撤回原判 |
+
+**辩论轮次**：1 轮。两条「不采纳」均走完「提交原判 → Root 反驳 + 实测证据 → 席位答让步」，
+无「坚持」项，**共识成立，无破裂项**。
+
+**顺带发现（席位亦让步，判「已知边界，记录不修」）**：`src/config.js` 的 `resolveFillTarget`
+在 `agent.session.requestHeader()` 返回 `{config:{}}` 或 `{config:{provider}}` 时抛
+`TypeError: Cannot read properties of undefined (reading 'length')`。真实存在，但生产不可达：
+宿主的 `hasProviderModel` 要求 `provider`/`model` 均为非空字符串，唯一的 emitter
+（`dsh-agent-loop`）在此前已自检；且该行是既有代码（早于本次会话），`src/config.js`
+不在 §2.1 授权范围。席位独立复核后同意。
+
+#### 自审 12：既有 T3 用例钉不住条目 1/2 —— 补新夹具
+
+条目 1/2 修好后，原有用例 `T3 reaches past a probe flood to keep the older write-like command`
+在**退回修复后仍全绿**：它的夹具把 `git commit` 放在首行，`capFirstLine` 本来就会保住它，
+从未走到「标记在后续行」的路径。故补两条夹具分别钉住两处修复，并逐一验证：
+把 `capWriteFirstLine` 退回首行、把 `prefer` 平局改回条目数比较，对应用例各自转红。
+
+**教训（与自审 11 同源，第二次撞上）**：验收测试必须先用「故意改坏实现」验证它会红。
+原有 T3 用例从 S1 落地起就是绿的，但从未测到它声称守的契约。
+
+**实测总账（本轮追加）**：单元测试 **143/143**（S1 前 106，S1 后 135）；`scripts/sync-upstream.test.mjs`
+24/24；`node scripts/aggregate.mjs --check` → `check OK: packages/all (8 source block(s), 8 dep(s))`
+（需先暂存另一会话在改的 `packages/all/aggregate.yml` 与 `pnpm-workspace.yaml`）。
