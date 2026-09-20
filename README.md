@@ -21,12 +21,11 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest
 | 路径 | 说明 |
 |---|---|
 | `packages/all/` | 聚合载体 `@logictan/dsh-plugins-all`；`aggregate.yml` 手写，`cordis.patch.yml` 与 `package.json` 是生成物 |
-| `packages/dsh-config-manager/` | 配置远程同步插件（`@logictan/dsh-config-manager`，git subtree fork 自上游 v0.1.60） |
+| `packages/<pkg>/` | 各个子插件。有上游的走 `git subtree` fork，自制的直接放这里——判据见 `AGENTS.md` |
+| `packages/<pkg>/sync-policy.json` | 仅 fork 有：该包的上游同步清单（`target` / `owned` / `deleted` / `added`） |
 | `scripts/aggregate.mjs` | 由 `aggregate.yml` 生成聚合 patch 与 dependencies |
 | `scripts/publish.mjs` | 按依赖边推导发布顺序（子插件 → 聚合包）；`npm run publish:plan` 预览 |
-| `scripts/sync-upstream.mjs` | 按各包的 `packages/<pkg>/sync-policy.json` 把上游改动合进来（只开 PR） |
-| `packages/dsh-config-manager/scripts/dev-watch.mjs` | 改源码 → 自动重建产物（客户端半边不刷新即生效） |
-| `packages/<pkg>/sync-policy.json` | 该 fork 的上游同步清单：`target` / `owned` / `deleted` / `added` |
+| `scripts/sync-upstream.mjs` | 按各包的 `sync-policy.json` 把上游改动合进来（只开 PR） |
 
 ## 开发
 
@@ -52,7 +51,7 @@ npm run publish:plan          # dir<TAB>name<TAB>version，顺序即发布顺序
 | 场景 | 做法 |
 |---|---|
 | **新增包首发** | 由**用户**人工 `npm publish --access public`，再配一次 trusted publisher（`npm trust github <pkg> --file publish.yml --repo dale0525/dsh-plugins --allow-publish`）。全新包不能走 CI：trusted publisher 只能配在已存在包上，staged publishing 也明确排除全新包 |
-| **已发布包更新** | 本地测试通过后走 **CI/CD**，不手动 `npm publish`。推 `v*` tag，或在 main 上 `gh workflow run publish.yml -f dry_run=false` |
+| **已发布包更新** | 本地测试通过后走 **CI/CD**，不手动 `npm publish`。推 `v*` tag，或在 main 上 `gh workflow run publish.yml --ref main -f dry_run=false` |
 
 细节见 `AGENTS.md` 的「📤 发布」。
 

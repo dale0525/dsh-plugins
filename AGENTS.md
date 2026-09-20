@@ -35,7 +35,10 @@ dsh-plugins/
 （`cordis-plugin-loader`：`duplicate loader entry id: <id>`），而 `aggregate.mjs --check` **不校验**
 行 id 唯一性（只校验 `deps` 重复包名）—— 新增子插件时须人工比对。
 
-**构建产物不入版本控制**：每个 `packages/<name>/lib/` 由各自 `.gitignore` 忽略；安装时靠 `prepare` 脚本构建。
+**构建产物不入版本控制**：每个 `packages/<name>/lib/` 由各自 `.gitignore` 忽略，由该包自己的构建脚本生成。
+各包的触发时机**不统一**：多数用 `prepare`（`pnpm install` 即构建），`dsh-imagegen` 只有 `build`、
+`dsh-workbuddy-connect` 只有 `prepack`——**别假设 `pnpm install` 之后每个包的 `lib/` 都已就绪**，
+用某个包的产物前先确认它的 `scripts` 里哪个钩子会构建（`node -p "require('./packages/<name>/package.json').scripts"`）。
 
 **子插件的来源决定它要不要 fork**：`packages/<name>/` 有两种合法形态，选哪种由**它有没有上游**决定。
 
@@ -70,25 +73,13 @@ dsh plugin --profile <p> add @logictan/dsh-plugins-all   # 用户安装的入口
 
 ### 1. 有上游就先收养为 `git subtree`
 
-| 来源 | 做法 |
-|---|---|
-| **改造自别人的上游仓库** | 走本节：收养成 `git subtree` fork |
-| **我们自制的插件**（无上游） | **跳过本节**，直接进第 2 步。不需要 fork，也不需要 `sync-policy.json` |
+分类判据与「未收养」的后果见上文「📦 仓库形态」，不重复。自制插件跳过本节。
 
 收养在**目录还不存在**时做最省事（一个命令）：
 
 ```bash
 git subtree add --prefix=packages/<name> <上游仓库 URL> <基线 tag>
 ```
-
-**判据**（可执行，不是提醒）：
-
-```bash
-git log --oneline --grep="git-subtree-dir: packages/<name>" | head -1   # 必须有输出
-```
-
-等价判据：`git subtree pull --prefix=packages/<name> <url> <tag>` **不报** `fatal: refusing to merge unrelated histories`。
-**空输出 / 报该错即未收养**——登记进聚合包只会让一个无法同步的 fork 更难被发现。
 
 收养后建 `packages/<name>/sync-policy.json`（声明 `target` / `owned` / `deleted` / `added`）。
 **不要**另建上游总表：`node scripts/sync-upstream.mjs --list` 从各 policy 汇总，policy 就是唯一登记处。
@@ -114,9 +105,9 @@ deps:
   - ../<name>      # 该子插件以 ^<version> 写进聚合包 dependencies
 ```
 
-两节是两件事：`patchFrom` 决定 profile 里出现哪些行，`deps` 决定装哪些包。只登记其一即失效。
-存在**只登记 `deps` 不登记 `patchFrom`** 的合法场景：包必须被安装，但它的行由别的插件在运行时注入
-（`ctx-mem` 即如此——见 `aggregate.yml` 里的就地注释）。
+两节是两件事：`patchFrom` 决定 profile 里出现哪些行，`deps` 决定装哪些包。
+**两节都要登记**：只写 `patchFrom` 会发出一个「包在新 profile 里根本不存在」的行；只写 `deps`
+则行不会出现在 patch 里。`ctx-mem` 两节都在（见 `aggregate.yml` 里的就地注释）。
 
 ### 4. 生成并校验
 
@@ -131,6 +122,11 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（CI 会�
 那里是发布规则的唯一真源，本节不重复。
 
 配好 trust 之后，该包**后续所有更新**都走 CI/CD，不再人工发布。
+
+**闭环：聚合包必须跟着升版并发出去。** 子插件首发只把它自己放上 npm；此时线上的
+`@logictan/dsh-plugins-all` 还是不含它的旧版本，`dsh plugin add …@latest` 自然带不出它。
+所以还要：升聚合包版本（`packages/all/package.json` 是生成物，改它的来源）→ 跑
+`node scripts/aggregate.mjs` → 走 CI/CD 发布。顺序由 `scripts/publish.mjs` 保证子插件在前。
 
 ### 验收
 
@@ -286,18 +282,20 @@ npm run publish:plan                 # 确认顺序：子插件在聚合包之�
 ## ✅ 验证命令
 
 ```bash
-pnpm install                                  # 工作区安装（子包 prepare 会构建）
+pnpm install                                  # 工作区安装（各包按自己的钩子构建）
 node scripts/aggregate.mjs --check            # 聚合 patch / deps 与清单一致
-pnpm --filter @logictan/dsh-config-manager typecheck
-pnpm --filter @logictan/dsh-config-manager test
+pnpm test                                     # 全仓测试：根 scripts/*.test.mjs + 每个子包
+pnpm typecheck                                # 全仓 typecheck（pnpm -r --if-present）
 ```
 
-> **测试的 TMPDIR 陷阱（macOS）**：`src/utils/recursive-walk.test.ts` 与
-> `tests/cli/*` 建真实符号链接，而 macOS 的 `/var/folders/...` 是 `/private/var/...` 的
-> 符号链接 —— `realpath` 会把 home 解析到 `/private/...`，导致「home 内」判定失败。
-> 跑测试前先 `mkdir -p /private/tmp/realhome` 并 `TMPDIR=/private/tmp/realhome/ node --test ...`。
+> **测试的 TMPDIR 陷阱（macOS，仅 `dsh-config-manager`）**：该包的符号链接类测试
+> （`packages/dsh-config-manager/src/**/*.test.ts`，如 `utils/recursive-walk.test.ts`、
+> `utils/atomic-write.test.ts`）建真实符号链接，而 macOS 的 `/var/folders/...` 是
+> `/private/var/...` 的符号链接 —— `realpath` 会把 home 解析到 `/private/...`，
+> 导致「home 内」判定失败。跑该包测试前先 `mkdir -p /private/tmp/realhome` 并带
+> `TMPDIR=/private/tmp/realhome/`。其余子包不受影响。
 
-> **平台专属路径只在 CI 覆盖**：`src/utils/env-lock.ts` 的进程身份探测**只有 Linux 真正实现**
+> **平台专属路径只在 CI 覆盖**：`packages/dsh-config-manager/src/utils/env-lock.ts` 的进程身份探测**只有 Linux 真正实现**
 > （读 `/proc/<pid>/stat` 的 starttime）；darwin / win32 的默认 probe 返回 `null`（不校验 PID 复用，
 > 留待宿主注入）。**Linux 分支在 macOS 上完全不走**，本地全绿不代表它正确。改到该文件或任何
 > 平台分支代码后，必须让 CI 在 ubuntu 上跑过一次再判定通过。
