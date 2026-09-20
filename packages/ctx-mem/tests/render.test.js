@@ -216,6 +216,28 @@ test('degenerate facts render the all-(none) skeleton without throwing', () => {
   }
 })
 
+test('non-string and nullish fact entries are coerced, never thrown on', () => {
+  // The capping helpers are string operations. `src/extract.js` only pushes
+  // strings today, but this is a public pure function whose contract says it
+  // never throws — a stray non-string must degrade, not blow up a compaction
+  // the host has already committed to.
+  const facts = {
+    intents: ['keep me', undefined, null],
+    files: [{ toString: () => '/coerced.js' }],
+    commands: [7, 'git commit -m x'],
+    errors: [null, 'boom'],
+  };
+
+  const result = renderCheckpoint(facts, 100000, estimate);
+
+  assert.ok(result.text.includes('keep me'));
+  assert.ok(result.text.includes('/coerced.js'), 'a non-string file is coerced via String()');
+  assert.ok(result.text.includes('7'), 'a non-string command is coerced via String()');
+  assert.ok(result.text.includes('git commit -m x'));
+  assert.ok(result.text.includes('boom'));
+  assert.ok(!result.text.includes('undefined'), 'nullish entries are dropped, not stringified');
+})
+
 test('the tier table is frozen and covers T1–T3', () => {
   assert.deepEqual(Object.keys(TIERS), ['T1', 'T2', 'T3']);
   assert.ok(Object.isFrozen(TIERS));

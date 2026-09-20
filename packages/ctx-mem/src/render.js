@@ -105,6 +105,30 @@ function commandAt(command, tier) {
 }
 
 /**
+ * Coerce one fact list to strings, dropping nullish entries.
+ *
+ * The capping helpers below are string operations, so a non-string entry that
+ * reached them would throw — which would violate this module's "never throws"
+ * contract at exactly the moment the host needs a checkpoint. `src/extract.js`
+ * only ever pushes strings today, but this module is a pure function with a
+ * public contract, so it normalizes its own input rather than trusting the
+ * caller. The semantics match `copyList` in `src/skeleton.js`, which the
+ * rendered output is built by anyway.
+ *
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+function coerceList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (item === null || item === undefined) continue;
+    out.push(typeof item === 'string' ? item : String(item));
+  }
+  return out;
+}
+
+/**
  * Coerce the caller's facts into the four lists this module renders.
  *
  * @param {import('./skeleton.js').Facts | undefined | null} facts
@@ -113,10 +137,10 @@ function commandAt(command, tier) {
 function normalize(facts) {
   const source = facts && typeof facts === 'object' ? facts : {};
   return {
-    intents: Array.isArray(source.intents) ? source.intents : [],
-    files: Array.isArray(source.files) ? source.files : [],
-    commands: Array.isArray(source.commands) ? source.commands : [],
-    errors: Array.isArray(source.errors) ? source.errors : [],
+    intents: coerceList(source.intents),
+    files: coerceList(source.files),
+    commands: coerceList(source.commands),
+    errors: coerceList(source.errors),
   };
 }
 
