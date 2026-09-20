@@ -19,6 +19,7 @@ import { sha256Hex } from '../../src/utils/hashing.ts';
 import { parseManifest, CHECKSUMS_FILE, MANIFEST_FILE } from '../../src/schema/manifest.ts';
 import { createSecretScanner } from '../../src/security/secret-scanner.ts';
 import { makeContext, type MockHostContext } from '../../src/adapters/test-helpers.ts';
+import { HOME_PATCH_FILE } from '../../src/core/patch-layers.ts';
 import type { Manifest } from '../../src/schema/types.ts';
 
 const NS = ['general', 'theme', 'llm-deepseek', 'llm-pi-ai'];
@@ -48,7 +49,9 @@ async function seedFullSource(ctx: MockHostContext): Promise<void> {
   ctx.workspace.records.set('ws-ops', {
     id: 'ws-ops', path: 'C:\\Users\\alice\\projects\\ops', title: 'OpsFlow', sessionIds: [],
   });
-  ctx.patchFile.lines.set('mcp-fs', {
+  // 层寻址契约：patch 行按层键控，夹具必须与真实门面同语义（单层 mock 会让同一行被当成两层两行，
+  // 而两行共享同一 raw 对象 → 扫描器报循环引用）。
+  ctx.useLayeredPatch().set(HOME_PATCH_FILE, 'mcp-fs', {
     lineId: 'mcp-fs',
     raw: { id: 'mcp-fs', name: 'dsh-mcp-client', config: { serverName: 'filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'] } },
   });

@@ -9,6 +9,75 @@ This file records release highlights of dsh-config-manager (bilingual: 中文 + 
 > **Release workflow**: on tag push, CI extracts the current version's section as the release notes highlights;
 > the build fails fast if the section is missing, so you cannot forget to update it.
 
+## [0.1.61] - 2026-09-20
+
+### 🐞 修复：同步只搬 home 层 patch，profile 层配置整块丢失
+
+**症状**：同步显示成功，换机恢复后配置却少一半 —— 端口、`trustedHosts`、召回参数、
+两组 `insert:` 挂载行、ctx-mem-bridge 开关全部不见。
+
+**根因不是「漏读一个文件」，是五处独立缺口叠加**，只补任一处都不够：
+
+| # | 缺口 | 后果 |
+|---|---|---|
+| 1 | 读取层：adapter 硬编码单一文件名 | profile 层从不参与导出 |
+| 2 | 寻址层：两个常量字面量相同（都是 `'cordis.patch.yml'`） | `patchPath` 的 profile 分支恒不可达，`ensureActivationRow` 以为在写 profile 层，实际写进 **home 层**（home 层对每个 profile 生效） |
+| 3 | diff 层：只读目标端 home 层 | profile 层行即使目标机已有同值也判 `Create`，已有不同值判不出 `Conflict` |
+| 4 | 键层：计划项 `id` / `target.ref` 只用裸 `lineId` | 跨层同名行撞车，`find` 只命中先出现的 home 层 → profile 层行被写进 home 层 |
+| 5 | 快照/回滚层：`patchLine` 硬编码文件 | 层信息未随快照保存，回滚一律写回 home 层 |
+
+第 4、5 条是**修 1 就会新引入**的缺陷（一旦开始搬 profile 层行，回滚就会把 profile 层原值写进
+home 层），因此它们是必要前置，不是顺手加固。
+
+**改动**：
+
+- **层寻址收成单一真源** `src/core/patch-layers.ts`：两个层 token —— home 层保持
+  `'cordis.patch.yml'`（**存量快照零改动**即可解析回 home 层），profile 层用
+  `'profile:cordis.patch.yml'`。用逻辑 token 而非相对路径：快照会跨机器、跨 profile 导入，
+  路径会把源机的 profile 名带过去。旧的 `USER_PATCH_FILE` 常量**已删除** —— 在两层世界里
+  它的字面语义必然二义，留着就是下一个撞车点。
+- **计划项 id / `target.ref` / 快照条目改用层限定复合键** `<file>#<lineId>`，不合并、不告警：
+  应用端本来就是全局按 id 索引、后应用的 home 层胜出，合并会篡改宿主语义。裸 `lineId`
+  按「无 `#` 即 home 层」兼容旧快照。
+- **`PluginsAdapter.export` 两层都读**，`file` 字段如实标注来源层；**`analyzeImport` 按行自带的
+  `file` 逐层惰性读目标端**；**`applyItem` / 快照 / 回滚按复合键定位并写回同一层**。
+- **`DshPatchFileFacade` 改为导出**，让测试能用**真实门面**（而非 mock）钉住层寻址 ——
+  mock 会让两个层 token 的取值撞车无处暴露。
+
+**明确不做**：不改宿主（跨层 id 覆盖是 `applyEntryPatches` 的既定语义）；不新增 schema 字段
+（`PatchLine.file` 与 `SnapshotEntry.ref` 都是既有字段）；不为 `mcp` / `prompts` adapter 补
+profile 层读取（同一缺陷的延伸，另开）。注意 `~/.dsh/profiles/web/cordis.patch.yml` 里
+「MCP 条目不放这里」的注释**是当前缺陷逼出来的规避措施，不是设计意图** —— 它自述的原因
+就是「MCP 分区硬编码只读顶层」。
+
+### 📄 文档与契约同步
+
+- `docs/spec/bundle-format-v1.md`：把 `plugins.patch[].file` 的取值域从隐式单值明确为**两个层
+  token**，并点明它与 `plugins.patchFiles`（`patches/**`，issue #35）是**两件毫不相干的事**；
+  新增「实现者注意（层寻址）」段。
+- `docs/spec/compat-matrix.md`：R13 与 1.3 的取证行随实现位置更新。
+
+### 验证
+
+- 契约测试：新增 `src/adapters/patch-layers.test.ts`（7 用例），`plugins.test.ts` /
+  `index.facade.test.ts` 补复合键与真实门面用例；包内全量 **1290 pass / 0 fail**。
+- 本机真实产物：对 `~/.dsh` 导出得 patch 行 **21 条**（home 11 + profile 10），
+  `file` 取值恰为两个 token，warnings 为空。
+- **端到端 push/pull（已执行）**：真实 Git 通道推一次快照 → 回读远端确认 21 行、
+  两个层 token、profile 层 10 行齐全（含 `webserver` 与 `ctx-mem-bridge`）；
+  隔离 stateDir 上 pull 识别出 20 个 patch 计划项，其中 profile 层 10 项。
+  差额 1 项是 `mcp-stitch`（`serverName` / `transport` / `url` 形态）由 **mcp 分区**接管，
+  不计入 plugins 分区 —— 两层互不覆盖。验证用快照已从远端删除。
+
+### ⚠️ 范围外发现（只报告，未修复）
+
+本包两个密钥扫描器判据不同：导出路径用的 `createSecretScanner` 对
+`X-Goog-Api-Key` 这类字段**0 命中**（规范化后既不以 `apikey` 开头也不相等，`AQ.` 前缀也不在值形状表里），
+而同步路径的 `defaultSecretScanner` 按子串判据 1 命中。即导出路径存在「含明文却未被识别」的机制缺口，
+且 `manifest.security.containsSecrets` 在无加密提供者时恒为 `false`。
+**未在任何真实产物中观察到**（`~/.dsh/dsh-config-manager/exports/` 下三个有效 ZIP 的 `AQ.` 命中均为 0）。
+是否修复、以及是否把两个扫描器收敛为单一真源，需另开决策。
+
 ## [0.1.60] - 2026-09-18
 
 > 本版包含**两块互不重叠**的工作：

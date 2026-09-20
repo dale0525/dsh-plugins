@@ -4,9 +4,15 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PluginsAdapter, USER_PATCH_FILE } from './plugins.ts';
+import { PluginsAdapter } from './plugins.ts';
 import { makeContext, makeImportContext } from './test-helpers.ts';
+import { HOME_PATCH_FILE, PROFILE_PATCH_FILE, patchLayerKey } from '../core/patch-layers.ts';
 import type { PlanItem } from '../core/types.ts';
+
+/** 计划项 id：层限定复合键的投影（`patch:<file>#<lineId>`）。 */
+function patchItemId(file: string, lineId: string): string {
+  return `patch:${patchLayerKey(file, lineId)}`;
+}
 
 test('issue #35：patch 文件随分区迁移；目标缺失的 patchedDependencies 声明导入时剔除', async () => {
   const ws = [
@@ -167,7 +173,9 @@ test('plugins: 导出清单与 patch 行', async () => {
   ctx.plugins.installed.set('@linxin666/dsh-ssh', { name: '@linxin666/dsh-ssh', version: '0.1.12', enabled: true, isBundle: true, inBundles: ['@linxin666/dsh-web-ui-all'] });
   ctx.plugins.installed.set('dsh-memory-evolve', { name: 'dsh-memory-evolve', version: '1.0.0', enabled: true, spec: 'github:csyangwen/dsh-memory-evolve' });
   ctx.plugins.installed.set('@deepseek-ai/dsh-base', { name: '@deepseek-ai/dsh-base', version: '0.1.0-rc.6', enabled: true });
-  ctx.patchFile.lines.set('skill-badge', { lineId: 'skill-badge', raw: { id: 'skill-badge', disabled: true } });
+  // 层寻址契约：导出同时读 home 与 profile 两层，单层的 MemPatch 对任何 file 都返回同一批行，
+  // 会让同一行被当成两层的两行。此处改用按层键控的门面，夹具才与真实门面同语义。
+  ctx.useLayeredPatch().set(HOME_PATCH_FILE, 'skill-badge', { id: 'skill-badge', disabled: true });
 
   const adapter = new PluginsAdapter();
   const out = await adapter.export(ctx, { includeSecrets: false });
@@ -235,11 +243,11 @@ test('plugins: 已装同版本 Skip / 未装 Install / 版本不同 Conflict / p
   const byId = new Map(items.map((i) => [i.id, i]));
   assert.equal(byId.get('plugin:pkg-a')?.kind, 'Skip');
   assert.equal(byId.get('plugin:pkg-b')?.kind, 'Conflict');
-  assert.equal(byId.get('patch:my-line')?.kind, 'Create');
-  assert.equal(byId.get('patch:my-line')?.target?.ref, 'my-line');
+  assert.equal(byId.get(patchItemId(HOME_PATCH_FILE, 'my-line'))?.kind, 'Create');
+  assert.equal(byId.get(patchItemId(HOME_PATCH_FILE, 'my-line'))?.target?.ref, patchLayerKey(HOME_PATCH_FILE, 'my-line'));
 
   // patch 行写入（Create）
-  const r = await adapter.applyItem(byId.get('patch:my-line')!, makeImportContext(dst, sections));
+  const r = await adapter.applyItem(byId.get(patchItemId(HOME_PATCH_FILE, 'my-line'))!, makeImportContext(dst, sections));
   assert.equal(r.ok, true);
   assert.equal(r.needsRestart, true);
   assert.deepEqual(dst.patchFile.lines.get('my-line')?.raw, { id: 'my-line', name: 'pkg-c', config: { x: 1 } });

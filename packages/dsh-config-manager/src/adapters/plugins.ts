@@ -1,9 +1,9 @@
 /**
  * plugins 分区 adapter（设计 §3.3/§8）：
- * 数据源 = ctx.plugins.listInstalled()（插件清单）+ 用户 patch 层（profile cordis.patch.yml）。
+ * 数据源 = ctx.plugins.listInstalled()（插件清单）+ 两个 patch 层（home 与 profile 的 cordis.patch.yml）。
  *
  * 安全不变量：绝不打包插件二进制；导入走 DSH 官方机制（dsh plugin CLI → needsRestart 提示）。
- * patch 行导入（用户自定义行：启用/禁用/插入）写回 cordis.patch.yml，同样 needsRestart。
+ * patch 行导入（用户自定义行：启用/禁用/插入）写回该行自带的层（home 或 profile），同样 needsRestart。
  *
  * T1（本地源插件迁移）：`link:` / `file:` 来源的插件指向本机路径，换机后必然不可达
  * （曾导致插件被静默丢失）。导出时经注入的 `localPack` 执行 `npm pack`，把 tarball 作为
@@ -19,6 +19,7 @@ import { msgOf, zhMsg } from '../core/messages.ts';
 import type { MsgFunc } from '../core/messages.ts';
 import { isPathSafe, normalizePath } from '../utils/paths.ts';
 import { PLUGIN_PATCH_REF_PREFIX } from '../core/backup.ts';
+import { HOME_PATCH_FILE, PROFILE_PATCH_FILE, patchLayerKey, parsePatchLayerKey } from '../core/patch-layers.ts';
 import { parsePnpmPatchedDependencies, sanitizePnpmWorkspacePatches } from './pnpm-workspace.ts';
 import type { LocalPluginTarball, PatchLine, PluginEntry, PluginsSection, PnpmPatchFile } from '../schema/types.ts';
 import type {
@@ -26,7 +27,6 @@ import type {
   ImportContext, PlanItem, ValidationResult,
 } from '../core/types.ts';
 
-export const USER_PATCH_FILE = 'cordis.patch.yml';
 
 /**
  * 本地源插件打包钩子（由宿主注入，见 src/index.ts createAdapters）。
@@ -170,12 +170,16 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
     } catch (err) {
       warnings.push(msgOf(ctx)('adapter.pluginListReadFailed', { reason: err instanceof Error ? err.message : String(err) }));
     }
+    // 两层都读：home 层（全机偏好）与 profile 层（该 profile 专属）。缺 profile 层文件不是故障
+    // （readPatchLines 对不存在的文件返回空数组），只有真读失败才告警。
     const patch: PatchLine[] = [];
-    try {
-      const lines = await ctx.patchFile.readPatchLines(USER_PATCH_FILE);
-      for (const l of lines) patch.push({ file: USER_PATCH_FILE, lineId: l.lineId, raw: l.raw });
-    } catch (err) {
-      warnings.push(msgOf(ctx)('adapter.patchReadFailed', { reason: err instanceof Error ? err.message : String(err) }));
+    for (const file of [HOME_PATCH_FILE, PROFILE_PATCH_FILE]) {
+      try {
+        const lines = await ctx.patchFile.readPatchLines(file);
+        for (const l of lines) patch.push({ file, lineId: l.lineId, raw: l.raw });
+      } catch (err) {
+        warnings.push(msgOf(ctx)('adapter.patchReadFailed', { reason: err instanceof Error ? err.message : String(err) }));
+      }
     }
     // pnpm-workspace.yaml（allowBuilds / minimumReleaseAgeExclude 等）：随插件分区迁移，
     // 否则目标 profile 的 pnpm 可能因构建白名单/冷静期拒绝安装插件（§34.17 同款语义）。
@@ -414,16 +418,25 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
 
     // 用户 patch 行：lineId 唯一键；存在且同 → Skip；存在不同 → Conflict；不存在 → Create。
     // mcp-client 行与 systemPrompt/planMode 行由 mcp/prompts adapter 管理，此处跳过（避免重复写入覆盖）。
-    const targetLines = await ctx.target.patchFile.readPatchLines(USER_PATCH_FILE);
+    // 逐层读目标端：行自带的 file 决定比对哪一层（只读 home 层会让 profile 层行在目标机
+    // 已有同值时被误判成 Create，也会让目标机 profile 层的不同值判不出 Conflict）。
+    const targetLines = new Map<string, { lineId: string; raw: unknown }[]>();
+    for (const pl of data.patch) {
+      if (!targetLines.has(pl.file)) {
+        targetLines.set(pl.file, await ctx.target.patchFile.readPatchLines(pl.file));
+      }
+    }
     for (const pl of data.patch) {
       if (isManagedElsewhere(pl.raw)) continue;
-      const id = `patch:${pl.lineId}`;
-      const tl = targetLines.find((l) => l.lineId === pl.lineId);
+      // 层限定复合键：两层可存在同名 lineId，裸 lineId 无法指向「哪一层的哪一行」。
+      const ref = patchLayerKey(pl.file, pl.lineId);
+      const id = `patch:${ref}`;
+      const tl = targetLines.get(pl.file)?.find((l) => l.lineId === pl.lineId);
       if (!tl) {
         items.push({
           id, kind: 'Create', adapter: 'plugins',
           description: msg('adapter.patchLineCreate', { lineId: pl.lineId }), severity: 'info',
-          target: { adapter: 'plugins', ref: pl.lineId },
+          target: { adapter: 'plugins', ref },
         });
       } else if (isDeepStrictEqual(tl.raw, pl.raw)) {
         items.push({ id, kind: 'Skip', adapter: 'plugins', description: msg('adapter.patchLineSame', { lineId: pl.lineId }), severity: 'info' });
@@ -431,7 +444,7 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
         items.push({
           id, kind: 'Conflict', adapter: 'plugins',
           description: msg('adapter.patchLineDiff', { lineId: pl.lineId }), severity: 'warning',
-          target: { adapter: 'plugins', ref: pl.lineId },
+          target: { adapter: 'plugins', ref },
         });
       }
     }
@@ -561,13 +574,16 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
     // patch 行：Create → insert，Update/Conflict(useImported) → update
     const ref = item.target?.ref;
     if (!ref) return { ok: false, message: msg('adapter.missingTargetRef') };
+    // 复合键解析出层与 lineId：只按 lineId 查找会命中数组里先出现的 home 层行，
+    // 把 profile 层的行写进 home 层（回滚同理）。
+    const { file, lineId } = parsePatchLayerKey(ref);
     const data = ctx.sections.get('plugins') as PluginsSection | undefined;
-    const pl = data?.patch.find((p) => p.lineId === ref);
+    const pl = data?.patch.find((p) => p.file === file && p.lineId === lineId);
     if (!pl) return { ok: false, message: msg('adapter.patchMissing', { ref }) };
-    await ctx.target.patchFile.applyPatchChanges(pl.file, [
-      { lineId: ref, raw: pl.raw, action: item.kind === 'Create' ? 'insert' : 'update' },
+    await ctx.target.patchFile.applyPatchChanges(file, [
+      { lineId, raw: pl.raw, action: item.kind === 'Create' ? 'insert' : 'update' },
     ]);
-    return { ok: true, needsRestart: true, message: msg('adapter.patchWritten', { ref }) };
+    return { ok: true, needsRestart: true, message: msg('adapter.patchWritten', { ref: lineId }) };
   }
 
   async validate(data: PluginsSection, msg: MsgFunc = zhMsg): Promise<ValidationResult> {

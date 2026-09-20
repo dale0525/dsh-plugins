@@ -158,6 +158,46 @@ export class MemPatch implements PatchFileFacade {
   }
 }
 
+/**
+ * 分层 patch 门面 mock：patch 行按 `file`（层 token）分桶。
+ * 单层的 `MemPatch` 无法表达「同名 lineId 分布在两层」——而那正是层寻址契约的核心，
+ * 故另立一个按层键控的实现，供 plugins 适配器与快照/回滚的契约测试使用。
+ */
+export class MemLayeredPatch implements PatchFileFacade {
+  files = new Map<string, Map<string, { lineId: string; raw: unknown }>>();
+
+  /** 直接落一行（测试夹具；等价于目标机该层已存在该行）。 */
+  set(file: string, lineId: string, raw: unknown): void {
+    const layer = this.files.get(file) ?? new Map();
+    layer.set(lineId, { lineId, raw });
+    this.files.set(file, layer);
+  }
+
+  has(file: string, lineId: string): boolean {
+    return this.files.get(file)?.has(lineId) ?? false;
+  }
+
+  rawOf(file: string, lineId: string): unknown {
+    return this.files.get(file)?.get(lineId)?.raw;
+  }
+
+  async readPatchLines(file: string): Promise<{ lineId: string; raw: unknown }[]> {
+    return [...(this.files.get(file)?.values() ?? [])];
+  }
+
+  async applyPatchChanges(
+    file: string,
+    changes: { lineId: string; raw: unknown; action: 'insert' | 'update' | 'remove' }[],
+  ): Promise<void> {
+    const layer = this.files.get(file) ?? new Map<string, { lineId: string; raw: unknown }>();
+    this.files.set(file, layer);
+    for (const c of changes) {
+      if (c.action === 'remove') layer.delete(c.lineId);
+      else layer.set(c.lineId, { lineId: c.lineId, raw: c.raw });
+    }
+  }
+}
+
 export class MemSnapshotStore implements SnapshotStore {
   snapshots = new Map<string, Snapshot>();
   blobs = new Map<string, Uint8Array>();
@@ -202,6 +242,14 @@ export class MockHostContext implements HostContext {
     this.profile = profile;
     this.fs = new MemFs(homeDir);
     this.log = createLogger({ level: 'error', sink: () => {} });
+  }
+
+  /** 换成按层键控的 patch 门面（层寻址契约测试用）。
+   *  字段的声明类型仍是单层的 MemPatch，以免既有夹具的 `.lines` 用法失型。 */
+  useLayeredPatch(): MemLayeredPatch {
+    const layered = new MemLayeredPatch();
+    this.patchFile = layered as unknown as MemPatch;
+    return layered;
   }
 }
 

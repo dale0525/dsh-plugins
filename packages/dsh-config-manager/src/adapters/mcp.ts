@@ -14,7 +14,7 @@ import type {
   ApplyResult, ConfigAdapter, ExportOptions, ExportSection, HostContext,
   ImportContext, PlanItem, ValidationResult,
 } from '../core/types.ts';
-import { USER_PATCH_FILE } from './plugins.ts';
+import { HOME_PATCH_FILE } from '../core/patch-layers.ts';
 
 /** 导出记录：McpServerEntry 之外附加来源 patch 行 id（导入写回定位用） */
 export interface McpExportEntry extends McpServerEntry {
@@ -95,7 +95,7 @@ export class McpAdapter implements ConfigAdapter<McpExportSection> {
     const warnings: string[] = [];
     let lines: { lineId: string; raw: unknown }[] = [];
     try {
-      lines = await ctx.patchFile.readPatchLines(USER_PATCH_FILE);
+      lines = await ctx.patchFile.readPatchLines(HOME_PATCH_FILE);
     } catch (err) {
       warnings.push(msgOf(ctx)('adapter.patchReadFailedMCP', { reason: err instanceof Error ? err.message : String(err) }));
     }
@@ -111,7 +111,7 @@ export class McpAdapter implements ConfigAdapter<McpExportSection> {
   async analyzeImport(data: McpExportSection, ctx: ImportContext): Promise<PlanItem[]> {
     const msg = ctx.msg;
     const items: PlanItem[] = [];
-    const targetLines = await ctx.target.patchFile.readPatchLines(USER_PATCH_FILE);
+    const targetLines = await ctx.target.patchFile.readPatchLines(HOME_PATCH_FILE);
     const targetServers = extractMcpServers(targetLines);
     for (const server of data.servers) {
       const id = `mcp:${server.serverName}`;
@@ -157,7 +157,7 @@ export class McpAdapter implements ConfigAdapter<McpExportSection> {
     const ref = item.target?.ref;
     if (!ref) return { ok: false, message: msg('adapter.missingTargetRef') };
     const raw = buildMcpPatchLine(ref, server);
-    await ctx.target.patchFile.applyPatchChanges(USER_PATCH_FILE, [
+    await ctx.target.patchFile.applyPatchChanges(HOME_PATCH_FILE, [
       { lineId: ref, raw, action: item.kind === 'Create' ? 'insert' : 'update' },
     ]);
     return { ok: true, needsRestart: true, message: msg('adapter.mcpWritten', { serverName }) };

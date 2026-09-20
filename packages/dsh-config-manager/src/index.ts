@@ -92,7 +92,8 @@ import type {
   SettingsFacade, Snapshot, WorkspaceFacade,
 } from './core/types.ts'
 import { ImportNotConfirmedError, ImportUserSkippedError } from './core/types.ts'
-import { createAdapters, USER_PATCH_FILE } from './adapters/index.ts'
+import { createAdapters } from './adapters/index.ts'
+import { HOME_PATCH_FILE, PROFILE_PATCH_FILE } from './core/patch-layers.ts'
 import { createLocalPluginPackHook } from './core/local-plugin-host.ts'
 import { createEncryptionProvider, decryptCredentials, decryptArchive, SecurityError, encryptArchive, isArchiveBlob, verifyEncryptedBlob } from './security/index.ts'
 import { createHardenedZipParser } from './security/zip-security.ts'
@@ -156,7 +157,7 @@ export const name = 'config-manager'
 export const inject = ['settings', 'credentials']
 
 /** Plugin version, kept in sync with package.json ("version"). */
-const PLUGIN_VERSION = '0.1.60'
+const PLUGIN_VERSION = '0.1.61'
 
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
@@ -646,12 +647,12 @@ class DshWorkspaceFacade implements WorkspaceFacade {
   }
 }
 
-/** Profile 目录内的 patch 文件（非 bundle 插件激活行写入处，marketplace 同款路径）。 */
-const PROFILE_PATCH_FILE = 'cordis.patch.yml'
-
 /** Patch-file facade：用户 patch 层（$DSH_HOME/cordis.patch.yml）+ profile patch 层
- * （$DSH_HOME/profiles/<name>/cordis.patch.yml），两者都在 home 根内。 */
-class DshPatchFileFacade implements PatchFileFacade {
+ * （$DSH_HOME/profiles/<name>/cordis.patch.yml），两者都在 home 根内。
+ *
+ * 导出仅为让测试能用**真实门面**（而非 mock）钉住层寻址——mock 会让两个层 token 的取值
+ * 撞车无处暴露（DshPluginsFacade 同款做法）。 */
+export class DshPatchFileFacade implements PatchFileFacade {
   private readonly homeDir: string
   private readonly profile: string
   private readonly msg: MsgFunc
@@ -663,9 +664,9 @@ class DshPatchFileFacade implements PatchFileFacade {
   }
 
   private patchPath(file: string): string {
-    if (file === USER_PATCH_FILE) return join(this.homeDir, USER_PATCH_FILE)
-    if (file === PROFILE_PATCH_FILE) return join(this.homeDir, 'profiles', this.profile, PROFILE_PATCH_FILE)
-    throw new Error(this.msg('host.patchUnsupported', { user: USER_PATCH_FILE, profile: PROFILE_PATCH_FILE, file }))
+    if (file === HOME_PATCH_FILE) return join(this.homeDir, HOME_PATCH_FILE)
+    if (file === PROFILE_PATCH_FILE) return join(this.homeDir, 'profiles', this.profile, HOME_PATCH_FILE)
+    throw new Error(this.msg('host.patchUnsupported', { user: HOME_PATCH_FILE, profile: PROFILE_PATCH_FILE, file }))
   }
 
   async readPatchLines(file: string): Promise<{ lineId: string; raw: unknown }[]> {

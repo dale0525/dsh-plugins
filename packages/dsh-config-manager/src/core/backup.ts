@@ -9,6 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { parseJsonSafe } from '../utils/json.ts';
+import { parsePatchLayerKey } from './patch-layers.ts';
 import { sha256Hex } from '../utils/hashing.ts';
 import { normalizePath } from '../utils/paths.ts';
 import { atomicWriteFile } from '../utils/atomic-write.ts';
@@ -206,10 +207,11 @@ async function engineSnapshotEntry(ctx: HostContext, target: SnapshotTarget): Pr
           copiedTo: `blobs/${crypto.randomUUID()}`,
         };
       }
-      // patchLine：从组合 patch 文件读取原行（file 为必填的 file 字段约定为 'cordis.patch.yml'）
-      const file = 'cordis.patch.yml';
+      // patchLine：ref 是层限定复合键（<file>#<lineId>），据此到**对应层**读原行。
+      // 旧快照的裸 lineId 由 parsePatchLayerKey 兼容为 home 层。
+      const { file, lineId } = parsePatchLayerKey(target.ref);
       const lines = await ctx.patchFile.readPatchLines(file);
-      const line = lines.find((l) => l.lineId === target.ref);
+      const line = lines.find((l) => l.lineId === lineId);
       return { kind: 'patchLine', adapter: target.adapter, ref: target.ref, before: line?.raw ?? null, existed: line !== undefined };
     }
     case 'skills':

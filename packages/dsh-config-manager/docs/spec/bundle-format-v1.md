@@ -645,7 +645,7 @@ THROW 备份 schema v2（高于当前 1，需升级插件），无法导入（�
 | `plugins.plugins[]` | `name`/`version`/`isBundle`/`inBundles`/`enabled` | 必需 | 插件清单 | `src/schema/types.ts:95-108` |
 | | `spec` | 可选 | 声明依赖 spec（`^0.3.6`、`github:user/repo`、`file:` 等） | `src/schema/types.ts:104` |
 | | `fiberPhase` | 可选 | 运行时相位标记 | `src/schema/types.ts:108` |
-| `plugins.patch[]` | `file`/`lineId`/`raw` | 必需 | patch 行；**`raw` 原样写回目标**（未知子字段在此被保留） | `src/schema/types.ts:111`、`src/adapters/plugins.ts:387-389` |
+| `plugins.patch[]` | `file`/`lineId`/`raw` | 必需 | patch 行；`file` 是**层 token**（取值域只有两个）：`cordis.patch.yml` = home 层（`$DSH_HOME/cordis.patch.yml`），`profile:cordis.patch.yml` = profile 层（`$DSH_HOME/profiles/<profile>/cordis.patch.yml`）。层 token 是**逻辑标识**而非相对路径——快照会跨机器/跨 profile 导入，路径会把源机的 profile 名带过去。两层可存在同名 `lineId`（宿主按 id 建全局索引、后应用的 home 层胜出），故计划项 id / `target.ref` / 快照条目一律用层限定复合键 `<file>#<lineId>`。**`raw` 原样写回目标**（未知子字段在此被保留） | `src/schema/types.ts:111`、`src/core/patch-layers.ts`、`src/adapters/plugins.ts` |
 | `plugins.pnpmWorkspace` | `string \| null` | 可选 | `pnpm-workspace.yaml` 原文 | `src/schema/types.ts:151` |
 | `plugins.localTarballs` | `LocalPluginTarball[]` | 可选 | 本地源插件 tarball（base64）。**市场通道两端拒绝**；仅本地备份合法 | `src/schema/types.ts:131-157`、`src/market/security.ts:175-184` |
 | `plugins.patchFiles` | `{relativePath: string, base64: string}[]` | 可选 | `pnpmWorkspace.patchedDependencies` 引用的 `patches/**` 文件，`relativePath` 相对 **profile 目录**。**市场通道两端拒绝**；仅本地备份合法 | `src/schema/types.ts:158-171`、`src/market/security.ts:185-196`、`src/market/prepare.ts:178-186` |
@@ -668,6 +668,8 @@ THROW 备份 schema v2（高于当前 1，需升级插件），无法导入（�
 另有两条同级硬约束：`security.containsSecrets === true` 的 bundle 市场拒收（`src/market/security.ts:105-107`）；`plugins.localTarballs` 非空市场拒收（`src/market/security.ts:175-184`）。
 
 `plugins.patchFiles` 非空同样**发布侧与导入侧双端拒收**（issue #35）：patch 会在 `pnpm install` 时改写依赖代码，与内嵌 tarball 同属「未经公开仓库审阅即执行」的内容，不得经公共市场分发（`src/market/prepare.ts:178-186`、`src/market/security.ts:185-196`）。本地备份/迁移通道不受此限制。
+
+**实现者注意（层寻址）**：`plugins.patch[]` 是 **patch 行**（写进 `cordis.patch.yml` 的 YAML 行），`plugins.patchFiles` 是 **pnpm patch 文件**（`profiles/<profile>/patches/**` 的整文件）——两者名字相近但毫无关系，不要混用。导入端写 patch 行时必须按行自带的 `file` 层 token 落到对应层：只按 `lineId` 查找会命中 home 层那一行，把 profile 层的行写进 home 层（回滚同理）。存量快照的 `file` 恒为 home token，`target.ref` 为裸 `lineId` 时按「无 `#` 即 home 层」兼容解析。
 
 **实现者注意（issue #35）**：`pnpmWorkspace` 与 `patchFiles` 必须**同进同出**。若只搬运 `pnpmWorkspace` 文本而目标机没有对应 patch 文件，目标机 pnpm 会拒绝**一切** `add`（`Failed to read patch file ... (os error 2)`）。本实现的导入端在写入 `pnpmWorkspace` 前，会剔除目标机无法满足的 `patchedDependencies` 条目（并在计划里给出 Warning 项），再写配置。
 

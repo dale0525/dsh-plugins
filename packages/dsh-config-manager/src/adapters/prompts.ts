@@ -17,7 +17,7 @@ import type {
   ApplyResult, ConfigAdapter, ExportOptions, ExportSection, HostContext,
   ImportContext, PlanItem, ValidationResult,
 } from '../core/types.ts';
-import { USER_PATCH_FILE } from './plugins.ts';
+import { HOME_PATCH_FILE } from '../core/patch-layers.ts';
 
 /** 导出记录：PromptEntry 之外记录来源行名（导入需要重建行时使用） */
 export interface PromptExportEntry extends PromptEntry {
@@ -116,7 +116,7 @@ export class PromptsAdapter implements ConfigAdapter<PromptsExportSection> {
     const warnings: string[] = [];
     let lines: { lineId: string; raw: unknown }[] = [];
     try {
-      lines = await ctx.patchFile.readPatchLines(USER_PATCH_FILE);
+      lines = await ctx.patchFile.readPatchLines(HOME_PATCH_FILE);
     } catch (err) {
       warnings.push(msgOf(ctx)('adapter.patchReadFailedPrompts', { reason: err instanceof Error ? err.message : String(err) }));
     }
@@ -132,7 +132,7 @@ export class PromptsAdapter implements ConfigAdapter<PromptsExportSection> {
   async analyzeImport(data: PromptsExportSection, ctx: ImportContext): Promise<PlanItem[]> {
     const msg = ctx.msg;
     const items: PlanItem[] = [];
-    const targetLines = await ctx.target.patchFile.readPatchLines(USER_PATCH_FILE);
+    const targetLines = await ctx.target.patchFile.readPatchLines(HOME_PATCH_FILE);
     const targetPrompts = extractPrompts(targetLines);
     for (const p of data.prompts) {
       const id = p.id;
@@ -192,17 +192,17 @@ export class PromptsAdapter implements ConfigAdapter<PromptsExportSection> {
     // Create：目标无来源行 → 用记录的行名重建 patch 行（insert）
     if (item.kind === 'Create') {
       const raw = buildPromptLine(ref, prompt);
-      await ctx.target.patchFile.applyPatchChanges(USER_PATCH_FILE, [
+      await ctx.target.patchFile.applyPatchChanges(HOME_PATCH_FILE, [
         { lineId: ref, raw, action: 'insert' },
       ]);
       return { ok: true, needsRestart: true, message: msg('adapter.promptCreated', { name: prompt.name, ref }) };
     }
     // Update / Conflict(useImported)：合并进目标行 config
-    const lines = await ctx.target.patchFile.readPatchLines(USER_PATCH_FILE);
+    const lines = await ctx.target.patchFile.readPatchLines(HOME_PATCH_FILE);
     const line = lines.find((l) => l.lineId === ref);
     if (!line) return { ok: false, message: msg('adapter.patchLineMissing', { ref }) };
     const newRaw = mergePromptIntoLine(line.raw, prompt);
-    await ctx.target.patchFile.applyPatchChanges(USER_PATCH_FILE, [
+    await ctx.target.patchFile.applyPatchChanges(HOME_PATCH_FILE, [
       { lineId: ref, raw: newRaw, action: 'update' },
     ]);
     return { ok: true, needsRestart: true, message: msg('adapter.promptWritten', { name: prompt.name, ref }) };

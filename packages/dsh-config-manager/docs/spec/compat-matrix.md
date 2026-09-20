@@ -3,7 +3,7 @@
 > 本文件回答一个问题：**本插件支持哪个 DSH 版本区间，以及 DSH 升级时哪一部分会先破。**
 > 所有断言均标注取证位置（`file:line`）或标记为「未验证」。凡未实际读取文件确认的结论一律不写入本文件。
 
-- 适用插件版本：`dsh-config-manager@0.1.59`（`package.json:3`，与 `src/index.ts:170` 的 `PLUGIN_VERSION` 一致）
+- 适用插件版本：`dsh-config-manager@0.1.61`（`package.json:3`，与 `src/index.ts:160` 的 `PLUGIN_VERSION` 一致）
 - 取证环境：Windows，Node `v24.13.0`，npm `11.19.0`
 - 本机 DSH 部署：`@deepseek-ai/dsh@0.1.5-rc.1`（`D:\Apps\nodejs\node_global\node_modules\@deepseek-ai\dsh\package.json`）
 
@@ -58,7 +58,7 @@ export const inject = ['settings', 'credentials']
 |---|---|---|
 | `@deepseek-ai/dsh-home-paths` 的 `resolveDshHome()` / `dshHomePath()` | 解析 `$DSH_HOME`（`homeDir`）与插件数据根 `$DSH_HOME/dsh-config-manager` | `src/index.ts:50`（import）；`src/index.ts:4635`、`4638` |
 | 官方 `dsh plugin --profile <name>` CLI | 插件安装/列举通道（pnpm forwarder），不依赖 `pluginMarketplace` / `pluginInventory` 服务 | `src/index.ts:31-34`（设计说明）；`src/core/plugin-cli.ts`（实现）；`src/index.ts:357-359`（调用） |
-| `$DSH_HOME/cordis.patch.yml` + `$DSH_HOME/profiles/<name>/cordis.patch.yml` 文件格式 | MCP / prompts 分区与插件激活行的读写对象（经 `js-yaml`，非官方服务） | `src/index.ts:685-704`；`src/index.ts:84`（`USER_PATCH_FILE`） |
+| `$DSH_HOME/cordis.patch.yml` + `$DSH_HOME/profiles/<name>/cordis.patch.yml` 文件格式 | MCP / prompts 分区与插件激活行的读写对象（经 `js-yaml`，非官方服务）；两层的持久化标识见 `src/core/patch-layers.ts` | `src/index.ts:666-769`（`DshPatchFileFacade`） |
 
 **运行时真实 import 的官方包只有 4 个**（在构建产物 `lib/` 全量 `.js` 中按字符串计数验证）：
 
@@ -254,7 +254,7 @@ react, react/jsx-runtime, react-dom, react-dom/client,
 | **R10** | `dsh.client.inject` / `dsh.client.platform` 字段校验变严（例如要求 inject 名字必须命中 boot graph） | client 半装载 | 设置页不出现；控制台报 client-modules 图相关错误 | 现状为「未命中即跳过、不抛错」（`dsh-client-modules/lib/client.js:265-268`），若 DSH 改为抛错则本节结论失效 |
 | **R11** | 插件加载器改为**强制 peer / engines 校验** | 安装/启动期 | 插件装不上或启动即被拒；报 peer 冲突（因 profile 为 `0.1.5-rc.2`，默认语义不满足 `^0.1.0-rc.6`） | §3.3 的 semver 实测表；检查 profile 是否开了 `autoInstallPeers` |
 | **R12** | DSH 进入 `0.2.x` | 全部 peer 范围 | 同 R11，且与 rc 无关（`^0.1.0-rc.6` 的上界是 `0.2.0`） | §3.3 表末行 |
-| **R13** | `$DSH_HOME/cordis.patch.yml` 或 profile patch 文件格式变化 | MCP 分区、prompts 分区、插件激活行 | MCP/prompts 导入后不生效；`patch 行` 解析报错 | `src/index.ts:685-704`；`src/adapters/mcp.ts:98,114,160`；`src/adapters/prompts.ts:119,135,195-205` |
+| **R13** | `$DSH_HOME/cordis.patch.yml` 或 profile patch 文件格式变化 | MCP 分区、prompts 分区、plugins 分区（patch 行）、插件激活行 | MCP/prompts 导入后不生效；`patch 行` 解析报错 | `src/index.ts:666-769`；`src/adapters/mcp.ts:98,114,160`；`src/adapters/prompts.ts:119,135,195-205`；`src/adapters/plugins.ts` |
 | **R14** | profile 目录布局变化（`profiles/<name>/` 或 `profiles/node_modules`） | `resolveDshVersion`（版本显示）、`resolveProfileDir`、插件 CLI 通道 | 关于页版本显示 `unknown`；插件安装/列举失败 | `src/index.ts:434-448`（两个候选路径）；`src/core/plugin-cli.ts` |
 
 ### 5.1 按「先破顺序」排序的直觉

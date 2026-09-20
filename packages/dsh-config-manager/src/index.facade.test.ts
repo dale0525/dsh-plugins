@@ -10,11 +10,11 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { DshPluginsFacade, ensureActivationRow } from './index.ts';
+import { DshPatchFileFacade, DshPluginsFacade, ensureActivationRow } from './index.ts';
 import { resolveProfileDir } from './core/plugin-cli.ts';
 import type { DshPluginResult } from './core/plugin-cli.ts';
 import type { PatchChange, PatchFileFacade } from './core/types.ts';
@@ -245,6 +245,29 @@ test('ensureActivationRow: bundle 包跳过（reconcile 已维护 bundles）', a
 
     await ensureActivationRow(patchFile, join(profileDir, 'node_modules', 'pkg-bundle'), 'pkg-bundle');
     assert.equal(patchFile.lines.size, 0, 'bundle 包不写 patch 行');
+  } finally {
+    cleanup();
+  }
+});
+
+test('ensureActivationRow: 非 bundle 插件补行落在 profile 层（home 层文件不受影响）', async () => {
+  const { homeDir, profileDir, cleanup } = makeTempProfile();
+  try {
+    writeInstalledPkg(profileDir, 'pkg-a', '1.0.0');
+    const patchFile = new DshPatchFileFacade(homeDir, 'web');
+    const homePatch = join(homeDir, 'cordis.patch.yml');
+    const profilePatch = join(profileDir, 'cordis.patch.yml');
+    writeFileSync(homePatch, '- id: home-line\n', 'utf8');
+    const homeBefore = readFileSync(homePatch, 'utf8');
+
+    await ensureActivationRow(patchFile, join(profileDir, 'node_modules', 'pkg-a'), 'pkg-a');
+
+    assert.match(
+      readFileSync(profilePatch, 'utf8'),
+      /id: pm-pkg-a/,
+      '激活行必须落在 profile 层（home 层对每个 profile 生效，会让只在 web 装过的插件污染其他 profile）',
+    );
+    assert.equal(readFileSync(homePatch, 'utf8'), homeBefore, 'home 层文件必须原样不变');
   } finally {
     cleanup();
   }
