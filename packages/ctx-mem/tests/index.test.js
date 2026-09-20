@@ -134,10 +134,17 @@ test('the config split keeps the host engine from rejecting our own keys', () =>
     fillProvider: 'vp',
     fillModel: 'vm',
     language: 'en',
+    maxCheckpointTokens: 12345,
   });
 
   assert.deepEqual(Object.keys(engineConfig).sort(), ['retainRatio', 'thresholdRatio']);
-  assert.deepEqual(own, { fillEnabled: false, fillProvider: 'vp', fillModel: 'vm', language: 'en' });
+  assert.deepEqual(own, {
+    fillEnabled: false,
+    fillProvider: 'vp',
+    fillModel: 'vm',
+    language: 'en',
+    maxCheckpointTokens: 12345,
+  });
 })
 
 test('the host engine genuinely rejects our keys, so stripping is required', () => {
@@ -160,6 +167,7 @@ test('the engine constructs with our keys present and applies their defaults', (
   assert.equal(engine.ctxMemConfig.fillProvider, '');
   assert.equal(engine.ctxMemConfig.fillModel, '');
   assert.equal(engine.ctxMemConfig.language, 'zh');
+  assert.equal(engine.ctxMemConfig.maxCheckpointTokens, 24000);
 })
 
 test('A10 — retainTokens: 0 is accepted, enabling the hard cutoff', () => {

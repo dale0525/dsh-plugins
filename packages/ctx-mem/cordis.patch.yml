@@ -1,6 +1,6 @@
 # ctx-mem bundle patch layer.
 #
-# Two rows, because this package ships two halves.
+# ONE row. The package ships two halves, but only the bridge has a row here.
 #
 # `ctx-mem-bridge` runs on the PROFILE plane and is ENABLED. The host's cordis
 # loader resolves every loader entry's config through the synchronous
@@ -10,19 +10,25 @@
 # `compaction` group. That is what makes the backend work in ANY mode without a
 # dedicated preset copy.
 #
-# `ctx-mem` is the ENGINE and is DISABLED. A compaction backend is a
-# `ctx.compaction` SERVICE replacement, and every shipped preset composes its
-# own backend inside an `isolate: { compaction: true }` group
+# The ENGINE (`@logictan/dsh-ctx-mem`) has no row here on purpose. A compaction
+# backend is a `ctx.compaction` SERVICE replacement, and every shipped preset
+# composes its own backend inside an `isolate: { compaction: true }` group
 # (`dsh-agent-presets/presets/*/agent.cordis.yml`), so an agent context resolves
 # `ctx.compaction` inside that realm and never sees a profile-plane provider.
-# Enabling this row would not replace the preset's backend — it would add a
-# SECOND engine beside it: a listener registered here carries no scope tag, and
-# an untagged listener is admitted for every agent in the process
+# A profile-plane engine row would therefore not replace the preset's backend —
+# it would add a SECOND engine beside it: a listener registered there carries no
+# scope tag, and an untagged listener is admitted for every agent in the process
 # (`dsh-scope`'s scope filter returns true when the dispatch context has no
 # tag), so its pressure listener would fire for every agent and both engines
-# would compact the same session. The row is declared so the package carries the
-# row the repo convention requires, with an id equal to the host half's
-# `export const name`; the bridge's injected row is what actually mounts it.
+# would compact the same session. A DISABLED engine row is equally pointless: it
+# never mounts, and `dsh-plugin-manager`'s `declaredRows` lists every row the
+# bundle declares — disabled ones included — so it only adds a second, useless
+# entry beside the bridge row in the plugin UI.
+#
+# The package must still be INSTALLED even though no row here names the engine:
+# this row names `@logictan/dsh-ctx-mem/bridge`, and the row the bridge injects
+# names `@logictan/dsh-ctx-mem` — both resolve by package name from the profile
+# root.
 #
 # The bridge only covers `standard`, `ptc` and `cordis` (see COVERED_PRESETS in
 # src/bridge.js). `minimal` and user-authored presets have no compaction group
@@ -33,7 +39,3 @@
       name: '@logictan/dsh-ctx-mem/bridge'
       config:
         engine: {}
-
-    - id: ctx-mem
-      name: '@logictan/dsh-ctx-mem'
-      disabled: true

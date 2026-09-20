@@ -57,6 +57,7 @@ PTC（programmatic tool calling）模式下，模型写的是 `run_code` 脚本�
 | `fillEnabled` | `true` | 是否执行模型填空；`false` 时退化为纯确定性产出，且不发起模型调用 |
 | `fillProvider` / `fillModel` | 空 | 填空所用路由；两者都空 = 用当前会话路由，只填一个不生效 |
 | `language` | `zh` | 产出语言 |
+| `maxCheckpointTokens` | `24000` | 检查点的绝对 token 上限；取它与「分母推导预算」的较小值 |
 | `thresholdRatio` | `0.8` | 压力触发阈值（继承 `compaction-basic` 语义） |
 | `retainRatio` | `0.16` | 保留近期尾巴的比例（继承语义） |
 | `retainTokens` | 未设置 | 保留尾巴的绝对 token 数，设置后覆盖 `retainRatio`；`0` = 一条尾巴都不留（硬切断） |
@@ -70,6 +71,8 @@ PTC（programmatic tool calling）模式下，模型写的是 `run_code` 脚本�
 
 触发、保留尾巴、溢出恢复、事务锁、tool-pairing 边界全部继承 `BasicCompactionEngine`，本插件只替换 `summarize()`。
 
+检查点的骨架按**预算**分档渲染：预算由被替换区间的实测帧价（分母）减去因果节价与固定余量得出，再取 `maxCheckpointTokens` 的较小值。宿主 guard 要求帧价严格小于分母，固定规则渲染在退化折上必然越界（分母冻结在上一检查点自身价，而事实集持续增长），因此必须由上限驱动渲染。`intents` 与 `files` 逐字且永不裁剪——它们是约 0.7% 的成本与 100% 的意图保真，**不受 `maxCheckpointTokens` 约束**（该上限只保证骨架不超，当保底档自身已超上限时以保真优先）。命令与报错按最新优先保留，状态改变类命令（`git commit` / `npm publish` / `rm` 等）逐字保留，探测类命令只留首行。
+
 `summarizationProvider` / `summarizationModel` 对 ctx-mem **无效**（它们只在官方 `summarize()` 里被读取，而该方法已被覆写）；填空路由请用 `fillProvider` / `fillModel`。
 
 `retainTokens: 0` 是 codex 式的硬切断：压缩后 surface 只剩 system + checkpoint，模型请求不含任何被压缩区间的逐字消息。旧事件仍在 log 中（可回放、可审计、可 fork），只是没有任何模型可读接口能取回。**默认关闭**。
@@ -78,8 +81,8 @@ PTC（programmatic tool calling）模式下，模型写的是 `run_code` 脚本�
 
 压缩后端是 `ctx.compaction` 服务替换，而每个 preset 都在 `isolate: { compaction: true }` 组里组合自己的后端，profile 层的行无法覆盖该 realm。本插件因此由两部分组成：
 
-1. **引擎行** `ctx-mem`（`@logictan/dsh-ctx-mem`）——真正的后端，必须落在 preset 的 `isolate` 组内。
-2. **bridge 行** `ctx-mem-bridge`（`@logictan/dsh-ctx-mem/bridge`）——挂在 profile 平面，在宿主挂载 preset 组合时给该组合注入一段 `patches`：关掉官方的 `compaction-basic`，并在同一个 `compaction` 组内插入 `ctx-mem`。
+1. **引擎** `ctx-mem`（`@logictan/dsh-ctx-mem`）——真正的后端，必须落在 preset 的 `isolate` 组内。它由 bridge 注入的行挂载，自身**没有** profile 平面的行。
+2. **bridge** `ctx-mem-bridge`（`@logictan/dsh-ctx-mem/bridge`）——挂在 profile 平面，在宿主挂载 preset 组合时给该组合注入一段 `patches`：关掉官方的 `compaction-basic`，并在同一个 `compaction` 组内插入 `ctx-mem`。
 
 因此**任何模式都直接生效**，无需新建或选择专用 preset：`standard` / `ptc` / `cordis` 三个预设会被 bridge 自动替换后端。`minimal` 与用户自建预设**不在覆盖范围内**——它们的设计意图里没有上下文压缩，bridge 不替它们做决定。无 preset 的 profile（如 `headless`）不经过 preset 子树，bridge 自然不生效。
 
@@ -94,9 +97,11 @@ PTC（programmatic tool calling）模式下，模型写的是 `run_code` 脚本�
       fillModel: deepseek-v4.1-flash
 ```
 
-**引擎行故意不写 `config:`**：上表每个键都已经等于继承来的默认值（或按设计不设置），写出来只会把默认值钉死在上游的当前取值上。引擎的配置只认 bridge 行的 `config.engine`——注入行由 bridge 生成，是它唯一的落点。
+引擎的配置只认 bridge 行的 `config.engine`——注入行由 bridge 生成，是它唯一的落点，而注入行本身**不带 `config:`**：上表每个键都已经等于继承来的默认值（或按设计不设置），写出来只会把默认值钉死在上游的当前取值上。
 
-本包的 `cordis.patch.yml` 声明两行：bridge 行 **enabled**（它的正确挂载点就是 profile 平面），引擎行 **disabled**（它在 profile 平面挂载会与 preset 的后端并存，两个引擎同时监听 `agent/pre-step` 压缩同一个会话）。两行的 id 分别等于各自宿主半边的 `export const name`；包本身必须被安装，因为 preset 行按包名从 profile 根解析它。
+本包的 `cordis.patch.yml` 只声明一行：bridge 行 **enabled**（它的正确挂载点就是 profile 平面）。引擎**不声明 profile 平面的行**：在该平面挂载会与 preset 的后端并存，两个引擎同时监听压缩同一个会话；声明成 disabled 也不会挂载，反而让插件界面多出一条无用条目。bridge 行是唯一的行，其 id 等于它宿主半边的 `export const name`。包本身必须被安装，因为 preset 内注入的行按包名从 profile 根解析它。
+
+> 若你在 `~/.dsh/profiles/<name>/cordis.patch.yml` 里手工写过 `- id: ctx-mem` 的覆盖项，它在本包升级后会变成悬空引用（宿主启动时打一条 `patch: entry not found` 警告并跳过，无功能影响），删掉即可。
 
 ## 使用指南（技能）
 
@@ -111,7 +116,7 @@ node --test        # 单元测试
 
 ## 上游
 
-Fork 自 [`fan56/dsh-dcp`](https://github.com/fan56/dsh-dcp) `v0.11.0`（MIT）。同步清单见 `sync-policy.json`。
+衍生自 [`fan56/dsh-dcp`](https://github.com/fan56/dsh-dcp) `v0.11.0`（MIT）。主体（`extract` / `skeleton` / `region` / `causal` / `prompt` / `render` / `bridge`）此后已重写，与上游无等价物，**上游同步已停止**；`LICENSE` 保留上游版权与许可声明。
 
 ## License
 

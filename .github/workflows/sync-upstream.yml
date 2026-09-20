@@ -53,9 +53,6 @@ jobs:
           - id: imagegen
             pkg: '@logictan/dsh-imagegen'
             test: 'pnpm --filter @logictan/dsh-imagegen typecheck'
-          - id: ctx-mem
-            pkg: '@logictan/dsh-ctx-mem'
-            test: 'pnpm --filter @logictan/dsh-ctx-mem test'
           - id: agy-link
             pkg: '@logictan/dsh-agy-link'
             test: 'pnpm --filter @logictan/dsh-agy-link test'

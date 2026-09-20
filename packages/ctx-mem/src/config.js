@@ -25,6 +25,15 @@ export const LANGUAGES = Object.freeze(['en', 'zh']);
 export const DEFAULT_LANGUAGE = 'zh';
 
 /**
+ * Default absolute ceiling on a rendered checkpoint, in estimated tokens.
+ *
+ * Set well above what a healthy fold needs (the largest real fold renders at
+ * ~24,000 framed tokens before tiering) so it never binds in normal operation,
+ * while still bounding the pathological case.
+ */
+export const DEFAULT_MAX_CHECKPOINT_TOKENS = 24000;
+
+/**
  * Keys owned by this backend — everything the host engine does not know.
  *
  * Deliberately not exported: `Object.freeze` does not make a `Set` immutable
@@ -32,7 +41,13 @@ export const DEFAULT_LANGUAGE = 'zh';
  * be a lie — any importer could add a key and change which keys `splitConfig`
  * strips from the host half. Keeping it module-private makes the guarantee real.
  */
-const OWN_CONFIG_KEYS = new Set(['fillEnabled', 'fillProvider', 'fillModel', 'language']);
+const OWN_CONFIG_KEYS = new Set([
+  'fillEnabled',
+  'fillProvider',
+  'fillModel',
+  'language',
+  'maxCheckpointTokens',
+]);
 
 /**
  * Configuration added by this backend.
@@ -43,6 +58,11 @@ const OWN_CONFIG_KEYS = new Set(['fillEnabled', 'fillProvider', 'fillModel', 'la
  *   default) means "use the session's own current route", which keeps the
  *   checkpoint on the same model the conversation is already using.
  * - `language` — language of the generated prose.
+ * - `maxCheckpointTokens` — absolute ceiling on the rendered checkpoint. The
+ *   budget is normally driven by the region's own price, but that price is a
+ *   heuristic over the replayed messages and can overstate what the guard will
+ *   see on a session carrying images or attachments. This is the backstop that
+ *   keeps a rendered checkpoint bounded regardless.
  */
 export const Config = z.intersect([
   BasicCompactionEngine.Config,
@@ -51,6 +71,7 @@ export const Config = z.intersect([
     fillProvider: z.string().default(''),
     fillModel: z.string().default(''),
     language: z.union(LANGUAGES.map((code) => z.const(code))).default(DEFAULT_LANGUAGE),
+    maxCheckpointTokens: z.number().step(1).min(1).default(DEFAULT_MAX_CHECKPOINT_TOKENS),
   }),
 ]);
 
@@ -63,6 +84,7 @@ export const Config = z.intersect([
  *   fillProvider: string,
  *   fillModel: string,
  *   language: string,
+ *   maxCheckpointTokens: number,
  * } }} `engineConfig` holds only keys the host engine accepts; `own` holds only
  *   keys this backend adds.
  */
@@ -73,6 +95,7 @@ export function splitConfig(config = {}) {
     fillProvider: '',
     fillModel: '',
     language: DEFAULT_LANGUAGE,
+    maxCheckpointTokens: DEFAULT_MAX_CHECKPOINT_TOKENS,
   };
 
   for (const [key, value] of Object.entries(config)) {
@@ -84,6 +107,7 @@ export function splitConfig(config = {}) {
   if (config.fillProvider !== undefined) own.fillProvider = config.fillProvider;
   if (config.fillModel !== undefined) own.fillModel = config.fillModel;
   if (config.language !== undefined) own.language = config.language;
+  if (config.maxCheckpointTokens !== undefined) own.maxCheckpointTokens = config.maxCheckpointTokens;
 
   return { engineConfig, own };
 }

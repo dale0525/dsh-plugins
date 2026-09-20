@@ -395,6 +395,52 @@ test('errors — a clean wrapped result is not an error', () => {
   assert.deepEqual(extractFacts(stubRegion(own)).errors, [])
 })
 
+test('errors — an [exit code: 1] result whose only real output is a section heading is dropped', () => {
+  // Acceptance contract A8: an executor command that merely printed a
+  // decoration banner and exited nonzero is noise, not an error. The drop is
+  // keyed on the line's SHAPE, never on "it matches no error pattern" — see the
+  // two tests above, which pin that a real diagnostic and a bare stdout line
+  // must both survive.
+  const own = [
+    assistantMsg(1, [callBlock('call_heading', 'bash', { command: 'echo "===== standard ====="' })]),
+    toolResult(2, 'call_heading', '===== standard =====\n[exit code: 1]', false),
+  ]
+
+  const facts = extractFacts(stubRegion(own))
+
+  assert.deepEqual(facts.errors, [], 'section heading output with exit code 1 must be dropped as noise')
+})
+
+test('errors — non-decoration output with a nonzero exit is never dropped', () => {
+  // The counterweight to the test above. `dsh-scope` is a bare word that matches
+  // no error pattern; dropping it would require the pattern-absence rule, which
+  // also drops `ls: ... No such file or directory`. A bare word is therefore
+  // kept — the conservative direction for a backend whose whole purpose is to
+  // preserve hard facts.
+  const own = [
+    assistantMsg(1, [callBlock('call_bare', 'bash', { command: 'dsh-scope --list' })]),
+    toolResult(2, 'call_bare', 'dsh-scope\n[exit code: 1]', false),
+  ]
+
+  const facts = extractFacts(stubRegion(own))
+
+  assert.deepEqual(facts.errors, ['bash: dsh-scope'], 'a bare non-decoration line must be kept')
+})
+
+test('errors — a result consisting of nothing but [exit code: 1] is kept', () => {
+  // When the result carries no real output text at all (nothing but markers),
+  // the nonzero exit code is reportable and must not be dropped.
+  const own = [
+    assistantMsg(1, [callBlock('call_marker_only', 'bash', { command: 'exit 1' })]),
+    toolResult(2, 'call_marker_only', '[exit code: 1]', false),
+  ]
+
+  const facts = extractFacts(stubRegion(own))
+
+  assert.equal(facts.errors.length, 1, `expected one error, got ${JSON.stringify(facts.errors)}`)
+  assert.equal(facts.errors[0], 'bash: [exit code: 1]')
+})
+
 test('ordering — commands follow seq order and duplicates are kept', () => {
   const own = [
     assistantMsg(1, [callBlock('call_ord_1', 'run_code', { code: 'await tools.bash({ command: "first" })' })]),

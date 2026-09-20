@@ -125,7 +125,7 @@ export function extractFacts(region) {
         const data = event.data ?? {}
         collectFromCall(data.subCallId, data.name, data.arguments, facts, seenFiles)
         if (data.isError === true || looksLikeFailure(dispatchBlocks(data))) {
-          recordError(facts, data.name, dispatchBlocks(data))
+          recordError(facts, data.name, dispatchBlocks(data), data.isError === true)
         }
         break
       }
@@ -135,7 +135,7 @@ export function extractFacts(region) {
         const callId = event.data?.message?.source?.callId
         const name = typeof callId === 'string' ? callNameById.get(callId) : undefined
         if (result.isError || looksLikeFailure(result.content)) {
-          recordError(facts, name, result.content)
+          recordError(facts, name, result.content, result.isError)
         }
         break
       }
@@ -373,17 +373,73 @@ function matchesErrorPattern(line) {
 }
 
 /**
- * Push a `"<tool>: <first non-empty line>"` error entry, when there is a line.
+ * Push a `"<tool>: <first non-empty line>"` error entry, when there is a line
+ * and the entry is not dropped noise.
  *
  * @param {Facts} facts
  * @param {unknown} name
  * @param {unknown} content
+ * @param {boolean} [isError=false]
  */
-function recordError(facts, name, content) {
+function recordError(facts, name, content, isError = false) {
   const line = firstMeaningfulLine(content)
   if (line === '') return
+  if (isNoiseExitError(content, line, isError)) return
   const prefix = typeof name === 'string' && name !== '' ? name : UNKNOWN_TOOL_PREFIX
   facts.errors.push(`${prefix}: ${line}`)
+}
+
+/**
+ * True for a decoration line — a banner the command itself printed, not output.
+ *
+ * The noise this predicate targets is a shell probe that echoed a section
+ * heading and then exited nonzero for a reason the heading cannot express
+ * (`grep` finding nothing, `ls` missing a path). A heading is recognizable by
+ * shape alone: a run of three or more `=`/`#`/`*`/`_`/`~`/`+`/`-`, or an
+ * ATX markdown heading.
+ *
+ * Shape, deliberately, rather than "the line matches no error pattern": a real
+ * diagnostic such as `ls: /x: No such file or directory` matches neither
+ * pattern either, so pattern-absence would silently discard it. Both pinned
+ * tests in `tests/extract.test.js` (the wrapped `ls` diagnostic and the
+ * `some stdout` result) exist precisely to catch that — they are not
+ * distinguishable from a bare word like `dsh-scope` by any text rule, so the
+ * conservative direction is to keep them and only drop lines that *look* like
+ * decoration.
+ *
+ * @param {string} line
+ * @returns {boolean}
+ */
+function isDecorationLine(line) {
+  const trimmed = line.trim()
+  if (trimmed === '') return false
+  if (/^#{1,6}\s+\S/.test(trimmed)) return true
+  return /[=#*_~+-]{3,}/.test(trimmed)
+}
+
+/**
+ * True when an error entry should be dropped as executor noise (contract A8).
+ *
+ * A command that printed only a decoration banner and exited nonzero is
+ * recorded as an error because `looksLikeFailure` reads the exit-code marker.
+ * Such an entry is noise unless the host explicitly marked it failed, it was
+ * killed by signal / timed out / denied by sandbox, its first line carries an
+ * error signal, its first line is the marker itself (nothing but markers), or
+ * its first line is not decoration.
+ *
+ * @param {unknown} content
+ * @param {string} line
+ * @param {boolean} isError
+ * @returns {boolean}
+ */
+function isNoiseExitError(content, line, isError) {
+  if (isError) return false
+  if (isWrapperMarker(line)) return false
+  if (matchesErrorPattern(line)) return false
+  if (!isDecorationLine(line)) return false
+  const text = joinedText(content)
+  if (/\[(killed by signal: .+|timed out after \d+ms|sandbox: .+)\]/.test(text)) return false
+  return /\[exit code: (?!0\])\d+\]/.test(text)
 }
 
 /**

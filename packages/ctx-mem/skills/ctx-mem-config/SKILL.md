@@ -1,6 +1,6 @@
 ---
 name: ctx-mem-config
-description: "ctx-mem 上下文交接压缩后端（@logictan/dsh-ctx-mem）的使用与配置指南。凡涉及上下文压缩行为、/compact、压缩调参（阈值/保留尾巴/填空开关/填空路由/产出语言）、或要改挂载与配置位置时先读本指南：ctx-mem 替换官方 compaction-basic，程序逐字抽取硬事实（路径/命令/报错）+ 模型只补四节因果，产出含 ## Extracted Facts 骨架与 ## Why This Approach 等四节；可调键 thresholdRatio / retainRatio / retainTokens / fillEnabled / fillProvider / fillModel / language。触发词：ctx-mem、压缩、compaction、上下文超限、上下文交接、摘要、骨架、硬事实、thresholdRatio、retainTokens、fillEnabled。"
+description: "ctx-mem 上下文交接压缩后端（@logictan/dsh-ctx-mem）的使用与配置指南。凡涉及上下文压缩行为、/compact、压缩调参（阈值/保留尾巴/填空开关/填空路由/产出语言）、或要改挂载与配置位置时先读本指南：ctx-mem 替换官方 compaction-basic，程序逐字抽取硬事实（路径/命令/报错）+ 模型只补四节因果，产出含 ## Extracted Facts 骨架与 ## Why This Approach 等四节；可调键 thresholdRatio / retainRatio / retainTokens / fillEnabled / fillProvider / fillModel / language / maxCheckpointTokens。触发词：ctx-mem、压缩、compaction、上下文超限、上下文交接、摘要、骨架、硬事实、thresholdRatio、retainTokens、fillEnabled。"
 ---
 
 # ctx-mem 使用指南
@@ -58,6 +58,7 @@ ctx-mem 自有键：
 | `fillEnabled` | `true` | 是否执行填空调用。`false` 时**零模型调用**，只产出骨架 |
 | `fillProvider` / `fillModel` | 空 | 填空所用路由。两者都空 = 用会话当前路由；只填一个不生效 |
 | `language` | `zh` | 四节因果的语言，取值 `zh` / `en` |
+| `maxCheckpointTokens` | `24000` | 检查点的绝对 token 上限（骨架预算取它与分母推导值的较小者） |
 
 继承官方 `compaction-basic` 且**对 ctx-mem 仍然生效**的策略键：
 

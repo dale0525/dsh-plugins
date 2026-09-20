@@ -35,7 +35,7 @@ const BUNDLED_SKILL_RANK = 600;
 
 /** Routing description; must stay identical to the SKILL.md frontmatter. */
 export const SKILL_DESCRIPTION =
-  'ctx-mem 上下文交接压缩后端（@logictan/dsh-ctx-mem）的使用与配置指南。凡涉及上下文压缩行为、/compact、压缩调参（阈值/保留尾巴/填空开关/填空路由/产出语言）、或要改挂载与配置位置时先读本指南：ctx-mem 替换官方 compaction-basic，程序逐字抽取硬事实（路径/命令/报错）+ 模型只补四节因果，产出含 ## Extracted Facts 骨架与 ## Why This Approach 等四节；可调键 thresholdRatio / retainRatio / retainTokens / fillEnabled / fillProvider / fillModel / language。触发词：ctx-mem、压缩、compaction、上下文超限、上下文交接、摘要、骨架、硬事实、thresholdRatio、retainTokens、fillEnabled。';
+  'ctx-mem 上下文交接压缩后端（@logictan/dsh-ctx-mem）的使用与配置指南。凡涉及上下文压缩行为、/compact、压缩调参（阈值/保留尾巴/填空开关/填空路由/产出语言）、或要改挂载与配置位置时先读本指南：ctx-mem 替换官方 compaction-basic，程序逐字抽取硬事实（路径/命令/报错）+ 模型只补四节因果，产出含 ## Extracted Facts 骨架与 ## Why This Approach 等四节；可调键 thresholdRatio / retainRatio / retainTokens / fillEnabled / fillProvider / fillModel / language / maxCheckpointTokens。触发词：ctx-mem、压缩、compaction、上下文超限、上下文交接、摘要、骨架、硬事实、thresholdRatio、retainTokens、fillEnabled。';
 
 const SKILL_CANDIDATE = {
   name: SKILL_PROVIDER_NAME,
