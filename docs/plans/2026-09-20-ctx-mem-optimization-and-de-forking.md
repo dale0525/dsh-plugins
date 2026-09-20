@@ -585,7 +585,7 @@ skeletonBudget = denominator − causalPrice − FRAME_RESERVE
 断言 `compaction/end` 无 `error`，且 `compaction/summary` 的
 `shadowedTokenCount > price(summary)`，余量 ≥ reserve。
 
-**回归**：`pnpm --filter @logictan/dsh-ctx-mem test` 全绿（当前 142 测试）；
+**回归**：`pnpm --filter @logictan/dsh-ctx-mem test` 全绿（当前 143 测试）；
 `node scripts/aggregate.mjs --check` 输出 `check OK`。
 
 ## 7. 风险
@@ -824,7 +824,7 @@ const firstIdx = systemHead(session, surfaceNodes[0]) === void 0 ? 0 : 1;
 | A13 因果 0→8000 字符 | 命令 429→385，单调不增 **PASS** |
 | A14 超大分母 | 帧价 23,829 ≤ 24,000 + 102 **PASS** |
 | A15 忠实链 12 轮 | 不触地板、最低保留率 92.0%（20 轮 87.4%）**PASS** |
-| 单元测试 | **142/142**（S1 前为 106） |
+| 单元测试 | **143/143**（S1 前为 106） |
 
 退化链的失败机制值得记下：**旧渲染的帧价单调增长，而分母在震荡**（低至 24,542）。
 两者必然相交——这正是生产上 27 次 guard 失败（超出 59–2,287 token）的成因，
@@ -858,7 +858,7 @@ const firstIdx = systemHead(session, surfaceNodes[0]) === void 0 ? 0 : 1;
 - **A17**（真实 Web GUI 里跑一次压缩、断言 `compaction/end` 无 error）—— **未验收**，
   且在当前 profile 下**不可能验收**：GUI 里跑的仍是旧 ctx-mem 0.1.0。
 
-**S1 的核心结论不受此影响**：预算驱动渲染的正确性由归档重放与 142 条单元测试独立证明
+**S1 的核心结论不受此影响**：预算驱动渲染的正确性由归档重放与 143 条单元测试独立证明
 （§10.4 实测总账），不依赖是否已发布。但「guard 在生产上不再失败」这句话，
 要等新版发布并进入用户 profile 之后才谈得上验证。
 
