@@ -67,10 +67,18 @@ function copyList(value) {
 
 /**
  * Defensively copy the whole facts shape, defaulting every list to `[]`.
+ *
+ * Exported because `src/render.js` must normalize its input before pricing or
+ * capping it, and a second copy of this rule would be a drift hazard: the two
+ * sit on the same data path (the renderer's parts are handed straight back to
+ * {@link buildSkeleton}), so a change to one copy's coercion semantics that
+ * missed the other would silently render a differently-shaped fact set than the
+ * one that was priced.
+ *
  * @param {Facts | undefined | null} facts
  * @returns {Facts}
  */
-function copyFacts(facts) {
+export function copyFacts(facts) {
   const source = facts && typeof facts === 'object' ? facts : {};
   return {
     intents: copyList(source.intents),

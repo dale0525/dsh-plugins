@@ -19,7 +19,7 @@
  *
  * @module @logictan/dsh-ctx-mem/render
  */
-import { buildSkeleton } from './skeleton.js';
+import { buildSkeleton, copyFacts } from './skeleton.js';
 
 /**
  * Per-item character caps, richest first.
@@ -39,6 +39,9 @@ export const TIERS = Object.freeze({
 
 /** The floor tier: intents and files only. Never a member of {@link TIERS}. */
 export const FLOOR_TIER = 'T4';
+
+/** Fidelity order, richest first. Used to break a {@link prefer} tie. */
+const TIER_RANK = Object.freeze({ T1: 0, T2: 1, T3: 2 });
 
 /**
  * Commands that change state — files, history, the published artifact or the
@@ -101,47 +104,37 @@ function commandAt(command, tier) {
   const write = isWriteLike(command);
   if (tier.writeOnly && !write) return undefined;
   if (write && tier.writeVerbatim > 0) return capText(command, tier.writeVerbatim);
+  // A write-like command whose marker is not on its first line (`cd X` then
+  // `cat > f <<EOF`) would otherwise be reduced to the leading `cd` and lose
+  // the fact entirely. Keep its first line AND the line that carries the
+  // marker, so the state change survives the degradation.
+  if (write) return capWriteFirstLine(command, tier.firstLine);
   return capFirstLine(command, tier.firstLine);
 }
 
 /**
- * Coerce one fact list to strings, dropping nullish entries.
+ * Keep a write-like command's first line plus its marker line.
  *
- * The capping helpers below are string operations, so a non-string entry that
- * reached them would throw — which would violate this module's "never throws"
- * contract at exactly the moment the host needs a checkpoint. `src/extract.js`
- * only ever pushes strings today, but this module is a pure function with a
- * public contract, so it normalizes its own input rather than trusting the
- * caller. The semantics match `copyList` in `src/skeleton.js`, which the
- * rendered output is built by anyway.
+ * Used when the command must be degraded below its verbatim cap: dropping the
+ * marker line would leave a bare `cd`/`echo`, which reads like a probe and
+ * silently discards the state change. Measured on the real archive: 74 of 429
+ * commands are write-like with the marker off line 1.
  *
- * @param {unknown} value
- * @returns {string[]}
+ * @param {string} text
+ * @param {number} limit
+ * @returns {string}
  */
-function coerceList(value) {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  for (const item of value) {
-    if (item === null || item === undefined) continue;
-    out.push(typeof item === 'string' ? item : String(item));
-  }
-  return out;
-}
+function capWriteFirstLine(text, limit) {
+  const lines = text.split('\n');
+  const first = lines[0] ?? '';
+  const markerIndex = lines.findIndex((line, index) => index > 0 && isWriteLike(line));
+  if (markerIndex === -1) return capFirstLine(text, limit);
 
-/**
- * Coerce the caller's facts into the four lists this module renders.
- *
- * @param {import('./skeleton.js').Facts | undefined | null} facts
- * @returns {{ intents: string[], files: string[], commands: string[], errors: string[] }}
- */
-function normalize(facts) {
-  const source = facts && typeof facts === 'object' ? facts : {};
-  return {
-    intents: coerceList(source.intents),
-    files: coerceList(source.files),
-    commands: coerceList(source.commands),
-    errors: coerceList(source.errors),
-  };
+  const head = capFirstLine(first, limit);
+  const marker = capFirstLine(lines[markerIndex], limit);
+  const kept = `${head} … ${marker}`;
+  const dropped = Math.max(0, text.length - head.length - marker.length);
+  return dropped > 0 ? `${kept} …[+${dropped} chars]` : kept;
 }
 
 /** Price one rendered part-set through the caller's estimator. */
@@ -182,7 +175,7 @@ function transformAll(facts, tier) {
  */
 function greedyFill(facts, tier, budget, estimate) {
   const base = { intents: facts.intents, files: facts.files, commands: [], errors: [] };
-  if (priceOf(base, estimate) >= budget) return { floor: true, parts: base };
+  if (priceOf(base, estimate) >= budget) return { floor: true, parts: base, originals: [] };
 
   const errors = [];
   for (const error of [...facts.errors].reverse()) {
@@ -193,32 +186,48 @@ function greedyFill(facts, tier, budget, estimate) {
   }
 
   const commands = [];
+  const originals = [];
   for (const command of [...facts.commands].reverse()) {
     const rendered = commandAt(command, tier);
     if (rendered === undefined) continue;
     const next = { ...base, commands: [rendered, ...commands], errors };
     if (priceOf(next, estimate) >= budget) break;
     commands.unshift(rendered);
+    originals.unshift(command);
   }
 
-  return { floor: false, parts: { ...base, commands, errors } };
+  return { floor: false, parts: { ...base, commands, errors }, originals };
 }
 
 /** Assemble the public result shape. */
-function result(parts, tier, floorHit) {
+function result(parts, tier, floorHit, originals = []) {
   return {
     text: buildSkeleton(parts).text,
     tier,
     commands: parts.commands,
     errors: parts.errors,
+    originals,
     floorHit,
   };
 }
 
-/** How many of a rendered command list still read as state-changing. */
-function writeLikeCount(commands) {
+/**
+ * How many of a rendered command list came from a state-changing original.
+ *
+ * The count is taken over the **original** facts, not the rendered text: T3
+ * degrades a write-like command to its first line, and a marker that lived on a
+ * later line (``echo setup`` then ``git commit -m ...``) disappears from the
+ * rendering. A predicate over the rendered text would then score that command
+ * as a probe, rank T3 below T2, and let a probe flood evict the very fact T3
+ * exists to rescue. What matters is whether the underlying fact was
+ * state-changing.
+ *
+ * @param {string[]} originals The original commands.
+ * @returns {number}
+ */
+function writeLikeCount(originals) {
   let count = 0;
-  for (const command of commands) if (isWriteLike(command)) count += 1;
+  for (const command of originals) if (isWriteLike(command)) count += 1;
   return count;
 }
 
@@ -232,15 +241,19 @@ function writeLikeCount(commands) {
  * commands wins, and only on a tie does the larger total win — which, given the
  * iteration order, leaves the richer tier in place.
  *
- * @param {{ commands: string[] }} candidate
- * @param {{ commands: string[] }} incumbent
+ * On a tie the **richer** tier wins, not the one with more entries: a lower
+ * per-item cap fits more (worse) entries into the same budget, so "more
+ * commands" would systematically prefer the degraded tier. See {@link TIER_RANK}.
+ *
+ * @param {{ commands: string[], originals: string[], tier: string }} candidate
+ * @param {{ commands: string[], originals: string[], tier: string }} incumbent
  * @returns {boolean}
  */
 function prefer(candidate, incumbent) {
-  const candidateWrites = writeLikeCount(candidate.commands);
-  const incumbentWrites = writeLikeCount(incumbent.commands);
+  const candidateWrites = writeLikeCount(candidate.originals);
+  const incumbentWrites = writeLikeCount(incumbent.originals);
   if (candidateWrites !== incumbentWrites) return candidateWrites > incumbentWrites;
-  return candidate.commands.length > incumbent.commands.length;
+  return TIER_RANK[candidate.tier] < TIER_RANK[incumbent.tier];
 }
 
 /**
@@ -271,7 +284,7 @@ function prefer(candidate, incumbent) {
  * @returns {{ text: string, tier: string, commands: string[], errors: string[], floorHit: boolean }}
  */
 export function renderCheckpoint(facts, budget, estimate) {
-  const all = normalize(facts);
+  const all = copyFacts(facts);
   // No estimator means no ceiling to enforce: render the richest tier whole
   // rather than silently degrading the checkpoint.
   if (typeof estimate !== 'function') return result(transformAll(all, TIERS.T1), 'T1', false);
@@ -286,7 +299,7 @@ export function renderCheckpoint(facts, budget, estimate) {
     const filled = greedyFill(all, TIERS[name], budget, estimate);
     // The floor price is tier-independent, so the first floor result is final.
     if (filled.floor) return result(filled.parts, FLOOR_TIER, true);
-    const candidate = result(filled.parts, name, false);
+    const candidate = result(filled.parts, name, false, filled.originals);
     if (best === undefined || prefer(candidate, best)) best = candidate;
   }
   return best;

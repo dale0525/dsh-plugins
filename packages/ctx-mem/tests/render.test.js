@@ -184,6 +184,45 @@ test('T3 reaches past a probe flood to keep the older write-like command', () =>
   assert.ok(commands.some((c) => c.startsWith('git commit')), 'the older write-like command must survive the probe flood');
 })
 
+test('T3 keeps a write-like command whose marker is off the first line, so it still reads as write-like', () => {
+  // Discriminating fixture: the state-changing marker (`git commit`) sits on
+  // the SECOND line, behind a plain `echo setup`. Pre-fix, T3 degraded a
+  // write-like command to its first line only, so the rendering was
+  // `echo setup …` — `isWriteLike` over that text said "probe", the 200 newer
+  // probes outranked it, and the renderer settled on T2 with the `git commit`
+  // fact gone. Keeping the first line AND the marker line is what makes the
+  // surviving command still test as write-like, which is what T3 selects on.
+  const cmd = `echo setup\ngit commit -m "${'w'.repeat(4000)}"`;
+  const facts = { intents: [], files: [], commands: [cmd, ...Array.from({ length: 200 }, (_, i) => `probe ${i} ${'p'.repeat(200)}`)], errors: [] };
+
+  for (const budget of [2000, 3000, 5000]) {
+    const { tier, commands } = renderCheckpoint(facts, budget, estimate);
+    assert.equal(tier, 'T3', `budget ${budget}: T3 must rescue the write-like command`);
+    assert.equal(commands.length, 1, `budget ${budget}: only the write-like command may survive`);
+    assert.ok(isWriteLike(commands[0]), `budget ${budget}: the rendered command must still read as write-like, got ${JSON.stringify(commands[0].slice(0, 60))}`);
+    assert.ok(commands[0].startsWith('echo setup'), `budget ${budget}: the first line must be kept`);
+    assert.ok(commands[0].includes('git commit'), `budget ${budget}: the marker line must be kept`);
+    assert.match(commands[0], /…\[\+\d+ chars\]$/, `budget ${budget}: the dropped characters must be marked`);
+  }
+})
+
+test('a tie in retained write-like commands is broken by the richer tier, not the larger count', () => {
+  // Discriminating fixture: one write-like command behind 100 probes, sized so
+  // both T1 and T2 retain exactly that one write-like command and the tie must
+  // be settled some other way. Pre-fix the tie-break was
+  // `candidate.commands.length > incumbent.commands.length`, and T2's smaller
+  // per-item cap packs MORE (worse) probes into the same budget — 51 entries
+  // beat T1's 33 — so the degraded tier won and the renderer returned T2. Only
+  // ranking the tiers by fidelity lets the richer T1 rendering win the tie.
+  const commands = [...Array.from({ length: 100 }, (_, i) => `grep -n needle${i} ${'p'.repeat(300)}`), `git commit -m "${'0'.repeat(3)}${'w'.repeat(500)}"`];
+  const facts = { intents: [], files: [], commands, errors: [] };
+
+  const { tier, commands: kept } = renderCheckpoint(facts, 2000, estimate);
+
+  assert.equal(tier, 'T1', 'the richer tier must win the tie, not the tier with more entries');
+  assert.ok(kept.some((c) => c.startsWith('git commit')), 'the write-like command must still be retained');
+})
+
 test('a probe flood never evicts a state-changing command at T1', () => {
   // Same shape, but the budget is large enough that T1 can hold the write-like
   // command after dropping probes — it must prefer that over an empty list.
