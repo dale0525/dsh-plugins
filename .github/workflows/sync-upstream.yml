@@ -53,6 +53,9 @@ jobs:
           - id: imagegen
             pkg: '@logictan/dsh-imagegen'
             test: 'pnpm --filter @logictan/dsh-imagegen typecheck'
+          - id: ctx-mem
+            pkg: '@logictan/dsh-ctx-mem'
+            test: 'pnpm --filter @logictan/dsh-ctx-mem test'
     # 按目标区分并发组：不同目标互不阻塞，同一目标不会并发两次
     concurrency:
       group: sync-upstream-${{ matrix.id }}
