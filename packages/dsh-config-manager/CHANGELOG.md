@@ -9,6 +9,62 @@ This file records release highlights of dsh-config-manager (bilingual: 中文 + 
 > **Release workflow**: on tag push, CI extracts the current version's section as the release notes highlights;
 > the build fails fast if the section is missing, so you cannot forget to update it.
 
+## [0.1.62] - 2026-09-21
+
+### 💥 破坏性变更：移除加密层（导出/导入侧收口）
+
+0.1.60 只删掉了**同步路径**的加密语义；本版把「删加密层」做彻底，
+清完导出/导入侧的**全部**残留。**备份恒为明文，本插件不再具备任何解密能力。**
+
+**被移除的公开 API**（导入本包 `.` 或 `./core` 的下游会编译失败）：
+
+| 移除项 | 原位置 |
+|---|---|
+| `EncryptionProvider` 类型 | `src/core/types.ts` → 已从 `./core` 再导出中删除 |
+| `ExportOptions.encryption` | 导出选项不再接受加密提供者 |
+| `ImportPort.decryptArchive()` | 导入端口不再有「解锁整体加密备份」能力 |
+| `ExportReport.security.encrypted` | 该字段恒 `false`，无消费方 |
+| `export.encryptionRequired` | 导出不再要求「含秘密必须有加密提供者」 |
+| `src/security/encryption.ts` | 整个文件删除（含 `createEncryptionProvider` / `encryptArchive` / `isArchiveBlob` 等） |
+
+**行为变更**：
+
+- `manifest.security.encrypted` 恒 `false`、`security.encryption` 恒 `null`；不再产生 `security/secrets.enc` 条目。
+- `manifest.security.containsSecrets` 改为按**文件类分区的实际内容**扫描后如实标注
+  （此前在无加密提供者时恒 `false`，与内容可能不符）。
+- `ExportOptions.includeSecrets` 保留，但**语义已变**：结构化分区的秘密值**始终**被
+  `SecretScanner` 剥离，该开关当前的实际作用只剩「导出后是否刷新本机 vault 镜像」。
+  同步通道以 `includeSecrets: true` 导出真实值（私有通道明文自用的产品选择，见包 `AGENTS.md`）。
+
+**刻意保留（不是加密能力）**：识别并**拒绝**上游历史加密产物的守卫——
+`analyzer` 在 `manifest.security.encrypted === true` 且宿主未注入 `decryptedCredentials`
+时抛 `import.encryptedPasswordRequired`；`sync-engine` 对加密快照一律拒绝。
+这两条服务于「不让历史加密备份被静默当明文处理」，与「本插件能解密」是两回事。
+
+### 📄 对外契约同步（`docs/spec/`）
+
+- `bundle-format-v1.md`：§4 由「两个加密层」改写为「**加密层（本实现已移除；历史产物仍可被识别）**」，
+  字节布局与错误分类保留**仅供第三方识别上游历史产物**；§5.1 从「默认不含秘密」改写为「秘密如何进入 bundle」。
+- `known-gaps.md`：G-08 由「按产品决策移除强度校验」改写为「随加密层整体移除」；G-10 行号订正；**新增 G-14**。
+- `bundle-manifest.schema.json` / `headless-consumption.md`：去掉已不存在的 `encryption` 字段说明。
+- `tests/conformance/README.md`：删除「加密包」语料与 `ENC-01` / `ENC-02` 用例（对应测试已不存在）。
+
+### ⚠️ 本次登记的实现缺口（G-14，如实登记，未修复）
+
+`DCA1` 外层容器探测**未实现**。规格 §4.6 / §9 步骤 2 此前声称「本实现只做识别不做解密」，
+实际 `src/` 全库检索 `DCA1` **零命中**——`DCA1` 容器会被直接交给 ZIP 解析器，得到
+`ZipSafetyError: 不是合法的 ZIP 文件（缺少中央目录结束记录）`，而非「需先解密」。
+规格已改为**不再声称已识别**，并标明第三方**应**实现该探测。是否补实现属独立决策。
+
+### 验证
+
+- `npm run typecheck`：**0 error**
+- `TMPDIR=/private/tmp/realhome/ npm test`：**1273 / 1273 pass**
+- `node scripts/aggregate.mjs --check`：**check OK**
+- 被移除符号零命中：`grep -rn "createEncryptionProvider|encryptArchive|isArchiveBlob|EncryptionProvider" src/ tests/` → **零命中**
+- `sync-policy.json` 重算：`owned=83 / deleted=151 / added=5`，`src/security/encryption.ts` 在 `deleted`
+  （上游同步第 3 步会重删，不再复活）
+
 ## [0.1.61] - 2026-09-20
 
 ### 🐞 修复：同步只搬 home 层 patch，profile 层配置整块丢失
