@@ -34,7 +34,7 @@ npm test
 合成凭据（`sk-conformance-fixture-value`）。
 **不含任何真实凭据、真实个人路径或 secret。**
 
-> **加密语料已移除**：本 fork 删除了加密层（`src/security/encryption.ts`），不再产生 `security/secrets.enc` 或 `DCA1` 容器，因此没有「加密包」语料，也没有 `ENC-01` / `ENC-02` 用例。`baseline` 的 `security.encrypted` 恒为 `false`、`security.encryption` 恒为 `null`（`RT-01` 钉住）。
+> **加密语料已移除**：本实现删除了加密层（`src/security/encryption.ts`），不再产生 `security/secrets.enc` 或 `DCA1` 容器，因此没有「加密包」语料，也没有 `ENC-01` / `ENC-02` 用例。`baseline` 的 `security.encrypted` 恒为 `false`、`security.encryption` 恒为 `null`（`RT-01` 钉住）。
 
 ### 为什么必须重算 checksums
 

@@ -1,6 +1,6 @@
 # dsh-config-manager 去 fork 化（改为自制插件）
 
-> 状态：待实施。目标 = 让本包成为**自制插件**：不再从上游 `xiajiajun516/dsh-config-manager` fork，不再有定时上游同步。
+> 状态：**已实施**（切片 1–3 落地，见提交 `2ed966c`；切片 4 盲审记录见 §4）。目标 = 让本包成为**自制插件**：不再从上游 `xiajiajun516/dsh-config-manager` fork，不再有定时上游同步。
 
 ## 1. 判据（为什么可以停同步）
 
