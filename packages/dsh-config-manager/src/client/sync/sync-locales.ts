@@ -331,7 +331,6 @@ export const en: Record<keyof typeof zh, string> = {
   'mode.defaultCount': 'Will sync {n} recommended section(s)',
   'mode.sectionRecommended': 'Recommended',
   'mode.persistHint': 'The mode and section selection are saved locally: both auto sync and manual push use this configuration (persists across restarts).',
-  // Encryption & secret export (manual push only; auto sync always pushes plain snapshots and skips encrypted ones)
   'autosync.title': 'Auto Sync',
   'autosync.description': 'When enabled, DSH keeps config in sync in the background: uploads locally-changed config automatically, pulls and overwrites only when it detects a new remote snapshot; the timer is just a fallback poll and no-ops when nothing changed. Local writes happen only when there are no conflicts or manual-decision items.',
   'autosync.enable': 'Enable auto sync',

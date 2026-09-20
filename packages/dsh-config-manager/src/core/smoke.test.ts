@@ -827,15 +827,15 @@ test('兼容性评分规则', () => {
   assert.equal(computeCompatibility({ sourceDsh: '0.1.0-rc.6', targetDsh: '0.1.0-rc.6', sourcePlatform: 'win32', targetPlatform: 'win32', schemaVersion: 999, missingSections: [] }), 'unsupported');
 });
 
-test('包含秘密导出：无加密提供者时拒绝（绝不明文泄密）', async () => {
+test('包含秘密导出：本插件无加密层，明文导出照常进行且备份恒标记未加密', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-cm-sec-'));
   try {
     const src = makeContext('win32', 'C:\\Users\\alice');
     const exporter = new Exporter({ ctx: src, adapters: makeAdapters(), now: () => new Date() });
-    await assert.rejects(
-      () => exporter.export({ includeSecrets: true, outPath: path.join(tmp, 'x.zip') }),
-      /EncryptionProvider/,
-    );
+    const { manifest, report } = await exporter.export({ includeSecrets: true, outPath: path.join(tmp, 'x.zip') });
+    assert.equal(manifest.security.encrypted, false, '备份恒为明文');
+    assert.equal(manifest.security.encryption, null, '不存在加密参数');
+    assert.equal(report.security.secretsExcluded, false, 'includeSecrets=true 时不走 vault 留存路径');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

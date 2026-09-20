@@ -278,7 +278,7 @@ test('E-07 文件级 vault：includeSecrets=false 时敏感文件镜像到本机
       .map((n) => Buffer.from(archive.readEntry(n)).toString('utf8'))
       .join('\n');
     assert.ok(!allText.includes(secret), '秘密值不得写入导出');
-    assert.ok(!archive.has('security/secrets.enc'), '无加密提供者时不生成 secrets.enc');
+    assert.ok(!archive.has('security/secrets.enc'), '本插件不再生成 secrets.enc（无加密层）');
   });
 });
 

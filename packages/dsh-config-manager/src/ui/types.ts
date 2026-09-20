@@ -175,14 +175,6 @@ export interface RollbackView {
 export interface ImportPort {
   analyzeImport(zipPath: string): Promise<ImportAnalysis>;
   createImportPlan(zipPath: string, decisions: ImportDecisions): Promise<ImportPlan>;
-  /**
-   * 解锁整体加密备份（只读，零写入）：用备份密码解密上传的加密容器，得到明文 ZIP
-   * 写入受控临时目录并返回新的 zipPath，供 analyze/plan/execute 引用。
-   * 顺带返回解密覆盖的凭据 ref 名（非值）——导出时容器密码与内部 secrets.enc
-   * 密码同源，解锁即完成凭据解密验证，无需第二次密码校验。
-   * 密码仅内存，绝不落盘/落日志；解密后的明文 ZIP 亦为临时文件，导入结束后清理。
-   */
-  decryptArchive(zipPath: string, password: string): Promise<{ zipPath: string; refs: string[] }>;
   executeImportPlan(
     zipPath: string,
     plan: ImportPlan,
@@ -192,8 +184,6 @@ export interface ImportPort {
       secretInputs?: Record<string, string>;
       /** 显式回滚策略：true=任一项失败整体回滚（场景 E）；false=单项失败继续（§34.17） */
       rollbackOnError: boolean;
-      /** 加密备份的解密密码（仅内存；core 拒绝加密备份无密码执行） */
-      decryptPassword?: string;
     },
   ): Promise<ImportResult>;
 }

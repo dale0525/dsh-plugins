@@ -23,7 +23,6 @@ npm test
 | 语料 | 构造方式 | 用途 |
 |---|---|---|
 | `baseline` | `Exporter.export({ includeSecrets:false, only:[...7 分区] })` | 明文 v1 往返无损的基线 |
-| `baseline + encryption` | 同上 + `createEncryptionProvider(password)` + `includeSecrets:true` | 加密包往返（正确/错误密码） |
 | `unknown-sections` | baseline → 在 `manifest.sections` 追加 `keybindings`/`workflows` + 把它们的文件放进 ZIP → **重算 checksums** | 未知分区的前向兼容行为 |
 | `unknown-fields` | baseline → 追加未知顶层字段与 `exporter.*` 未知子字段 | 未知字段的保留语义 |
 | `schema-v2` / `schema-v0` | baseline → 改 `manifest.schemaVersion` → **重算 checksums** | 版本协商（过新 / 过旧） |
@@ -31,9 +30,11 @@ npm test
 | `no-checksums` | baseline → **剥掉** `integrity/checksums.json`（其余条目逐字节保留） | 校验表缺失时的语义（`INT-02`） |
 | `empty-checksums` | baseline → 把 `integrity/checksums.json` 覆盖为 `{}` | 校验表为空时的语义（`INT-03`） |
 
-语料**小而可读**，且只含合成数据：合成 home（`C:\Users\fixture-src`）、合成密码
-（`conformance-password-123`）、合成凭据（`sk-conformance-fixture-value`）。
+语料**小而可读**，且只含合成数据：合成 home（`C:\Users\fixture-src`）、
+合成凭据（`sk-conformance-fixture-value`）。
 **不含任何真实凭据、真实个人路径或 secret。**
+
+> **加密语料已移除**：本 fork 删除了加密层（`src/security/encryption.ts`），不再产生 `security/secrets.enc` 或 `DCA1` 容器，因此没有「加密包」语料，也没有 `ENC-01` / `ENC-02` 用例。`baseline` 的 `security.encrypted` 恒为 `false`、`security.encryption` 恒为 `null`（`RT-01` 钉住）。
 
 ### 为什么必须重算 checksums
 
@@ -151,17 +152,6 @@ import { rebuildBundle } from './tests/conformance/corpus.ts';
 | 1 | 解析后**保留**在内存结果里 | ✅ |
 | 2 | 不报错、不告警、不参与任何逻辑 | ✅ `valid=true`、`warnings=[]`、兼容性仍 `excellent` |
 
-**加密包（`baseline + encryption`）**
-
-| # | 规格要求 | 本仓库实测 |
-|---|---|---|
-| 1 | `security.encrypted === true`，`security.encryption` 记录 `aes-256-gcm` / `scrypt` / salt / iv / authTag | ✅ |
-| 2 | 密码与明文凭据**绝不出现在**除 `security/secrets.enc` 外的任何条目 | ✅ |
-| 3 | 正确密码解出的明文 == 导出时的 `.credentials.yaml` 原文 | ✅ |
-| 4 | `encrypted === true` 且未提供解密结果 → **拒绝执行**（不得静默降级） | ✅ |
-| 5 | 错误密码 → `SecurityError(BAD_PASSWORD)`（不是「损坏」、不是静默成功） | ✅ |
-| 6 | 解密失败路径**零写入**（无半写入状态） | ✅ |
-
 **版本协商（`schema-v2` / `schema-v0`）**
 
 | # | 规格要求 | 本仓库实测 |
@@ -195,11 +185,18 @@ import { rebuildBundle } from './tests/conformance/corpus.ts';
 2. **本仓库 exporter → 你的 importer**：用 `corpus.ts` 造 baseline 与三份畸形语料，
    跑你的 importer，逐条对照 §2.2。
 3. **字节级契约**：ZIP 条目路径（`config/settings.json`、`custom/skills/<rel>`、
-   `agents/presets/<rel>`、`security/credentials.json`、`security/secrets.enc`、
-   `integrity/checksums.json`、`manifest.json`）、
-   `secrets.enc` 头部布局（`magic "DSC1"` + version + salt16 + iv12 + authTag16 + ciphertext）
-   见规格 §1–§4。`CORPUS-01` 断言了「只改 manifest 时其余条目逐字节不变」，
+   `agents/presets/<rel>`、`security/credentials.json`、
+   `integrity/checksums.json`、`manifest.json`）见规格 §1–§4。
+   `CORPUS-01` 断言了「只改 manifest 时其余条目逐字节不变」，
    可作为你实现「无损改写」时的对照。
+
+   > 本实现**不产生** `security/secrets.enc`（无加密层）。规格 §4 保留的
+   > `DSC1` / `DCA1` 字节布局与错误分类，**供第三方识别上游历史产物**——见规格 §4 的
+   > 「本实现已移除」说明。
+   >
+   > **本实现自身不做 `DCA1` 探测**（规格 §10 G-14）：遇到 `DCA1` 容器会得到
+   > `ZipSafetyError: 不是合法的 ZIP 文件（缺少中央目录结束记录）`，而非「需先解密」。`DSC1` / `DCA1` 的字节布局描述是**规格侧的
+   > 第三方指引**，不是本实现的能力声明。
 
 ---
 
@@ -213,8 +210,6 @@ import { rebuildBundle } from './tests/conformance/corpus.ts';
 | `FC-02` | 未知顶层字段 / 已知对象内未知子字段 → 保留且无副作用 |
 | `FC-03` | 分区数据 `version > 1` → 跳过该分区并告警、不阻断；`version` 损坏仍硬失败（**G-05 已修复**） |
 | `FC-04` | 语义回归：`missingSections` 只统计「已知分区但文件缺失」，与「未知分区」互不串味 |
-| `ENC-01` | 加密往返：正确密码、密码与明文不落盘、无解密结果拒绝执行、凭据按值恢复 |
-| `ENC-02` | 加密往返：错误密码 `BAD_PASSWORD` + 解密失败路径零写入 |
 | `VER-01` | `schemaVersion=2` → `isTooNew` 硬失败 + 可操作错误 + 零写入 |
 | `VER-02` | `schemaVersion=0` → 低于最低支持硬失败 |
 | `VER-03` | **G-06/G-07 已修复**：`loadBundle` **方法体内**受 `needsMigration` 守卫地调用 `runSchemaMigration`（B2 加固：解析方法体边界 + 断言调用点落在守卫的受控块内，而非只 grep 文件级符号）+ 每个已应用步骤产生 `import.migrated` 告警 + 迁移结果重新校验 |
@@ -286,7 +281,7 @@ import { rebuildBundle } from './tests/conformance/corpus.ts';
 
 ## 4. 维护须知
 
-- 改 `src/core/analyzer.ts` 的未知分区/版本/加密行为，或改
+- 改 `src/core/analyzer.ts` 的未知分区/版本行为，或改
   `src/core/exporter.ts` 的 ZIP 布局，**必须**重跑本套件。
 - 断言红灯时，**不要**为了变绿而放宽断言——先确认是修好了还是改坏了：
   - 修好了 → 更新断言 + 更新规格缺口表 + **在 `CHANGELOG.md` 记一条**（修复行为变更属于发布亮点）；

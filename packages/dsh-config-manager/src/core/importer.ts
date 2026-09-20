@@ -36,7 +36,7 @@ export interface ExecuteOptions {
   confirm: boolean;
   /** 用户补录的秘密值（仅内存） */
   secretInputs?: Record<string, string>;
-  /** 加密备份解密结果（仅内存；解密必须经 m4 encryption provider） */
+  /** 旧版加密备份的解密结果（仅内存；宿主解密后注入，本插件不再产生加密备份） */
   decryptedCredentials?: Map<string, string>;
   /** 任一项失败立即整体回滚（默认 false：单项失败如实记录并继续其余项） */
   rollbackOnError?: boolean;

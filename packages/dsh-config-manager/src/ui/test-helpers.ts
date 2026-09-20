@@ -33,7 +33,7 @@ export function makeExportReport(overrides: Partial<ExportReport> = {}): ExportR
       { section: 'plugins', counts: { plugins: 8 } },
     ],
     excluded: ['sessions', 'pluginFiles'],
-    security: { secretsExcluded: true, containsSecrets: false, encrypted: false, redactedHits: 2 },
+    security: { secretsExcluded: true, containsSecrets: false, redactedHits: 2 },
     file: { name: 'dsh-config-2026-08-14.zip', sizeBytes: 20480 },
     warnings: [],
     ...overrides,
@@ -149,7 +149,7 @@ export class MockImportPort implements ImportPort {
   result: ImportResult;
   analyzeCalls = 0;
   planCalls: ImportDecisions[] = [];
-  executeCalls: { confirm: boolean; secretInputs?: Record<string, string>; rollbackOnError: boolean; decryptPassword?: string; plan?: ImportPlan }[] = [];
+  executeCalls: { confirm: boolean; secretInputs?: Record<string, string>; rollbackOnError: boolean; plan?: ImportPlan }[] = [];
 
   constructor(opts: {
     analysis?: ImportAnalysis;
@@ -169,14 +169,10 @@ export class MockImportPort implements ImportPort {
     this.planCalls.push(decisions);
     return this.plan;
   }
-  async decryptArchive(zipPath: string): Promise<{ zipPath: string; refs: string[] }> {
-    // 测试用：把传入路径视为已解锁的明文 ZIP（不真正解密），无内部凭据
-    return { zipPath, refs: [] };
-  }
   async executeImportPlan(
     _zip: string,
     plan: ImportPlan,
-    opts: { confirm: boolean; secretInputs?: Record<string, string>; rollbackOnError: boolean; decryptPassword?: string },
+    opts: { confirm: boolean; secretInputs?: Record<string, string>; rollbackOnError: boolean },
   ): Promise<ImportResult> {
     this.executeCalls.push({ ...opts, plan });
     return this.result;

@@ -18,9 +18,7 @@ export type { MsgFunc, MsgParams } from './msg-types.ts';
 
 export const zh = {
   // ---------- 导出 ----------
-  'export.encryptionRequired': '导出包含秘密需要注入 EncryptionProvider（m4 实现），拒绝明文导出秘密',
   'export.sectionFailed': '分区 {adapter} 导出失败: {reason}',
-  'export.credentialsReadFailed': '读取凭据文件失败，跳过秘密导出: {reason}',
   'export.vaultRefreshed': '凭据明文未进入备份，已镜像到本机 vault（{count} 个文件，恢复时可回填）',
   'export.vaultRefreshSkipped': 'vault 镜像跳过 {rel}: {reason}',
   'export.vaultRefreshFailed': 'vault 镜像刷新失败（不影响导出）: {reason}',
@@ -53,9 +51,7 @@ export const zh = {
   'import.secretMissingDesc': '凭据 {ref} 需要补录',
   'import.secretNotProvided': '凭据未提供，需补录',
   'import.notConfirmed': '导入未确认：必须显式 confirm 后才允许修改任何数据',
-  'import.encryptedPasswordRequired': '该备份已加密，必须提供解密密码才能导入（拒绝无密码导入）',
-  'import.encryptedPasswordWrong': '解密密码错误，请重试',
-  'import.notEncryptedContainer': '该文件不是加密备份容器，无法解锁',
+  'import.encryptedPasswordRequired': '该备份含上游历史加密凭据（security.encrypted=true），本插件无解密能力：须由宿主解密后注入凭据（decryptedCredentials）才能导入',
   'import.userSkipped': '用户跳过（导入中点击「跳过当前插件」）',
   'import.userSkippedDetail': '插件 {name} 已由用户跳过，未安装',
   'import.vaultRestored': '凭据文件 {rel} 已从本机 vault 回填',
@@ -327,9 +323,7 @@ export const zh = {
 
 export const en: Record<keyof typeof zh, string> = {
   // ---------- export ----------
-  'export.encryptionRequired': 'Encrypted export requires an EncryptionProvider (m4); refusing to export secrets in plaintext',
   'export.sectionFailed': 'Section {adapter} export failed: {reason}',
-  'export.credentialsReadFailed': 'Failed to read the credentials file; secrets export skipped: {reason}',
   'export.vaultRefreshed': 'Credential plaintext did not enter the backup; mirrored to the local vault ({count} file(s), available for restore backfill)',
   'export.vaultRefreshSkipped': 'Vault mirror skipped {rel}: {reason}',
   'export.vaultRefreshFailed': 'Vault mirror refresh failed (export unaffected): {reason}',
@@ -362,9 +356,7 @@ export const en: Record<keyof typeof zh, string> = {
   'import.secretMissingDesc': 'Credential {ref} needs to be re-entered',
   'import.secretNotProvided': 'Credential not provided; requires re-entry',
   'import.notConfirmed': 'Import not confirmed: explicit confirm is required before any data is modified',
-  'import.encryptedPasswordRequired': 'This backup is encrypted; the decryption password is required to import it (refusing password-less import)',
-  'import.encryptedPasswordWrong': 'Wrong decryption password, please try again',
-  'import.notEncryptedContainer': 'This file is not an encrypted backup container and cannot be unlocked',
+  'import.encryptedPasswordRequired': 'This backup carries upstream-encrypted credentials (security.encrypted=true) and this plugin cannot decrypt them: a host must decrypt and inject them (decryptedCredentials) before import',
   'import.userSkipped': 'Skipped by user (clicked "Skip current plugin" during import)',
   'import.userSkippedDetail': 'Plugin {name} was skipped by the user and not installed',
   'import.vaultRestored': 'Credential file {rel} backfilled from the local vault',

@@ -33,9 +33,9 @@ export interface SyncSnapshotMeta {
 /** 加密快照的 sections 载荷：整个明文 sections 对象序列化后整体加密（AES-256-GCM）。 */
 export interface EncryptedSections {
   encrypted: {
-    /** 加密参数（salt/iv/authTag base64；与 security/encryption.ts 的 EncryptionInfo 对齐） */
+    /** 加密参数（salt/iv/authTag base64）；本插件已不生成，仅供读取历史快照 */
     info: EncryptionInfo;
-    /** base64：带 DSC1 头的密文（明文 = 序列化的 sections Record） */
+    /** base64 密文（明文 = 序列化的 sections Record） */
     data: string;
   };
 }
@@ -87,7 +87,7 @@ export function computeSnapshotMeta(snapshot: SyncSnapshot): SyncSnapshotMeta {
 export function sectionsEqual(remote: SyncSnapshotMeta, local: SyncSnapshotMeta): boolean {
   const r = remote.sections;
   const l = local.sections;
-  if (Object.keys(l).length === 0) return false; // 本地为空（加密快照）→ 无法比较
+  if (Object.keys(l).length === 0) return false; // 本地无分区（空快照）→ 无法比较
   if (Object.keys(r).length !== Object.keys(l).length) return false;
   for (const key of Object.keys(r)) {
     if (r[key as SectionId] !== l[key as SectionId]) return false;

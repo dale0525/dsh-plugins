@@ -2,7 +2,7 @@
  * run-store 单测：模块级单例 store + sessionStorage 恢复（同步面板专属）。
  *
  * 覆盖：
- *  - 敏感字段（token/webdavPassword/encryptPassword 等）绝不写入 sessionStorage（白名单剔除）；
+ *  - 敏感字段（token/webdavPassword 等）绝不写入 sessionStorage（白名单剔除）；
  *  - 内存瞬态（busy/savingConfig）不写入 sessionStorage，刷新后复位；
  *  - 非敏感状态序列化/反序列化往返（新实例 + 同存储 = 模拟刷新）；
  *  - 损坏/版本不符数据回退默认并清除脏键；

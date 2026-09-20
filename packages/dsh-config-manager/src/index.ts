@@ -20,8 +20,8 @@
  *    (isLoopbackRequest); LAN-exposed deployments never serve these endpoints;
  *  - uploads/exported ZIPs are staged under $DSH_HOME/dsh-config-manager/{tmp,exports}
  *    and every `path`/`zipPath` reference is confined to those roots;
- *  - the encryption password is in-memory only: used to derive the AES-256-GCM
- *    key for secrets.enc, never written to any file, manifest, or log;
+ *  - there is no encryption layer: every backup is plaintext, and secret values are
+ *    stripped by the secret scanner before they reach any file, manifest, or log;
  *  - the import execute endpoint refuses to run without `confirm: true`
  *    (core ImportNotConfirmedError safety valve).
  *
@@ -95,7 +95,6 @@ import { ImportNotConfirmedError, ImportUserSkippedError } from './core/types.ts
 import { createAdapters } from './adapters/index.ts'
 import { HOME_PATCH_FILE, PROFILE_PATCH_FILE } from './core/patch-layers.ts'
 import { createLocalPluginPackHook } from './core/local-plugin-host.ts'
-import { createEncryptionProvider, decryptCredentials, decryptArchive, SecurityError, encryptArchive, isArchiveBlob, verifyEncryptedBlob } from './security/index.ts'
 import { createHardenedZipParser } from './security/zip-security.ts'
 import { atomicCopyFile, atomicWriteFile } from './utils/atomic-write.ts'
 import { EnvironmentLockManager, runWithMutationLock, EnvironmentLockUnavailableError, type MutationLockContext } from './utils/env-lock.ts'
@@ -140,11 +139,10 @@ import { createConfiguredSecretScanner } from './security/secret-scanner.ts'
 import type { ConfiguredSecretPatterns } from './security/secret-scanner.ts'
 import type { SecretScanner } from './core/types.ts'
 import { sha256Hex } from './utils/hashing.ts'
-import { MANIFEST_FILE, parseManifest } from './schema/manifest.ts'
 import { isFileSection, SECTION_IDS } from './schema/config.ts'
 import { stringifyJsonSafe } from './utils/json.ts'
-import type { Manifest, SectionId, WorkspaceRecord } from './schema/types.ts'
-import { parseZip, zipToBuffer } from './utils/zip.ts'
+import type { SectionId, WorkspaceRecord } from './schema/types.ts'
+import { zipToBuffer } from './utils/zip.ts'
 import { isSameOrChild, normalizePath } from './utils/paths.ts'
 import { createLogger, type Logger } from './utils/logger.ts'
 
@@ -917,48 +915,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
   } finally {
     if (timer !== undefined) clearTimeout(timer)
   }
-}
-
-/** Decrypt an encrypted backup's credentials (in-memory only; undefined when not applicable). */
-async function tryDecryptCredentials(
-  zipPath: string,
-  password: string | undefined,
-): Promise<Map<string, string> | undefined> {
-  if (password === undefined || password === '') return undefined
-  const raw = await fs.readFile(zipPath)
-  const archive = parseZip(raw)
-  if (!archive.has(MANIFEST_FILE)) return undefined
-  let manifest: Manifest
-  try {
-    manifest = parseManifest(archive.readEntryText(MANIFEST_FILE))
-  } catch {
-    return undefined
-  }
-  if (!manifest.security.encrypted || manifest.security.encryption === null) return undefined
-  if (!archive.has('security/secrets.enc')) return undefined
-  const blob = archive.readEntry('security/secrets.enc')
-  const plaintext = await decryptCredentials(blob, manifest.security.encryption, password)
-  let parsed: unknown
-  try {
-    parsed = yaml.load(plaintext)
-  } catch {
-    return undefined
-  }
-  const map = new Map<string, string>()
-  if (parsed !== null && typeof parsed === 'object') {
-    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof v === 'string' && v !== '') map.set(k, v)
-    }
-  }
-  return map
-}
-
-/** 解密错误 → 用户可读文本：BAD_PASSWORD 只报「密码错误」（不泄内部细节），其余原文 */
-function decryptErrorText(error: unknown, msg: MsgFunc): string {
-  if (error instanceof SecurityError && error.code === 'BAD_PASSWORD') {
-    return msg('import.encryptedPasswordWrong')
-  }
-  return error instanceof Error ? error.message : String(error)
 }
 
 interface RoutesDeps {
@@ -1840,13 +1796,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
     // 零写入；loopback fence 必备。
     // ------------------------------------------------------------ download
     // -------------------------------------------------------------- upload
-    // ------------------------------------------------------ decrypt-archive
-    // 整体加密备份容器的解锁（只读，零写入到任何配置）：用备份密码解密上传的加密容器，
-    // 得到明文 ZIP 写入受控临时目录并返回新 zipPath，供 analyze/plan/execute 引用。
-    // 导出时容器密码与内部 secrets.enc 密码同源（同一 password 派生两层加密），
-    // 因此顺带在明文 ZIP 上解出内部凭据覆盖清单（refs，非值）一并返回——
-    // 导入全程只需输入这一次密码，无需第二个密码校验页面。
-    // 密码仅内存随请求体传入，绝不落盘/落日志；解出的明文 ZIP 亦为临时文件，导入结束后清理。
     // ------------------------------------------------------------- analyze
     // ---------------------------------------------------------------- plan
     // ------------------------------------------------------------ progress

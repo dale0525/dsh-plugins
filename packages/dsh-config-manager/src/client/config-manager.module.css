@@ -2284,7 +2284,7 @@ button.statCard:focus-visible {
   padding: 1px 0;
 }
 
-/* 选项行（加密/导出密钥复选内联） */
+/* 选项行（导出密钥复选内联） */
 .optionsRow {
   display: flex;
   align-items: center;

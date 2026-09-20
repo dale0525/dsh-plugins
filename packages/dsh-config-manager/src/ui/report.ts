@@ -30,8 +30,7 @@ export function renderExportReport(report: ExportReport, t: UiT = zhUiT): string
   }
   lines.push(t('report.security'));
   lines.push(`  ✓ ${t('report.apiKeysExcluded')} ${report.security.secretsExcluded ? t('report.yes') : t('report.no')}`);
-  lines.push(`  ✓ ${t('report.containsSecrets')} ${report.security.containsSecrets ? t('report.yesEncrypted') : t('report.no')}`);
-  lines.push(`  ✓ ${t('report.encrypted')} ${report.security.encrypted ? t('report.yes') : t('report.no')}`);
+  lines.push(`  ✓ ${t('report.containsSecrets')} ${report.security.containsSecrets ? t('report.yes') : t('report.no')}`);
   if (report.security.redactedHits > 0) lines.push(`  ⚠ ${t('report.redacted', { count: String(report.security.redactedHits) })}`);
   lines.push('');
   lines.push(`${t('report.file')} ${report.file.name} (${formatBytes(report.file.sizeBytes)})`);

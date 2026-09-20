@@ -8,7 +8,7 @@
  *   dialogMask + dialogCard dialogWide + dialogHeaderRow + dialogClose +
  *   dialogBodyScroll，零新增样式）；
  * - **通道配置弹窗**：通道子 tab（GitHub（git）/ WebDAV）切换，两个通道的
- *   配置表单、自动同步、同步模式、是否加密、远端快照**各自独立**；关闭弹窗
+ *   配置表单、自动同步、同步模式、远端快照**各自独立**；关闭弹窗
  *   = 放弃本次操作（GitHub 登录流程进行中则一并取消，§8.12 约定）；
  * - GitHub 子 tab：repoUrl（必填）+ 认证 token（可选，写入 DSH credentials 的提示）
  *   + **GitHub OAuth device flow 登录**（登录块跟随 git 通道配置放在弹窗内：
@@ -24,7 +24,7 @@
  * 全部渲染模型来自 ./sync-view.ts 纯函数（node 单测覆盖），组件只做装配；
  * 状态组件内自持（useState），同时经 toSyncStoreSlice() 镜像进模块级 runStore：
  * 模块级单例保证「切 tab 不丢」，sessionStorage 白名单保证「刷新恢复」；
- * token/webdav 密码/加密与解密密码仅内存（state），成功后清空（已写入 DSH
+ * token/webdav 密码仅内存（state），成功后清空（已写入 DSH
  * credentials），持久化白名单硬性剔除（含 byChannel 内密码类字段），刷新后
  * 清空、需要时重新输入。
  */
@@ -89,7 +89,7 @@ interface SyncUiState {
   webdavUsername: string
   /** 仅内存：成功后清空（已写入 DSH credentials），绝不持久化/回显 */
   webdavPassword: string
-  /** git/webdav 各自独立的设置状态（自动同步 / 同步模式 / 加密 / 快照） */
+  /** git/webdav 各自独立的设置状态（自动同步 / 同步模式 / 快照） */
   byChannel: {
     git: ChannelSyncState
     webdav: ChannelSyncState
@@ -174,7 +174,7 @@ const initial: SyncUiState = {
 
 /**
  * 从 runStore 恢复上次的同步 UI 状态（切 tab 回 / 刷新后挂载）。
- * 敏感字段（token/webdav 密码/加密与解密密码）只在内存切片里保留：切 tab 保留；
+ * 敏感字段（token/webdav 密码）只在内存切片里保留：切 tab 保留；
  * 刷新后已被持久化白名单清空（applyPersisted 强制归零）→ 需要时重新输入。
  * busy/savingConfig 为瞬态：切 tab 由模块级单例保留（切回仍显示进行中）；
  * 刷新后白名单剔除 → 回复空闲。
@@ -240,7 +240,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   })
   /** 更新当前激活通道的 byChannel 状态。 */
   const patchChannel = (p: Partial<ChannelSyncState>): void => patchChannelState(state.channel, p)
-  /** 当前激活通道的设置状态（自动同步/模式/加密/快照）。 */
+  /** 当前激活通道的设置状态（自动同步/模式/快照）。 */
   const chState: ChannelSyncState = state.byChannel[state.channel]
   /** GitHub 流程态（不进 store 切片；commit 的镜像写幂等无害）。 */
   const patchGithub = (p: Partial<GithubUiState>): void => commit({

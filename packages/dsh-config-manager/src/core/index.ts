@@ -47,7 +47,7 @@ export type {
   ExportOptions, ExportSection, ValidationResult, HostContext,
   SettingsFacade, CredentialsFacade, PluginsFacade, WorkspaceFacade,
   PatchFileFacade, FileSystemFacade, NamespaceInfo, PluginInfo,
-  ConfigAdapter, Portability, SecretScanner, SensitiveHit, EncryptionProvider,
+  ConfigAdapter, Portability, SecretScanner, SensitiveHit,
   PlanItem, PlanItemKind, ItemResolution, GlobalConflictStrategy,
   ImportAnalysis, ImportDecisions, ImportPlan, ImportResult, ExecutedItem,
   ImportContext, SnapshotTarget, SnapshotEntry, Snapshot, SnapshotStore,

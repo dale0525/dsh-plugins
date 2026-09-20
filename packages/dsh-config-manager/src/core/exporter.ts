@@ -3,11 +3,9 @@
  *   adapter 收集各分区 → Secret 过滤 → manifest → checksum → ZIP。
  *
  * 安全不变量：
- *  - Secret 值默认永不进入导出数据（结构化分区逐一过 SecretScanner）；
- *  - includeSecrets=true 必须注入 EncryptionProvider（m4 实现），否则拒绝导出；
- *  - 注入 EncryptionProvider 时备份标记为加密（encrypted=true）：includeSecrets=false
- *    时 secrets.enc 加密空内容占位，备份仍需要密码导入，但不含任何凭据值；
- *  - 加密密码/秘密值绝不写入 manifest 与日志。
+ *  - Secret 值默认永不进入导出数据（结构化分区逐一过 SecretScanner 剥离值）；
+ *  - 备份恒为明文（encrypted=false / encryption=null）：本插件不再有加密层；
+ *  - 秘密值绝不写入 manifest 与日志。
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -21,7 +19,7 @@ import { msgOf } from './messages.ts';
 import type { MsgFunc } from './messages.ts';
 import type { Manifest, SectionId } from '../schema/types.ts';
 import type {
-  ConfigAdapter, EncryptionProvider, ExportOptions, ExportReport,
+  ConfigAdapter, ExportOptions, ExportReport,
   ExportSection, HostContext, SecretScanner, SensitiveHit,
 } from './types.ts';
 
@@ -39,8 +37,6 @@ export interface ExporterOptions {
   adapters: ConfigAdapter[];
   /** Secret 扫描器；缺省用字段名黑名单剥离（m4 可注入强化版） */
   scanner?: SecretScanner;
-  /** 加密提供者（m4 用 node:crypto 实现）；includeSecrets 时必填；提供时备份标记 encrypted=true */
-  encryption?: EncryptionProvider | null;
   /** 插件自身版本（manifest.exporter.version） */
   exporterVersion?: string;
   now?: () => Date;
@@ -176,7 +172,6 @@ export class Exporter {
   private readonly ctx: HostContext;
   private readonly adapters: ConfigAdapter[];
   private readonly scanner: SecretScanner;
-  private readonly encryption: EncryptionProvider | null;
   private readonly exporterVersion: string;
   private readonly now: () => Date;
   private readonly msg: MsgFunc;
@@ -187,7 +182,6 @@ export class Exporter {
     this.ctx = opts.ctx;
     this.adapters = opts.adapters;
     this.scanner = opts.scanner ?? defaultSecretScanner();
-    this.encryption = opts.encryption ?? null;
     this.exporterVersion = opts.exporterVersion ?? '0.1.0';
     this.now = opts.now ?? (() => new Date());
     this.msg = opts.msg ?? msgOf(opts.ctx);
@@ -201,9 +195,6 @@ export class Exporter {
    */
   async export(options: ExportOptions): Promise<{ zipPath: string; manifest: Manifest; report: ExportReport }> {
     const { includeSecrets, only } = options;
-    if (includeSecrets && !this.encryption) {
-      throw new Error(this.msg('export.encryptionRequired'));
-    }
 
     // 1. 选定分区（only 过滤 + 默认包含）
     const selected = this.adapters
@@ -214,6 +205,8 @@ export class Exporter {
     const sections: ExportSection[] = [];
     const warnings: string[] = [];
     const redactedHits: SensitiveHit[] = [];
+    /** 文件类分区实扫到的命中数：只有它能让 containsSecrets 为真（结构化分区已被剥离） */
+    let fileSectionSecretHits = 0;
     const included: ExportReport['included'] = [];
     const excluded: SectionId[] = this.adapters.filter((a) => !selected.includes(a.id)).map((a) => a.id);
 
@@ -249,6 +242,7 @@ export class Exporter {
         if (fileHits.length > 0) {
           // redactedHits 是**报告统计**通道（非告警通道）：仍计入全量命中（含同一文件的多行/多形态命中）。
           redactedHits.push(...fileHits);
+          fileSectionSecretHits += fileHits.length;
           // 告警按**文件**去重（G-09/H1）：同一路径只告警一次。
           // 修复前按 hit 计数，同一行同时命中「字段名」与「值形状」会产出两条同路径告警，
           // 使少数文件就吃满上限，导致含真实明文凭据的其它文件被静默淹没（实测 redactedHits=8 而 5 条告警全属一个文件）。
@@ -278,12 +272,13 @@ export class Exporter {
       warnings.push(...section.warnings);
     }
 
-    // 4. 组装 ZIP 条目（JSON 分区 + 文件类分区 + secrets.enc + checksums + manifest）
+    // 4. 组装 ZIP 条目（JSON 分区 + 文件类分区 + checksums + manifest）
     const entries: { name: string; data: Uint8Array }[] = [];
     const sectionFlags = buildSectionFlags(sections);
-    let containsSecrets = false;
-    let encrypted = false;
-    let encryption: Manifest['security']['encryption'] = null;
+    // 备份恒为明文：本插件不再有加密层。containsSecrets 只认「文件类分区实扫到的命中」——
+    // 结构化分区的敏感值已被 scanner 剥离，不构成「含秘密」；文件类分区只报告不改写，
+    // 命中即代表归档里确有明文，必须如实标注。
+    const containsSecrets = fileSectionSecretHits > 0;
 
     for (const section of sections) {
       if (isFileSection(section.sectionId)) {
@@ -302,33 +297,8 @@ export class Exporter {
       });
     }
 
-    // secrets.enc：有加密提供者即生成。includeSecrets=true 时加密真实的凭据原文；
-    // 只勾选加密（不导出密钥）时加密空内容占位，备份仍标记 encrypted（导入需密码），
-    // 但绝不把凭据值放进去（containsSecrets 保持 false；安全不变量不破）。
-    if (this.encryption) {
-      const credentialsFile = path.join(this.ctx.homeDir, '.credentials.yaml');
-      let plaintext: string;
-      if (includeSecrets) {
-        try {
-          const raw = await this.ctx.fs.readFile(credentialsFile);
-          plaintext = Buffer.from(raw).toString('utf8');
-        } catch (err) {
-          warnings.push(this.msg('export.credentialsReadFailed', { reason: err instanceof Error ? err.message : String(err) }));
-          plaintext = '';
-        }
-      } else {
-        plaintext = '';
-      }
-      const result = await this.encryption.encrypt(plaintext);
-      entries.push({ name: 'security/secrets.enc', data: result.blob });
-      encryption = result.info;
-      containsSecrets = includeSecrets && plaintext !== '';
-      encrypted = true;
-    }
-
     // 4b. 文件级 vault（includeSecrets=false：敏感文件明文不进归档 → 镜像到本机 vault）。
-    //     尽力而为：任何失败仅记警告，不中断导出。includeSecrets=true 时秘密已加密进归档，
-    //     无需镜像（vault 只服务于「明文不进备份」的本机留存场景）。
+    //     尽力而为：任何失败仅记警告，不中断导出。
     let vaultRefreshed = 0;
     if (!includeSecrets) {
       try {
@@ -357,8 +327,8 @@ export class Exporter {
       arch: this.ctx.arch,
       sections: sectionFlags,
       containsSecrets,
-      encrypted,
-      encryption,
+      encrypted: false,
+      encryption: null,
       exportedAt: this.now().toISOString(),
     });
     entries.push({ name: MANIFEST_FILE, data: Buffer.from(stringifyJsonSafe(manifest, { space: 2 }), 'utf8') });
@@ -375,7 +345,6 @@ export class Exporter {
       sections: Object.keys(sectionFlags).filter((k) => sectionFlags[k as SectionId]),
       redactedFields: redactedHits.length,
       containsSecrets,
-      encrypted,
       vaultRefreshed,
     });
 
@@ -385,7 +354,6 @@ export class Exporter {
       security: {
         secretsExcluded: !includeSecrets,
         containsSecrets,
-        encrypted,
         redactedHits: redactedHits.length,
         vaultRefreshed,
       },

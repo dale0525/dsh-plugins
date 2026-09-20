@@ -5,7 +5,7 @@
  *
  * 安全不变量：永不导出值（hasValue 恒 false）；导入生成 MissingSecret 清单，
  * 用户补录值经 ctx.secretInputs / decryptedCredentials（仅内存）→ credentials.set()。
- * .credentials.yaml 文件字节交由 m4 加密层处理，本 adapter 不触碰。
+ * .credentials.yaml 文件字节由 Exporter 的文件级 vault 处理，本 adapter 不触碰。
  */
 import type { CredentialStatus, CredentialsSection } from '../schema/types.ts';
 import { msgOf, zhMsg } from '../core/messages.ts';

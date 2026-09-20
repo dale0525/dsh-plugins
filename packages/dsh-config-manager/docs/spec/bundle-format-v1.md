@@ -12,6 +12,7 @@
 > - 本版修订（S-1…S-4 + G-10）：补齐独立审计确认缺失的 4 处关键信息（ZIP 读侧强制/容忍边界、文件类条目名归一化规则、已知分区内未知字段的真实命运、`redactedHits` 语义）并显式澄清 `sections.secrets`；**同时修正了旧版 §1.2「含反斜杠的条目名一律拒绝」这一与实测不符的表述**（实测：仅拒绝以 `\` 开头者，中段 `\` 被接受，见 §3.3.2 与 §10 G-11）
 > - **M2 一致性修订（前次）**：让 §10 缺口表、§8.3、§11 未验证清单与「附：一句话结论」与**当前工作区实际状态**一致——原结论段把 §10 已标 ✅ 的 G-01/G-02/G-03/G-06 仍列为「未修复缺口」，§8.3 以现在时断言「导入路径并未调用 `migrateToCurrent`」，§11 把已读码确认的密码强度校验函数调用点仍列为「未验证」，§10 G-09 行标「⏳ 未复核（推测仍成立）」而实测已修复。同时**逐条用 Node 读当前源码行内容**校正了漂移的 `file:line` 取证（G-09 / G-10 / G-04 / G-06 / §11 scanner 与 password 行号、§8.3 的 `isSupported` 行号等），并新增 G-12 / G-13 两条「本轮审计新发现、正在修复」的登记。
 > - **M3 产品决策修订（本次）**：**加密备份不再做任何密码强度校验**（产品负责人决策，2026-09-13）。§4.6 的密码强度校验行与「未验证」块、§10 G-08 行、§11 移除块、§10 末尾的「已修复缺口」清单与「附：一句话结论」全部改写为**最终状态**：加密只要求密码**非空**，任何非空密码都可用。原先为实现该闸门而引入的符号（强度校验函数、断言函数、导出路由密码守卫）与消息键 `export.passwordTooWeak` **已从源码整体移除**——本文件不再把它们当作现状描述，仅在下述 G-08 条目中作为**已移除**的历史记录出现。**对第三方实现者的直接要求：不要假设本格式对加密密码有任何强度要求。**
+> - **M4 加密层移除修订（本次，fork 内）**：本 fork **整体删除了加密层**（`src/security/encryption.ts`、`EncryptionProvider`、`DCA1` 容器、`security/secrets.enc` 条目、`export.encryptionRequired` 等），导出与同步**恒为明文**。§4 已由「本实现的两个加密层」改写为「**加密层（本实现已移除；历史产物仍可被识别）**」：保留字节布局与错误分类**仅供第三方识别上游历史产物**，并明确本实现**不提供解密能力**。§0.1 / §1.1 / §2.2 / §2.5 / §3 分区表 / §5.1 / §5.3.1b / §8 / §9 / §10 G-08 / §10 G-10 / §11 的对应断言已同步改写；**本实现不再产生 `secrets.enc`，`security.encrypted` 恒 `false`、`security.encryption` 恒 `null`**。§4.7 的「加密备份未注入解密结果即拒绝执行」守卫**刻意保留**（`src/core/analyzer.ts:533-535`）。
 > - **行号时效口径**：本文件的 `file:line` 是**写作时**逐条读源码核对的快照；源码仍在校验期间被并行修改，行号可能再次漂移。检索时请以**符号名 / 消息 key**（如 `runSchemaMigration`、`import.checksumsMissing`、`isFileSection`）为主锚点，行号仅作快速定位。
 > - 编码校验：本文件写入后以 Node 逐字节读取校验，确认不含零宽字符（正则 `[\u200b\u200c\u200d\u2060\ufeff]`）且为合法 UTF-8。PowerShell 控制台显示的中文 mojibake 属显示层假象，不作为编码判据。
 
@@ -27,8 +28,7 @@
 | `manifest.json` 的字段契约 | `src/schema/manifest.ts:27-44`、`src/schema/manifest.ts:65-123` |
 | 13 个分区的落盘形态与 section version | `src/schema/config.ts:20-39`、`src/schema/config.ts:60-130` |
 | `integrity/checksums.json` 的格式与校验语义 | `src/utils/hashing.ts:18-52`、`src/core/analyzer.ts:160-205` |
-| `security/secrets.enc` 的二进制布局与加密参数 | `src/security/encryption.ts:43-110` |
-| 整体加密容器 `DCA1` 的字节布局 | `src/security/encryption.ts:35-41`、`src/security/encryption.ts:203-232` |
+| 历史密文条目 / 整体加密容器的字节布局（**本实现已不产生**，见 §4） | §4.2（识别用布局；上游实现已从本 fork 删除） |
 | 版本协商与拒绝行为 | `src/schema/versions.ts`、`src/core/analyzer.ts:208-222` |
 
 **不属于本规格**（第三方实现不必兼容，但需要知道它们存在，避免误认为同一格式）：
@@ -43,7 +43,7 @@
 
 ### 0.2 本规格的取证方法（可复现）
 
-除读源码外，本文件的关键行为结论由**实际运行**得出：构造标准 bundle → 注入畸形结构（未知分区 / 未知字段 / 分区 version≠1 / 缺失分区文件 / 多余 ZIP 条目 / 加密备份）→ 跑 `Importer.analyzeImport` / `createImportPlan` / `executeImportPlan` → 记录真实返回。§7 的每一条结论都对应一次这样的运行。
+除读源码外，本文件的关键行为结论由**实际运行**得出：构造标准 bundle → 注入畸形结构（未知分区 / 未知字段 / 分区 version≠1 / 缺失分区文件 / 多余 ZIP 条目）→ 跑 `Importer.analyzeImport` / `createImportPlan` / `executeImportPlan` → 记录真实返回。§7 的每一条结论都对应一次这样的运行。
 
 本版（S-1…S-4 补全）额外做了一批**字节级**运行验证，方法与产物如下：
 
@@ -76,7 +76,6 @@ bundle 是一个普通 ZIP。**顶层是扁平条目，不写显式目录条目*
 | `custom/prompts.json` | JSON | `src/schema/config.ts:26` |
 | `workspaces/workspaces.json` | JSON | `src/schema/config.ts:27` |
 | `security/credentials.json` | JSON | `src/schema/config.ts:28` |
-| `security/secrets.enc` | 二进制（非 JSON） | `src/core/exporter.ts:323` |
 | `custom/skills/**` | 真实文件（递归） | `src/schema/config.ts:33` |
 | `agents/presets/**` | 真实文件（递归） | `src/schema/config.ts:34` |
 | `custom/agent-instructions/**` | 真实文件 | `src/schema/config.ts:35` |
@@ -84,7 +83,7 @@ bundle 是一个普通 ZIP。**顶层是扁平条目，不写显式目录条目*
 | `sessions/**` | 真实文件（递归） | `src/schema/config.ts:37` |
 | `self/**` | 真实文件 | `src/schema/config.ts:38` |
 
-真实产物的条目集合示例（来自 §0.2 的运行结果，未加密、默认分区）：
+真实产物的条目集合示例（来自 §0.2 的运行结果，默认分区）：
 
 ```
 config/settings.json
@@ -99,7 +98,7 @@ integrity/checksums.json
 manifest.json
 ```
 
-带密码导出时多一条 `security/secrets.enc`。
+**这就是完整的条目集合**：本实现已无加密层，不存在 `security/secrets.enc`，也不会产出 `DCA1` 容器（§4）。
 
 ### 1.2 文件命名规则（第三方 exporter 必须遵守，否则本实现会拒收）
 
@@ -324,8 +323,8 @@ crc32(空) = 0
 | `exportedAt` | `string` | 必需 | 导出时间，ISO-8601 UTC | 必须是字符串且 `Date.parse` 非 NaN | `src/schema/manifest.ts:93-95` |
 | `sections` | `Record<SectionId, boolean>` | 必需 | 分区开关表，见 §2.5 | 必须是对象；每个**值**必须是布尔 | `src/schema/manifest.ts:97-109` |
 | `security.containsSecrets` | `boolean` | 必需 | bundle 是否携带真实凭据明文 | 必须是布尔 | `src/schema/manifest.ts:115` |
-| `security.encrypted` | `boolean` | 必需 | 是否需要密码才能导入 | 必须是布尔 | `src/schema/manifest.ts:116` |
-| `security.encryption` | `EncryptionInfo \| null` | 必需（可为 `null`） | 加密参数元数据，见 §4 | 必须是对象或 `null` | `src/schema/manifest.ts:117-120` |
+| `security.encrypted` | `boolean` | 必需 | 是否需要密码才能导入。**本实现恒写 `false`** | 必须是布尔 | `src/schema/manifest.ts:116` |
+| `security.encryption` | `EncryptionInfo \| null` | 必需（可为 `null`） | 加密参数元数据，见 §4。**本实现恒写 `null`** | 必须是对象或 `null` | `src/schema/manifest.ts:117-120` |
 
 ### 2.3 未知字段的处理（manifest 层）
 
@@ -352,7 +351,7 @@ win32 | darwin | linux | freebsd | openbsd | aix | sunos | android | cygwin | ha
 - `sections` 恒包含全部 **15 个键**，缺一不可：`settings, ui, providers, plugins, mcp, prompts, skills, agentPresets, agentInstructions, workspaces, pluginFiles, credentialsStatus, secrets, sessions, self`。
 - 这 15 个键要按**两种性质**分开读，否则极易误读为「只写 14 个键」：
   - **14 个真实数据分区 id**：`settings, ui, providers, plugins, mcp, prompts, skills, agentPresets, agentInstructions, workspaces, pluginFiles, credentialsStatus, sessions, self`——每个都对应一个 adapter / ZIP 目录，可被置 `true` 或 `false`；
-  - **1 个状态位 `secrets`**：**不是数据分区**，全仓库没有它的 adapter（见 §3.2），因此它在 `sections` 里**恒为 `false`**（`src/core/exporter.ts:404`）。它出现在表里只为「键集合恒全量」这一条不变量，**不代表 bundle 含凭据**——是否含凭据由 `security.containsSecrets` / `security.encrypted` 承载（见 §4）。
+  - **1 个状态位 `secrets`**：**不是数据分区**，全仓库没有它的 adapter（见 §3.2），因此它在 `sections` 里**恒为 `false`**（`src/core/exporter.ts:372`）。它出现在表里只为「键集合恒全量」这一条不变量，**不代表 bundle 含凭据**——是否含凭据由 `security.containsSecrets` / `security.encrypted` 承载（见 §4）。
 - **所以第三方 exporter 应当写满 15 个键**（14 个数据分区 + `secrets: false`）：本实现自己的导出端**永远**写满。需要留意校验强度——`validateManifest` 对 `sections` 只检查「值必须是布尔」与「键是否已知（未知键仅 warning）」（`src/schema/manifest.ts:97-104`），**并不强制 15 个键齐全**；但缺键会让接收端把该分区当作「未声明」，因此不建议依赖这种宽松。**取证**：§0.2 运行产物中 `manifest.sections` 的键集合与 `SECTION_IDS`（`src/schema/config.ts:13-17`，**15 项**，其中 `secrets` 亦在列）逐项一致。
 - **未知分区键可以存在**（仅 warning），但本实现的导出端**永不会**产生它们。
 
@@ -363,19 +362,19 @@ win32 | darwin | linux | freebsd | openbsd | aix | sunos | android | cygwin | ha
 > | 你想知道的事 | 正确来源 | **错误来源** |
 > |---|---|---|
 > | bundle 里是否有凭据**明文** | `security.containsSecrets`（`boolean`，必需字段，`src/schema/manifest.ts:115`） | ❌ `sections.secrets` |
-> | 导入是否需要密码 | `security.encrypted`（`boolean`，必需字段，`src/schema/manifest.ts:116`）+ `security.encryption`（参数或 `null`） | ❌ `sections.secrets` |
+> | 导入是否需要密码 | `security.encrypted`（`boolean`，必需字段，`src/schema/manifest.ts:116`）；本实现恒写 `false` | ❌ `sections.secrets` |
 > | 是否声明了 `secrets` 分区 | 无意义——该键**恒为 `false`** | ❌ `sections.secrets` |
 >
 > **为什么不能：**
 >
-> 1. `secrets` **没有 adapter**，不在 `createAdapters()` 的挂载列表里（`src/adapters/index.ts:52-74`），其产物 `security/secrets.enc` 由 `Exporter` **直接写**（`src/core/exporter.ts:305-327`），**从不经过** `buildSectionFlags` 的 `sections[section.sectionId] = true` 那条赋值路径。
-> 2. `buildSectionFlags` 显式硬写 `flags['secrets'] = false`（`src/core/exporter.ts:404`），且它在遍历 `sections` 之前就写死了；`sections` 数组里根本不可能出现 `secrets` 条目。
-> 3. 因此 `sections.secrets` 在**任何**本实现产物里都恒为 `false`——**包括 `includeSecrets=true` 且 `containsSecrets=true` 的加密备份**。
+> 1. `secrets` **没有 adapter**，不在 `createAdapters()` 的挂载列表里（`src/adapters/index.ts:52-74`）。上游的 `Exporter` 会**直接写**一个 `security/secrets.enc` 条目（**从不经过** `buildSectionFlags` 的赋值路径）；本实现已删除该写入（`src/core/exporter.ts:283-298` 只按 `SECTION_JSON_PATHS` / `SECTION_FILE_PREFIXES` 组装条目）。
+> 2. `buildSectionFlags` 显式硬写 `flags['secrets'] = false`（`src/core/exporter.ts:372`），且它在遍历 `sections` 之前就写死了；`sections` 数组里根本不可能出现 `secrets` 条目。
+> 3. 因此 `sections.secrets` 在**任何**本实现产物里都恒为 `false`。
 > 4. 反向也成立：第三方若把 `sections.secrets` 置 `true`，只会得到一条 `备份声明了但缺少的分区: secrets` 告警，`sectionsInZip` 里不会出现 `secrets`（§0.2 实测），导入行为与置 `false` 完全相同。
 >
-> **`secrets.enc` 的存在性也不等于「含秘密」**：`includeSecrets=false` 但提供密码时，本实现仍会生成 `secrets.enc`（内容是**空串**的密文占位），`containsSecrets` 保持 `false`、`encrypted` 为 `true`（`src/core/exporter.ts:319-321`、`src/core/exporter.ts:322-327`）。所以：
+> **上游的 `secrets.enc` 存在性也不等于「含秘密」**：`includeSecrets=false` 但提供密码时，上游仍会生成 `secrets.enc`（内容是**空串**的密文占位），`containsSecrets` 保持 `false`、`encrypted` 为 `true`。**本实现不再产生任何 `secrets.enc`**，故第三方读本实现的产物时不会遇到这一歧义；但读上游历史产物时仍需按上表区分：
 >
-> | 观测 | `security.encrypted` | `security.containsSecrets` | 是否含真实凭据明文 |
+> | 观测（历史产物） | `security.encrypted` | `security.containsSecrets` | 是否含真实凭据明文 |
 > |---|---|---|---|
 > | 无密码导出 | `false` | `false` | 否 |
 > | 有密码、`includeSecrets=false`（只加密不导密钥） | `true` | `false` | 否（`secrets.enc` 是空占位） |
@@ -478,7 +477,7 @@ win32 | darwin | linux | freebsd | openbsd | aix | sunos | android | cygwin | ha
 | 10 | `workspaces` | JSON | `workspaces/workspaces.json` | `{version:1, workspaces}` | 1 | true | platformSpecific |
 | 11 | `pluginFiles` | 文件 | `plugin-files/` | 递归真实文件 | 1（内存） | **false** | deviceSpecific |
 | 12 | `credentialsStatus` | JSON | `security/credentials.json` | `{version:1, credentials}` | 1 | true | deviceSpecific |
-| 13 | `secrets` | 二进制 | `security/secrets.enc` | 见 §4 | 由 blob 内 `version` 字节承载（当前 `1`） | 恒 false | — |
+| 13 | `secrets` | — | **无产物**（本实现不写任何文件；上游曾写 `security/secrets.enc`，见 §4） | — | — | 恒 false | — |
 | 14 | `sessions` | 文件 | `sessions/` | 递归真实文件 | 1（内存） | **false** | deviceSpecific |
 | 15 | `self` | 文件 | `self/` | 白名单配置文件 | 1（内存） | true | portable |
 
@@ -677,52 +676,48 @@ THROW 备份 schema v2（高于当前 1，需升级插件），无法导入（�
 
 ---
 
-## 4. 加密语义
+## 4. 加密层（本实现已移除；历史产物仍可被识别）
 
-### 4.1 两个独立的加密层（**不要混淆**）
+> **本节状态：本实现不产生、也不解密任何加密产物。** 上游 `v0.1.59` 曾有两个独立的加密层（§4.1），本实现已整体删除加密模块（`src/security/encryption.ts`）与其导出面。**导出与同步恒为明文**：`manifest.security.encrypted` 恒为 `false`、`security.encryption` 恒为 `null`（`src/core/exporter.ts:330-331`）。
+>
+> **第三方实现者需要知道的三件事**：
+>
+> 1. 本实现产出的 bundle **永远不含** `security/secrets.enc`，也**永远不是** `DCA1` 容器；
+> 2. **但上游历史产物可能含**——遇到「不是 ZIP」的文件应先探测 magic `DCA1`（§4.6），遇到 `security.encrypted === true` 的 manifest 应按 §4.7 处理；
+> 3. 本实现**不提供**解密能力，这类历史产物必须先用外部工具解密成明文 ZIP 再交给本实现。
 
-| 层 | 产物 | 形态 | 触发条件 |
-|---|---|---|---|
-| **内层**：凭据密文 | `security/secrets.enc` | ZIP **内部**的一个二进制条目 | 导出时提供密码即生成（即使不含凭据值，也生成空明文占位） |
-| **外层**：整体加密容器 | 整个输出文件（**不是 ZIP**） | magic `DCA1` 的二进制 blob | 导出时提供密码即用同一密码加密整个明文 ZIP |
+### 4.1 上游的两个加密层（历史，仅供识别）
 
-取证：`src/index.ts:2112-2121`（外层）、`src/core/exporter.ts:305-327`（内层）、`src/security/encryption.ts:191-232`。
+| 层 | 产物 | 形态 |
+|---|---|---|
+| **内层**：凭据密文 | `security/secrets.enc` | ZIP **内部**的一个二进制条目，magic `DSC1` |
+| **外层**：整体加密容器 | 整个输出文件（**不是 ZIP**） | magic `DCA1` 的二进制 blob |
 
-**同一密码同时用于两层**（`src/index.ts:2089` 与 `src/index.ts:2115`）。因此导入侧只需一次密码输入：先解外层容器 → 得到明文 ZIP → 再用同一密码解内层 `secrets.enc`（`src/ui/import-wizard.ts:52`、`src/ui/import-wizard.ts:109`）。
+上游用**同一密码**同时加密两层，导入侧因此只需一次密码输入。本实现两侧都不再产生。
 
-### 4.2 `security/secrets.enc` 二进制布局
+### 4.2 历史密文条目的字节布局（识别用）
+
+两个容器的布局同构，仅 magic 不同：
 
 ```
 偏移   长度   内容
-0      4      magic "DSC1"（ASCII）
-4      1      version（当前 1）
+0      4      magic（"DSC1" = 内层 secrets.enc，"DCA1" = 外层整体容器）
+4      1      version（当时为 1）
 5      16     salt（随机）
 21     12     iv（随机）
 33     16     authTag（GCM 认证标签）
-49     ...    ciphertext（明文 = .credentials.yaml 原文的 UTF-8 字节）
+49     ...    ciphertext
 ```
 
-总头部长度 = 4+1+16+12+16 = **49 字节**（`src/security/encryption.ts:47-48`）。
+总头部长度 = 4+1+16+12+16 = **49 字节**。内层 ciphertext 的明文是 `.credentials.yaml` 原文的 UTF-8 字节；外层是完整 bundle ZIP 的字节。
 
-### 4.3 加密参数
+历史加密参数：AES-256-GCM + scrypt（`N=16384`、`r=8`、`p=1`、`keyLength=32`；salt 16 / iv 12 / authTag 16 字节）。这些参数**不写进**外层容器，内层则记录在 `manifest.security.encryption`（§4.3）。
 
-| 项 | 值 | 取证 |
-|---|---|---|
-| 算法 | AES-256-GCM | `src/security/encryption.ts:89`、`src/security/encryption.ts:101` |
-| KDF | scrypt | `src/security/encryption.ts:77` |
-| `N` | 16384（2^14） | `src/security/encryption.ts:43` |
-| `r` | 8 | 同上 |
-| `p` | 1 | 同上 |
-| `keyLength` | 32 | 同上 |
-| salt 长度 | 16 字节 | `src/security/encryption.ts:44` |
-| iv 长度 | 12 字节 | `src/security/encryption.ts:45` |
-| authTag 长度 | 16 字节 | `src/security/encryption.ts:46` |
-| 随机性 | 每次加密 salt 与 iv 全随机 | `src/security/encryption.ts:86-87` |
-| 派生调用 | `crypto.scrypt(password, salt, 32, {N,r,p})` | `src/security/encryption.ts:77` |
+> 本实现只保留 `EncryptionInfo` 类型（`src/schema/types.ts:24`）用于**解析**这类历史 manifest，不实现任何解密。
 
-KDF 参数值域校验（防 manifest 被篡改成超大 `N` 造成 DoS）：`N ∈ [2^14, 2^20]`、`r ∈ [1,32]`、`p ∈ [1,32]`、`keyLength === 32`；不满足即 `UNSUPPORTED_FORMAT`（`src/security/encryption.ts:62-69`、`src/security/encryption.ts:129-131`）。
+### 4.3 `manifest.security.encryption` 字段（历史）
 
-### 4.4 `manifest.security.encryption` 字段
+上游在 `security.encryption` 里记录内层的加密参数：
 
 ```json
 {
@@ -736,69 +731,63 @@ KDF 参数值域校验（防 manifest 被篡改成超大 `N` 造成 DoS）：`N 
 }
 ```
 
-类型：`src/schema/types.ts:24-32`。`salt`/`iv`/`authTag` **同时**存在于 blob 头部与 manifest 中；解密前必须比对两者一致，不一致即判定 `TAMPERED`（`src/security/encryption.ts:136-142`）。
+类型：`src/schema/types.ts:24-32`。`salt`/`iv`/`authTag` **同时**存在于 blob 头部与 manifest 中，解密前必须比对两者一致。
 
-### 4.5 错误分类（第三方实现应对齐的用户可见语义）
+**本实现的校验强度**：`validateManifest` 只要求 `security.encryption` 是「对象或 `null`」（`src/schema/manifest.ts:117-120`），**不校验**对象内部字段——因为本实现不再解密，这些参数只是历史元数据。第三方解密器需要自行做完整的形状与值域校验。
 
-| 错误码 | 触发条件 | 取证 |
-|---|---|---|
-| `UNSUPPORTED_FORMAT` | magic 不是 `DSC1`（或容器不是 `DCA1`）；blob 内 version 不等于 1；manifest 加密参数非法/不受支持 | `src/security/encryption.ts:122-131` |
-| `TAMPERED` | blob 长度 < 49；blob 头部参数与 manifest 不一致 | `src/security/encryption.ts:118-120`、`src/security/encryption.ts:136-142` |
-| `BAD_PASSWORD` | GCM 认证失败（密码错或密文被改）；密钥派生失败；密码为空串 | `src/security/encryption.ts:85`、`src/security/encryption.ts:144-161` |
+### 4.4 历史错误分类（仅供第三方解密器对齐）
 
-### 4.6 密码如何传递
+| 错误码 | 触发条件 |
+|---|---|
+| `UNSUPPORTED_FORMAT` | magic 不是 `DSC1`（或容器不是 `DCA1`）；blob 内 version 不等于 1；manifest 加密参数非法/不受支持 |
+| `TAMPERED` | blob 长度 < 49；blob 头部参数与 manifest 不一致 |
+| `BAD_PASSWORD` | GCM 认证失败（密码错或密文被改）；密钥派生失败；密码为空串 |
 
-| 环节 | 方式 | 取证 |
-|---|---|---|
-| 导出（HTTP） | `POST /api/dsh-config-manager/export` 的 JSON body 字段 `password`（非空字符串才生效） | `src/index.ts:2053` |
-| 导出（构造） | `createEncryptionProvider(password)` 注入 `ExporterOptions.encryption` | `src/index.ts:2089`、`src/security/encryption.ts:180-189` |
-| 密码强度校验 | **无**——加密**不做任何密码强度校验**（产品决策）。任何非空密码都被接受，包括 `1`、`12345678`、`password` | 唯一约束是**非空**：空字符串抛 `SecurityError('BAD_PASSWORD', '加密密码不能为空')`（`src/security/encryption.ts:85`、`src/security/encryption.ts:197`） |
-| 导入（HTTP） | `POST /api/dsh-config-manager/decrypt-archive`，body 带 `password` | `src/index.ts:2288-2325` |
-| 落盘 | **绝不落盘、绝不入日志**；内存使用后丢弃 | `src/index.ts:2050`（注释与实现）、`src/security/encryption.ts:14-15` |
+**本实现不产生这些错误码**（没有解密路径）。历史产品决策：加密路径**不做任何密码强度校验**，任何非空密码都被接受；该强度校验函数已从上游源码整体移除（见 §10 G-08），第三方**不得**假设本格式对密码有强度要求。
 
-> **产品决策（2026-09-13，已复核）**：加密路径**不施加任何密码强度要求**——这是刻意的产品决策（密码策略由用户自己掌握，插件不施加约束），不是遗漏。**第三方实现者不要假设本格式对加密密码有强度要求**：任何非空字符串都是合法密码。历史上曾存在一个强度校验函数（已从源码移除，见 §10 G-08），它甚至在基线版本中**从未被调用**；本版选择**整体删除**而非接通，以免留下「看起来在守、实际不跑」的死代码。
->
-> **解密侧同样不校验**（且现在整个校验面都不存在）：历史备份可能用弱密码加密，任何强度校验都会让它们**永久打不开**。因此加密与解密两侧对密码的唯一要求都是**非空**（解密侧连非空也不强制——错误密码走 GCM 认证失败 → `BAD_PASSWORD`）。
+### 4.5 密码传递（已随加密层移除）
 
-### 4.7 整体加密容器 `DCA1`
+上游曾用 `POST /api/dsh-config-manager/export` 的 `password` 字段触发加密、用 `POST /api/dsh-config-manager/decrypt-archive` 解密。**这两个路由在本实现中已不存在**——本实现的同步路由族只有 `/api/dsh-config-manager/sync/*`，导出/导入不经 HTTP。
 
-```
-偏移   长度   内容
-0      4      magic "DCA1"（ASCII）
-4      1      version（当前 1）
-5      16     salt
-21     12     iv
-33     16     authTag
-49     ...    ciphertext（明文 = 完整 bundle ZIP 的字节）
-```
+### 4.6 识别整体加密容器 `DCA1`
 
-布局与 `secrets.enc` 同构，区别仅在 magic/version 与 KDF 参数**恒为默认常量**（不写进任何元数据，`src/security/encryption.ts:35-41`、`src/security/encryption.ts:203-232`）。`isArchiveBlob()` 只探测前 4 字节（`src/security/encryption.ts:40-42`）。
+外层容器加密后，磁盘上**看不到任何明文**（包括 `manifest.json`）。第三方 importer 若遇到一个「不是 ZIP」的文件，应**先探测前 4 字节是否等于 `DCA1`**，是则报「需先解密」而**不是**报「ZIP 损坏」。字节布局见 §4.2。
 
-**重要**：外层容器加密后，磁盘上**看不到任何明文**（包括 `manifest.json`）。第三方 importer 若遇到一个「不是 ZIP」的文件，应先探测 magic `DCA1`（`src/core/backup-verify.ts:175-178` 就是这样识别并给出「需先解密」结论的）。
+> **本实现的状态（勿误读为已实现）**：本 fork **没有**实现这个探测——`src/` 全库检索 `DCA1` 零命中，
+> `analyzer.loadBundle` 直接把字节交给 ZIP 解析器，因此 `DCA1` 容器会得到
+> `ZipSafetyError: 不是合法的 ZIP 文件（缺少中央目录结束记录）`（`src/utils/zip.ts:261`），
+> 而非「需先解密」。这是**已知的实现缺口**（§10 G-14），不是规格与实现的一致性契约：
+> 第三方**不得**以本实现为参照声称「已做识别」。
 
-### 4.8 加密的导入侧不变量
+### 4.7 历史加密备份的导入侧不变量（**本实现保留此守卫**）
 
-`manifest.security.encrypted === true` 时，**未提供解密结果即拒绝执行**：
+`manifest.security.encrypted === true` 时，**未提供解密结果即拒绝执行任何写入**：
 
-- `src/core/analyzer.ts:522-524`：`decryptedCredentials === undefined` → 抛 `该备份已加密，必须提供解密密码才能导入（拒绝无密码导入）`。
-- §0.2 运行验证：加密 bundle 直接 `executeImportPlan({confirm:true})` → 抛出上述错误，零写入。
-
-即：**不允许把加密备份静默降级为「缺凭据照常导入」**（`src/core/analyzer.ts:519-521` 明写该设计意图）。
+- `src/core/analyzer.ts:533-535`：`decryptedCredentials === undefined` → 抛 `该备份含上游历史加密凭据（security.encrypted=true），本插件无解密能力：须由宿主解密后注入凭据（decryptedCredentials）才能导入`（消息键 `import.encryptedPasswordRequired`，`src/core/messages.ts:54`）。
+- 该守卫在加密层删除后**刻意保留**：本实现无法解密，但**不允许**把加密备份静默降级为「缺凭据照常导入」——那会让加密备份与普通备份在安全语义上无区别。
+- 由于本实现已无解密能力，`decryptedCredentials` 只能由宿主在调用引擎时注入（`src/core/analyzer.ts:504`）。同步引擎传 `undefined`（`src/sync/sync-engine.ts:648`），因此**同步路径遇到加密快照一律拒绝**（`src/sync/sync-engine.ts:277`）。
 
 ---
 
 ## 5. Secret 语义
 
-### 5.1 默认不含秘密（安全不变量）
+### 5.1 秘密如何进入 bundle（安全不变量）
+
+**核心事实：本实现没有任何「凭据值写入归档」的通道。** 凭据值（token / password / API key）在导出时**永不进归档**——这一点与上游不同：上游用 `includeSecrets=true` + 加密把 `.credentials.yaml` 原文塞进 `secrets.enc`，本实现删掉了那条通道。
 
 | 规则 | 取证（**当前工作区**行号 + 符号锚点） |
 |---|---|
-| `includeSecrets` 缺省 `false` | `src/core/types.ts:18-19`（`ExportOptions.includeSecrets`）；导出路由 `src/index.ts:2064`（`body['includeSecrets'] === true`，未传即 `false`） |
-| `includeSecrets=true` **必须**注入 `EncryptionProvider`，否则拒绝导出 | `src/core/exporter.ts:204-206`（`if (includeSecrets && !this.encryption) throw ... 'export.encryptionRequired'`） |
-| 明文 `.credentials.yaml` 只在 `includeSecrets=true` 时被读取并加密进 `secrets.enc` | `src/core/exporter.ts:311-321`（`if (includeSecrets)` 才 `ctx.fs.readFile(credentialsFile)`） |
-| `includeSecrets=false` 时仍生成 `secrets.enc`，但明文是**空串**；`containsSecrets` 保持 `false` | `src/core/exporter.ts:319-323`（`plaintext = ''` → `encryption.encrypt(plaintext)` → push `security/secrets.enc`）、`:325`（`containsSecrets = includeSecrets && plaintext !== ''`） |
-| `credentialsStatus` 分区的 `hasValue` 普通备份恒 `false` | `src/schema/types.ts:207` |
-| 凭据值经 `ctx.credentials` **永不回读**，只经文件级读 | `src/core/types.ts:73-78`、`src/security/encryption.ts:16-18` |
+| `includeSecrets` 的**当前实际作用**只剩「是否刷新本机 vault 镜像」——结构化分区的秘密值**始终**被 `SecretScanner` 剥离 | `src/core/types.ts:18-24`（`ExportOptions.includeSecrets` 的注释明写此语义）；`src/core/exporter.ts:236-239`（结构化分区一律 `scanAndRedact`） |
+| `includeSecrets=false` → 导出后把敏感文件镜像到**本机** vault（明文**不进**归档） | `src/core/exporter.ts:300-316`（`if (!includeSecrets)` → `refreshVault`）；敏感清单 `src/security/vault.ts:32-34`（当前仅 `.credentials.yaml`） |
+| `includeSecrets=true` → **不**刷新 vault；但秘密值同样**不进**归档（没有加密层可承载它） | `src/core/exporter.ts:303`（`if (!includeSecrets)` 的反面即跳过 vault）；无任何写 `secrets.enc` 的代码路径 |
+| `security.containsSecrets` 只由**文件类分区实扫到的命中**决定（结构化分区已被剥离，不构成「含秘密」） | `src/core/exporter.ts:278-281`（`containsSecrets = fileSectionSecretHits > 0`，注释明写该判据） |
+| `security.encrypted` 恒 `false`、`security.encryption` 恒 `null` | `src/core/exporter.ts:330-331` |
+| `credentialsStatus` 分区的 `hasValue` **恒 `false`**（值未导出） | `src/schema/types.ts`；产出点 `src/adapters/credentials.ts:91`（`hasValue: false, // 值未导出（安全不变量）`） |
+| 凭据值经 `ctx.credentials` **永不回读**，只经文件级读 | `src/core/types.ts`（`HostContext.credentials` 只有 `describe`/`set`，无 getter） |
+
+> **本机 vault 不是 bundle 的一部分**：它落在 `<dataDir>/vault`（`src/security/vault.ts:37-39`），仅在**同一台机器**上导入时用于回填 `$DSH_HOME`（`src/core/analyzer.ts:729-742`）。把 bundle 拷到另一台机器时 vault 不跟随，敏感文件需重新配置。**第三方 importer 不必实现 vault**：它是本实现的本地辅助机制，不是格式的一部分。
+
+> ⚠️ **同步通道是例外**：它按产品语义**携带明文密钥**（`includeSecrets: true`，`src/sync/sync-engine.ts:294` 等 4 处），并按实际内容如实标注 `containsSecrets`（`src/sync/sync-engine.ts:309`、`:566`、`:726`）。这与「导出 ZIP 不含凭据值」并不矛盾——同步走的是**私有通道自用**的明文语义（见包内 `AGENTS.md` 的安全不变量）。
 
 ### 5.2 `scanAndRedact` 的行为
 
@@ -867,7 +856,7 @@ if (!isFileSection(adapter.id)) {
 | 边界 1 | 文件类分区（`skills`/`agentPresets`/`agentInstructions`/`pluginFiles`/`sessions`/`self`）的内容**现在会计入**（G-09 已修复），但走的是**另一条通道**：`scanFileSectionText`（文本级扫描，**只报告不改写**），因此它们的命中**不产生内容剥离** | 导出器对文件类分区走 `else` 分支：`src/core/exporter.ts:247-275`（`scanFileSectionText` 调用在 `:248`、命中累加在 `:251`） |
 | 边界 2 | 已经是空串的值不命中 | 剥离产物就是空串（`REDACTED_PLACEHOLDER = ''`），二次扫描时 `value === ''` 直接放行 → **重复导出同一份已被剥离的数据，计数会变成 0** | `src/security/secret-scanner.ts:31`、`src/security/secret-scanner.ts:265`、`src/core/exporter.ts:82`（缺省扫描器同款判断） |
 | 边界 3 | 非字符串值（数字/布尔/null/对象/数组本身）不计入 | `judgeFieldValue` 只对字符串叶值调用；`typeof v === 'string'` 才判 | `src/security/secret-scanner.ts:328-337` |
-| 边界 4 | `includeSecrets=true` 时，凭据原文进 `secrets.enc`（不经结构化扫描），该计数只反映**其余分区**的命中 | 凭据文件按字节读入并加密，从不经过 `scanAndRedact` | `src/core/exporter.ts:305-327` |
+| 边界 4 | 凭据原文**不进归档**（本实现无该通道），故不存在「凭据不计入扫描」的边界——该计数覆盖**全部**实际进包的条目 | 凭据值只经 `ctx.credentials.describe()` 读**状态**，`hasValue` 恒 `false` | `src/adapters/credentials.ts:80-103` |
 
 #### 5.3.2 它出现在哪里（完整消费点清单，全仓库检索）
 
@@ -909,9 +898,9 @@ if (!isFileSection(adapter.id)) {
 | 是否进 bundle | ❌ 否 | ✅ 是（必需字段） |
 | 类型 | `number`（计数） | `boolean` |
 | 语义 | 导出时**被剥离（结构化分区）/ 被命中（文件类分区）**的敏感字段**数量** | bundle 是否**真的携带**了凭据明文 |
-| 置真条件 | 任一结构化分区命中 `scanAndRedact` **或**任一文件类分区命中 `scanFileSectionText`（后者只告警、不剥离） | `includeSecrets === true` **且** `.credentials.yaml` 读取成功且非空（`src/core/exporter.ts:325`：`containsSecrets = includeSecrets && plaintext !== ''`） |
-| 用户可见面 | 「{n} 个敏感字段已脱敏」提示（`src/ui/report.ts:35`） | manifest 徽章 / 市场与同步通道的硬拒绝闸门（`src/market/security.ts:105-107`、`src/sync/sync-engine.ts:329`） |
-| 典型组合 | 高 `redactedHits` + `containsSecrets=false` = **结构化分区扫描工作正常**（剥离了秘密）。**但 G-09 后该组合不再保证「包内无秘密」**：文件类分区的命中**只告警不剥离**，明文仍在包里，而 `containsSecrets` 不反映它们 | `containsSecrets=true` + `encrypted=false` = 危险组合（市场/同步通道拒收） |
+| 置真条件 | 任一结构化分区命中 `scanAndRedact` **或**任一文件类分区命中 `scanFileSectionText`（后者只告警、不剥离） | **仅**由「文件类分区实扫到命中」决定：`containsSecrets = fileSectionSecretHits > 0`（`src/core/exporter.ts:278-281`）。结构化分区的值已被剥离，故不置真 |
+| 用户可见面 | 「{n} 个敏感字段已脱敏」提示（`src/ui/report.ts:34`） | manifest 徽章 / 同步通道的拒绝闸门（`src/sync/sync-engine.ts:277` 对**加密**快照的拒绝） |
+| 典型组合 | 高 `redactedHits` + `containsSecrets=false` = **结构化分区扫描工作正常**（剥离了秘密）。**但该组合不再保证「包内无秘密」**：文件类分区的命中**只告警不剥离**，明文仍在包里，而 `containsSecrets` 不反映它们 | `containsSecrets=true` + `encrypted=false` = **本实现的常态组合**（同步通道按明文语义运行），但市场通道拒收（`src/market/security.ts`） |
 
 **一句话**：`containsSecrets` 回答「**包里有没有真秘密**」，`redactedHits` 回答「**导出时命中了几个敏感位置**」。二者可以同时为 `false`/`0`（没有敏感字段，也没有秘密），也可以一个是高计数、另一个是 `false`。**任何把两者互相推导的实现都是错的**——尤其是「`redactedHits > 0` 就说明包里干净」：G-09 之后文件类分区的命中**并未被剥离**。
 
@@ -1248,7 +1237,7 @@ errors   = []
 |---|---|---|
 | 1 | 按 §1 读 ZIP：正斜杠条目名、UTF-8（按 §1.5.4，**不依赖 EFS flag**）、method ∈ {0,8}、**CRC32 取中央目录值**、`解压长度 === uncompressedSize`、容忍数据描述符（§1.5.5）与目录条目（§1.5.6）、拒绝 Zip Slip / 绝对路径 / 以 `\` 开头的名字、强制 §1.3 限额 | 对 `../evil.txt`、`C:/evil.txt`、`/abs` 条目**整体拒绝**；对 method=12、CRC 不符、尺寸不符**整体拒绝**；对 method=0（真 stored）、EFS 未置、bit3 置位、目录条目**接受** |
 | 1b | 条目名归一化（**文件类分区专用**，见 §3.3.1）：`relativePath = name.slice(prefix.length)`，跳过 `rel === ''` 与 `rel.endsWith('/')`，目标路径 = `join(baseDir, relativePath)` 归一化后再比对 | 含 `//` / `./` 的条目名必须落到归一化后的同一路径；含 `..` 段的条目名在条目名层就被拒（不依赖 `join` 兜底） |
-| 2 | 探测外层容器：前 4 字节 == `DCA1` → 要求密码，解密后得到明文 ZIP 再继续；否则按 ZIP 解析 | 对加密容器不报「ZIP 损坏」，而是报「需先解密」（对齐 `src/core/backup-verify.ts:175-178`） |
+| 2 | 探测外层容器：前 4 字节 == `DCA1` → 报「需先解密」（本实现**不提供**解密，须外部工具转成明文 ZIP）；否则按 ZIP 解析 | 对加密容器不报「ZIP 损坏」，而是报「需先解密」。**本实现未实现此探测**（把 `DCA1` 文件当损坏 ZIP 报错，见 §4.6），第三方**应**实现它 |
 | 3 | 要求 `manifest.json` 存在；不存在 → 明确报「不是本格式的 bundle」 | 对齐 `import.noManifest` 文案语义（`src/core/analyzer.ts:152`） |
 | 4 | 解析 manifest 并按 §2.2 逐字段校验；任一 error → 拒绝；`sections` 内未知键 → **warning 不拒绝**；**判断「含秘密/需密码」只看 `security.containsSecrets` / `security.encrypted`，不看 `sections.secrets`**（§2.5 G-10） | 对齐 M-04（`tests/schema/manifest.test.ts:81-89`）；`sections.secrets` 无论真假都不得影响安全判断 |
 | 5 | 版本协商：`schemaVersion > CURRENT` → 硬失败并提示「需升级插件」；`< MIN_SUPPORTED` → 硬失败；**不得静默降级** | 对齐 §6.2；错误文案含版本号 |
@@ -1257,14 +1246,14 @@ errors   = []
 | 8 | **未知分区 id**：明确告警（不受支持/已跳过），**不**因此拒绝整个 bundle，**不**把它混入「声明但缺失」 | 见 §7.2；这是本规格要求第三方**做得比现有实现更好**的一条 |
 | 9 | 声明为 `true` 但 ZIP 内无对应文件的 JSON 分区 → 记入 `missingSections` 并告警（不拒绝） | 对齐 `src/core/analyzer.ts:362-367` |
 | 10 | 未列入 checksums 表的额外 ZIP 条目 → 至少计数并告警（建议） | 参考 `src/core/analyzer.ts:183-196`（当前工作区已做）、`src/core/backup-verify.ts:265-272` |
-| 11 | `security.encrypted === true` → 未拿到解密结果时**拒绝执行任何写入** | 对齐 `src/core/analyzer.ts:523`；§0.2 运行验证 |
+| 11 | `security.encrypted === true`（**仅历史产物**，本实现恒写 `false`）→ 未拿到解密结果时**拒绝执行任何写入** | 对齐 `src/core/analyzer.ts:533-535`；§4.7 |
 | 12 | 未显式 `confirm` → 拒绝执行（只读分析与预览必须零写入） | 对齐 `ImportNotConfirmedError`（`src/core/types.ts:497-503`）、`src/core/analyzer.ts:516` |
 | 13 | 执行前对将被修改的目标做快照；执行失败可回滚 | `src/core/analyzer.ts:543-553`（强制快照）、`src/core/analyzer.ts:668-690`（回滚） |
 | 14 | 逐分区落盘时**按已知语义重建**（见 §7.3 实测表）：`settings`/`ui`/`mcp`/`prompts`/`credentialsStatus` 忽略未知字段；`workspaces[]` 记录、`plugins.patch[].raw`、`providers.raw` 会**整体搬运**（连带未知字段） | 不得声称「未知字段一律被保留」，也不得声称「一律被丢弃」——两种说法都会给出错误的兼容性预期 |
 | 15 | 凭据值：`credentialsStatus` 分区**永不含值**；补录值只经凭据写入通道，绝不落盘/落日志 | `src/schema/types.ts:202-208`、`src/core/analyzer.ts:803-811` |
 | 16 | 导出报告里的 `redactedHits` **不参与** bundle 读写：第三方 importer **不需要**从 bundle 读取它，也**不能**反推它（§5.3.3） | bundle 内不存在该字段的任何载体 |
 
-**只读 importer 可以跳过**：加密导出（§4.1 内层生成）、checksums 生成、`localTarballs` 解包、`patchFiles` 落盘（`profiles/<profile>/<relativePath>`）、市场通道约束（§3.5）、插件安装副作用。
+**只读 importer 可以跳过**：checksums 生成、`localTarballs` 解包、`patchFiles` 落盘（`profiles/<profile>/<relativePath>`）、市场通道约束（§3.5）、插件安装副作用。**加密相关全部可跳过**：本实现不产生加密产物，§4 的内容只在读上游历史产物时才需要（且只需「识别 + 拒绝」，不需要解密能力）。
 
 ---
 
@@ -1274,7 +1263,7 @@ errors   = []
 >
 > **⚠️ 时效性声明（必读）**：本规格的取证基线是提交 `696cb17`（曾被标记为 `0.1.59`，但**从未发布**；`v0.1.60` 已并入 `v0.1.59`，本版将以 `v0.1.59` 发布）。在**格式相关行为**上，该基线与 npm 上**最新已发布**的 `v0.1.58` 一致，故「基线版本」列可视为**已发布版本**的真实行为；「当前工作区状态」列是**本文件写作时仓库工作区**的实测/读码结论，两列**刻意分开**——已发布版本仍可能带这些缺陷，第三方实现者需要知道它们存在过、以及修好之后应该长什么样。
 >
-> **当前工作区状态汇总**：✅ 已修复 G-01 / G-02 / G-03 / G-04（含本轮补齐的表缺失分支）/ G-06 / G-09 / G-10（规格侧澄清）；➖ **G-08 已按产品决策整体移除**（不是「修复」——加密不再做任何密码强度校验，该能力被有意取消，任何非空密码可用）；⚠️ G-05 部分修复（不对称）；⚠️ G-07 **仍然成立**（`MIN = CURRENT = 1` 未变，迁移分支结构上仍不可达，但接线已就绪）；✅ G-11 仍然成立（本版新增登记）。
+> **当前工作区状态汇总**：✅ 已修复 G-01 / G-02 / G-03 / G-04（含本轮补齐的表缺失分支）/ G-06 / G-09 / G-10（规格侧澄清）；➖ **G-08 已按产品决策整体移除**（不是「修复」——加密不再做任何密码强度校验，该能力被有意取消，任何非空密码可用）；⚠️ G-05 部分修复（不对称）；⚠️ G-07 **仍然成立**（`MIN = CURRENT = 1` 未变，迁移分支结构上仍不可达，但接线已就绪）；✅ G-11 仍然成立（本版新增登记）；⚠️ **G-14 仍然成立**（本次登记：`DCA1` 探测未实现，规格已改为不再声称已识别）。
 >
 > 行号口径：**「当前工作区状态」列引用的行号是当前源码行号**（写作时逐条用 Node 读行内容核对过）；「基线」列的行号指 `0.1.59` 发布版源码。源码仍在并行修改，若行号漂移请以符号名（函数/消息 key）为准检索。
 
@@ -1287,12 +1276,13 @@ errors   = []
 | **G-05** | **分区 version 无兼容余地** | 精确 `=== 1` 判定；任何已知分区 JSON 的 `version != 1` 都会让**整个 bundle** 无法导入（而非跳过该分区） | 基线：`src/schema/config.ts:66-69`；§0.2 运行验证（P4 抛错） | 未来分区结构演进没有加法之外的空间 | ⚠️ **部分修复**：`version > 1` 现在**跳过该分区**并告警（`src/core/analyzer.ts:269-279`，§3.3.3 实测）；`version < 1` / 非数字 / 缺失**仍让整个 bundle 硬失败**（不对称，见 §3.3） |
 | **G-06** | **迁移链未接入导入路径** | `migrateToCurrent` 已实现且有测试，但**导入路径从不调用它**：`analyzer.loadBundle` 只用 `isSupported` 判定后直接继续 | 基线：`src/core/analyzer.ts:165-168` | 一旦 `CURRENT > MIN`，旧备份会被「判定为可迁移」却**不会真的被迁移** | ✅ **已修复**：`src/core/analyzer.ts:218-222` 在 `needsMigration` 为真时调用 `runSchemaMigration`（实现 `src/core/analyzer.ts:870-885`），迁移结果重新过 `validateManifest` 才作为后续 manifest 使用。当前 `MIN = CURRENT = 1` 故路径仍不可达（见 G-07） |
 | **G-07** | **`needsMigration` / `describeVersion` 的「将迁移」分支当前不可达** | `MIN = CURRENT = 1`，不存在 `1 < v < 1` 的整数 | `tests/schema-compat.test.ts:17-18`、`tests/schema-compat.test.ts:154` | 迁移链在真实导入中**从未被执行过**，其正确性是理论值 | ⚠️ **仍然成立**（`MIN = CURRENT = 1` 未变）；但迁移链已接入导入路径（G-06），一旦上移 `CURRENT` 即会真实执行。**这不是待修缺陷，而是版本区间的必然结果**——修复动作只在发布 v2 时随 G-06 一并生效 |
-| **G-08** | **密码强度校验（基线形同虚设 → 一度接通 → 按产品决策整体移除）** | 基线 `0.1.59` 中强度校验函数已实现且有单测，但在 `src/index.ts` 中**零调用**——导出端只要求 `password` 是非空字符串。**形同虚设**：有一个「看起来在守、实际不跑」的强度函数 | 基线：`src/security/encryption.ts:165-174`（函数定义）、`src/index.ts:2053`（基线唯一校验是 `!== ''`） | 基线：弱密码可被接受（当时无闸门）；**现状：这是刻意的产品决策，不是缺陷** | ➖ **已按产品决策整体移除**（2026-09-13）：本轮一度接通的三层闸门（导出路由 400 拒绝、`config_backup` 结构化拒绝、加密层兜底）**被全部删除**，而非保留或收紧。**当前唯一约束是非空**：空字符串抛 `BAD_PASSWORD`（`src/security/encryption.ts:85`、`:197`），其余任何密码（含 `1` / `12345678` / `password`）一律接受。被移除的符号与消息键（强度校验函数、断言函数、导出路由密码守卫、`export.passwordTooWeak`）**在当前工作区已不存在**，第三方**不得**假设本格式有密码强度要求。 |
+| **G-08** | **密码强度校验（基线形同虚设 → 一度接通 → 随加密层整体移除）** | 基线 `0.1.59` 中强度校验函数已实现且有单测，但**零调用**——导出端只要求 `password` 是非空字符串。**形同虚设**：有一个「看起来在守、实际不跑」的强度函数 | 基线：`src/security/encryption.ts:165-174`（函数定义） | 基线：弱密码可被接受（当时无闸门） | ➖ **已整体移除（含加密层本身）**：本 fork 删除了整个 `src/security/encryption.ts` 与全部加密入口（§4），强度校验随之一并不存在——**不是「保留了密码但去掉强度校验」，而是「没有密码这回事」**。第三方**不得**假设本格式有密码强度要求，**也不应**在自己的实现里加闸门：那会让跨实现迁移被拒。 |
 | **G-09** | **文件类分区内容不扫描 secret** | `skills`/`agentPresets`/`agentInstructions`/`pluginFiles`/`sessions`/`self` 的文件内容**完全不进扫描器**，也不计入 `redactedHits` | 基线：`src/core/exporter.ts:161-167`、`src/adapters/self.ts:21-22` | 「默认不含秘密」对文件类分区**不成立**；`pluginFiles` 默认 `false` 与市场 BANNED 是对此的缓解，但**用户显式勾选即可带出明文** | ✅ **已修复（已实测复核）**：文件类分区改走 `scanFileSectionText`（定义 `src/core/exporter.ts:135-161`，调用点 `:248`），命中**计入 `redactedHits`** 并逐条产出 `export.fileSectionSecrets` 告警（`src/core/messages.ts:28`）。**边界（仍然成立）**：只报告**不改写**（绝不剥离用户文件内容）；默认 `defaultSecretScanner` 未实现 `scanText` → 该分支返回空、行为与修复前一致（`src/core/exporter.ts:130-131`、`:137`），生产路径注入的是含 `scanText` 的强化扫描器。**遗留的告警去重问题**见本表 G-13 |
-| **G-10** | **`secrets` 在 `sections` 中恒 `false` 但语义被复用** | `sections.secrets` 永远是 `false`（无 adapter）；加密事实由 `security.encrypted` 承载。若第三方按「`sections.secrets === true` 表示含凭据」理解会出错 | 基线：`src/core/exporter.ts:296`（基线行号）；§0.2 运行验证 | 格式语义的坑（文档级，非实现缺陷） | ✅ **已收口（规格侧澄清，实现未变）**：`buildSectionFlags` 里 `flags['secrets'] = false` 仍在（**当前工作区** `src/core/exporter.ts:404`），这不是实现缺陷而是**语义设计**；§2.5 已加显式警告块，§9 步骤 4 的验收判据明确「含秘密/需密码只看 `security.containsSecrets` / `security.encrypted`，不看 `sections.secrets`」。第三方按该判据实现即不会误判 |
-| **G-11** | **条目名侧不拒绝中段反斜杠（与 checksums 侧不一致）** | `isPathSafe` 只拒绝「以 `/` 或 `\` 开头」与「含 `..` 段」的名字，**中段 `\` 被接受**：`isPathSafe('custom/skills/back\\slash.md') === true`，写侧 `zipToBuffer` 也接受，读侧 `parseZip` 也接受。后果：① 同一份 bundle 在 Windows 目标上把 `\` 当分隔符（`skills/probe/back/slash.md`），在 POSIX 目标上当普通字符（`skills/probe/back\slash.md`）——**跨平台路径语义不一致**；② 而 `checksums.json` 的键侧**明确拒绝**含 `\` 的路径（`src/security/integrity.ts:63`），两套规则不对齐 | `src/utils/paths.ts:45-54`（无 `\` 检查）、`src/utils/zip.ts:95-97`、`src/utils/zip.ts:289`；§3.3.2 实测 C10 | 条目名安全边界；跨平台不一致；第三方若照抄 `isPathSafe` 会继承该缺陷 | ✅ **仍然成立**（本版新增登记，实测确认）。**这是本表唯一一条「未修复的格式行为缺陷」** |
+| **G-10** | **`secrets` 在 `sections` 中恒 `false` 但语义被复用** | `sections.secrets` 永远是 `false`（无 adapter）；「是否含凭据」由 `security.containsSecrets` 承载。若第三方按「`sections.secrets === true` 表示含凭据」理解会出错 | 基线：`src/core/exporter.ts:296`（基线行号）；§0.2 运行验证 | 格式语义的坑（文档级，非实现缺陷） | ✅ **已收口（规格侧澄清，实现未变）**：`buildSectionFlags` 里 `flags['secrets'] = false` 仍在（**当前工作区** `src/core/exporter.ts:372`），这不是实现缺陷而是**语义设计**；§2.5 已加显式警告块，§9 步骤 4 的验收判据明确「含秘密/需密码只看 `security.containsSecrets` / `security.encrypted`，不看 `sections.secrets`」。第三方按该判据实现即不会误判 |
+| **G-11** | **条目名侧不拒绝中段反斜杠（与 checksums 侧不一致）** | `isPathSafe` 只拒绝「以 `/` 或 `\` 开头」与「含 `..` 段」的名字，**中段 `\` 被接受**：`isPathSafe('custom/skills/back\\slash.md') === true`，写侧 `zipToBuffer` 也接受，读侧 `parseZip` 也接受。后果：① 同一份 bundle 在 Windows 目标上把 `\` 当分隔符（`skills/probe/back/slash.md`），在 POSIX 目标上当普通字符（`skills/probe/back\slash.md`）——**跨平台路径语义不一致**；② 而 `checksums.json` 的键侧**明确拒绝**含 `\` 的路径（`src/security/integrity.ts:63`），两套规则不对齐 | `src/utils/paths.ts:45-54`（无 `\` 检查）、`src/utils/zip.ts:95-97`、`src/utils/zip.ts:289`；§3.3.2 实测 C10 | 条目名安全边界；跨平台不一致；第三方若照抄 `isPathSafe` 会继承该缺陷 | ✅ **仍然成立**（本版新增登记，实测确认）。**这是本表唯一一条「未修复的格式行为缺陷」**（G-14 是同类未修复项，但属**识别能力**缺口而非格式读写行为） |
 | **G-12** | **G-04 的收窄残留：checksums 表缺失/为空时「未登记条目」漏报** | 反向完整性检查（「ZIP 里在、校验表里不在」的条目）原本整段嵌在「表存在」分支内：剥掉 `integrity/checksums.json` 或把它置为 `{}` ⇒ 一个条目都不校验、也零告警，却 `valid=true` | 基线：`src/core/analyzer.ts:163`（`if (archive.has(CHECKSUMS_FILE))` 包住整段） | 与 G-04 同源：可静默绕过完整性校验 | 🚧 **本轮审计新发现，正在修复（未收口）**。**工作区已见修复**：`src/core/analyzer.ts:167-172` 把「表缺失或为空」统一映射为 `import.checksumsMissing` 告警，反向检查（`:196-205`）此时不再运行（无表可对照）；回归测试 `INT-02` / `INT-03` / `INT-04`（`tests/conformance/roundtrip.test.ts:945-1031`）。**但由并行任务负责收口与验收，本文件不声称已修完**——详见 §7.4「行为正在变更」提示与 `docs/spec/known-gaps.md` §2 |
 | **G-13** | **G-09 的告警去重问题** | 文件类分区的 secret 命中告警原本按 **hit** 计数且不去重：同一行同时命中「字段名」与「值形状」会产出两条**同路径**告警，少数文件就吃满 `MAX_FILE_SECTION_WARNINGS_PER_SECTION` 上限，使含真实明文凭据的其它文件被静默淹没 | 基线：`src/core/exporter.ts` 按 hit 逐条 push | 告警噪声，可淹没真正需要关注的命中；**不改变**「命中是否被检出」这一安全事实（计数始终可信） | 🚧 **本轮审计新发现，正在修复（未收口）**。**工作区已见修复**：`src/core/exporter.ts:252-273` 先按**文件路径**去重、再截断到 `MAX_FILE_SECTION_WARNINGS_PER_SECTION`（语义 = 不同**文件**数，常量在 `:107-108`），并对被截断的文件数补一条**汇总告警**；`redactedHits` 仍计**全量命中**。回归测试 `tests/core/exporter.test.ts:381` / `:436` / `:456`。**但由并行任务负责收口，本文件不声称已修完** |
+| **G-14** | **`DCA1` 外层容器探测未实现（规格 §4.6 / §9 步骤 2 声称「本实现只做识别不做解密」，实际未识别）** | 加密层移除后，§4.6 与 §9 步骤 2 仍写着「先探测前 4 字节是否等于 `DCA1`，是则报『需先解密』」，并声称本实现**已做识别**。实际 `src/` 全库检索 `DCA1` **零命中**，`analyzer.loadBundle` 把字节直接交给 ZIP 解析器 ⇒ `DCA1` 容器得到的是 `ZipSafetyError: 不是合法的 ZIP 文件（缺少中央目录结束记录）`（`src/utils/zip.ts:261` / `src/security/zip-security.ts:62`，实测确认），**不是**「需先解密」 | 规格 §4.6 / §9 步骤 2 vs `grep -rn DCA1 src/`（零命中） | 第三方按规格「照抄本实现」会以为探测已存在而跳过实现；真正的 `DCA1` 产物报错误导用户去查「备份损坏」而非「需先解密」 | ⚠️ **仍然成立（本次登记）**：§4.6 已加显式状态块、§9 步骤 2 的验收列已改为「**本实现未实现此探测**」，**不再声称已识别**。是否补实现属独立决策，**本文件不声称已修复** |
 
 > 说明：G-07 目前**没有可观测后果**（因为 `MIN = CURRENT = 1`，迁移路径不可达）。**G-06 已修复后，这条定时问题已解除**：一旦发布 schema v2，`loadBundle` 会沿迁移链真实执行迁移（`src/core/analyzer.ts:218-222`），而不是「判定可迁移却按新格式直接用」。v2 发布前仍应补一条「v1 → v2 真实迁移」的端到端测试。
 >
@@ -1316,7 +1306,7 @@ errors   = []
 >
 > - ~~`prompts` / `providers` / `workspaces` / `credentialsStatus` 分区内未知字段是否写回目标~~ → **已实测**，见 §7.3（含 `providers.raw` 与 `workspaces[]` 两个反例）。
 > - ~~`redactedHits` 除 UI/日志外的持久化/审计用途~~ → **已查清**，见 §5.3（全仓库 5 处命中，不落 bundle、不落盘）。
-> - ~~密码强度校验函数在 host 侧的实际调用点~~ → **已不再适用**：该函数本身已按产品决策**从源码整体移除**（见 §4.6 与 §10 G-08）。现状不是「调用点在哪」，而是**没有强度校验这回事**——加密只要求密码非空。基线 `0.1.59` 的旧表述「在 `src/index.ts` 中检索该符号零命中」描述的正是「已实现但从不调用」的形同虚设状态，该状态随移除一并终结。
+> - ~~密码强度校验函数在 host 侧的实际调用点~~ → **已不再适用**：该函数与整个加密层都已从本 fork 源码移除（见 §4 与 §10 G-08）。现状不是「调用点在哪」，而是**没有加密这回事**——本实现不产生、不解密任何加密产物。
 > - ~~checksums 表**缺失或为空**时，ZIP 内多余条目是否告警~~ → **已查清并正在变更**：当前工作区在表缺失/为空时产出 `import.checksumsMissing` 告警（`src/core/analyzer.ts:167-172`），「未登记条目」反向检查（`:196-205`）此时不再运行（无表可对照）；基线 `0.1.59` 是整段跳过、零告警。行为正在变更，见 §7.4 的提示块与 §10 G-12。
 >
 > ~~G-09 / G-10 在**当前工作区**是否仍成立~~ → **已逐条读码复核**：G-09 ✅ 已修复（含边界说明）、G-10 ✅ 已在规格侧澄清；两者的当前状态见 §10 表内「当前工作区状态」列。~~G-08~~ **不再是「未验证」问题**：它已按产品决策整体移除，状态为 ➖ 而非 ✅（§10 G-08）。
@@ -1325,7 +1315,7 @@ errors   = []
 
 ## 附：一句话结论
 
-Bundle Format v1 的**文件布局、manifest 契约、checksums 语义、加密字节布局、ZIP 读侧强制/容忍边界（§1.5）、文件类条目名归一化规则（§3.3.1）、各分区未知字段的真实命运（§7.3）、`redactedHits` 的非持久化语义（§5.3）**都已写明，第三方可以照 §1–§6 实现一个兼容的 exporter/importer。
+Bundle Format v1 的**文件布局、manifest 契约、checksums 语义、ZIP 读侧强制/容忍边界（§1.5）、文件类条目名归一化规则（§3.3.1）、各分区未知字段的真实命运（§7.3）、`redactedHits` 的非持久化语义（§5.3）**都已写明，第三方可以照 §1–§6 实现一个兼容的 exporter/importer。§4 只描述**上游历史加密产物**的识别方法（本 fork 不产生也不解密）。
 
 **当前工作区仍需注意的真实缺口**（与 §10 缺口表的「当前工作区状态」列**逐条一致**，不含任何已在 §10 标 ✅ 的条目）：
 
@@ -1337,7 +1327,7 @@ Bundle Format v1 的**文件布局、manifest 契约、checksums 语义、加密
 
 - **G-01/G-02/G-03「未知分区」必须显式告警**——基线把未知分区**静默丢弃**并复用「声明但缺失」的误导文案（`src/core/analyzer.ts:204-205`、`:275-280`）；当前工作区已改为**独立通道 + 独立文案 + 从 `missingSections` 剔除**（`:251-254`、`:297-298`、`:366-373`，§7.2 实测）。但**格式 v1 没有「原样保留未知分区」的能力**：未知分区的字节两版都不幸存。因此「显式告警、不混入『声明但缺失』、不拒绝整包」仍是本规格要求第三方**主动做得比基线更好**的**主要**一条（§7.5、§9 步骤 8）。
 - **G-06「迁移链已接入导入路径」**——基线是「已实现但从不调用」的定时问题；当前工作区已在 `needsMigration` 为真时调用 `runSchemaMigration`（`src/core/analyzer.ts:218-222`）。发布 schema v2 前仍需补一条「v1 → v2 真实迁移」的端到端测试（§10 G-06 / G-07）。
-- **G-08「加密密码强度」——第三方必须主动做得比基线更少，而不是更多**——基线与本轮中间态都曾存在强度闸门（基线是形同虚设的函数，中间态是三层接通）。**最终状态是按产品决策整体移除**：加密**不做**任何密码强度校验，任何非空密码都可用（§4.6、§10 G-08）。**第三方实现者不要假设本格式对加密密码有强度要求，也不要在自己的实现里加闸门**——那会与格式行为不一致，并可能让用户在跨实现迁移备份时被拒。
+- **G-08「加密密码强度」已随加密层整体消失**——本 fork 删除了加密层本身（§4），强度校验函数不再存在，**也没有密码这回事**（§10 G-08）。**第三方实现者不要假设本格式对加密密码有强度要求，也不要在自己的实现里加闸门**——那会与格式行为不一致，并可能让用户在跨实现迁移备份时被拒。
 
 **本版已消除的规格空白**（独立审计确认缺失的 4 处 + 1 处澄清）：
 
@@ -1349,4 +1339,4 @@ Bundle Format v1 的**文件布局、manifest 契约、checksums 语义、加密
 | S-4 `redactedHits` 的持久化 / 审计语义 | **§5.3**（5 处消费点 + 明确「不进 bundle」+ 与 `containsSecrets` 的正交对照表） |
 | G-10 `sections.secrets` 语义澄清 | **§2.5 的显式警告块** + §9 步骤 4 验收判据 + §10 G-10 |
 
-**仍未验证的项**已在 §11 逐条列出（原因 + 已完成的替代验证）。本轮共把**四项**原先的「未验证」实测/读码补齐并移出清单（见 §11 末尾的移除块），并逐条复核了 G-09 / G-10 在当前工作区的真实状态（§10）；**G-08 不再属于「未验证」范畴**——它已按产品决策整体移除，最终状态是「加密不做密码强度校验」（➖，非 ✅，见 §4.6 与 §10 G-08）。
+**仍未验证的项**已在 §11 逐条列出（原因 + 已完成的替代验证）。本轮共把**四项**原先的「未验证」实测/读码补齐并移出清单（见 §11 末尾的移除块），并逐条复核了 G-09 / G-10 在当前工作区的真实状态（§10）；**G-08 不再属于「未验证」范畴**——加密层已整体移除，强度校验问题随之消失（➖，非 ✅，见 §4 与 §10 G-08）。

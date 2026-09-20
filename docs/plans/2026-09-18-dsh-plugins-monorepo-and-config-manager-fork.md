@@ -1108,3 +1108,102 @@ OIDC 每次换取短时、工作流专属、不可导出的凭证，且自动生
 > **未覆盖的一项（如实登记）**：本轮没有「发布一个全新版本」的实测 —— 那需要 bump 版本号，
 > 属发版决策而非验证动作。故「OIDC 能否真正 publish（而非仅 skip）」尚未端到端证明；
 > 但 skip 分支已证明凭证可用，且 `npm view` 需要同样的 registry 访问。
+
+---
+
+### 14.12 加密层移除的收口（补做）
+
+改造一（§7.2）删掉了同步路径的加密语义，但**导出/导入侧的加密层残留**在本轮才清完。本轮把
+「删加密模块」这件事做彻底，并把**同步策略登记**补齐（否则上游同步会静默复活删除的代码）。
+
+#### 14.12.1 代码层残留清理
+
+| 位置 | 残留 | 处置 |
+|---|---|---|
+| `src/ui/report.ts` | 导出报告恒打印「已加密：否」（`security.encrypted` 恒 `false`，无信息量） | 删除该行；`containsSecrets` 的取值文案从 `report.yesEncrypted` 改回普通 `report.yes` |
+| `src/core/types.ts` `ExportReport.security` | `encrypted: boolean` 字段恒 `false`，无任何消费方 | 删除字段 |
+| `src/ui/i18n.ts` | `report.encrypted` / `report.yesEncrypted` / `sync.pushPreviewEncrypted` 三个键（zh + en）成为死键 | 删除 |
+| `src/client/sync/SyncSettingsView.tsx`、`config-manager.module.css`、`sync-locales.ts` | 注释仍写「是否加密」「加密与解密密码」 | 就地改写为现状 |
+| `src/adapters/credentials.ts`、`src/core/importer.ts`、`src/core/analyzer.ts` | 注释指向已不存在的 `m4 加密层` | 改写为文件级 vault / 宿主注入 |
+| `src/core/types.ts` `ImportAnalysis.encrypted` | 注释称「备份是否加密」像是现状描述 | 改注为「旧版加密备份标记，本插件不再产生」 |
+
+**保留项（刻意）**：`ImportAnalysis.encrypted` 字段、`EncryptionInfo` 类型、`EncryptedSections` /
+`isEncryptedSections`、`sync-engine.ts` 对加密快照的拒绝、`analyzer.ts:533-535` 的
+`import.encryptedPasswordRequired` 守卫——它们服务于**识别并拒绝上游历史产物**，不是加密能力本身。
+
+#### 14.12.2 同步策略登记（关键，否则上游同步会复活删除的代码）
+
+`sync-policy.json` 原为 `owned=54 / deleted=150 / added=3`，与当前 fork 实际状态**已漂移**
+（`deleted` 漏登 `src/security/encryption.ts`，`owned` 漏登 25 个我方改过的文件）。
+按仓库 `AGENTS.md`「改了 fork 的文件集就必须重算清单」重跑：
+
+```bash
+node scripts/sync-upstream.mjs --refresh-policy --target config-manager
+```
+
+结果：**`owned=83 / deleted=151 / added=5`**。要点：
+- `src/security/encryption.ts` 进入 `deleted`（上游同步第 4 步会重删，不再复活）；
+- 我方本轮及此前改过的 `docs/spec/*`、`tests/conformance/README.md`、`src/**` 进入 `owned`；
+- **未重新提交前重算无效**：`computeLists` 读的是 `git ls-files`（索引），未 `git add` 的删除不可见。
+
+#### 14.12.3 对外契约同步（`docs/spec/`）
+
+包 `AGENTS.md` 规定「改格式行为必须同步 `docs/spec/`」。本轮同步的文件：
+
+| 文件 | 改动 |
+|---|---|
+| `docs/spec/bundle-format-v1.md` | §4 由「两个加密层」改写为「**加密层（本实现已移除；历史产物仍可被识别）**」：保留字节布局/错误分类**仅供识别上游历史产物**，明确本实现不解密；§0.1 / §1.1 / §2.2 / §2.5 / §3 分区表 / §5.1 / §5.3.1b / §8 / §9 / §10 G-08·G-10 / §11 / 结论段同步改写；新增 M4 修订说明 |
+| `docs/spec/known-gaps.md` | G-08 由「按产品决策移除强度校验」改写为「**随加密层整体移除**」；G-10 的 `exporter.ts:404` → `:372`；`DCA1` 空白项标记为已不适用 |
+| `docs/spec/bundle-manifest.schema.json` | 三处 description 由「解密器校验」改为「本实现不解密、只做对象或 null 判定」 |
+| `docs/spec/headless-consumption.md` | 消费示例的 `ExporterOptions` 去掉已不存在的 `encryption?` |
+| `tests/conformance/README.md` | 删除「加密包」语料与 `ENC-01`/`ENC-02` 用例（对应测试已不存在），加注说明 |
+
+**§5.1 从「默认不含秘密」改写为「秘密如何进入 bundle」**：原文断言 `includeSecrets=true` 必须注入
+`EncryptionProvider`、凭据原文加密进 `secrets.enc`——这些在本 fork **已全部不成立**。现文写明
+`includeSecrets` 的**实际作用只剩「是否刷新本机 vault 镜像」**，结构化分区的值**始终**被剥离，
+且**没有任何凭据值写入归档的通道**；同步通道作为明文例外单独标注。
+
+#### 14.12.4 验收（全部实跑）
+
+| 验收 | 命令 | 结果 |
+|---|---|---|
+| 类型 | `npm run typecheck` | **0 error** |
+| 测试 | `TMPDIR=/private/tmp/realhome/ npm test` | **1273/1273 pass** |
+| 聚合门禁 | `node scripts/aggregate.mjs --check` | `check OK` |
+| 被移除符号零命中 | `grep -rn "createEncryptionProvider\|encryptArchive\|isArchiveBlob\|export.encryptionRequired" src/ tests/` | **零命中**（仅 `docs/spec/` 的历史记录段出现，属刻意保留） |
+| 死 i18n 键零引用 | `grep -rn "report.encrypted\|report.yesEncrypted\|sync.pushPreviewEncrypted" src/ tests/` | **零命中** |
+| policy 覆盖 | `sync-policy.json` 逐条比对当前 fork 状态 | `owned=83 deleted=151 added=5`，`encryption.ts` 在 `deleted` |
+
+#### 14.12.5 与计划 §7.2.6 验收 3 的偏离（如实登记）
+
+§7.2.6 第 3 条冻结为「`grep -rn "includeSecrets\|encryptSectionsPayload\|decryptSectionsPayload\|portableAdapters" src/` **零命中**」。
+实测：`encryptSectionsPayload` / `decryptSectionsPayload` / `portableAdapters` **已零命中**，但
+`includeSecrets` **仍有非测试引用**——它是 `ExportOptions` 的**必填字段**（`src/core/types.ts:24`），
+本 fork 给它保留了**新语义**（「是否刷新本机 vault 镜像」）。引用分三类（`grep -rn includeSecrets src/ | grep -v '\.test\.'`）：
+**1 处声明**（`types.ts:24`）、**约 4 处 Exporter 内部读写**（`exporter.ts:197/303/355` 与文件头注释）、
+**约 10 处调用点传值**（`config-lifecycle`/`config-state`/`profile-manager`/`sync-engine`×4/`export-flow`），
+另有若干说明性注释。
+
+该条验收的**原意**是「同步路径不再有加密开关」，这一点已达成（`sync-selection.json` 只剩
+`{schemaVersion, channels}`，`sync-selection.test.ts` 钉住 `encrypt`/`includeSecrets` 废弃字段被忽略）。
+**但计划措辞与实现语义在这一点上不一致**：按「删除该约束，恒导出真实值」的原意，
+`includeSecrets` 应连同其加密含义一起消失；实际保留的是**同名但语义已变**的开关。
+
+**逐条实测（用于判定该偏离是否可接受）**：
+
+| 事实 | 证据 |
+|---|---|
+| 唯一**读取**该字段的代码是 Exporter 自己 | `src/core/exporter.ts:197`（解构）、`:303`（`if (!includeSecrets)` → 刷 vault）、`:355`（`secretsExcluded`） |
+| **12 个 adapter 全部忽略它**——签名一律 `export(ctx, _options: ExportOptions)`，下划线即未使用 | `grep -n "async export(" src/adapters/*.ts` → 全部 `_options` |
+| 其余 15 处引用是**调用点传值**（`config-lifecycle`/`config-state`/`profile-manager`/`sync-engine`/`export-flow`） | 见上 |
+
+判定：**属于计划措辞过窄，非实现缺陷**。理由有两条实测支撑：① 它当前承载的 vault 语义是真实需要的
+（`export.vaultRefreshed` 告警、`src/security/vault.ts` 的镜像/回填都依赖它）；
+② 删掉它会改 `ExportOptions` 这一**跨 12 个 adapter 的公共契约**，而 §7.2.6-3 的原意
+（同步选择里不再有加密开关）已由 `sync-selection` 的 schema 收敛独立达成。
+
+> **同时记录一处设计事实（非缺陷，供后续维护者理解）**：同步路径携带真实密钥**不是因为**
+> `includeSecrets: true`（adapter 忽略该参数），而是因为 `sync-engine` **直接调用 adapter**
+> （`src/sync/sync-engine.ts:294` / `:355` / `:506` / `:673`）并自行组装 manifest，
+> **绕过了 Exporter 的 `scanAndRedact` 剥离**。这正是 `sectionsCarrySecrets()` 必须独立扫描
+> 并按实际内容标注 `containsSecrets` 的原因（§7.2.4）。

@@ -15,7 +15,7 @@
     "credentialsStatus", "secrets", "sessions", "self"
   ],
   "x-expected-encryption-info": {
-    "description": "说明性形状（规格 §4.4；类型定义 src/schema/types.ts:24-32）。不参与校验：validateManifest 只要求 security.encryption 是对象或 null。算法/KDF 与 KDF 参数值域由 src/security/encryption.ts 的解密器校验（aes-256-gcm / scrypt；N∈[2^14,2^20]、r∈[1,32]、p∈[1,32]、keyLength===32），不属 manifest 结构校验。",
+    "description": "说明性形状（规格 §4.3；类型定义 src/schema/types.ts:24-32）。不参与校验：validateManifest 只要求 security.encryption 是对象或 null。本实现已删除加密层，不再产生该对象（恒为 null）；此处保留形状仅供第三方解密上游历史产物时参考。",
     "required": ["algorithm", "kdf", "kdfParams", "salt", "iv", "authTag", "version"],
     "properties": {
       "algorithm": "aes-256-gcm",
@@ -29,10 +29,10 @@
   },
   "x-semantic-constraints": [
     "exportedAt 必须可被 Date.parse 解析为合法时间（规格 §2.2；src/schema/manifest.ts:93-95）。JSON Schema 2020-12 无内置日期关键字，未以 pattern/format 表达。",
-    "security.encryption 为对象时，其内部字段（algorithm/kdf/kdfParams/salt/iv/authTag/version）在解密阶段另有校验，见 x-expected-encryption-info。",
+    "security.encryption 为对象时，其内部字段（algorithm/kdf/kdfParams/salt/iv/authTag/version）在解密阶段另有校验，见 x-expected-encryption-info。本实现不解密，故只做「对象或 null」判定。",
     "sections 中声明的未知分区键在实现里产生 warning（非 error）并被保留；导入层会丢弃其数据（规格 §7.2 / 缺口 G-01）。本 schema 不表达 warning 语义，故对未知键保持放行。",
     "schemaVersion 的「是否受支持」不属结构校验：实现按 isSupported/canImport 做版本协商（规格 §6），v>1 与 v<1 都硬失败。",
-    "已记录的实现缺口：validateManifest 用 `typeof enc !== 'object'` 判定 security.encryption（src/schema/manifest.ts:117-120），而 JavaScript 中数组的 typeof 也是 'object'，故数组被实现当作合法 encryption 接受。本 schema 按规格 §2.2/§4.4 只接受「对象或 null」，比实现更严——这是刻意的、已记录的落差，不是静默漂移。"
+    "已记录的实现缺口：validateManifest 用 `typeof enc !== 'object'` 判定 security.encryption（src/schema/manifest.ts:117-120），而 JavaScript 中数组的 typeof 也是 'object'，故数组被实现当作合法 encryption 接受。本 schema 按规格 §2.2/§4.3 只接受「对象或 null」，比实现更严——这是刻意的、已记录的落差，不是静默漂移。"
   ],
   "type": "object",
   "required": ["schemaVersion", "exporter", "source", "exportedAt", "sections", "security"],

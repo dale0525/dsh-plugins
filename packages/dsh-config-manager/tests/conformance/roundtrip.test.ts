@@ -33,7 +33,6 @@ import { makeContext, MemSnapshotStore, type MockHostContext } from '../../src/a
 import { parseZip, writeZip } from '../../src/utils/zip.ts';
 import { sha256Hex, buildChecksums } from '../../src/utils/hashing.ts';
 import { CHECKSUMS_FILE, MANIFEST_FILE, parseManifest } from '../../src/schema/manifest.ts';
-import { decryptCredentials, createEncryptionProvider, SecurityError } from '../../src/security/encryption.ts';
 import { isTooNew, describeVersion } from '../../src/schema/versions.ts';
 import { runSchemaMigration } from '../../src/core/analyzer.ts';
 import { zhMsg } from '../../src/core/messages.ts';
@@ -50,10 +49,8 @@ const FIXTURE_SECTIONS: SectionId[] = [
 /** 传给 createAdapters 的 namespace 清单（provider namespace 必须在内） */
 const NS = ['general', 'theme', 'llm-deepseek'];
 
-/** 合成密码与合成凭据（**绝无真实凭据**；仅用于验证加密往返链路） */
-const TEST_PASSWORD = 'conformance-password-123';
+/** 合成凭据值（**绝无真实凭据**）：仅用于验证秘密扫描确实把它剥离了 */
 const FIXTURE_CREDENTIAL_VALUE = 'sk-conformance-fixture-value';
-const CREDENTIALS_YAML = `DEEPSEEK_API_KEY: ${FIXTURE_CREDENTIAL_VALUE}\nOTHER_TOKEN: tok-conformance-fixture\n`;
 
 const SKILL_REL = 'conformance/coding.md';
 const SKILL_BODY = '# Conformance skill\nSynthetic content only.\n';
@@ -88,7 +85,7 @@ async function seedSource(ctx: MockHostContext): Promise<void> {
   });
   // 'theme' 属 UI 类 namespace → 由 ui 分区承载（settings/ui 互斥并集）
   ctx.settings.ns.set('theme', { value: { mode: 'dark', accent: 'blue' }, revision: 1, secrets: [] });
-  // apiKey 是敏感字段 → 导出时被 secret 扫描剥离为空串；凭据真值只经 secrets.enc（加密语料用）
+  // apiKey 是敏感字段 → 导出时被 secret 扫描剥离为空串（本插件无加密层，凭据值从不进备份）
   ctx.settings.ns.set('llm-deepseek', {
     value: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: 'https://api.deepseek.com', model: 'deepseek-chat', apiKey: FIXTURE_CREDENTIAL_VALUE },
     revision: 5,
@@ -111,13 +108,12 @@ async function seedSource(ctx: MockHostContext): Promise<void> {
 async function exportBaseline(
   src: MockHostContext,
   outPath: string,
-  opts: { encryption?: ReturnType<typeof createEncryptionProvider>; includeSecrets?: boolean } = {},
+  opts: { includeSecrets?: boolean } = {},
 ): Promise<void> {
   await new Exporter({
     ctx: src,
     adapters: createAdapters({ namespaces: NS }),
     exporterVersion: '0.1.0-conformance',
-    encryption: opts.encryption,
     now: FIXED_NOW,
   }).export({ includeSecrets: opts.includeSecrets ?? false, only: FIXTURE_SECTIONS, outPath });
 }
@@ -183,7 +179,7 @@ test('RT-01 明文 v1 多分区往返：Exporter → ZIP → Importer → 目标
     ]) {
       assert.ok(archive.has(entry), `ZIP 应包含 ${entry}`);
     }
-    assert.ok(!archive.has('security/secrets.enc'), '未注入 encryption provider 时不得生成 secrets.enc');
+    assert.ok(!archive.has('security/secrets.enc'), '本插件不再生成 secrets.enc（无加密层）');
 
     // checksums 覆盖「除 manifest / checksums 之外」的全部条目，且逐条可校验
     const checksums = archive.readEntryJson(CHECKSUMS_FILE) as Record<string, string>;
@@ -490,123 +486,6 @@ test('FC-04 语义回归：missingSections 只统计「已知分区但文件缺�
     assert.deepEqual(analysis.unsupportedSections, [], '已知分区缺失不得被算成「本版本不支持的分区」');
     // 兼容性：真缺失 → partial（规格 §6.3）
     assert.equal(analysis.compatibility, 'partial', '真实的分区缺失仍必须把兼容性评低');
-  });
-});
-
-/* ═══════════════════════════════════════════════════════════════════════
- * 3. 加密包往返
- * ═══════════════════════════════════════════════════════════════════════ */
-
-test('ENC-01 加密往返：正确密码 → 解密成功、凭据按值恢复、密码与明文均不落 ZIP', async () => {
-  await withTmp(async (dir) => {
-    const src = makeContext('win32', SRC_HOME);
-    await seedSource(src);
-    await src.fs.writeFile(path.join(src.homeDir, '.credentials.yaml'), Buffer.from(CREDENTIALS_YAML, 'utf8'));
-    const zipPath = path.join(dir, 'enc01.zip');
-    await exportBaseline(src, zipPath, { encryption: createEncryptionProvider(TEST_PASSWORD), includeSecrets: true });
-
-    const archive = parseZip(await fs.readFile(zipPath));
-    const manifest = parseManifest(archive.readEntryText(MANIFEST_FILE));
-    assert.equal(manifest.security.encrypted, true, '注入 encryption provider → 备份必须标记加密');
-    assert.equal(manifest.security.containsSecrets, true, 'includeSecrets=true 且凭据文件非空 → containsSecrets=true');
-    assert.ok(manifest.security.encryption, '必须记录加密参数（算法/KDF/salt/iv/authTag）');
-    assert.equal(manifest.security.encryption!.algorithm, 'aes-256-gcm');
-    assert.equal(manifest.security.encryption!.kdf, 'scrypt');
-    assert.ok(archive.has('security/secrets.enc'), '必须写入 security/secrets.enc');
-
-    // 密码与明文凭据绝不落盘（secrets.enc 为密文，单独排除）
-    for (const name of archive.names()) {
-      if (name === 'security/secrets.enc') continue;
-      const text = Buffer.from(archive.readEntry(name)).toString('utf8');
-      assert.ok(!text.includes(TEST_PASSWORD), `密码不得出现在 ${name}`);
-      assert.ok(!text.includes(FIXTURE_CREDENTIAL_VALUE), `明文凭据不得出现在 ${name}`);
-    }
-
-    // 宿主侧解密（第三方 importer 用同一路径恢复凭据）
-    const plaintext = await decryptCredentials(
-      archive.readEntry('security/secrets.enc'),
-      manifest.security.encryption!,
-      TEST_PASSWORD,
-    );
-    assert.equal(plaintext, CREDENTIALS_YAML, '正确密码必须解出原始 .credentials.yaml 文本');
-
-    const dst = seedCleanTarget();
-    const importer = makeImporter(dst);
-    const analysis = await importer.analyzeImport(zipPath);
-    assert.equal(analysis.encrypted, true, '分析结果必须暴露 encrypted 标志，UI 据此索要密码');
-    assert.equal(analysis.secretCount, 1);
-
-    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
-    assert.ok(plan.missingSecrets.some((s) => s.ref === 'DEEPSEEK_API_KEY'), '已配置但未导出值的凭据必须出现在 missingSecrets');
-
-    // 不变量：加密包未提供解密结果 → 拒绝执行（不允许静默降级为「缺凭据照常导入」）
-    await assert.rejects(
-      () => importer.executeImportPlan(zipPath, plan, { confirm: true }),
-      /解密密码才能导入/,
-      '加密备份无 decryptedCredentials 必须拒绝执行',
-    );
-    assert.equal(await exists(dst, path.join('skills', SKILL_REL)), false, '拒绝时不得产生任何写入');
-
-    const map = new Map<string, string>();
-    for (const row of plaintext.split('\n')) {
-      const m = /^([A-Za-z0-9_]+):\s*(.+)$/.exec(row.trim());
-      if (m) map.set(m[1]!, m[2]!);
-    }
-    const result = await importer.executeImportPlan(zipPath, plan, { confirm: true, decryptedCredentials: map });
-    assert.equal(result.ok, true);
-    assert.deepEqual(result.missingSecrets, [], '解密覆盖的凭据不再计入缺失');
-    assert.equal(dst.credentials.values.get('DEEPSEEK_API_KEY'), FIXTURE_CREDENTIAL_VALUE, '凭据必须按值恢复');
-    assert.deepEqual(
-      dst.settings.ns.get('general')?.value,
-      { theme: 'dark', language: 'zh-CN', nested: { keep: [1, 2, 3], text: '你好，世界！' } },
-      '加密包的非凭据分区同样必须往返无损',
-    );
-  });
-});
-
-test('ENC-02 加密往返：错误密码 → BAD_PASSWORD，且解密失败路径零写入（无半写入状态）', async () => {
-  await withTmp(async (dir) => {
-    const src = makeContext('win32', SRC_HOME);
-    await seedSource(src);
-    await src.fs.writeFile(path.join(src.homeDir, '.credentials.yaml'), Buffer.from(CREDENTIALS_YAML, 'utf8'));
-    const zipPath = path.join(dir, 'enc02.zip');
-    await exportBaseline(src, zipPath, { encryption: createEncryptionProvider(TEST_PASSWORD), includeSecrets: true });
-
-    const archive = parseZip(await fs.readFile(zipPath));
-    const manifest = parseManifest(archive.readEntryText(MANIFEST_FILE));
-    const blob = archive.readEntry('security/secrets.enc');
-
-    // 密码错误 → GCM 认证失败 → BAD_PASSWORD（分类明确，不得退化成「损坏」或静默成功）
-    await assert.rejects(
-      () => decryptCredentials(blob, manifest.security.encryption!, 'wrong-password-999'),
-      (err: unknown) => err instanceof SecurityError && err.code === 'BAD_PASSWORD',
-      '错误密码必须抛 SecurityError(BAD_PASSWORD)',
-    );
-
-    // 错误密码发生在解密阶段（任何执行之前）→ 目标必须完全未被触碰
-    const dst = seedCleanTarget();
-    const importer = makeImporter(dst);
-    const plan = await importer.createImportPlan(zipPath, { strategy: 'merge', resolutions: {}, pathMappings: [] });
-
-    let failure: unknown = null;
-    try {
-      await decryptCredentials(blob, manifest.security.encryption!, 'wrong-password-999');
-    } catch (err) {
-      failure = err;
-    }
-    assert.ok(failure instanceof SecurityError, '错误密码必须让解密步骤失败');
-
-    // 半写入检查：settings / 文件 / patch 行 / 凭据全部保持原样
-    assert.equal(dst.settings.ns.get('general'), undefined, '错误密码不得写入任何 namespace');
-    assert.equal(await exists(dst, path.join('skills', SKILL_REL)), false, '错误密码不得写入任何文件');
-    assert.equal(dst.patchFile.lines.size, 0, '错误密码不得写入任何 patch 行');
-    assert.equal(dst.credentials.values.size, 0, '错误密码不得写入任何凭据');
-
-    // 即便用户「确认执行」但解密结果为空，凭据项也绝不得被写入
-    const result = await importer.executeImportPlan(zipPath, plan, { confirm: true, decryptedCredentials: new Map() });
-    assert.equal(result.ok, true, '非凭据分区照常导入（密码错误只影响凭据）');
-    assert.equal(dst.credentials.values.size, 0, '空解密结果绝不得写入凭据');
-    assert.deepEqual(result.missingSecrets, ['DEEPSEEK_API_KEY'], '未提供的凭据必须如实报告为缺失');
   });
 });
 

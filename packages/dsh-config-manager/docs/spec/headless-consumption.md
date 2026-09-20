@@ -87,7 +87,7 @@ CLI 入口（`bin: dsh-config-manager` → `lib/cli/index.js`）同样只用 Nod
 ```js
 import { Exporter, EXPORTER_INFO } from 'dsh-config-manager/core'
 
-// ExporterOptions: { ctx, adapters, scanner?, encryption?, exporterVersion?, now? }
+// ExporterOptions: { ctx, adapters, scanner?, exporterVersion?, now?, onSection?, vaultDataDir? }
 const exporter = new Exporter({ ctx, adapters })
 
 // ExportOptions: 分区选择、是否含 secret、目标路径……

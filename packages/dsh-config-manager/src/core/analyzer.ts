@@ -526,8 +526,9 @@ export class Analyzer {
       throw new ImportNotConfirmedError(this.msg);
     }
 
-    // 10b. 加密不变量：加密备份必须已成功解密（decryptedCredentials 由宿主用备份密码
-    // 解开 security/secrets.enc 后注入）。未解密（undefined）一律拒绝执行——
+    // 10b. 旧版加密备份的兼容不变量：本插件已无加密层，但历史产物仍可能带
+    // manifest.security.encrypted=true。这类备份的凭据必须由宿主解密后注入
+    // （decryptedCredentials）；未注入（undefined）一律拒绝执行——
     // 不允许把加密凭据静默降级为「缺凭据照常导入」，否则加密备份与普通备份无区别。
     if (bundle.manifest.security.encrypted && opts.decryptedCredentials === undefined) {
       throw new Error(this.msg('import.encryptedPasswordRequired'));
@@ -725,8 +726,8 @@ export class Analyzer {
     // M1：导入成功 → 快照标记 done（元数据写失败只告警，不改变导入结论）
     await this.markSnapshotStatus(snapshot.id, 'done');
 
-    // F1 vault 回填：导出时敏感文件（.credentials.yaml 等）明文未进备份（includeSecrets=false
-    // 时镜像到 <dataDir>/vault），导入成功后从本机 vault 回填 $DSH_HOME；vault 缺失
+    // F1 vault 回填：includeSecrets=false 的导出会把敏感文件（.credentials.yaml 等）镜像到
+    // <dataDir>/vault 而不进备份，导入成功后从本机 vault 回填 $DSH_HOME；vault 缺失
     // （跨机恢复 / 从未镜像过）记入警告提示用户重填。尽力而为：失败仅警告，不影响导入结论。
     try {
       const vaultDataDir = path.join(this.ctx.homeDir, 'dsh-config-manager');

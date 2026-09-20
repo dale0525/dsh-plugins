@@ -5,7 +5,7 @@
  * HostContext 是 m3 定义、m5 实现的 DSH Service 门面（研究报告 §3.2 的叶子方法最小集），
  * 测试用内存 mock 即可驱动完整导出→导入往返。
  */
-import type { EncryptionInfo, Manifest, SectionId, WorkspaceRecord } from '../schema/types.ts';
+import type { Manifest, SectionId, WorkspaceRecord } from '../schema/types.ts';
 import type { TombstoneKind } from '../schema/tombstones.ts';
 import type { MutationLockPort } from '../utils/env-lock.ts';
 import type { RecursiveListing } from '../utils/recursive-walk.ts';
@@ -16,7 +16,11 @@ import type { MsgFunc } from './messages.ts';
 /* ---------------- 导出选项与分区产出 ---------------- */
 
 export interface ExportOptions {
-  /** 是否包含真实秘密（必须配合 encryption 提供者；缺省 false = 只导状态） */
+  /**
+   * 是否把真实秘密写入备份。本插件不再有加密层（备份恒为明文），结构化分区的秘密值
+   * 始终由 SecretScanner 剥离，故本开关当前的实际作用只剩「是否刷新本机 vault 镜像」：
+   * false → 导出后把敏感文件镜像到本机 vault（明文不进归档）。
+   */
   includeSecrets: boolean;
   /** 仅导出指定分区（缺省 = 全部默认包含分区） */
   only?: SectionId[];
@@ -235,7 +239,7 @@ export interface ImportAnalysis {
   pathIssues: PathIssue[];
   secretCount: number;
   dependencyIssues: { item: string; dependency: string }[];
-  /** 备份是否加密（manifest.security.encrypted）：加密备份的凭据必须用解密密码恢复 */
+  /** 旧版加密备份标记（manifest.security.encrypted）：本插件不再产生，仅历史产物为 true */
   encrypted: boolean;
 }
 
@@ -298,6 +302,7 @@ export interface ImportContext {
   resolutions: Record<string, ItemResolution>;
   /** 用户补录的秘密值（仅内存，永不落盘/日志） */
   secretInputs: Record<string, string>;
+  /** 旧版加密备份的解密结果（仅内存；宿主解密后注入） */
   decryptedCredentials?: Map<string, string>;
   log: Logger;
   /** 消息翻译器（analyzer 注入；适配器用它生成计划项描述/校验/结果消息） */
@@ -466,7 +471,6 @@ export interface ExportReport {
   security: {
     secretsExcluded: boolean;
     containsSecrets: boolean;
-    encrypted: boolean;
     redactedHits: number;
     /** 本次导出镜像到本机 vault 的敏感文件数（文件级 vault；0 或缺失 = 未镜像） */
     vaultRefreshed?: number;
@@ -502,14 +506,6 @@ export interface ConfigAdapter<TSection = unknown> {
 
   /** 可选：针对本 adapter 的补偿动作 */
   rollback?(entries: SnapshotEntry[], ctx: HostContext): Promise<void>;
-}
-
-/* ---------------- 加密提供者（m4 用 node:crypto 实现） ---------------- */
-
-export interface EncryptionProvider {
-  encrypt(plaintext: string): Promise<{ blob: Uint8Array; info: EncryptionInfo }>;
-  /** authTag 校验失败必须抛错 */
-  decrypt(blob: Uint8Array, info: EncryptionInfo, password: string): Promise<string>;
 }
 
 /* ---------------- 错误类型 ---------------- */
