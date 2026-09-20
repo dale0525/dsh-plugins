@@ -89,7 +89,11 @@ export default class CtxMemEngine extends BasicCompactionEngine {
 
   /**
    * This backend's own configuration, split out of the row config.
-   * @type {{ fillEnabled: boolean, fillProvider: string, fillModel: string, language: string }}
+   *
+   * Mirrors the `own` half of {@link splitConfig}, which is the single place the
+   * defaults are defined — see `src/config.js` for what each key means.
+   *
+   * @type {{ fillEnabled: boolean, fillProvider: string, fillModel: string, language: string, maxCheckpointTokens: number }}
    */
   ctxMemConfig;
 
@@ -142,11 +146,23 @@ export default class CtxMemEngine extends BasicCompactionEngine {
     const denominator = shadowedPrice(this.ctx, input.messages);
     const budget = this.ctxMemConfig.maxCheckpointTokens;
     const framed = frameEstimator(this.ctx);
+    // One expression, four call sites: the budget is the region's own price net
+    // of the frame reserve, clamped by the absolute cap. `withCausal` subtracts
+    // the causal allowance as well, which is only right for the passes that run
+    // *before* the causal section exists (its input skeleton, and the two
+    // deterministic checkpoints that never get one).
+    const budgetFor = (withCausal) =>
+      capped(
+        denominator === undefined
+          ? undefined
+          : denominator - FRAME_RESERVE - (withCausal ? CAUSAL_ALLOWANCE : 0),
+        budget,
+      );
 
     if (!this.ctxMemConfig.fillEnabled) {
       const { text, tier, floorHit } = renderCheckpoint(
         facts,
-        capped(denominator === undefined ? undefined : denominator - CAUSAL_ALLOWANCE - FRAME_RESERVE, budget),
+        budgetFor(true),
         framed(undefined),
       );
       this.logFloor(denominator, tier, floorHit);
@@ -159,7 +175,7 @@ export default class CtxMemEngine extends BasicCompactionEngine {
       // the facts and avoids failing a compaction the host already committed to.
       const { text, tier, floorHit } = renderCheckpoint(
         facts,
-        capped(denominator === undefined ? undefined : denominator - CAUSAL_ALLOWANCE - FRAME_RESERVE, budget),
+        budgetFor(true),
         framed(undefined),
       );
       this.logFloor(denominator, tier, floorHit);
@@ -176,7 +192,7 @@ export default class CtxMemEngine extends BasicCompactionEngine {
     // causal section that does not exist yet. It is only the fill call's input.
     const provisional = renderCheckpoint(
       facts,
-      capped(denominator === undefined ? undefined : denominator - CAUSAL_ALLOWANCE - FRAME_RESERVE, budget),
+      budgetFor(true),
       framed(undefined),
     );
 
@@ -196,7 +212,7 @@ export default class CtxMemEngine extends BasicCompactionEngine {
     const causal = normalizeCausal(raw);
     const final = renderCheckpoint(
       facts,
-      capped(denominator === undefined ? undefined : denominator - FRAME_RESERVE, budget),
+      budgetFor(false),
       framed(causal),
     );
     this.logFloor(denominator, final.tier, final.floorHit);
