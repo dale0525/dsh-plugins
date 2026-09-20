@@ -28,6 +28,23 @@ function tempStore(): { store: WorkBuddyCatalogStore; path: string } {
   return { store: new WorkBuddyCatalogStore({ path }), path }
 }
 
+/**
+ * A path that cannot be created on any platform: its parent is a regular file,
+ * so mkdir/write fail with ENOTDIR everywhere.
+ *
+ * A hardcoded `/proc/...` path is the wrong probe for this: `/proc` only
+ * exists on Linux, so on macOS and Windows the path is merely absent (the test
+ * passes for the wrong reason) while on the Linux CI runner it does not fail
+ * cleanly and stalls the suite.
+ */
+function unwritablePath(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'wb-unwritable-'))
+  CLEANUP.push(dir)
+  const blocker = join(dir, 'blocker')
+  writeFileSync(blocker, 'not a directory')
+  return join(blocker, 'catalog.json')
+}
+
 function model(id: string): WorkBuddyUpstreamModel {
   return {
     id,
@@ -107,7 +124,7 @@ describe('WorkBuddyCatalogStore', () => {
   })
 
   it('survives an unwritable path without throwing', () => {
-    const store = new WorkBuddyCatalogStore({ path: '/proc/definitely-not-writable/catalog.json' })
+    const store = new WorkBuddyCatalogStore({ path: unwritablePath() })
     // Saving is best-effort: the plugin has already served these models, and a
     // failed write must not surface as a crash.
     expect(() => store.set('uid-1:ent-1', { source: 's', fetchedAtMs: 1, models: [model('a')] })).not.toThrow()

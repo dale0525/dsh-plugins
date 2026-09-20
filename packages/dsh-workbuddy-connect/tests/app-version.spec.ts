@@ -30,6 +30,23 @@ async function tempPath(): Promise<string> {
   return join(root, 'version.json')
 }
 
+/**
+ * A path that cannot be created on any platform: its parent is a regular file,
+ * so mkdir/write fail with ENOTDIR everywhere.
+ *
+ * A hardcoded `/proc/...` path is the wrong probe for this: `/proc` only
+ * exists on Linux, so on macOS and Windows the path is merely absent (the test
+ * passes for the wrong reason) while on the Linux CI runner it does not fail
+ * cleanly and stalls the suite.
+ */
+async function unwritablePath(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'wb-unwritable-'))
+  CLEANUP.push(() => rm(root, { recursive: true, force: true }))
+  const blocker = join(root, 'blocker')
+  await writeFile(blocker, 'not a directory')
+  return join(blocker, 'version.json')
+}
+
 describe('validAppVersion', () => {
   it('accepts only dotted numeric versions', () => {
     expect(validAppVersion('5.5.2')).toBe(true)
@@ -137,7 +154,7 @@ describe('resolveAppVersion', () => {
     // A read-only home must not take the catalog down with it.
     await expect(resolveAppVersion({
       installed: async () => ({ version: '5.5.2', bundle: '/x' }),
-      path: '/proc/definitely-not-writable/version.json',
+      path: await unwritablePath(),
     })).resolves.toMatchObject({ version: '5.5.2', source: 'installed' })
   })
 
