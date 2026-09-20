@@ -294,6 +294,104 @@ test('A13 — a smaller budget never yields more commands (the causal competitio
   assert.ok(counts[counts.length - 1] < counts[0], `a tight budget must cost commands, got ${JSON.stringify(counts)}`);
 })
 
+/**
+ * One turn carrying a large write-like command.
+ *
+ * Needed by the A1 test: the shared `pushTurn` produces such small facts that
+ * every tier holds them whole, so the budget never binds and a denominator
+ * difference stays invisible. A ~2000-char heredoc per turn makes the T1 form
+ * exceed the budget, so the denominator is what decides the rendered price.
+ */
+function pushBigTurn(events, seq, index) {
+  events.push({
+    type: 'user/message',
+    seq,
+    data: { role: 'user', content: [{ type: 'text', text: `write config ${index}` }] },
+  });
+  events.push({
+    type: 'assistant/message',
+    seq: seq + 1,
+    data: {
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool-call', name: 'bash', arguments: JSON.stringify({ command: `cat > /repo/cfg-${index}.yml <<'EOF'\n${'x'.repeat(2000)}\nEOF` }) }],
+      },
+    },
+  });
+  events.push({
+    type: 'tool/result',
+    seq: seq + 2,
+    data: { message: { role: 'user', content: [{ type: 'tool-result', content: [{ type: 'text', text: 'written' }] }] } },
+  });
+  return seq + 3;
+}
+
+test('A1 — the denominator mirrors the host firstIdx in BOTH system-head cases', async () => {
+  // The host's `selectCompactableRange` uses
+  // `firstIdx = systemHead(session, surfaceNodes[0]) === undefined ? 0 : 1`:
+  // the leading message is skipped only when it really is a system message, so
+  // a region with no system head starts at index 0. Skipping blindly would
+  // under-count the denominator and stop mirroring the host — which is the
+  // whole point of A1 (measured 11/11 exact against `shadowedRouteTokenCount`).
+  //
+  // The two fixtures are built so the HOST denominator is identical:
+  //   with a head:    [system(H), user(H), turns…]  → host skips the system
+  //   without a head: [user(H),        turns…]      → host keeps everything
+  // Both sum to H + turns. The engine must therefore reach the same budget, and
+  // spend it the same way, in both cases. Under a blind index-0 skip the second
+  // fixture loses H from its denominator and renders a smaller checkpoint.
+  //
+  // The assertion is on the framed price, not on the retained command count:
+  // both fixtures keep every command (the budget binds on detail, not on
+  // dropping), so only the price reveals that the budget differed.
+  const HEAD = 'context '.repeat(1500); // ≈3000 estimated tokens
+  const turns = 25;
+
+  const withHead = [
+    { type: 'system/message', seq: 0, data: { message: { role: 'system', content: [{ type: 'text', text: HEAD }] } } },
+    { type: 'user/message', seq: 1, data: { role: 'user', content: [{ type: 'text', text: HEAD }] } },
+  ];
+  for (let i = 0; i < turns; i += 1) pushBigTurn(withHead, withHead.length, i);
+
+  const withoutHead = [
+    { type: 'user/message', seq: 0, data: { role: 'user', content: [{ type: 'text', text: HEAD }] } },
+  ];
+  for (let i = 0; i < turns; i += 1) pushBigTurn(withoutHead, withoutHead.length, i);
+
+  const render = async (events) => {
+    const session = sessionFor(events);
+    const messages = events.map((event) => session.deriveEventMessage(event));
+    const { ctx } = budgetContext();
+    const engine = new CtxMemEngine(ctx, { thresholdRatio: 0.8, retainRatio: 0.16, maxCheckpointTokens: 24000 });
+    const result = await engine.summarize({ messages }, AGENT(session));
+    return { messages, price: framePrice(result.summary.map((b) => b.text).join('')) };
+  };
+
+  const head = await render(withHead);
+  const noHead = await render(withoutHead);
+
+  // The host denominator: skip index 0 only when it is a system message.
+  const hostDenominator = (messages) =>
+    messages[0]?.role === 'system'
+      ? messages.slice(1).reduce((total, m) => total + estimateMessage(m), 0)
+      : messages.reduce((total, m) => total + estimateMessage(m), 0);
+
+  const denominator = hostDenominator(head.messages);
+  assert.equal(
+    denominator,
+    hostDenominator(noHead.messages),
+    'the two fixtures must present the same host denominator, or this test proves nothing',
+  );
+  assert.ok(head.price < denominator, 'with a system head: the guard must hold');
+  assert.ok(noHead.price < denominator, 'without a system head: the guard must hold');
+  assert.equal(
+    noHead.price,
+    head.price,
+    `equal host denominators must yield equal checkpoints (got ${noHead.price} vs ${head.price}) — ` +
+      `a blind index-0 skip under-counts a region that has no system head`,
+  );
+})
+
 test('with no tokenMeter the engine still produces a checkpoint', async () => {
   const events = growingRegion(30);
   const session = sessionFor(events);

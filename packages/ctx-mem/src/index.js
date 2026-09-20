@@ -259,9 +259,15 @@ function maxTokensFor(config, target) {
  * (measured 11/11 against the host's own value), which is what makes the budget
  * a real ceiling rather than a guess.
  *
- * The leading `system/message` is skipped because the host's
- * `selectCompactableRange` starts at index 1 — pricing it would inflate the
- * denominator and hand the renderer a budget it cannot actually spend.
+ * A leading `system/message` is skipped because the host's
+ * `selectCompactableRange` starts at index 1 in that case — pricing it would
+ * inflate the denominator and hand the renderer a budget it cannot actually
+ * spend. The skip is **conditional**, exactly as the host's
+ * `firstIdx = systemHead(...) === undefined ? 0 : 1`: a region with no system
+ * head starts at index 0, so skipping blindly would under-count the
+ * denominator. Under-counting is the safe direction (a smaller budget can only
+ * make the checkpoint cheaper), but it would also make this function stop
+ * mirroring the host, and A1's whole value is that the two agree.
  *
  * @param {any} ctx Service context; must carry a `tokenMeter`.
  * @param {readonly any[]} messages Replayed region messages.
@@ -272,8 +278,13 @@ function shadowedPrice(ctx, messages) {
   const meter = ctx?.tokenMeter;
   if (typeof meter?.estimateMessage !== 'function' || !Array.isArray(messages)) return undefined;
 
+  // `buildSummarizationInput` prepends the surface head's derived message only
+  // when that head is a `system/message`; the host then starts the range at 1.
+  const head = messages[0];
+  const startsWithSystem = head !== null && head !== undefined && head.role === 'system';
+
   let total = 0;
-  for (let index = 1; index < messages.length; index += 1) {
+  for (let index = startsWithSystem ? 1 : 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (message === undefined || message === null) continue;
     total += meter.estimateMessage(message);
