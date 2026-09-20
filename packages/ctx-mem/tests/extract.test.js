@@ -427,6 +427,68 @@ test('errors — non-decoration output with a nonzero exit is never dropped', ()
   assert.deepEqual(facts.errors, ['bash: dsh-scope'], 'a bare non-decoration line must be kept')
 })
 
+test('errors — a decoration-shaped go test failure line is kept as an error', () => {
+  // The shape test alone reads `--- FAIL: TestAdd (0.00s)` as a run of dashes,
+  // i.e. a banner, and drops a real test failure from the checkpoint. It is
+  // genuinely a failure statement, so a line that names a failure is exempt
+  // from the shape test. Note it carries no `failed`/`failure` substring, so it
+  // cannot be rescued by the existing error-pattern branch — the carve-out in
+  // isDecorationLine is the only thing that saves it.
+  const own = [
+    assistantMsg(1, [callBlock('call_gofail', 'bash', { command: 'go test ./...' })]),
+    toolResult(2, 'call_gofail', '--- FAIL: TestAdd (0.00s)\n[exit code: 1]', false),
+  ]
+
+  const facts = extractFacts(stubRegion(own))
+
+  assert.deepEqual(
+    facts.errors,
+    ['bash: --- FAIL: TestAdd (0.00s)'],
+    'a go test failure line must be kept despite its decoration shape',
+  )
+})
+
+test('errors — a decoration-shaped jest failure line is kept as an error', () => {
+  // `--- FAIL ./sum.test.js ---` is bracketed by dash runs, so the shape test
+  // would classify the whole line as decoration. It names a failure, so it is
+  // output, not a banner, and must survive into the checkpoint verbatim.
+  const own = [
+    assistantMsg(1, [callBlock('call_jestfail', 'bash', { command: 'npx jest' })]),
+    toolResult(2, 'call_jestfail', '--- FAIL ./sum.test.js ---\n[exit code: 1]', false),
+  ]
+
+  const facts = extractFacts(stubRegion(own))
+
+  assert.deepEqual(
+    facts.errors,
+    ['bash: --- FAIL ./sum.test.js ---'],
+    'a jest failure banner must be kept despite its decoration shape',
+  )
+})
+
+test('errors — the failure keyword carve-out decides both directions of the decoration test', () => {
+  // Both directions pinned together, because a carve-out that is too broad is
+  // as wrong as one that is missing: the exemption must let a failure-naming
+  // heading through while the plain banner still drops. `##### FAIL: ...`
+  // exercises the ATX-heading branch of the shape test (the two tests above
+  // exercise the character-run branch), and carries no `failed`/`failure`
+  // substring, so only the carve-out can keep it.
+  const own = [
+    assistantMsg(1, [callBlock('call_heading_fail', 'bash', { command: 'go test ./...' })]),
+    toolResult(2, 'call_heading_fail', '##### FAIL: TestAdd (0.00s)\n[exit code: 1]', false),
+    assistantMsg(3, [callBlock('call_heading_plain', 'bash', { command: 'echo "##### session"' })]),
+    toolResult(4, 'call_heading_plain', '##### session\n[exit code: 1]', false),
+  ]
+
+  const facts = extractFacts(stubRegion(own))
+
+  assert.deepEqual(
+    facts.errors,
+    ['bash: ##### FAIL: TestAdd (0.00s)'],
+    'a failure-naming heading is kept while a failure-free heading is dropped as a banner',
+  )
+})
+
 test('errors — a result consisting of nothing but [exit code: 1] is kept', () => {
   // When the result carries no real output text at all (nothing but markers),
   // the nonzero exit code is reportable and must not be dropped.

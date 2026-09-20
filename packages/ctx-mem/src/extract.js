@@ -40,6 +40,16 @@ const ERROR_PATTERN_EN =
 /** Chinese error signal, applied in addition to the English one. */
 const ERROR_PATTERN_ZH = /(失败|错误|报错|异常|找不到|未找到|不存在|无法|拒绝|超时|崩溃|致命)/
 
+/**
+ * Failure keyword, matched anywhere in a line to exempt it from the
+ * decoration-shape test — see {@link isDecorationLine}.
+ *
+ * The trailing word boundary is omitted on purpose so a single stem covers
+ * `fail` / `failed` / `failure` / `failures` / `FAILED` and
+ * `assert` / `assertion`.
+ */
+const FAILURE_KEYWORD = /\b(?:fail|error|panic|assert|fatal|exception)/i
+
 /** Tool-name prefix used when a result cannot be paired back to its call. */
 const UNKNOWN_TOOL_PREFIX = 'tool'
 
@@ -407,12 +417,29 @@ function recordError(facts, name, content, isError = false) {
  * conservative direction is to keep them and only drop lines that *look* like
  * decoration.
  *
+ * Shape alone is nevertheless too coarse, because real test frameworks print
+ * their failures in exactly that shape. `go test` emits
+ * `--- FAIL: TestAdd (0.00s)` and `jest` emits `--- FAIL ./sum.test.js ---`;
+ * both are runs of three or more `-` and would be classified as banners,
+ * silently discarding a genuine failure from the checkpoint. So a
+ * decoration-shaped line that **names a failure** is not decoration: the
+ * failure keyword is checked first, and only a line with no failure word is
+ * eligible for the shape test.
+ *
+ * The keyword test has no trailing word boundary on purpose, so one stem covers
+ * `fail` / `failed` / `failure` / `failures` / `FAILED` and likewise
+ * `assert` / `assertion`. It stays narrow enough to leave real banners alone: a
+ * section delimiter such as cargo's `---- tests::add stdout ----` carries no
+ * failure word, so it is still dropped — correctly, since it delimits output
+ * rather than stating a failure.
+ *
  * @param {string} line
  * @returns {boolean}
  */
 function isDecorationLine(line) {
   const trimmed = line.trim()
   if (trimmed === '') return false
+  if (FAILURE_KEYWORD.test(trimmed)) return false
   if (/^#{1,6}\s+\S/.test(trimmed)) return true
   return /[=#*_~+-]{3,}/.test(trimmed)
 }
@@ -425,7 +452,9 @@ function isDecorationLine(line) {
  * Such an entry is noise unless the host explicitly marked it failed, it was
  * killed by signal / timed out / denied by sandbox, its first line carries an
  * error signal, its first line is the marker itself (nothing but markers), or
- * its first line is not decoration.
+ * its first line is not decoration — which includes a decoration-shaped line
+ * that names a failure, such as `--- FAIL: TestAdd (0.00s)` (see
+ * {@link isDecorationLine}).
  *
  * @param {unknown} content
  * @param {string} line
