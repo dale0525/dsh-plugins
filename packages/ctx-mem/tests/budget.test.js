@@ -176,7 +176,7 @@ test('A14 — a large region is bounded by maxCheckpointTokens', async () => {
   assert.ok(price < denominatorOf(events), 'and must still satisfy the guard');
 })
 
-test('A4/A6 vs A14 — intents and files are never trimmed, so they may exceed the cap', async () => {
+test('A18 / A4 / A6 vs A14 — intents and files are never trimmed, so they may exceed the cap', async () => {
   // The floor tier is deliberately exempt from the cap: intents and files are
   // the 0.7% of the checkpoint that carries the intent, and the renderer must
   // never silently drop them to satisfy a ceiling. This pins that the cap is
