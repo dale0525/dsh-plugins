@@ -830,40 +830,39 @@ const firstIdx = systemHead(session, surfaceNodes[0]) === void 0 ? 0 : 1;
 两者必然相交——这正是生产上 27 次 guard 失败（超出 59–2,287 token）的成因，
 也是「固定规则渲染无论调多小都会越界」的实证。
 
-### 10.5 交付缺口（实施完成但用户尚不可见）
+### 10.5 交付缺口（已关闭）
 
-**本计划的四项改动都已进仓库，但用户界面上看不到任何变化。** 这不是回归，是交付链的
-一个未记入计划的环节，必须写明，否则「S5 已完成」会被误读为「插件页已经只剩一个条目」。
+**发布已完成**（2026-09-20，CI run `35507367134`）：`workflow_dispatch` 落在 `main`
+（`cbc9dca`）且显式 `dry_run=false`，publish job 全绿 —— Typecheck / Test /
+`aggregate.mjs --check` / 逐包发布均 success。
 
-实测（2026-09-20）：
+| 包 | 版本 | shasum | 打包文件数 |
+|---|---|---|---|
+| `@logictan/dsh-ctx-mem` | 0.2.0 | `0d635e3c…` | 16 |
+| `@logictan/dsh-plugins-all` | 0.5.0 | `c7faf873…` | 2 |
 
-| 位置 | `id: ctx-mem` 行数 | 是否有 S1/S2 代码 |
-|---|---|---|
-| 仓库工作集 | 1（只有 bridge） | 有（`render.js` / `isNoiseExitError` / `maxCheckpointTokens`） |
-| 已发布的 `@logictan/dsh-plugins-all@0.4.0` | **2** | —— |
-| 用户 profile `~/.dsh/profiles/web/node_modules/` | **2** | **无**（`lib/` 里没有 `render.js`，`extract.js` 无 `isNoiseExitError`） |
+两者都带 sigstore provenance 语句；`npm view` 已回读到 `0.2.0` / `0.5.0`，dist-tag
+`latest` 指向新版本。其余 7 个包的版本早已在线，被 `npm view "$name@$version"` 判重跳过。
 
-用户 profile 依赖的是 `"@logictan/dsh-plugins-all": "^0.4.0"`，即 npm 上的**已发布版本**，
-而不是本仓库。本仓库的 `packages/all/package.json` 版本号**仍是 0.4.0**，与已发布版本
-**同号但内容不同**（ctx-mem 块 16 增 14 删）。因此：
+**为什么走 workflow_dispatch 而不是 tag**：tag `v0.5.0` 指向 `3c485ef`，不含下面那笔
+CI 门禁修复；移动已推送的 tag 属 §2 禁区（重写 Git 历史）。workflow 显式支持「`main` 上的
+手动触发且 `dry_run=false`」这条路径。发布产物与 tag 指向无关：两个包的 `files` 都不含
+`packages/dsh-workbuddy-connect/**`，从 `cbc9dca` 与从 `3c485ef` 发出的 tarball 逐字节相同。
 
-1. 本计划的改动要到达用户界面，必须**重新发布**聚合包；
-2. 同号重发不可行（npm 拒绝覆盖已发布版本），故必须先**升版本**（0.4.0 → 0.5.0）；
-3. 升版本与发布都不在本计划的授权范围内（§2.1 未列），需用户裁定。
+**CI 门禁修复（本轮发现）**：上一轮 tag 发布（run `35505235880`）在 `ubuntu-latest` 上
+`cancelled`，Test 步 10:30:28Z → 11:00:15Z 撞上 `timeout-minutes: 30`。根因是
+`packages/dsh-workbuddy-connect` 有两条测试把「不可写路径」写成硬编码 `/proc/...`：`/proc`
+只存在于 Linux，macOS 上该路径仅是不存在（快速失败，测试为错误的原因通过），Linux 上
+`mkdir` 不返回，整个套件挂死。改成「父路径是普通文件」的跨平台不可写路径（`mkdir` /
+`writeFile` 在三个平台都稳定抛 `ENOTDIR` / `EEXIST`），并给该包最慢的 `boot()` 等待补上
+显式 20s 预算。两条 spec 已由 `sync-upstream.mjs --refresh-policy` 登记进 `sync-policy.json`
+的 `owned`。
 
-**因此 A16 / A17 的判据需要分开看**：
-
-- **A16**（本包 patch 只有一行、`aggregate.mjs --check` 通过）—— **仓库内已满足**，
-  可独立验收；
-- **A17**（真实 Web GUI 里跑一次压缩、断言 `compaction/end` 无 error）—— **未验收**，
-  且在当前 profile 下**不可能验收**：GUI 里跑的仍是旧 ctx-mem 0.1.0。
-
-**S1 的核心结论不受此影响**：预算驱动渲染的正确性由归档重放与 143 条单元测试独立证明
-（§10.4 实测总账），不依赖是否已发布。但「guard 在生产上不再失败」这句话，
-要等新版发布并进入用户 profile 之后才谈得上验证。
-
-**后续动作（需用户授权）**：`packages/all` 升 0.4.0 → 0.5.0、`packages/ctx-mem` 升
-0.1.0 → 0.2.0（S1/S2 改了对外行为与配置键），然后走 `scripts/publish.mjs` 的拓扑顺序发布。
+**仍待验收（A17）**：`~/.dsh/profiles/web/package.json` 的依赖范围是
+`"@logictan/dsh-plugins-all": "^0.4.0"`，按 0.x 的 caret 语义不匹配 0.5.0，新版本不会自动
+进入 profile。A17（真实 Web GUI 里跑一次压缩、断言 `compaction/end` 无 error）须在 profile
+升级并重启宿主之后才谈得上验收。S1 的正确性结论不受影响：预算驱动渲染由归档重放与 143 条
+单元测试独立证明（§10.4），不依赖是否已发布。
 
 ### 10.6 里程碑盲审（S1/S2/S3/S5 收尾，9 条）
 
