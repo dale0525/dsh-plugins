@@ -21,7 +21,7 @@ importers:
         specifier: ^0.4.37
         version: link:../dsh-agy-link
       '@logictan/dsh-config-manager':
-        specifier: ^0.1.60
+        specifier: ^0.1.61
         version: link:../dsh-config-manager
       '@logictan/dsh-ctx-mem':
         specifier: ^0.2.0
