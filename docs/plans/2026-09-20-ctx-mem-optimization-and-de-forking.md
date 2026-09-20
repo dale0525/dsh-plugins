@@ -333,7 +333,7 @@ summary = textBlocks(`${skeleton}\n\n${normalizeCausal(raw)}`)   // src/index.js
 
 ```
 causalPrice    = estimateMessage(causalMessage)          // 因果节单独定价
-skeletonBudget = denominator − causalPrice − 128         // 128 = 骨架框架开销的余量
+skeletonBudget = denominator − causalPrice − FRAME_RESERVE   // 实测取 64（见 §10.4 自审 10）
 ```
 
 **实测**：该规则在全部 9 个真实 ctx-mem 折上 **9/9 PASS**，且在连续 12 轮
@@ -364,7 +364,7 @@ renderCheckpoint(facts, budget, estimate) -> { text, tier, commands, errors, flo
 denominator    = Σ estimateMessage(m)   for m in input.messages
                  跳过开头的 system/message（宿主 selectCompactableRange 的 firstIdx = 1 跳它）
 causalPrice    = 因果节单独定价（§4.9）
-skeletonBudget = denominator − causalPrice − 128
+skeletonBudget = denominator − causalPrice − FRAME_RESERVE
 ```
 
 实测 11/11 与宿主 `shadowedRouteTokenCount` **精确相等**（§6 A1 钉住）。
@@ -646,7 +646,7 @@ guard 的 throw 在 `for(;;)` 重试循环**之外**，不可恢复；且该循�
 
 | # | 条目 | 处置 |
 |---|---|---|
-| 1 | **因果节在被保护的价格里，却不在预算公式内**（严重） | 采纳。新增 §4.9 与 A12/A13：先量因果价、再算骨架预算（`denominator − causalPrice − 128`）。实测 9/9 PASS、12 轮退化折不触地板。**这是本轮最重要的一条** |
+| 1 | **因果节在被保护的价格里，却不在预算公式内**（严重） | 采纳。新增 §4.9 与 A12/A13：先量因果价、再算骨架预算（`denominator − causalPrice − FRAME_RESERVE`，余量实测取 64）。实测 9/9 PASS、12 轮退化折不触地板。**这是本轮最重要的一条** |
 | 2 | 「地板不可满足」的条件写错：真值是 `denominator ≤ 464`，不是 `≤ 464 + reserve` | 采纳。§4.8 已更正，并区分「宿主侧不可满足」与「插件侧判超预算」两个不同条件 |
 | 3 | 94 token 的框架开销**已含在帧价里**，`reserve` 若 ≥256 是重复计算 | 采纳。§4.7 改为明确说明两者不是同一笔开销、不得相加 |
 | 4 | §5.6 写「区间重扫给出 428 条」，规范计数是 **429** | 采纳。已改（本文件全部计数以 `extractFacts` 的条目数为准） |
