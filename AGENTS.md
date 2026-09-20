@@ -235,18 +235,10 @@ git commit
 1. trusted publisher 只能配在**已存在包**的设置页上；
 2. staged publishing 明确排除全新包（`you cannot stage a brand-new package`）。
 
-所以新包必须先由用户人工发一次，再配 trust，之后才交给 CI：
-
-```sh
-cd packages/<name> && npm publish --access public
-npm trust github <pkg> --file publish.yml --repo dale0525/dsh-plugins --allow-publish
-```
-
-> `--allow-publish` **不可省**：2026-09-03 之后创建的配置默认只允许 `npm stage publish`，
-> 不给这个 flag 时 CI 直接发布会被拒。
+所以新包必须先由用户人工发一次，再配 trust，之后才交给 CI。**命令见 `README.md` 的「发布」。**
 
 **Agent 不得代为执行新包发布**：本机 `npm publish` 需要 OTP，会以 `npm error code EOTP` 失败。
-把上面两条命令原样交给用户，等用户确认 trust 配好后再进 CI/CD。
+把命令原样交给用户，等用户确认 trust 配好后再进 CI/CD。
 
 ### 更新已发布包：走 CI/CD，**禁止手动发布**
 
@@ -268,11 +260,9 @@ npm trust github <pkg> --file publish.yml --repo dale0525/dsh-plugins --allow-pu
 > 那样真发布会被静默跳过。已实测 `-f dry_run=false` 能正常发布（run `35508114244`：
 > Publish 步骤 success、Dry run notice skipped），无需改用 `gh api`。
 
-**发布前必过**（CI 会跑，本地先跑一遍能省一轮）：
+**发布前必过**：先跑完「✅ 验证命令」的三条门禁，再确认发布顺序：
 
 ```bash
-pnpm test                            # 全量测试；CI 在 ubuntu-latest 上跑
-node scripts/aggregate.mjs --check   # 聚合 patch / deps 无 drift
 npm run publish:plan                 # 确认顺序：子插件在聚合包之前
 ```
 
@@ -281,9 +271,10 @@ npm run publish:plan                 # 确认顺序：子插件在聚合包之�
 
 ## ✅ 验证命令
 
+安装与日常构建命令见 `README.md` 的「开发」。以下三条是**合并前必过的验收门禁**：
+
 ```bash
-pnpm install                                  # 工作区安装（各包按自己的钩子构建）
-node scripts/aggregate.mjs --check            # 聚合 patch / deps 与清单一致
+node scripts/aggregate.mjs --check            # 聚合 patch / deps 与清单一致（CI 会跑）
 pnpm test                                     # 全仓测试：根 scripts/*.test.mjs + 每个子包
 pnpm typecheck                                # 全仓 typecheck（pnpm -r --if-present）
 ```

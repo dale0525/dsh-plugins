@@ -46,22 +46,32 @@ node scripts/aggregate.mjs             # 重新生成
 npm run publish:plan          # dir<TAB>name<TAB>version，顺序即发布顺序
 ```
 
-**顺序由依赖边推导**，不写死包名：子插件必须先上线，聚合包才能解析到它的依赖版本。
+**顺序由依赖边推导**，不写死包名：子插件在前，聚合包在后——聚合包要解析子插件的依赖版本。
 
-| 场景 | 做法 |
-|---|---|
-| **新增包首发** | 由**用户**人工 `npm publish --access public`，再配一次 trusted publisher（`npm trust github <pkg> --file publish.yml --repo dale0525/dsh-plugins --allow-publish`）。全新包不能走 CI：trusted publisher 只能配在已存在包上，staged publishing 也明确排除全新包 |
-| **已发布包更新** | 本地测试通过后走 **CI/CD**，不手动 `npm publish`。推 `v*` tag，或在 main 上 `gh workflow run publish.yml --ref main -f dry_run=false` |
+### 新增包：由用户人工首发
+
+全新包不能走 CI：trusted publisher 只能配在已存在包上，staged publishing 也明确排除全新包。
+所以先由用户人工发一次，再配 trust：
+
+```sh
+cd packages/<name> && npm publish --access public
+npm trust github <pkg> --file publish.yml --repo dale0525/dsh-plugins --allow-publish
+```
+
+`--allow-publish` 不可省——2026-09-03 之后创建的配置默认只允许 `npm stage publish`，
+不给这个 flag 时 CI 直接发布会被拒。配好 trust 后，该包后续更新都走 CI/CD。
+
+### 已发布包：走 CI/CD
+
+本地测试通过后由 CI/CD 发布，推 `v*` tag，或在 main 上手动触发：
+
+```bash
+gh workflow run publish.yml --ref main -f dry_run=false
+```
 
 细节见 `AGENTS.md` 的「📤 发布」。
 
-## 生效方式（改动要不要重启）
+## 生效方式
 
-| 改动 | 需要重启吗 |
-|---|---|
-| `cordis.patch.yml` / `settings.yaml` | 不需要，宿主自行热重载 |
-| 插件客户端产物（`lib/client.js`） | 不需要，跑 `dev:watch` 后浏览器原位替换 |
-| 插件包代码同版本覆盖安装 | **需要** |
-| 插件宿主半边源码 | **需要**（默认关闭 module watch） |
-
-细节与实测依据见 `AGENTS.md`。
+改完之后要不要重启宿主，取决于改动落在哪一层。这张表是硬门禁与实测依据，
+维护在 `AGENTS.md` 的「🚀 生效门禁」；以那里为准。
