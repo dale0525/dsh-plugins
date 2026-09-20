@@ -80,10 +80,33 @@ await check('A2 Config schema validates + marks apiKey secret', () => {
   assert.equal(resolved.apiKey, 'sk-1')
   assert.equal(resolved.enabled, true)
   assert.equal(resolved.allowAgentImageGeneration, true)
+  assert.equal(resolved.defaultModel, '')
   assert.deepEqual(resolved.imageModels, [])
   // Config is the schemastery schema itself: the secret role lives on the
   // schema node, which the settings seam's redactor walks.
   assert.equal(host.Config.dict?.apiKey?.meta?.role, 'secret')
+})
+await check('A2b configured default image model is used when Agent omits model', () => {
+  const channels = [{
+    id: 'default',
+    preset: '',
+    name: 'Default',
+    apiUrl: 'https://example.test/v1',
+    apiKey: 'sk-test',
+    models: [
+      { alias: 'qwen-image-3-pro', id: 'qwen-image-3-pro' },
+      { alias: 'qwen-image-2', id: 'qwen-image-2' },
+    ],
+  }]
+  const picked = host.resolveAgentImageModel({
+    enabled: true,
+    allowAgentImageGeneration: true,
+    channels,
+    defaultChannelId: 'default',
+    defaultModel: 'qwen-image-2',
+  }, undefined)
+  assert.equal(picked.alias, 'qwen-image-2')
+  assert.equal(picked.upstream, 'qwen-image-2')
 })
 await check('A3 updater parses stable Releases and caches checks', async () => {
   assert.equal(host.CURRENT_VERSION, packageJson.version)
@@ -1194,6 +1217,34 @@ await check('C4 comparison tasks run in parallel and share comparison history me
   assert.deepEqual(comparisonEntries[0].comparisonModels, ['gpt-image-2', 'grok-imagine-image'])
 })
 
+await check('C4b task polling stays lightweight and hydrates completed results on demand', async () => {
+  const image = `data:image/png;base64,${pngBytes.toString('base64')}`
+  const submitted = await post('/api/dsh-imagegen/tasks/submit', {
+    mode: 'edit', model: 'gpt-image-2', prompt: 'edit this lightweight task payload', size: '3:2', quality: '4k', n: 1, detail: '',
+    image, refName: 'reference.png',
+  })
+  assert.equal(submitted.body.ok, true, JSON.stringify(submitted.body))
+  let summary
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const listed = await post('/api/dsh-imagegen/tasks/list', {})
+    summary = listed.body.tasks.find(task => task.id === submitted.body.task.id)
+    if (summary?.status === 'completed') break
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(summary?.status, 'completed')
+  assert.equal(summary.result, undefined)
+  assert.equal(summary.resultAvailable, true)
+  assert.equal(summary.request.image, undefined)
+  assert.equal(summary.request.images, undefined)
+
+  const hydrated = await post('/api/dsh-imagegen/tasks/get', { id: submitted.body.task.id })
+  assert.equal(hydrated.body.ok, true)
+  assert.equal(hydrated.body.task.request.image, image)
+  assert.ok(hydrated.body.task.result.images.length > 0)
+  const missing = await post('/api/dsh-imagegen/tasks/get', { id: 'missing-task' })
+  assert.equal(missing.body.ok, false)
+  assert.equal(missing.body.code, 'not-found')
+})
 await check('C5 image model discovery and configured-model allow-list work', async () => {
   const discovered = await post('/api/dsh-imagegen/image-models', {})
   assert.equal(discovered.body.ok, true)
@@ -1799,6 +1850,12 @@ await check('C10f previewable assets serve inline with byte ranges, markup never
   const base = `http://127.0.0.1:${port}`
   const bytes = Buffer.from('%PDF-1.4\nsecond page\n%%EOF\n', 'utf8')
   const pdf = await uploadCanvasFile('inline.pdf', 'application/pdf', bytes)
+  const png = await uploadCanvasFile('inline.png', 'image/png', pngBytes)
+  assert.match(png.url, /\.png$/)
+  const inlinePng = await fetch(`${base}${png.url}`)
+  assert.equal(inlinePng.headers.get('content-type'), 'image/png')
+  assert.match(inlinePng.headers.get('content-disposition') ?? '', /^inline/)
+  assert.deepEqual(Buffer.from(await inlinePng.arrayBuffer()), pngBytes)
 
   // Plain requests keep the attachment contract the upload path promises.
   const download = await fetch(`${base}${pdf.url}`)
@@ -3121,9 +3178,13 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       preset: '',
       name: 'Default',
       apiUrl: 'https://example.test/v1',
-      models: [{ alias: 'gpt-image-2', id: 'gpt-image-2' }],
+      models: [
+        { alias: 'gpt-image-2', id: 'gpt-image-2' },
+        { alias: 'gpt-image-2-alt', id: 'gpt-image-2' },
+      ],
     }],
     defaultChannelId: 'default',
+    defaultModel: 'gpt-image-2-alt',
   }
   const channelSecrets = () => [{ path: ['channelSecrets', 'default'], set: keyState.set }]
   const mutateCalls = []
@@ -3209,6 +3270,10 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       for (const op of payload.ops) {
         if (op.path[0] === 'channels' && op.op === 'set') configState.channels = op.value
         if (op.path[0] === 'defaultChannelId' && op.op === 'set') configState.defaultChannelId = op.value
+        if (op.path[0] === 'defaultModel') {
+          if (op.op === 'set') configState.defaultModel = op.value
+          else delete configState.defaultModel
+        }
         if (op.path[0] === 'channelSecrets' && op.path[1] === 'default') keyState.set = op.op === 'set'
       }
       return {
@@ -3378,18 +3443,45 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       const task = { id: `ecommerce-task-${ecommerceSubmissions.length}`, request: payload, status: 'queued', createdAt: 1 }
       return { ok: true, json: async () => ({ ok: true, task }) }
     }
+    if (path.endsWith('/tasks/get')) {
+      const requestedId = JSON.parse(init.body).id
+      const match = /^ecommerce-task-(\d+)$/.exec(requestedId)
+      const index = match === null ? -1 : Number(match[1]) - 1
+      const payload = index < 0 ? undefined : ecommerceSubmissions[index]
+      if (payload === undefined) {
+        return { ok: true, json: async () => ({ ok: false, code: 'not-found', message: 'task not found' }) }
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          task: {
+            id: requestedId,
+            request: payload,
+            status: index === 0 ? 'completed' : 'queued',
+            createdAt: 1,
+            ...index === 0 ? { result: { images: [{ b64: 'cG5nLWRhdGE=', mime: 'image/png' }] } } : {},
+          },
+        }),
+      }
+    }
     if (path.endsWith('/tasks/list')) {
       return {
         ok: true,
         json: async () => ({
           ok: true,
-          tasks: ecommerceSubmissions.map((payload, index) => ({
-            id: `ecommerce-task-${index + 1}`,
-            request: payload,
-            status: index === 0 ? 'completed' : 'queued',
-            createdAt: 1,
-            ...index === 0 ? { result: { images: [{ b64: 'cG5nLWRhdGE=', mime: 'image/png' }] } } : {},
-          })),
+          tasks: ecommerceSubmissions.map((payload, index) => {
+            const request = { ...payload }
+            delete request.image
+            delete request.images
+            return {
+              id: `ecommerce-task-${index + 1}`,
+              request,
+              status: index === 0 ? 'completed' : 'queued',
+              createdAt: 1,
+              resultAvailable: index === 0,
+            }
+          }),
         }),
       }
     }
@@ -3765,6 +3857,14 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     // write by the secrets sidecar; a save that landed must not show failure
     // (this exact bug surfaced as "保存失败" while values were actually stored).
     const face = sectionRegistration.inject()
+    const initialSettings = face.hooks.imageGenSettingsCard.getSnapshot()
+    assert.equal(initialSettings.channels.defaultModel, 'gpt-image-2-alt', 'settings select shows the configured default model')
+    face.channels.setDefaultModel('gpt-image-2')
+    await face.channels.commit()
+    assert.ok(
+      mutateCalls.some(m => m.ops.some(o => o.path[0] === 'defaultModel' && o.op === 'set' && o.value === 'gpt-image-2')),
+      'default model write reaches the host bridge',
+    )
     face.channels.setChannelKey('default', 'sk-new')
     await face.channels.commit()
     await new Promise(resolve => setTimeout(resolve, 100))
