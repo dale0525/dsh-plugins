@@ -61,7 +61,7 @@ DSH 当前的压缩后端 `@deepseek-ai/dsh-compaction-basic` 在每次压缩时
 | 上游参考实现 | `@aiwayds/dsh-dcp@0.11.0`（MIT）——其 peer 要求 `>=0.1.5-rc.2`，与本机 alpha 线不满足；且其在 PTC 下失效。**因此 fork 改造，而非直接依赖** |
 | 挂载层 | 压缩后端是 `ctx.compaction` 服务替换，preset 的 `isolate` realm 决定 profile 层无法覆盖该服务（调研 §6）。**落地方式见 §11**：由 profile 平面的 `ctx-mem-bridge` 行在 preset 组合挂载时注入 patch（路由 B），不再依赖专用 preset 副本。本插件的其余部分（配置项、`SKILL.md`）不涉及服务替换 |
 | preset id | 用户根无法覆盖官方 `standard`（first-root-wins），必须使用新 id |
-| 仓库 | 落在 `dsh-plugins` monorepo，遵循 `docs/adding-a-child-plugin.md` 的接入规范 |
+| 仓库 | 落在 `dsh-plugins` monorepo，遵循 `AGENTS.md`「➕ 新增子插件」的接入规范 |
 | 构建产物 | `lib/` 不入版本控制，由 `prepare` 脚本构建（仓库既有约定） |
 
 ## 4. 已定决策

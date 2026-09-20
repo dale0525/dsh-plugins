@@ -27,7 +27,6 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest
 | `scripts/sync-upstream.mjs` | 按各包的 `packages/<pkg>/sync-policy.json` 把上游改动合进来（只开 PR） |
 | `packages/dsh-config-manager/scripts/dev-watch.mjs` | 改源码 → 自动重建产物（客户端半边不刷新即生效） |
 | `packages/<pkg>/sync-policy.json` | 该 fork 的上游同步清单：`target` / `owned` / `deleted` / `added` |
-| `docs/adding-a-child-plugin.md` | 新增子插件的完整步骤、验收与雷区 |
 
 ## 开发
 
@@ -38,24 +37,24 @@ node scripts/aggregate.mjs             # 重新生成
 ```
 
 改子插件的 patch 行：编辑该子包自己的 `cordis.patch.yml`，再跑 `node scripts/aggregate.mjs`。
-新增一个子插件见 `docs/adding-a-child-plugin.md`。
+新增一个子插件见 `AGENTS.md` 的「➕ 新增子插件」。
 
 ## 发布
 
-推 `v*` tag 触发 `.github/workflows/publish.yml`，认证走 **trusted publishing (OIDC)**，
-不存任何长期 npm token。手动预览发布计划：
+认证走 **trusted publishing (OIDC)**，不存任何长期 npm token。手动预览发布计划：
 
 ```bash
 npm run publish:plan          # dir<TAB>name<TAB>version，顺序即发布顺序
 ```
 
 **顺序由依赖边推导**，不写死包名：子插件必须先上线，聚合包才能解析到它的依赖版本。
-新增子插件/聚合包时无需改脚本，但**每个新包都要在 npmjs.com 配一次 trusted publisher**
-（`npm trust github <pkg> --file publish.yml --repo dale0525/dsh-plugins --allow-publish`）。
 
-> **首次发布必须人工**：trusted publisher 配在**已存在包**的设置页上，staged publishing
-> 也明确排除全新包（"you cannot stage a brand-new package"）。所以新包要先人工
-> `npm publish --access public` 一次，再配 OIDC，之后才交给 CI。
+| 场景 | 做法 |
+|---|---|
+| **新增包首发** | 由**用户**人工 `npm publish --access public`，再配一次 trusted publisher（`npm trust github <pkg> --file publish.yml --repo dale0525/dsh-plugins --allow-publish`）。全新包不能走 CI：trusted publisher 只能配在已存在包上，staged publishing 也明确排除全新包 |
+| **已发布包更新** | 本地测试通过后走 **CI/CD**，不手动 `npm publish`。推 `v*` tag，或在 main 上 `gh workflow run publish.yml -f dry_run=false` |
+
+细节见 `AGENTS.md` 的「📤 发布」。
 
 ## 生效方式（改动要不要重启）
 
