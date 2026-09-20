@@ -162,8 +162,9 @@ const PLUGIN_NAME = 'dsh-config-manager'
 
 /**
  * Star 引导弹窗指向的 GitHub 仓库（用户引导点 Star 的目标）。
- * 与 package.json 的 repository 字段保持一致；界面不可改（硬编码，参照
- * 「一键上传」目标仓库先例）。仅在 GET /star-prompt 响应中返回，供弹窗按钮跳转。
+ * 指向**衍生来源的上游仓库**，不是 package.json 的 repository（后者指向本仓库）；
+ * 界面不可改（硬编码，参照「一键上传」目标仓库先例）。仅在 GET /star-prompt
+ * 响应中返回，供弹窗按钮跳转。
  */
 const STAR_PROMPT_REPO_URL = 'https://github.com/xiajiajun516/dsh-config-manager'
 

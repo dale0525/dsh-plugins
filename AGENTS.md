@@ -16,7 +16,7 @@ dsh-plugins/
 │   ├── ctx-mem/                # 自制（无上游）→ 不 fork
 │   ├── dsh-fakeip-fetch/       # 自制（无上游）→ 不 fork
 │   ├── dsh-agy-link/           # 有上游 → git subtree fork
-│   ├── dsh-config-manager/     # 自制（无上游）→ 不 fork
+│   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-easyrewrite/        # 有上游 → git subtree fork
 │   ├── dsh-imagegen/           # 有上游 → git subtree fork
 │   ├── dsh-market/             # 有上游 → git subtree fork

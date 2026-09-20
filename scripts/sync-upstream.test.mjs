@@ -26,7 +26,7 @@ import {
   advanceBaseline,
 } from './sync-upstream.mjs'
 
-const EXPECTED_IDS = ['easyrewrite', 'imagegen', 'market', 'workbuddy']
+const EXPECTED_IDS = ['agy-link', 'easyrewrite', 'imagegen', 'market', 'workbuddy']
 
 /**
  * 取出 YAML 里每个 `run:` 会真正执行的命令文本。
@@ -173,7 +173,7 @@ function makeFixtureCommit(entries) {
   }
 }
 
-/** 本仓库负责的 fork。别的会话可能再加包，所以只断言「必须包含」而非集合相等。 */
+/** 本仓库负责的 5 个 fork。别的会话可能再加包，所以只断言「必须包含」而非集合相等。 */
 test('真实仓库：已知 target 全部被发现，且 policy 跟随自己的包', () => {
   const targets = discoverTargets(REPO_ROOT)
   const ids = targets.map((t) => t.id)

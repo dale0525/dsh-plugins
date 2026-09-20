@@ -1,10 +1,10 @@
 {
   "name": "dsh-config-manager",
-  "version": "0.1.45",
-  "description": "DSH (DeepSeek Harness) config backup / export / import / migration / sync and config market plugin.",
-  "author": { "name": "xiajiajun516" },
-  "homepage": "https://github.com/xiajiajun516/dsh-config-manager",
-  "repository": "https://github.com/xiajiajun516/dsh-config-manager",
+  "version": "0.1.62",
+  "description": "DSH (DeepSeek Harness) config remote sync plugin: settings, plugins, MCP servers, skills, agent presets, workspaces and provider credentials over a private git or WebDAV channel.",
+  "author": { "name": "Logic Tan" },
+  "homepage": "https://github.com/dale0525/dsh-plugins/tree/main/packages/dsh-config-manager",
+  "repository": "https://github.com/dale0525/dsh-plugins",
   "license": "MIT",
   "keywords": ["deepseek-harness", "cordis", "config-manager", "backup", "sync"]
 }
