@@ -563,7 +563,7 @@ skeletonBudget = denominator − causalPrice − FRAME_RESERVE
 
 | # | 契约 | 证伪方式 |
 |---|---|---|
-| A1 | 插件算出的分母与宿主 `shadowedRouteTokenCount` 精确相等 | 用归档重放 11 折，断言逐个相等（实测已 11/11） |
+| A1 | 插件算出的分母与宿主 `shadowedRouteTokenCount` 精确相等，**且跳过 index 0 是条件式的**（宿主 `firstIdx` 无 system 头时为 0，见 §10.4 自审 11） | 归档重放 11 折断言逐个相等（实测已 11/11）；单元测试另构造宿主分母相等的有头/无头两夹具，断言渲染价相等 |
 | A2 | 渲染帧价 **严格小于** denominator（公式见 §10.4 自审 5：原稿的 `max(256, ⌈denominator×2%⌉)` 未实施） | 单元测试：对每个档的渲染结果断言 `price(render) < denominator` |
 | A3 | `write` 类判别式在 429 条真实命令上命中 103 条，且命中集包含全部 `git commit` / `npm publish` / `dsh-web restart` | 固定语料断言命中条数与集合 |
 | A4 | intents 与 files 在任何档下都逐字、不裁剪、不截断 | 单元测试：构造超长 intent，断言输出含完整原文 |
@@ -585,7 +585,7 @@ skeletonBudget = denominator − causalPrice − FRAME_RESERVE
 断言 `compaction/end` 无 `error`，且 `compaction/summary` 的
 `shadowedTokenCount > price(summary)`，余量 ≥ reserve。
 
-**回归**：`pnpm --filter @logictan/dsh-ctx-mem test` 全绿（当前 103 测试）；
+**回归**：`pnpm --filter @logictan/dsh-ctx-mem test` 全绿（当前 135 测试）；
 `node scripts/aggregate.mjs --check` 输出 `check OK`。
 
 ## 7. 风险
