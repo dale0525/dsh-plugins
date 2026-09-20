@@ -858,11 +858,19 @@ CI 门禁修复；移动已推送的 tag 属 §2 禁区（重写 Git 历史）�
 显式 20s 预算。两条 spec 已由 `sync-upstream.mjs --refresh-policy` 登记进 `sync-policy.json`
 的 `owned`。
 
-**仍待验收（A17）**：`~/.dsh/profiles/web/package.json` 的依赖范围是
+**A17 受阻（原因已定位，非交付缺陷）**：`~/.dsh/profiles/web/package.json` 的依赖范围原为
 `"@logictan/dsh-plugins-all": "^0.4.0"`，按 0.x 的 caret 语义不匹配 0.5.0，新版本不会自动
-进入 profile。A17（真实 Web GUI 里跑一次压缩、断言 `compaction/end` 无 error）须在 profile
-升级并重启宿主之后才谈得上验收。S1 的正确性结论不受影响：预算驱动渲染由归档重放与 143 条
-单元测试独立证明（§10.4），不依赖是否已发布。
+进入 profile。该范围已升为 `^0.5.0` 并重装（`dsh-plugins-all@0.5.0` + `dsh-ctx-mem@0.2.0`
+已落盘，`dsh-web restart` 后 `Verdict: OK`）。
+
+但 profile 的 `cordis.patch.yml` 里 `ctx-mem` 与 `ctx-mem-bridge` **两行都是 `disabled: true`**
+（`~/.dsh/profiles/web/cordis.patch.yml:115-118`），引擎在运行时不挂载，压缩路径根本不会走到
+ctx-mem。启用这两行是既定禁区，故 A17 无法在本轮闭环。
+
+**可独立完成的替代证据**：从 registry 拉取已发布的 `@logictan/dsh-ctx-mem@0.2.0`（shasum
+`0d635e3c…` 与 registry 一致），解包后与仓库 `packages/ctx-mem/` 逐文件 `cmp` —— 16 个文件
+**全部 IDENTICAL**（含 11 个 `lib/*.js`）。即「发布出去的字节」与「本地验证过的字节」相同，
+S1 的正确性结论由归档重放与 143 条单元测试独立证明（§10.4），不依赖运行时挂载状态。
 
 ### 10.6 里程碑盲审（S1/S2/S3/S5 收尾，9 条）
 
