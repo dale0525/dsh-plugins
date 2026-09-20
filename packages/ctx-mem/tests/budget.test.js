@@ -106,7 +106,7 @@ function sessionFor(events) {
 }
 
 /** A context whose meter prices like the host and whose llm returns `reply`. */
-function budgetContext(reply = '## Why This Approach\n- because the guard is not recoverable\n') {
+function budgetContext(reply = '## Why This Approach\n- because the guard is not recoverable\n', meter = METER) {
   const calls = [];
   const ctx = new Context();
   ctx.provide('llm', {
@@ -118,7 +118,7 @@ function budgetContext(reply = '## Why This Approach\n- because the guard is not
       })();
     },
   });
-  ctx.provide('tokenMeter', METER);
+  ctx.provide('tokenMeter', meter);
   ctx.provide('sessions', {});
   return { ctx, calls };
 }
@@ -404,6 +404,9 @@ test('with no tokenMeter the engine still produces a checkpoint', async () => {
       })();
     },
   });
+  // A meter with no `estimateMessage`: the shape a host without the service, or
+  // with a stub, presents. `frameEstimator` then returns a function that yields
+  // `undefined`, and `renderCheckpoint` sees `typeof estimate !== 'function'`.
   ctx.provide('tokenMeter', {});
   ctx.provide('sessions', {});
   const engine = new CtxMemEngine(ctx, { thresholdRatio: 0.8, retainRatio: 0.16 });
@@ -412,4 +415,82 @@ test('with no tokenMeter the engine still produces a checkpoint', async () => {
   const result = await engine.summarize({ messages }, AGENT(session));
 
   assert.ok(result.summary.map((b) => b.text).join('').startsWith('## Extracted Facts'));
+})
+
+test('with no usable meter every fact is rendered whole — the budget cannot bind', async () => {
+  // The counterweight to the test above, which only asserts that *something*
+  // came out. With no estimator there is no ceiling to enforce, so the renderer
+  // must keep the richest tier intact rather than silently degrading. This is
+  // observable: the same region under a real meter is truncated by the budget.
+  //
+  // Pinned because the branch is easy to misread as unreachable: `frameEstimator`
+  // returns `() => undefined` when the meter is unusable, which reads as "the
+  // estimator is a function, so `typeof estimate !== 'function'` never fires".
+  // It does fire — the call site passes `framed(undefined)`, the *result* of that
+  // call, so the renderer receives `undefined`. Measured: making the no-meter
+  // path price realistically instead turns this test red, while the test above
+  // stays green.
+  // Long, non-write-like commands against a small region: the fact set is large
+  // while the denominator stays small, so the budget genuinely binds. Write-like
+  // commands would not do — T3 keeps those, so the budget could never drop one.
+  const events = [];
+  for (let i = 0; i < 40; i += 1) {
+    const seq = events.length;
+    events.push({
+      type: 'assistant/message',
+      seq,
+      data: {
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              name: 'bash',
+              arguments: JSON.stringify({
+                command: `grep -n needle-${i} /repo/${'deep/'.repeat(20)}file-${i}.js`,
+              }),
+            },
+          ],
+        },
+      },
+    });
+    events.push({
+      type: 'tool/result',
+      seq: seq + 1,
+      data: {
+        message: {
+          role: 'user',
+          content: [{ type: 'tool-result', content: [{ type: 'text', text: 'ok' }] }],
+        },
+      },
+    });
+  }
+  const session = sessionFor(events);
+  const messages = events.map((event) => session.deriveEventMessage(event));
+
+  // The cap must be low enough to bind: at the 24 000 default this region fits
+  // whole either way, and the assertion below would hold for the wrong reason.
+  const bare = await new CtxMemEngine(budgetContext(undefined, {}).ctx, {
+    thresholdRatio: 0.8,
+    retainRatio: 0.16,
+    maxCheckpointTokens: 1200,
+  }).summarize({ messages }, AGENT(session));
+
+  const budgeted = await new CtxMemEngine(budgetContext().ctx, {
+    thresholdRatio: 0.8,
+    retainRatio: 0.16,
+    maxCheckpointTokens: 1200,
+  }).summarize({ messages }, AGENT(session));
+
+  // Count the commands themselves, not `- ` bullets: the causal reply is a
+  // markdown list of its own and would be counted alongside them.
+  const kept = (result) =>
+    (result.summary.map((b) => b.text).join('').match(/grep -n needle-/g) ?? []).length;
+
+  assert.equal(kept(bare), 40, 'every command of the region must survive whole');
+  assert.ok(
+    kept(budgeted) < kept(bare),
+    `with a real meter the cap must truncate the command list, otherwise this ` +
+      `fixture proves nothing about which branch ran (got ${kept(budgeted)} vs ${kept(bare)})`,
+  )
 })
