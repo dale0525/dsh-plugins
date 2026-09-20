@@ -575,7 +575,7 @@ skeletonBudget = denominator − causalPrice − 128
 | A10 | 去 fork 后 `node scripts/sync-upstream.mjs --list` 不再列出 ctx-mem，且 `node --test scripts/sync-upstream.test.mjs` 全绿 | 运行该测试 |
 | A11 | `lib/` 不再被 git 跟踪 | `git ls-files packages/ctx-mem/lib/` 无输出 |
 | A12 | **帧价含因果节**：对 9 个真实折重放，断言 `price(skeleton + causal) < denominator`（不是只断言骨架） | 归档重放：9/9 PASS（实测） |
-| A13 | `skeletonBudget = denominator − causalPrice − FRAME_RESERVE`；因果节变长时骨架预算等量变小 | 归档重放：固定 denominator，把 causal 文本 0→8000 字符，断言骨架命令数 429→385 单调不增（实测，见 §10.4） |
+| A13 | `skeletonBudget = denominator − causalPrice − FRAME_RESERVE`；因果节变长时骨架预算等量变小 | 单元测试（渲染器层，确定性）：预算 24000→250，断言命令数 60→5 单调不增；引擎层接线另由 A2/A12 与归档重放钉住（causal 0→8000 字符 ⇒ 429→385，见 §10.4） |
 | A14 | `effectiveBudget = min(skeletonBudget, maxCheckpointTokens)`，且缺省 `maxCheckpointTokens = 24000` | 单元测试：传超大 denominator，断言渲染价 ≤ 24 000 + 框架开销 |
 | A15 | 连续 12 轮背靠背退化折不触地板，保留率 ≥ 87% | 归档重放：忠实分母链（见 §10.4 自审 6），断言 12 轮 `floorHit` 全 false、最低保留率 87.4% |
 | A16 | 本包 patch 只声明一行（`ctx-mem-bridge`），引擎行不存在 | `node -e` 读 `cordis.patch.yml` 断言行数 == 1 且 id 为 `ctx-mem-bridge`；`aggregate.mjs --check` 通过 |
