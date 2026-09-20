@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
