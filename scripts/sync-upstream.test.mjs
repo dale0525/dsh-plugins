@@ -260,7 +260,7 @@ test('missingDependencies：我方已有同名键（即使 range 不同）不算
  * 检查全绿，但 `updater` 会拿错误的 `CURRENT_VERSION` 去比较，更新提示永久失真。
  *
  * 所以判据不是「内容是否不同」，而是「该文件承载了我方不可被上游覆盖的常量」：承载版本常量的
- * 文件必须在 `owned` 里。config-manager 的 `src/index.ts` 正是这么登记的，imagegen 曾漏登记。
+ * 文件必须在 `owned` 里。imagegen 的 `src/protocol.ts` 正是这么登记的（曾漏登记）。
  */
 test('计划 §10.3：承载 PLUGIN_VERSION 的文件必须登记进 owned（否则被上游静默改版本）', () => {
   const targets = discoverTargets(REPO_ROOT)
