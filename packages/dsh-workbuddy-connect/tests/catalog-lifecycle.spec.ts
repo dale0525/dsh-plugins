@@ -125,10 +125,13 @@ async function boot(): Promise<Context> {
   // Provider row and model roster are two separate steps (registration vs the
   // credential sweep's `catalog.setVisible(true)`); waiting on the provider
   // alone lets a later `listModels` observe an empty roster under CPU load.
+  // Explicit timeout: this is the suite's slowest wait and it runs while the
+  // whole workspace test job is saturating the CPU, where the default 1000ms
+  // budget is not enough for the credential sweep to finish its first pass.
   await vi.waitFor(async () => {
     expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
-  })
+  }, { timeout: 20_000 })
   return ctx
 }
 
