@@ -2,8 +2,7 @@
  * m-self：插件自身 UI 偏好持久化（ui-prefs.json）。
  *
  * 与 sync-config.json / sync-selection.json 并列独立文件：语义清楚、schema 演进独立。
- * 当前存 lastSyncChannel（用户上次选择的同步通道 git/webdav）+ Star 引导弹窗状态
- * （starPromptFirstSeenAt / starPromptDismissed / starPromptClicked，见 src/ui/star-prompt.ts）。
+ * 当前存 lastSyncChannel（用户上次选择的同步通道 git/webdav）。
  *
  * 背景（self 分区设计）：此前该偏好只存浏览器 localStorage（键
  * dsh.configManager.syncChannel），换浏览器/换机器即丢失，且 Host 进程读不到
@@ -12,17 +11,12 @@
  *  - 随 self 分区进入导出备份，迁移到新机器时恢复；
  *  - localStorage 仅保留为前端同步读取的降级通道（status 未带回填时的兜底）。
  *
- * 字段 { schemaVersion, lastSyncChannel?: 'git' | 'webdav',
- *         starPromptFirstSeenAt?: number, starPromptDismissed?: boolean,
- *         starPromptClicked?: boolean }：
+ * 字段 { schemaVersion, lastSyncChannel?: 'git' | 'webdav' }：
  * - 缺省/未配置 = undefined（UI 回退到 sync-config.transport / 首次进入页面）；
- * - 原子写（临时文件 + rename），损坏/不支持 schema 回退缺省；
- * - 多端点共写同一文件：一律经 updateUiPrefs（read → merge → write）原子更新，
- *   避免「sync/ui-prefs 写 lastSyncChannel」与「star-prompt 写弹窗状态」互相覆盖。
+ * - 原子写（临时文件 + rename），损坏/不支持 schema 回退缺省。
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import crypto from 'node:crypto';
 
 import { parseJsonSafe, stringifyJsonSafe } from '../utils/json.ts';
 import { atomicWriteFile } from '../utils/atomic-write.ts';
@@ -38,16 +32,6 @@ export interface UiPrefs {
   schemaVersion: number;
   /** 用户上次选择的同步通道；未配置为 undefined */
   lastSyncChannel?: UiPrefsChannel;
-  /** Star 引导弹窗：首次进入页面时间（ms 时间戳）；未配置 = 尚未进入过页面 */
-  starPromptFirstSeenAt?: number;
-  /** Star 引导弹窗：用户点过「不再提示」（永久不再弹） */
-  starPromptDismissed?: boolean;
-  /** Star 引导弹窗：用户点过「去点 Star」（方案 A：引导完成，不再弹） */
-  starPromptClicked?: boolean;
-  /** 更新内容弹窗：上次已记录/展示过的插件版本号（如 '0.1.54'） */
-  releaseNotesLastSeenVersion?: string;
-  /** 更新内容弹窗：用户点过「永不提示」（永久不再自动弹出） */
-  releaseNotesDismissed?: boolean;
 }
 
 /** 缺省配置（首次无文件 / 损坏 / 不支持 schema 时回退） */
@@ -84,21 +68,6 @@ export async function readUiPrefs(dir: string): Promise<UiPrefs> {
   if (obj['lastSyncChannel'] === 'git' || obj['lastSyncChannel'] === 'webdav') {
     prefs.lastSyncChannel = obj['lastSyncChannel'];
   }
-  if (typeof obj['starPromptFirstSeenAt'] === 'number' && Number.isFinite(obj['starPromptFirstSeenAt'])) {
-    prefs.starPromptFirstSeenAt = obj['starPromptFirstSeenAt'];
-  }
-  if (obj['starPromptDismissed'] === true) {
-    prefs.starPromptDismissed = true;
-  }
-  if (obj['starPromptClicked'] === true) {
-    prefs.starPromptClicked = true;
-  }
-  if (typeof obj['releaseNotesLastSeenVersion'] === 'string' && obj['releaseNotesLastSeenVersion'].trim().length > 0) {
-    prefs.releaseNotesLastSeenVersion = obj['releaseNotesLastSeenVersion'].trim();
-  }
-  if (obj['releaseNotesDismissed'] === true) {
-    prefs.releaseNotesDismissed = true;
-  }
   return prefs;
 }
 
@@ -108,11 +77,6 @@ export async function writeUiPrefs(dir: string, prefs: UiPrefs): Promise<void> {
   const payload: Record<string, unknown> = {
     schemaVersion: UI_PREFS_SCHEMA_VERSION,
     ...(prefs.lastSyncChannel !== undefined ? { lastSyncChannel: prefs.lastSyncChannel } : {}),
-    ...(prefs.starPromptFirstSeenAt !== undefined ? { starPromptFirstSeenAt: prefs.starPromptFirstSeenAt } : {}),
-    ...(prefs.starPromptDismissed === true ? { starPromptDismissed: true } : {}),
-    ...(prefs.starPromptClicked === true ? { starPromptClicked: true } : {}),
-    ...(prefs.releaseNotesLastSeenVersion !== undefined ? { releaseNotesLastSeenVersion: prefs.releaseNotesLastSeenVersion } : {}),
-    ...(prefs.releaseNotesDismissed === true ? { releaseNotesDismissed: true } : {}),
   };
   const target = path.join(dir, UI_PREFS_FILE);
   const data = stringifyJsonSafe(payload, { space: 2 });
@@ -120,9 +84,8 @@ export async function writeUiPrefs(dir: string, prefs: UiPrefs): Promise<void> {
 }
 
 /**
- * 局部原子更新：read → merge → write。
- * 多端点共写 ui-prefs.json 时（sync/ui-prefs 与 star-prompt），任一端点写全量对象
- * 都会丢掉另一端点刚写入的字段；统一走本函数按补丁合并，杜绝互相覆盖。
+ * 局部原子更新：read → merge → write。调用方只提交要改的字段，
+ * 未提交的字段保留磁盘现值。
  */
 export async function updateUiPrefs(dir: string, patch: UiPrefsPatch): Promise<UiPrefs> {
   const current = await readUiPrefs(dir);

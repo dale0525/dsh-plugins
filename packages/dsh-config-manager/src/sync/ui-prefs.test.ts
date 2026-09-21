@@ -1,6 +1,6 @@
 /**
  * ui-prefs 测试：ui-prefs.json 读写往返、缺省值、损坏 JSON 回退缺省、非法通道值忽略、
- * Star 引导弹窗状态字段往返与非法值忽略、updateUiPrefs 局部原子更新不互相覆盖。
+ * updateUiPrefs 局部原子更新不覆盖未提交的字段。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -78,75 +78,18 @@ test('readUiPrefs：非法通道值 → 忽略（回退缺省）', async () => {
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
 
-test('Star 引导状态：写入三字段 → 读回一致 + 原始文件校验', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-ui-prefs-star-'));
-  try {
-    await writeUiPrefs(dir, {
-      schemaVersion: 1,
-      starPromptFirstSeenAt: 1700000000000,
-      starPromptDismissed: false,
-      starPromptClicked: true,
-    });
-    const prefs = await readUiPrefs(dir);
-    assert.equal(prefs.starPromptFirstSeenAt, 1700000000000);
-    assert.equal(prefs.starPromptDismissed, undefined, 'false 不落字段');
-    assert.equal(prefs.starPromptClicked, true);
-    const raw = JSON.parse(await fs.readFile(path.join(dir, UI_PREFS_FILE), 'utf8'));
-    assert.equal(raw.starPromptFirstSeenAt, 1700000000000);
-    assert.equal('starPromptDismissed' in raw, false, 'false 不写字段');
-    assert.equal(raw.starPromptClicked, true);
-  } finally { await fs.rm(dir, { recursive: true, force: true }); }
-});
-
-test('readUiPrefs：Star 字段非法值（字符串时间戳 / 非布尔）→ 忽略', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-ui-prefs-star-bad-'));
-  try {
-    await fs.writeFile(
-      path.join(dir, UI_PREFS_FILE),
-      JSON.stringify({ schemaVersion: 1, starPromptFirstSeenAt: 'yesterday', starPromptDismissed: 'yes' }),
-      'utf8',
-    );
-    const prefs = await readUiPrefs(dir);
-    assert.equal(prefs.starPromptFirstSeenAt, undefined);
-    assert.equal(prefs.starPromptDismissed, undefined);
-  } finally { await fs.rm(dir, { recursive: true, force: true }); }
-});
-
-test('updateUiPrefs：局部补丁合并，不覆盖未涉及的字段（防多端点互覆盖）', async () => {
+test('updateUiPrefs：局部补丁合并，不覆盖未提交的字段', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-ui-prefs-upd-'));
   try {
     await writeUiPrefs(dir, { schemaVersion: 1, lastSyncChannel: 'webdav' });
-    // star-prompt 端点更新：只补弹窗字段，lastSyncChannel 必须保留
-    const next = await updateUiPrefs(dir, { starPromptFirstSeenAt: 1700000000000, starPromptClicked: true });
-    assert.equal(next.lastSyncChannel, 'webdav', '未涉及的 lastSyncChannel 保留');
-    assert.equal(next.starPromptFirstSeenAt, 1700000000000);
-    assert.equal(next.starPromptClicked, true);
-    // sync/ui-prefs 端点更新：只补通道字段，弹窗字段必须保留
-    const after = await updateUiPrefs(dir, { lastSyncChannel: 'git' });
-    assert.equal(after.lastSyncChannel, 'git');
-    assert.equal(after.starPromptFirstSeenAt, 1700000000000, '未涉及的 Star 字段保留');
-    assert.equal(after.starPromptClicked, true);
+    // 空补丁：磁盘现值必须原样保留（read → merge → write 不得丢字段）
+    const unchanged = await updateUiPrefs(dir, {});
+    assert.equal(unchanged.lastSyncChannel, 'webdav', '未提交的字段保留磁盘现值');
+    // 提交字段：按补丁更新
+    const next = await updateUiPrefs(dir, { lastSyncChannel: 'git' });
+    assert.equal(next.lastSyncChannel, 'git');
     // 磁盘最终态
     const raw = JSON.parse(await fs.readFile(path.join(dir, UI_PREFS_FILE), 'utf8'));
     assert.equal(raw.lastSyncChannel, 'git');
-    assert.equal(raw.starPromptFirstSeenAt, 1700000000000);
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
-
-test('更新内容弹窗状态：写入字段 → 读回一致 + 原始文件校验', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-ui-prefs-rn-'));
-  try {
-    await writeUiPrefs(dir, {
-      schemaVersion: 1,
-      releaseNotesLastSeenVersion: '0.1.54',
-      releaseNotesDismissed: true,
-    });
-    const prefs = await readUiPrefs(dir);
-    assert.equal(prefs.releaseNotesLastSeenVersion, '0.1.54');
-    assert.equal(prefs.releaseNotesDismissed, true);
-    const raw = JSON.parse(await fs.readFile(path.join(dir, UI_PREFS_FILE), 'utf8'));
-    assert.equal(raw.releaseNotesLastSeenVersion, '0.1.54');
-    assert.equal(raw.releaseNotesDismissed, true);
-  } finally { await fs.rm(dir, { recursive: true, force: true }); }
-});
-

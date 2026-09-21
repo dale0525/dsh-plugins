@@ -160,9 +160,6 @@ const PLUGIN_VERSION = '0.1.62'
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
 
-/** 衍生来源的上游仓库地址（硬编码）。 */
-const STAR_PROMPT_REPO_URL = 'https://github.com/xiajiajun516/dsh-config-manager'
-
 /** 缓存自动清理周期：24 小时（启动即清一次 + 此后每日一次；与 cache-cleaner 保留期独立） */
 const CACHE_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
 
@@ -217,11 +214,6 @@ export interface Config {
 const API = {
   // 设置页页脚版本行（pluginVersion / dshVersion）。只读，loopback fence。
   status: '/api/dsh-config-manager/status',
-  // P2-⑫：导出前只读预览（不落盘 ZIP；返回各分区 counts + 估算大小）
-  // P1-⑧：快照管理（手动删除 + 置顶豁免自动清理）
-  // m-backup-schedule：定时全量备份（读/存 backup-schedule.json + 立即执行一次）
-  // m-backup-files：导出产物管理（列出 exports/*.zip + 删除；下载复用 /download）
-  // Phase 7：迁移前咨询（只读健康评分 + 建议；POST，loopback fence）
   // m-sync-ui：远程同步（Git 私有仓库通道）
   syncStatus: '/api/dsh-config-manager/sync/status',
   syncPush: '/api/dsh-config-manager/sync/push',
@@ -247,16 +239,6 @@ const API = {
   syncConfig: '/api/dsh-config-manager/sync/config',
   // m-self：插件 UI 偏好（如上次选择的同步通道；ui-prefs.json，随 self 分区进备份）
   syncUiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
-  // m-star-prompt：Star 引导弹窗状态（复用 ui-prefs.json；GET 读 + POST 局部更新）
-  // 版本更新内容弹窗状态（复用 ui-prefs.json；GET 读 + POST 局部更新）
-  // m-market：配置市场（内置单仓库，只读公开仓库：浏览 + 下载 + 安全校验；apply 复用 execute）
-  // m-my-configs：「一键上传 / 我的配置」（目标仓库固定 xiajiajun516/dsh-config-market；
-  // 登录复用 sync/github/start|poll|cancel，不重复实现；/me/items 401 → 未登录）
-  // m-profiles：配置档案（Profile = 一组可切换的配置快照；Save/List/Delete/Rename/Switch/Import）
-  // Phase 5：recovery 编排（prefix 路由，内部按 path 分发：status / <opId>/preview|confirm|execute|verify|retry|dismiss）
-  // Phase 6：迁移历史审计（统一历史引擎；只读 GET + 导出）
-  // Phase 1 P0-1/P0-2：配置生命周期（自动快照 / 撤销 / 重做）与崩溃归因
-  // Phase 1 P0-3：启动救援模式（禁用其它插件使 DSH 能启动）
 } as const
 
 /**
@@ -923,7 +905,6 @@ interface RoutesDeps {
   runs: RunRegistry
   /** m-sync-ui：同步状态/配置目录（$DSH_HOME/dsh-config-manager/sync） */
   syncDir: string
-  /** m-market：市场目录（$DSH_HOME/dsh-config-manager/market；其下 config/ 与 cache/） */
   /** 插件数据根目录（$DSH_HOME/dsh-config-manager；F1 vault 镜像目录 = <dataDir>/vault） */
   dataDir: string
   /** F2 强化 Secret 扫描器（含部署者 personalPatterns）；缺省 = 默认扫描器 */
@@ -1785,64 +1766,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
         })
       },
     },
-    // ------------------------------------------------------------- export
-    // ---------------------------------------------------- export-preview
-    // P2-⑫：导出前只读预览（不落盘 ZIP）：对选中分区逐个 adapter.export 收集 counts
-    // （与真实导出一致的 secret 剥离，不导出任何值），估算 JSON 载荷大小，返回可展示摘要。
-    // 零写入；loopback fence 必备。
-    // ------------------------------------------------------------ download
-    // -------------------------------------------------------------- upload
-    // ------------------------------------------------------------- analyze
-    // ---------------------------------------------------------------- plan
-    // ------------------------------------------------------------ progress
-    // m1：查询单个 run 的实时状态（轮询 / 刷新恢复用；runId 不可猜，走 loopback-only 守卫）
-    // ----------------------------------------------------------------- runs
-    // m1：列出当前活跃（running）的 run（刷新恢复时重新订阅进度用）
-    // ------------------------------------------------------------- execute
-    // -------------------------------------------------- execute/skip
-    // 用户跳过当前计划项（导入中，目前仅插件安装）：abort 当前项的中止控制器 → 引擎
-    // 捕获 ImportUserSkippedError 记为 user-skipped，导入继续执行其余项。
-    // ---------------------------------------------------------- snapshots
-    // M4：列出快照元信息（id/createdAt/sourceZip/status/计数，createdAt 倒序）
-    // ------------------------------------------------------------ restore
-    // M4：快照恢复。dryRun=true 只返回动作计划（planRestore，零写入）；
-    // 真实执行 = 计划 → 宿主执行器（ctx.fs 整文件/文件还原 + runDshPlugin 卸载插件）
-    // → 与 CLI 一致的诚实报告 { restored/removedPlugins/manualHints/failed/skipped }。
-    //
-    // **并发防护（P1-1）**：真实执行（dryRun=false）经 runs.register('restore') 登记——
-    // 同 kind 已有 running 时抛 RunConflictError → 409 拒绝。这是宿主侧的权威防重
-    // （前端 loading 只是 UX）：即使两个 tab / 刷新后重复点击，同一时刻至多一个
-    // restore 在执行（不同快照并发恢复会交错写文件，同快照并发会互相覆盖
-    // pre-restore 双保险备份，都是真实数据风险）。进度经 onAction 埋点更新
-    // RunRegistry（/progress 轮询 + /runs 刷新恢复可见）；响应含 runId。
-    // ------------------------------------------- snapshots/delete（P1-⑧）
-    // 手动删除单个快照（危险操作：该导入前回滚点不可恢复）。loopback fence（guard）；
-    // 只接受合法快照 id（deleteSnapshot 内防穿越）。与自动保留清理不同：置顶快照
-    // 只能在这里被用户手动删除。
-    // --------------------------------------------- snapshots/pin（P1-⑧）
-    // 置顶/取消置顶快照：置顶快照豁免「最多保留 N 个」的自动清理（只能手动删除）。
-    // 纯元数据写（重写 snapshot.json 的 pinned 字段）；loopback fence 必备。
-    // -------------------------------------------------- m-profiles
-    // 配置档案（Profile）：保存当前 DSH 配置为多套可切换快照（Work/Personal…）。
-    // 安全：Profile 名严格校验（ProfileManager 内部 isValidProfileName 防穿越）；
-    // 切换走「预览 → confirm → 快照 → 分阶段 apply → 失败回滚」与导入同一语义；
-    // Save 复用 adapter.export（天然不含秘密值）；全部路由 loopback fence。
-    // -------------------------------------------------- backup-schedule
-    // 定时全量备份设置（GET 读 / PUT 存 sync/backup-schedule.json；无敏感字段）：
-    // 保存后重排调度器（reload）；恒不含 secret、不加密（与自动同步同语义）。
-    // 与全仓一致：每个方法分支都过 loopback fence（guard）——其他 /api/dsh-config-manager/*
-    // 路由全部首行 guard，新增路由不得遗漏（安全不变量：仅 loopback + 同源可访问）。
-    // ------------------------------------------------- backup-schedule/run
-    // 返回执行结果（status/zip/skipReason/error）+ 最新配置（含 lastRun 状态）。
-    // 同全仓：loopback fence（guard）——远程调用方不得触发宿主写盘操作。
-    // ------------------------------------------------------ backup-files
-    // 导出产物管理（m-backup-files）：列出 exports/*.zip（名称/大小/时间/来源，
-    // 时间倒序）+ 删除单个备份文件。下载复用 /download（roots 已含 exportsDir）。
-    // 安全：删除只接受文件名（服务端 basename 校验防路径穿越）；恒 loopback guard。
-    // ------------------------------------------------------ consult
-    // Phase 7：迁移前咨询（只读健康评分 + 建议）。POST，loopback fence。
-    // 对 4 种可迁移源（export-zip / local-snapshot / remote-snapshot / profile）生成
-    // 统一咨询报告。**只读**：不写配置/快照/journal；临时 ZIP 用 try/finally 立即清理。
     // ------------------------------------------------------ sync/status
     // m-sync-ui：同步状态（通道配置 / 凭据状态 / 上次同步 / 分区数）。只读，无 secret 值。
     {
@@ -1943,7 +1866,7 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
     // ------------------------------------------------------ sync/ui-prefs
     // m-self：保存插件 UI 偏好（当前为上次选择的同步通道；ui-prefs.json，随 self 分区进备份）。
     // 纯偏好、无 secret；失败仅提示，不阻断同步主流程。
-    // 经 updateUiPrefs 局部合并写：不覆盖其他端点（star-prompt）刚写入的字段。
+    // 经 updateUiPrefs 局部合并写：只改 lastSyncChannel，不动文件中其他字段。
     {
       kind: 'exact',
       path: API.syncUiPrefs,
@@ -1963,15 +1886,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
         }
       },
     },
-    // ------------------------------------------------------ star-prompt
-    // m-star-prompt：Star 引导弹窗状态（复用 ui-prefs.json；随 self 分区进备份）。
-    // GET → 返回仓库地址 + 弹窗状态（UI 挂载时判定是否展示 / 是否补记首次使用时间）；
-    // POST → 局部更新（firstSeenAt / dismissed / clicked 白名单），经 updateUiPrefs
-    // 合并写，不覆盖 sync/ui-prefs 的 lastSyncChannel。纯偏好、无 secret。
-    // ------------------------------------------------------ release-notes-prompt
-    // 版本更新内容弹窗状态（复用 ui-prefs.json；随 self 分区进备份）。
-    // GET → 返回当前插件版本 + 上次已读版本 + 是否永不提示；
-    // POST → 局部更新（lastSeenVersion / dismissed 白名单），经 updateUiPrefs 合并写。
     // ------------------------------------------------------ sync/push
     // m-sync-ui：推送（导出 portable 分区 → 提交私有仓库 → 更新 sync-state）。
     // token 可选：非空先写入 DSH credentials；成功则记忆仓库配置（回填表单用）。
@@ -2580,50 +2494,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
         }
       }),
     },
-    // ---------------------------------------------------- market/status
-    // 内置单市场（只读、不可编辑）：恒返回内置仓库摘要。无 add/remove —— 市场绑定内置仓库。
-    // ---------------------------------------------------- market/refresh
-    // ---------------------------------------------------- market/browse
-    // ---------------------------------------------------- market/download
-    // 拉取 manifest + config.zip → 安全校验（§6）→ valid 则落受控临时区 + dry-run 分析/计划。
-    // 真正落盘由用户确认后走既有 POST /execute（zipPath + plan）。零写入到确认。
-    // ---------------------------------------------------- market/prepare
-    // 发布向导：由「用户上传的配置 zip + 用户填写元数据」生成市场条目包
-    // （L2 manifest + config.zip SHA-256 + sections），供 UI 展示/复制与引导推送。
-    // 零写入配置：只在受控临时区生成发布目录；插件不做任何 git 写操作、不持有凭据。
-    // ---------------------------------------------------- me/status
-    // 「一键上传 / 我的配置」登录状态：resolve SYNC_CREDENTIAL_REF token → GET /user。
-    // 401 → loggedIn:false（未登录）；token 值不出模块外，只回传 login 用户名。
-    // ---------------------------------------------------- me/upload
-    // 一键上传：zipPath 必须来自受控上传临时区（复用 /market/prepare 规则）；
-    // form 仅 { name, description?, categories? }（name 必填）；元数据全自动由 MyRepoService 生成。
-    // ---------------------------------------------------- me/items
-    // 查看已上传：读用户仓库 index.json + 收录状态（未收录 / PR 待审核 / 已收录）。
-    // 401（token 过期）→ 401 + 脱敏错误，UI 引导重新登录。
-    // ---------------------------------------------------- me/update
-    // 一键更新：同 upload 时序；version 纯自动 +1、id 不变；PR 未合并 force push 更新 / 已合并基于最新 main 重开。
-    // ---------------------------------------------------- me/listing
-    // 查询收录/下架任务状态（结果卡轮询）：任务表命中 → 直接返回；未命中 → 回退 GitHub 实况推导；
-    // 无任务且无实况 → 200 null。401（token 过期）→ 401，UI 引导重新登录。
-    // ---------------------------------------------------- me/relist
-    // 重新提交收录（收录失败 / 进程重启丢失后的一键重试）：幂等复用已存在 fork/open PR。
-    // ---------------------------------------------------- me/delete
-    // 删除条目：同步删用户仓库索引 + items/<id>/ 文件；已收录 → 后台异步提下架 PR；待审核 → 关闭收录 PR。
-    // ------------------------------------------------------------ history
-    // Phase 6：迁移历史审计（统一历史引擎）。只读 GET：列表（过滤）+ 导出。
-    // loopback fence（guard）与全仓一致——仅同源 + loopback 可访问。
-    // ------------------------------------------------------------ recovery
-    // Phase 5：recovery 编排（prefix 路由，内部按 path 分发）。
-    // 禁用 withMutationGate（避免 double-journal）；mutation 路由经 withMutationLock + loopback fence。
-    // ------------------------------------------------------------ Phase 1 P0
-    // 配置生命周期（自动快照 / 撤销 / 重做）：prefix 路由，内部按 path 分发。
-    // mutation 动作经 withMutationGate（GLOBAL 锁 + SAFE MODE 闸门）；status 只读不加锁。
-    // 崩溃归因（P0-5）：只读。上次启动是否异常 + 归因 + 建议动作 + last-good 快照。
-    // 启动救援模式（P0-3）：on = 备份三处原件后，把 profile patch 改写成只挂载本插件的最小内容、
-    // 置空 home patch，并把 dsh.profile.bundles 收窄为 DSH 核心（@deepseek-ai/*）与本插件自身
-    // —— 其余用户插件本次启动不挂载（这才是「禁用其它插件」，只中和 patch 层救不了
-    // 「插件代码自己把 DSH 搞挂」）；off = 从备份完整还原。两侧都只动
-    // cordis.patch.yml / package.json / state.json，可完全回退。
   ]
   return { routes: routesList, scheduler, makeSyncEngine, lifecycle }
 }
