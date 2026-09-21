@@ -44,7 +44,12 @@ export const name = 'agy-link-client';
 // for ctx.locale to be readable (issue #24). dsh-web-app ships dsh-client-locale.
 export const inject = ['slots', 'locale'];
 
-export interface ClientContext extends Context {
+// Several slot keys registered below (conversation header actions, tool cards)
+// are declared by the web shell, which is not in this package's dependency
+// graph. `Context`'s inherited `slots` face therefore resolves against an
+// incomplete SlotMap. Keep the structural face the call sites use and drop the
+// inherited one, so the narrower declaration does not clash with it.
+export interface ClientContext extends Omit<Context, 'slots'> {
 	slots: {
 		inject(name: string, register: () => () => void): void;
 		register(
