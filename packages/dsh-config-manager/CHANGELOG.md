@@ -9,6 +9,42 @@ This file records release highlights of dsh-config-manager (bilingual: 中文 + 
 > **Release workflow**: on tag push, CI extracts the current version's section as the release notes highlights;
 > the build fails fast if the section is missing, so you cannot forget to update it.
 
+## [0.1.63] - 2026-09-21
+
+### 🧹 死代码清理：收窄改造遗留的孤立注释与常量
+
+「收窄到同步标签页」的改造（`fc9cc45`）删掉了 Star 引导弹窗、版本更新内容弹窗、市场、
+档案、导出预览、备份调度、recovery 等子系统，但**留下了它们的常量与注释**。该包未开
+`noUnusedLocals`，typecheck 抓不到，于是这批孤儿注释一直挂在路由表里冒充文档。
+
+**移除（实测全仓库源码零引用，排除 `lib/`）**：
+
+| 移除项 | 说明 |
+|---|---|
+| `src/index.ts` 的 `STAR_PROMPT_REPO_URL` | 非 export，源码内零引用（唯一消费点随 `fc9cc45` 消失） |
+| `API` 对象里 12 组孤儿注释 | 注释的路由已不存在，旁边**没有**任何对应条目 |
+| `RoutesDeps.marketDir` 的孤儿字段注释 | 该字段已不在接口里 |
+| `makeRoutes` 路由数组内约 45 行孤儿分隔注释 | 同上 |
+| `ui-prefs.json` 的 5 个字段读写路径与测试 | `starPromptFirstSeenAt` / `starPromptDismissed` / `starPromptClicked` / `releaseNotesLastSeenVersion` / `releaseNotesDismissed` |
+
+**保留**：`lastSyncChannel` 及其 `updateUiPrefs` 合并写语义（宿主与浏览器半边都在用）。
+
+**契约影响**：无。`src/sync/ui-prefs.ts` 不在 `package.json#exports` 的任何入口内
+（`.` / `./core` / `./schema` / `./client` 均不可达），被删字段属包内实现细节，
+因此按 patch 位升版。
+
+**行为影响**：已停止写入的旧字段若残留在用户 `ui-prefs.json` 中，读取时不再解析，
+写回时被丢弃 —— 与「这些字段已无生产者与消费者」一致，不影响同步通道选择。
+
+### Verification / 验证
+
+- `npm run typecheck`：**0 error**
+- `TMPDIR=/private/tmp/realhome/ npm test`：**1270 / 1270 pass**
+- `node scripts/aggregate.mjs --check`：**check OK**
+- 根测试 `node --test scripts/*.test.mjs`：**31 / 31 pass**
+- 被移除标识符零命中：`starPrompt` / `STAR_PROMPT` / `releaseNotes` / `marketDir` 在
+  `packages/dsh-config-manager`（排除 `lib/` 与 CHANGELOG）内 → **零命中**
+
 ## [0.1.62] - 2026-09-21
 
 ### 💥 破坏性变更：移除加密层（导出/导入侧收口）

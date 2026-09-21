@@ -1,6 +1,6 @@
 {
   "name": "dsh-config-manager",
-  "version": "0.1.62",
+  "version": "0.1.63",
   "description": "DSH (DeepSeek Harness) config remote sync plugin: settings, plugins, MCP servers, skills, agent presets, workspaces and provider credentials over a private git or WebDAV channel.",
   "author": { "name": "Logic Tan" },
   "homepage": "https://github.com/dale0525/dsh-plugins/tree/main/packages/dsh-config-manager",
