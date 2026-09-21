@@ -850,8 +850,29 @@ S0 的探针丢弃在真实产物上生效。`### Errors Seen` 的偏移也从 1
    `ERR_PNPM_NO_MATCHING_VERSION`），且 `FAIL_LINE` 的全文守卫因结果里含 pnpm 的 `×` 而正确保留了它，
    所以 **S2 的契约未被违反**；但条目文本误导读者。这是取行口径的问题，属本轮新发现。
 
-**A16 仍未验证**：设置卡片（`src/client.js`）的实现已随 0.3.0 发布并落盘，但**未在界面上真实点击保存过**。
-本轮验收只覆盖 A14 的四项产物契约。
+**A16 复验：未通过（2026-09-21，真实界面）。** 在 `http://127.0.0.1:10000` 打开「插件」页、
+展开 `plugins-all` 卡片核对：`ctx-mem-bridge` 行存在且「运行中」，但**该行没有配置入口**
+（官方页仅在 `plugins.row.config` 槽位有注册时才把行标题渲染成可点按钮，见
+`dsh-client-ui-plugin-manager` 的 `RowsSection`），插件页全站也搜不到「检查点」字样。
+
+**根因（已定位，非推断）**：**ctx-mem 的客户端产物从未进入浏览器的加载图**。
+`window.__DSH_BOOT__.entries` 里 68 个条目、6 个 `@logictan/*` 包，
+**没有 `@logictan/dsh-ctx-mem`**；`/plugins/??@logictan/dsh-ctx-mem/client.js` 返回 404。
+
+`dsh-client-modules` 的扫描以**加载器行的 specifier** 定位包清单（`locatePkgJson` →
+`exactPackageSpecifier`）。`exactPackageSpecifier` 只接受**裸包名**，而本包的 patch 行是
+`name: '@logictan/dsh-ctx-mem/bridge'`（子路径）→ 返回 `undefined` → 清单定位失败 → `dsh.client`
+永不被发现。对照：聚合包其余七个 `@logictan/*` 插件的行名**全部是裸包名**，它们的客户端产物都在加载图里；
+本包是唯一用子路径行名的。
+
+> 这也说明根 `AGENTS.md` 里「客户端产物 entry `id` 等于包名」这条硬约束**不充分**：
+> 真正被扫描的是**加载器行的 specifier**，entry `id` 只是 loader 协议字段。本包的
+> `lib/client.js` 注册 `id: "@logictan/dsh-ctx-mem"`（合规），但仍然不加载。
+
+**修法（未实施，属破坏性改动）**：把包的两个面**互换**——`exports['.']` 指向 bridge、
+新增 `exports['./engine']` 指向引擎，patch 行改为裸名 `@logictan/dsh-ctx-mem`，
+`buildPatches` 注入的行名改为 `@logictan/dsh-ctx-mem/engine`。
+这样 profile 平面上的裸名行即可被扫描到。需按 minor 破坏性升版（0.3.0 → 0.4.0）并重走发布。
 
 > **未做**：以上两处缺陷**均未修改代码**——用户本轮的授权是「发布 + 本地验收」，修缺陷超出范围。
 > 本计划到此为止；是否修、按什么判据修，待用户裁定。
