@@ -6,23 +6,31 @@ import { buildSkeleton } from '../src/skeleton.js';
 /**
  * @typedef {object} Facts
  * @property {string[]} intents
+ * @property {string[]} contexts
  * @property {string[]} files
  * @property {string[]} commands
  * @property {string[]} errors
  */
 
-/** Fixed subsection order — the renderer must never reorder or omit these. */
+/**
+ * Fixed subsection order — the renderer must never reorder or omit these.
+ *
+ * Errors precede commands because an error cannot be re-derived from anything
+ * else in the checkpoint, while a command is reflected in the file list; the
+ * budget gives commands away first for the same reason.
+ */
 const SECTIONS = [
   { key: 'intents', header: '### User Intents' },
   { key: 'files', header: '### Files Touched' },
-  { key: 'commands', header: '### Commands Run' },
   { key: 'errors', header: '### Errors Seen' },
+  { key: 'commands', header: '### Commands Run' },
 ];
 
 /** @returns {Facts} */
 function fullFacts() {
   return {
     intents: ['add a skeleton renderer', 'keep facts verbatim'],
+    contexts: [],
     files: ['src/skeleton.js', 'tests/skeleton.test.js'],
     commands: ['node --test tests/skeleton.test.js'],
     errors: ['TypeError: buildSkeleton is not a function'],
@@ -89,7 +97,7 @@ test('A4b — every empty list renders `(none)` and no bullets at all', () => {
 test('A4c — no omission: populating one list leaves the other three as `(none)`', () => {
   for (const { key, header } of SECTIONS) {
     /** @type {Record<string, string[]>} */
-    const facts = { intents: [], files: [], commands: [], errors: [] };
+    const facts = { intents: [], contexts: [], files: [], commands: [], errors: [] };
     facts[key] = [`only-${key}`];
 
     const { text } = buildSkeleton(facts);
@@ -112,13 +120,39 @@ test('A3 — verbatim round-trip: quoting, $VAR, comments and surrounding spaces
   assert.ok(!text.includes(`- ${value.trim()}\n`), 'the trimmed variant must NOT be what was emitted');
 });
 
-test('A3b — embedded newline: an item keeps its newline instead of being split or collapsed', () => {
+test('A3b — embedded newline: an item keeps its newline and indents the continuation', () => {
   const value = 'line one\nline two';
   const { text } = buildSkeleton({ errors: [value] });
 
-  assert.ok(text.includes(value), 'the raw substring with the newline must be present');
-  assert.ok(text.includes(`- ${value}\n`), 'the bullet must span the embedded newline');
+  assert.ok(
+    text.includes('- line one\n  line two\n'),
+    'the item must span the embedded newline with the continuation indented',
+  );
+  assert.ok(text.includes('line one'), 'the first line is kept verbatim');
+  assert.ok(text.includes('line two'), 'the continuation line is kept verbatim');
   assert.equal(bulletLines(text).length, 1, 'one item stays one bullet');
+});
+
+test('A8 — a multi-line item is not counted as several entries', () => {
+  const heredoc = "cat > f <<'EOF'\n- not an item\n- also not\nEOF";
+  const { text } = buildSkeleton({ commands: [heredoc, 'git commit -m x'] });
+
+  assert.equal(bulletLines(text).length, 2, 'two items must read as two bullets');
+  assert.equal(
+    sectionBody(text, '### Commands Run').split('\n').filter((l) => l.startsWith('- ')).length,
+    2,
+    'no continuation line may look like a top-level bullet',
+  );
+});
+
+test('A8b — a continuation that looks like a heading cannot truncate its section', () => {
+  const { text } = buildSkeleton({ errors: ['boom\n# CI lines look like: x', 'second'] });
+
+  assert.equal(
+    sectionBody(text, '### Errors Seen'),
+    '- boom\n  # CI lines look like: x\n- second',
+    'an indented continuation is not a Markdown heading',
+  );
 });
 
 test('no cascade decay: rendering is a pure function of the raw facts', () => {
@@ -167,8 +201,56 @@ test('Degenerate input — missing facts, empty facts and undefined all render t
       result = buildSkeleton(input);
     });
     assert.equal(result.text, expected, `unexpected output for ${JSON.stringify(input)}`);
-    assert.deepStrictEqual(result.facts, { intents: [], files: [], commands: [], errors: [] });
+    assert.deepStrictEqual(result.facts, { intents: [], contexts: [], files: [], commands: [], errors: [] });
   }
+});
+
+
+/* ------------------------------------------- S6: paired intent context */
+
+test('A19 — an intent renders its paired context on an indented arrow line', () => {
+  const { text } = buildSkeleton({
+    intents: ['continue', 'authorize enabling it'],
+    contexts: ['I finished the refactor.', 'Do you want me to enable the row?'],
+  });
+
+  assert.equal(
+    sectionBody(text, '### User Intents'),
+    '- continue\n  ↑ I finished the refactor.\n- authorize enabling it\n  ↑ Do you want me to enable the row?',
+  );
+  assert.equal(bulletLines(text).length, 2, 'each intent stays one bullet');
+});
+
+test('A19 — an empty context adds no line and changes nothing', () => {
+  const bare = buildSkeleton({ intents: ['continue'] }).text;
+  const paired = buildSkeleton({ intents: ['continue'], contexts: [''] }).text;
+
+  assert.equal(paired, bare, 'an empty context must be indistinguishable from none');
+});
+
+test('A19 — contexts shorter than intents leave the extra intents unpaired', () => {
+  // copyFacts tolerates a partial shape; a context list that does not cover
+  // every intent must degrade to unpaired rather than throw or misalign.
+  const { text } = buildSkeleton({ intents: ['a', 'b'], contexts: ['only for a'] });
+
+  assert.equal(sectionBody(text, '### User Intents'), '- a\n  ↑ only for a\n- b');
+});
+
+test('A20 — the skeleton never truncates the intent, only the context', () => {
+  const intent = 'please ' + 'really '.repeat(200) + 'fix it';
+  const { text } = buildSkeleton({ intents: [intent], contexts: ['short'] });
+
+  assert.ok(text.includes(intent), 'the intent must be emitted byte-for-byte');
+});
+
+test('A3b — a paired context is a continuation, so it cannot look like a bullet or heading', () => {
+  const { text } = buildSkeleton({ intents: ['go'], contexts: ['# not a heading\n- not a bullet'] });
+
+  assert.equal(
+    sectionBody(text, '### User Intents'),
+    '- go\n  ↑ # not a heading\n  - not a bullet',
+  );
+  assert.equal(bulletLines(text).length, 1, 'the context lines stay inside the intent item');
 });
 
 test('the skeleton is language-independent — the language drives the fill prompt only', () => {

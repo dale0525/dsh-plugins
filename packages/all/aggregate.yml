@@ -17,11 +17,12 @@ deps:
   - ../dsh-market
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch
-  # ctx-mem's ENGINE row is disabled (its backend is a `compaction` SERVICE
-  # replacement, which only a preset's isolate realm can mount), but the package
-  # must still be INSTALLED: the bridge row names `@logictan/dsh-ctx-mem/bridge`,
-  # and the row the bridge injects names `@logictan/dsh-ctx-mem` — both resolve
-  # by package name from the profile root. patchFrom alone would ship rows whose
-  # packages are absent from a fresh profile.
+  # ctx-mem declares ONE row (its bridge). The engine is mounted by the row the
+  # bridge injects into a preset's `isolate: { compaction: true }` group, which
+  # no profile-plane row can reach — but the package must still be INSTALLED:
+  # the bridge row names `@logictan/dsh-ctx-mem/bridge`, and the injected row
+  # names `@logictan/dsh-ctx-mem` — both resolve by package name from the profile
+  # root. patchFrom alone would ship a row whose package is absent from a fresh
+  # profile.
   - ../ctx-mem
   - ../dsh-agy-link

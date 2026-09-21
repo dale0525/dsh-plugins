@@ -13,6 +13,8 @@
 import { basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { SETTINGS_NAMESPACE, SettingsSection } from './config.js'
+
 export const name = 'ctx-mem-bridge'
 
 /** Set of preset ids this bridge covers. */
@@ -110,11 +112,46 @@ export function onInternalConfig(config, next, engine) {
   return out
 }
 
+/**
+ * Composition base for the settings section.
+ *
+ * What the card's reset returns to: whatever the bridge row's `config.engine`
+ * already carries. An absent key stays absent, so the section's own schema
+ * default applies rather than a literal restated here.
+ * @param {Record<string, unknown>} [engine]
+ * @returns {Record<string, unknown>}
+ */
+function sectionBase(engine) {
+  const base = {}
+  if (engine?.maxCheckpointTokens !== undefined) base.maxCheckpointTokens = engine.maxCheckpointTokens
+  return base
+}
+
 const plugin = {
   name,
   apply(ctx, config) {
     const engine = config?.engine
-    ctx.on('internal/config', (c, next) => onInternalConfig(c, next, engine), { global: true })
+    // The settings section is the source for the ceiling knob once the settings
+    // service is up; before that — or in a profile shipping no settings
+    // provider — the row's own engine config stands alone. The source is read
+    // on every waterfall pass rather than captured, so a composition mounted
+    // after a settings change already sees it.
+    let section = () => engine
+    ctx.inject(['settings'], (settingsCtx) => {
+      settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, SettingsSection, sectionBase(engine), {
+        setSource(source) {
+          section = source
+        },
+        // Nothing to do until restart: the engine captured its config when the
+        // preset composition mounted.
+        onChange() {},
+      })
+    })
+    ctx.on(
+      'internal/config',
+      (c, next) => onInternalConfig(c, next, { ...(engine ?? {}), ...section() }),
+      { global: true },
+    )
   },
 }
 

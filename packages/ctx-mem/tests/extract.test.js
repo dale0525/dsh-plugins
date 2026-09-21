@@ -523,11 +523,191 @@ test('ordering — commands follow seq order and duplicates are kept', () => {
 
 test('degenerate input — empty region and unparsable arguments never throw', () => {
   const empty = extractFacts(stubRegion([]))
-  assert.deepEqual(empty, { intents: [], files: [], commands: [], errors: [] })
+  assert.deepEqual(empty, { intents: [], contexts: [], files: [], commands: [], errors: [] })
 
-  assert.deepEqual(extractFacts(undefined), { intents: [], files: [], commands: [], errors: [] })
+  assert.deepEqual(extractFacts(undefined), { intents: [], contexts: [], files: [], commands: [], errors: [] })
 
   const malformed = stubRegion([assistantMsg(1, [callBlock('call_bad', 'read', '{not valid json')])])
   assert.doesNotThrow(() => extractFacts(malformed))
-  assert.deepEqual(extractFacts(malformed), { intents: [], files: [], commands: [], errors: [] })
+  assert.deepEqual(extractFacts(malformed), { intents: [], contexts: [], files: [], commands: [], errors: [] })
+})
+
+/* ------------------------------------------- S2: misclassified-error filter */
+
+test('A5 — a passing test line is not an error, despite the failure word in its name', () => {
+  // The runner's own verdict is the checkmark. `dsh-config-manager`'s suite
+  // prints case names that carry Chinese failure words (`重复条目名拒绝`), so
+  // ERROR_PATTERN_ZH fires on the *name* and the success line was recorded as an
+  // error. Measured on the real archive: 8 of the 52 HEAD entries carried a
+  // leading checkmark, and none of them describes a failure.
+  const own = [
+    assistantMsg(1, [callBlock('call_pass', 'bash', { command: 'pnpm test' })]),
+    toolResult(2, 'call_pass', '✔ zip-security: 重复条目名拒绝 (1.416708ms)\n[exit code: 1]', false),
+  ]
+
+  assert.deepEqual(extractFacts(stubRegion(own)).errors, [], 'a passing case must not become an error')
+})
+
+test('A5 — a serialized tool payload is data, not a diagnostic', () => {
+  // `gh run list --json …` returns an array whose `conclusion` field may read
+  // "failure". The word is a field value, not a diagnostic, and the entry's
+  // first line opens with `[`.
+  const own = [
+    assistantMsg(1, [callBlock('call_json', 'bash', { command: 'gh run list --json conclusion' })]),
+    toolResult(2, 'call_json', '[{"conclusion":"failure","createdAt":"2026-09-20T08:38:47Z"}]', false),
+  ]
+
+  assert.deepEqual(extractFacts(stubRegion(own)).errors, [], 'a JSON payload must not become an error')
+})
+
+test('A5b — a pure-numeric first line is a real error and must be kept', () => {
+  // `bash: 0` was once misjudged as a false positive. It is not: it is the
+  // output of `git ls-remote --tags origin | grep -c ''`, which FAILED — its
+  // only output is a count. Dropping it drops "this command failed". Same for a
+  // bare indented number.
+  const own = [
+    assistantMsg(1, [callBlock('call_count', 'bash', { command: "git ls-remote --tags origin | grep -c ''" })]),
+    toolResult(2, 'call_count', '0\n[exit code: 1]', false),
+    assistantMsg(3, [callBlock('call_indent', 'bash', { command: 'probe | wc -l' })]),
+    toolResult(4, 'call_indent', '      35\n[exit code: 1]', false),
+  ]
+
+  assert.deepEqual(
+    extractFacts(stubRegion(own)).errors,
+    ['bash: 0', 'bash:       35'],
+    'a numeric first line must never be treated as a misclassified error',
+  )
+})
+
+test('A5c — the host ruling wins: an isError result is kept even with a checkmark', () => {
+  const own = [
+    assistantMsg(1, [callBlock('call_forced', 'bash', { command: 'runner --all' })]),
+    toolResult(2, 'call_forced', '✔ suite started\nboom 失败', true),
+  ]
+
+  assert.deepEqual(
+    extractFacts(stubRegion(own)).errors,
+    ['bash: ✔ suite started'],
+    'isError must outrank both shape predicates',
+  )
+})
+
+test('A5c — a failure checkmark anywhere in the content vetoes both drop rules', () => {
+  // A run that both passed and failed some case must keep its error. The veto
+  // reads the WHOLE content (deliberately), unlike the two shape predicates.
+  const own = [
+    assistantMsg(1, [callBlock('call_mixed', 'bash', { command: 'pnpm test' })]),
+    toolResult(2, 'call_mixed', '✔ passing case: 失败 (1ms)\n✘ failing case: boom', false),
+  ]
+
+  assert.deepEqual(
+    extractFacts(stubRegion(own)).errors,
+    ['bash: ✔ passing case: 失败 (1ms)'],
+    'a run that also failed must not lose its error',
+  )
+})
+
+test('A5d — the shape predicates read only the first 200 characters of the line', () => {
+  // Both predicates are claims about how a line STARTS. Measured on the real
+  // archive, two 46,652-character heredoc leaks were dropped only because a
+  // checkmark sat ~37,600 characters in — not because they look like a runner
+  // verdict. Bounding the window restores both.
+  const buried = 'A'.repeat(250) + ' 失败'
+  const leading = '✔ ' + 'A'.repeat(250) + ' 失败'
+  assert.equal(buried.indexOf('\u2714'), -1, 'fixture must not carry a checkmark')
+  assert.ok(buried.length > 200 && leading.length > 200, 'both fixtures must exceed the window')
+
+  const own = [
+    assistantMsg(1, [callBlock('call_buried', 'bash', { command: 'probe' })]),
+    toolResult(2, 'call_buried', buried + '\n[exit code: 1]', false),
+    assistantMsg(3, [callBlock('call_leading', 'bash', { command: 'probe' })]),
+    toolResult(4, 'call_leading', leading + '\n[exit code: 1]', false),
+  ]
+
+  const { errors } = extractFacts(stubRegion(own))
+
+  assert.equal(errors.length, 1, 'expected only the leading-checkmark line to drop, got ' + JSON.stringify(errors))
+  assert.equal(errors[0], 'bash: ' + buried, 'a checkmark past the window is not a runner verdict')
+})
+
+test('A5d — a JSON blob opening past the window is not dropped either', () => {
+  // Same scope rule for the structural predicate: the pattern is anchored, so a
+  // `[` that is not at the head of the judged window cannot satisfy it.
+  const buried = 'B'.repeat(240) + ' [{"conclusion":"failure"}] 失败'
+  const own = [
+    assistantMsg(1, [callBlock('call_json_buried', 'bash', { command: 'probe' })]),
+    toolResult(2, 'call_json_buried', buried + '\n[exit code: 1]', false),
+  ]
+
+  assert.deepEqual(
+    extractFacts(stubRegion(own)).errors,
+    ['bash: ' + buried],
+    'a payload that does not open the line must not be dropped as one',
+  )
+})
+
+/* --------------------------------- S6: paired assistant context per intent */
+
+/** An `assistant/message` event carrying plain text. */
+function assistantText(seq, text) {
+  return assistantMsg(seq, [{ type: 'text', text }])
+}
+
+test('A19 — contexts is index-aligned with intents', () => {
+  const own = [
+    assistantText(1, 'I will refactor the parser now.'),
+    userMsg(2, 'continue', { kind: 'user' }),
+    assistantText(3, 'Done. Next I need your approval.'),
+    userMsg(4, 'approved', { kind: 'user' }),
+  ]
+
+  const { intents, contexts } = extractFacts(stubRegion(own))
+
+  assert.equal(contexts.length, intents.length, 'contexts must align 1:1 with intents')
+  assert.deepEqual(intents, ['continue', 'approved'])
+  assert.deepEqual(contexts, ['I will refactor the parser now.', 'Done. Next I need your approval.'])
+})
+
+test('A19 — the first intent in a region has no preceding statement', () => {
+  const own = [userMsg(1, 'start here', { kind: 'user' }), assistantText(2, 'ok')]
+
+  assert.deepEqual(extractFacts(stubRegion(own)).contexts, [''])
+})
+
+test('A21 — only the immediately preceding statement is paired, never accumulated', () => {
+  // Two consecutive user messages with no assistant text between them: the
+  // second must not inherit the first turn's statement.
+  const own = [
+    assistantText(1, 'a statement from an earlier turn'),
+    userMsg(2, 'first', { kind: 'user' }),
+    userMsg(3, 'second', { kind: 'user' }),
+  ]
+
+  assert.deepEqual(extractFacts(stubRegion(own)).contexts, ['a statement from an earlier turn', ''])
+})
+
+test('a tool-call-only assistant turn does not erase the pending statement', () => {
+  // An assistant message whose content is only tool calls carries no text. It
+  // must not overwrite the last real statement, or the pairing would be lost
+  // for every intent that follows an ordinary tool round.
+  const own = [
+    assistantText(1, 'the last thing I actually said'),
+    assistantMsg(2, [callBlock('call_x', 'bash', { command: 'ls' })]),
+    userMsg(3, 'go on', { kind: 'user' }),
+  ]
+
+  assert.deepEqual(extractFacts(stubRegion(own)).contexts, ['the last thing I actually said'])
+})
+
+test('framework rows do not produce intents and so consume no context', () => {
+  const own = [
+    assistantText(1, 'a statement'),
+    userMsg(2, 'AGENTS.md body', { kind: 'agent-instructions' }),
+    userMsg(3, 'the real request', { kind: 'user' }),
+  ]
+
+  const { intents, contexts } = extractFacts(stubRegion(own))
+
+  assert.deepEqual(intents, ['the real request'])
+  assert.deepEqual(contexts, ['a statement'], 'a skipped framework row must not consume the context')
 })

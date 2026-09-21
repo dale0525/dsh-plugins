@@ -57,7 +57,7 @@ PTC（programmatic tool calling）模式下，模型写的是 `run_code` 脚本�
 | `fillEnabled` | `true` | 是否执行模型填空；`false` 时退化为纯确定性产出，且不发起模型调用 |
 | `fillProvider` / `fillModel` | 空 | 填空所用路由；两者都空 = 用当前会话路由，只填一个不生效 |
 | `language` | `zh` | 产出语言 |
-| `maxCheckpointTokens` | `24000` | 检查点的绝对 token 上限；取它与「分母推导预算」的较小值 |
+| `maxCheckpointTokens` | `10000` | 检查点的绝对 token 上限；取它与「分母推导预算」的较小值。**这是纯上限旋钮**：调小不会丢任何一类事实，只会让骨架更早向低档位下降（每条写类命令保留得更短） |
 | `thresholdRatio` | `0.8` | 压力触发阈值（继承 `compaction-basic` 语义） |
 | `retainRatio` | `0.16` | 保留近期尾巴的比例（继承语义） |
 | `retainTokens` | 未设置 | 保留尾巴的绝对 token 数，设置后覆盖 `retainRatio`；`0` = 一条尾巴都不留（硬切断） |

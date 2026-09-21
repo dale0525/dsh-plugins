@@ -30,6 +30,10 @@ const METER = { estimateMessage };
  * Both a `read` and a `bash` call on purpose: `files` and `commands` are
  * populated by different accessors, so a bash-only fixture would leave `files`
  * empty and let a "files survive" assertion pass vacuously.
+ *
+ * The bash call must be state-changing: a probe's text is never rendered (see
+ * `src/render.js`), so a `grep` here would leave the command list empty and
+ * every budget assertion would pass without the budget ever binding.
  */
 function pushTurn(events, seq, index) {
   events.push({
@@ -63,7 +67,7 @@ function pushTurn(events, seq, index) {
     data: {
       message: {
         role: 'assistant',
-        content: [{ type: 'tool-call', name: 'bash', arguments: JSON.stringify({ command: `grep -n "needle-${index}" /repo/src/module-${index}/index.js` }) }],
+        content: [{ type: 'tool-call', name: 'bash', arguments: JSON.stringify({ command: `mkdir -p /repo/dist/module-${index}` }) }],
       },
     },
   });
@@ -247,7 +251,7 @@ test('the fact sections reach the checkpoint when the budget is ample', async ()
   assert.ok(text.includes('## Extracted Facts'), 'the skeleton survives');
   assert.ok(text.includes('## Why This Approach'), 'the causal section is appended');
   assert.ok(text.includes('/repo/src/module-0/index.js'), 'an early fact survives');
-  assert.ok(text.includes('grep -n'), 'a command survives');
+  assert.ok(text.includes('mkdir -p /repo/dist/module-'), 'a command survives');
 })
 
 test('a degenerate region still renders the floor rather than throwing', async () => {
@@ -430,9 +434,10 @@ test('with no usable meter every fact is rendered whole — the budget cannot bi
   // call, so the renderer receives `undefined`. Measured: making the no-meter
   // path price realistically instead turns this test red, while the test above
   // stays green.
-  // Long, non-write-like commands against a small region: the fact set is large
-  // while the denominator stays small, so the budget genuinely binds. Write-like
-  // commands would not do — T3 keeps those, so the budget could never drop one.
+  // Long state-changing commands: only those render at all, and the fact set
+  // they produce is larger than the 1200-token cap, so the budget genuinely
+  // binds. A probe would not do — probes never render, so the fact set would be
+  // empty and the cap could not bite.
   const events = [];
   for (let i = 0; i < 40; i += 1) {
     const seq = events.length;
@@ -447,7 +452,7 @@ test('with no usable meter every fact is rendered whole — the budget cannot bi
               type: 'tool-call',
               name: 'bash',
               arguments: JSON.stringify({
-                command: `grep -n needle-${i} /repo/${'deep/'.repeat(20)}file-${i}.js`,
+                command: `mkdir -p /repo/${'deep/'.repeat(20)}dir-${i}`,
               }),
             },
           ],
@@ -485,7 +490,7 @@ test('with no usable meter every fact is rendered whole — the budget cannot bi
   // Count the commands themselves, not `- ` bullets: the causal reply is a
   // markdown list of its own and would be counted alongside them.
   const kept = (result) =>
-    (result.summary.map((b) => b.text).join('').match(/grep -n needle-/g) ?? []).length;
+    (result.summary.map((b) => b.text).join('').match(/mkdir -p \/repo\//g) ?? []).length;
 
   assert.equal(kept(bare), 40, 'every command of the region must survive whole');
   assert.ok(

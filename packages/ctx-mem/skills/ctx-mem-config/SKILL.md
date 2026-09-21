@@ -44,8 +44,8 @@ bridge 给该组合注入一段 `patches`——关掉官方 `compaction-basic`�
       fillModel: deepseek-v4.1-flash
 ```
 
-不要改 preset 文件，也不要直接给 `ctx-mem` 行写 `config:`——那一行是 disabled 的
-声明行，引擎实际由 bridge 注入。
+不要改 preset 文件，也不要给 `ctx-mem` 行写 `config:`——引擎**没有** profile 平面的
+行（它由 bridge 注入到 preset 的 `isolate` 组内），配置只认 bridge 行的 `config.engine`。
 
 ## 配置键
 
@@ -58,7 +58,7 @@ ctx-mem 自有键：
 | `fillEnabled` | `true` | 是否执行填空调用。`false` 时**零模型调用**，只产出骨架 |
 | `fillProvider` / `fillModel` | 空 | 填空所用路由。两者都空 = 用会话当前路由；只填一个不生效 |
 | `language` | `zh` | 四节因果的语言，取值 `zh` / `en` |
-| `maxCheckpointTokens` | `24000` | 检查点的绝对 token 上限（骨架预算取它与分母推导值的较小者） |
+| `maxCheckpointTokens` | `10000` | 检查点的绝对 token 上限（骨架预算取它与分母推导值的较小者）。**纯上限旋钮**：调小不丢事实类别，只让骨架更早降档（写类命令保留更短） |
 
 继承官方 `compaction-basic` 且**对 ctx-mem 仍然生效**的策略键：
 

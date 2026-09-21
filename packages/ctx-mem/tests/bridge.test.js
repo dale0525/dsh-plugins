@@ -25,6 +25,7 @@ import plugin, {
   onInternalConfig,
   presetIdFromPath,
 } from '../src/bridge.js';
+import { SETTINGS_NAMESPACE, SettingsSection } from '../src/config.js';
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -50,6 +51,30 @@ function findRow(entries, id) {
     }
   }
   return undefined;
+}
+
+/**
+ * Drive plugin.apply with a fake context and record both seams.
+ *
+ * inject is resolved synchronously so the registered body runs against a fake
+ * settings service: the test observes exactly what installSection was handed
+ * without a real settings provider in the process.
+ * @param {Record<string, unknown>} [engine] the bridge row's config.engine.
+ * @returns {{ctx: object, events: unknown[][], installs: unknown[][]}}
+ */
+function applyBridgePlugin(engine) {
+  const events = [];
+  const installs = [];
+  const settingsCtx = { settings: { installSection: (...args) => installs.push(args) } };
+  const ctx = {
+    on: (...args) => events.push(args),
+    inject: (services, body) => {
+      assert.deepEqual(services, ['settings']);
+      body(settingsCtx);
+    },
+  };
+  plugin.apply(ctx, engine === undefined ? undefined : { engine });
+  return { ctx, events, installs };
 }
 
 /* ------------------------------------------------------------------ group 1 */
@@ -188,10 +213,9 @@ test('onInternalConfig returns a non-object next() result unchanged', () => {
 test('plugin registers the global internal/config waterfall', () => {
   assert.equal(name, 'ctx-mem-bridge');
   assert.equal(plugin.name, name);
-  const calls = [];
-  plugin.apply({ on: (...args) => calls.push(args) });
-  assert.equal(calls.length, 1);
-  const [event, listener, options] = calls[0];
+  const { events } = applyBridgePlugin();
+  assert.equal(events.length, 1);
+  const [event, listener, options] = events[0];
   assert.equal(event, 'internal/config');
   assert.equal(typeof listener, 'function');
   assert.deepEqual(options, { global: true });
@@ -203,13 +227,52 @@ test('plugin registers the global internal/config waterfall', () => {
 });
 
 test('A17: the bridge row config is forwarded onto the injected ctx-mem row', () => {
-  const calls = [];
-  plugin.apply({ on: (...args) => calls.push(args) }, { engine: { fillModel: 'deepseek-v4.1-flash' } });
-  const listener = calls[0][1];
+  const { events } = applyBridgePlugin({ fillModel: 'deepseek-v4.1-flash' });
+  const listener = events[0][1];
   const input = { path: 'file:///Users/x/.dsh/presets/standard/agent.cordis.yml' };
   listener(input, () => input);
   const injected = input.patches[1].insert[0];
   assert.deepEqual(injected.config, { fillModel: 'deepseek-v4.1-flash' });
+});
+
+test('A17: the settings namespace is registered exactly once, on the bridge row', () => {
+  // The bridge covers three presets and every mount runs the waterfall again,
+  // but settings.register fails loud on a second registration of one namespace
+  // -- so the registration must belong to the profile-plane bridge fiber, which
+  // is mounted once per process, and not to the engine row the bridge injects.
+  const { ctx, installs } = applyBridgePlugin({ fillModel: 'deepseek-v4.1-flash' });
+  assert.equal(installs.length, 1);
+
+  const [owner, ns, schema, base, hooks] = installs[0];
+  assert.equal(owner, ctx, 'the namespace must be owned by the bridge fiber');
+  assert.equal(ns, SETTINGS_NAMESPACE);
+  assert.equal(schema, SettingsSection);
+  assert.deepEqual(base, {}, 'an engine config without the knob contributes no base value');
+  assert.equal(typeof hooks.setSource, 'function');
+  assert.equal(typeof hooks.onChange, 'function');
+});
+
+test('A17: the composition base is the knob the bridge row already carries', () => {
+  const { installs } = applyBridgePlugin({ maxCheckpointTokens: 3000, fillModel: 'x' });
+  assert.deepEqual(installs[0][3], { maxCheckpointTokens: 3000 });
+});
+
+test('A17: the resolved settings section drives the injected row config', () => {
+  const { events, installs } = applyBridgePlugin({ fillModel: 'deepseek-v4.1-flash' });
+  const listener = events[0][1];
+  const inject = (extra) => {
+    const input = { path: 'file:///Users/x/.dsh/presets/standard/agent.cordis.yml', ...extra };
+    listener(input, () => input);
+    return input.patches[1].insert[0].config;
+  };
+
+  // Before the settings service resolves, the row's own engine config stands.
+  assert.deepEqual(inject(), { fillModel: 'deepseek-v4.1-flash' });
+
+  // After installSection hands over its source, the section wins the knob while
+  // the row config keeps supplying everything the section does not own.
+  installs[0][4].setSource(() => ({ maxCheckpointTokens: 12345 }));
+  assert.deepEqual(inject(), { fillModel: 'deepseek-v4.1-flash', maxCheckpointTokens: 12345 });
 });
 
 test('A17: an absent or empty engine config adds no config key to the injected row', () => {

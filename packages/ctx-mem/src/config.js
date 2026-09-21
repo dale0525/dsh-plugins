@@ -27,11 +27,37 @@ export const DEFAULT_LANGUAGE = 'zh';
 /**
  * Default absolute ceiling on a rendered checkpoint, in estimated tokens.
  *
- * Set well above what a healthy fold needs (the largest real fold renders at
- * ~24,000 framed tokens before tiering) so it never binds in normal operation,
- * while still bounding the pathological case.
+ * The budget is normally driven by the region's own price; this only bounds it.
+ * 10,000 is comfortably above what a healthy fold renders — the real archive's
+ * last fold produces a 6,440-token skeleton and a 7,057-token one once the
+ * paired contexts are included — so it never binds in normal operation, while
+ * still giving a fold whose denominator collapses an earlier point at which the
+ * renderer starts descending the tier ladder.
+ *
+ * It is a pure ceiling: since commands are filtered to write-like ones at every
+ * tier, lowering it changes how much of each command is kept, never which
+ * classes of fact survive.
  */
-export const DEFAULT_MAX_CHECKPOINT_TOKENS = 24000;
+export const DEFAULT_MAX_CHECKPOINT_TOKENS = 10000;
+
+/**
+ * Settings namespace the bridge row registers for the Web GUI.
+ *
+ * The Plugins page renders a configuration card for the namespace under the row
+ * that registers it. Only {@link SettingsSection}'s single field is exposed —
+ * this backend's other own keys stay composition-only.
+ */
+export const SETTINGS_NAMESPACE = 'ctx-mem';
+
+/**
+ * Schema of the {@link SETTINGS_NAMESPACE} section.
+ *
+ * The same default as {@link Config}'s maxCheckpointTokens and
+ * {@link splitConfig}'s fallback: one constant, three surfaces.
+ */
+export const SettingsSection = z.object({
+  maxCheckpointTokens: z.number().step(1).min(1).default(DEFAULT_MAX_CHECKPOINT_TOKENS),
+});
 
 /**
  * Keys owned by this backend — everything the host engine does not know.

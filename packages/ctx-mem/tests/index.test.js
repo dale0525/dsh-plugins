@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { Context } from '@deepseek-ai/cordis';
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic';
 import CtxMemEngine, { name } from '../src/index.js';
-import { resolveFillTarget, splitConfig } from '../src/config.js';
+import { Config, DEFAULT_MAX_CHECKPOINT_TOKENS, SettingsSection, resolveFillTarget, splitConfig } from '../src/config.js';
 import { CAUSAL_SECTIONS } from '../src/causal.js';
 
 /* ------------------------------------------------------------------ helpers */
@@ -167,7 +167,28 @@ test('the engine constructs with our keys present and applies their defaults', (
   assert.equal(engine.ctxMemConfig.fillProvider, '');
   assert.equal(engine.ctxMemConfig.fillModel, '');
   assert.equal(engine.ctxMemConfig.language, 'zh');
-  assert.equal(engine.ctxMemConfig.maxCheckpointTokens, 24000);
+  assert.equal(engine.ctxMemConfig.maxCheckpointTokens, DEFAULT_MAX_CHECKPOINT_TOKENS);
+})
+
+test('A15 — the default cap is 10,000, and every surface agrees on it', () => {
+  // One number, four surfaces: the exported constant, the schema default the
+  // loader validates a config file through, the fallback `splitConfig` applies
+  // to a config that omits the key, and the settings section the Web GUI edits.
+  // Reading them from the constant is what keeps a change from landing on one
+  // surface and missing another.
+  assert.equal(DEFAULT_MAX_CHECKPOINT_TOKENS, 10000);
+
+  const { engineConfig, own } = splitConfig({})
+  assert.equal(own.maxCheckpointTokens, 10000, 'splitConfig must fall back to 10000')
+  assert.deepEqual(engineConfig, {})
+
+  const validated = Config({ thresholdRatio: 0.8 })
+  assert.equal(validated.maxCheckpointTokens, 10000)
+
+  // The settings section is validated on its own, so it carries its own default
+  // rather than inheriting one from the row config.
+  const section = SettingsSection({})
+  assert.equal(section.maxCheckpointTokens, 10000)
 })
 
 test('A10 — retainTokens: 0 is accepted, enabling the hard cutoff', () => {

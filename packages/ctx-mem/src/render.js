@@ -17,6 +17,10 @@
  * intent fidelity. `errors` and `commands` are retained newest-first, so the
  * oldest (least relevant) entries are the ones that fall off.
  *
+ * Fact contract: `commands` renders state-changing commands only. A probe's
+ * fact is its output, which the error and file lists already carry, so the
+ * probe text itself is dropped (see {@link commandAt}).
+ *
  * @module @logictan/dsh-ctx-mem/render
  */
 import { buildSkeleton, copyFacts } from './skeleton.js';
@@ -24,17 +28,22 @@ import { buildSkeleton, copyFacts } from './skeleton.js';
 /**
  * Per-item character caps, richest first.
  *
- * `writeVerbatim` is the cap for state-changing commands (see
- * {@link isWriteLike}); when it is `0` those commands degrade to their first
- * line as well. `firstLine` caps every other command, and `errorCap` caps one
- * error entry. `writeOnly` drops probe commands entirely.
+ * Only state-changing commands are rendered at all (see {@link isWriteLike}), so
+ * every tier differs solely in how much of each one it keeps. `writeVerbatim`
+ * is that cap; when it is `0` those commands degrade to their first line plus
+ * their marker line (see {@link capWriteFirstLine}). `errorCap` caps one error
+ * entry, and `contextCap` one paired assistant statement.
  *
- * @type {Readonly<Record<string, { writeVerbatim: number, firstLine: number, errorCap: number, writeOnly: boolean }>>}
+ * `contextCap` is the one cap that bounds *added* text rather than a fact: the
+ * paired context is derived from the same region, so capping it loses nothing
+ * that is not already in the region. The intent above it is never capped.
+ *
+ * @type {Readonly<Record<string, { writeVerbatim: number, firstLine: number, errorCap: number, contextCap: number }>>}
  */
 export const TIERS = Object.freeze({
-  T1: Object.freeze({ writeVerbatim: 4000, firstLine: 200, errorCap: 300, writeOnly: false }),
-  T2: Object.freeze({ writeVerbatim: 2000, firstLine: 120, errorCap: 200, writeOnly: false }),
-  T3: Object.freeze({ writeVerbatim: 0, firstLine: 120, errorCap: 120, writeOnly: true }),
+  T1: Object.freeze({ writeVerbatim: 4000, firstLine: 200, errorCap: 300, contextCap: 300 }),
+  T2: Object.freeze({ writeVerbatim: 2000, firstLine: 120, errorCap: 200, contextCap: 200 }),
+  T3: Object.freeze({ writeVerbatim: 0, firstLine: 120, errorCap: 120, contextCap: 120 }),
 });
 
 /** The floor tier: intents and files only. Never a member of {@link TIERS}. */
@@ -45,11 +54,30 @@ const TIER_RANK = Object.freeze({ T1: 0, T2: 1, T3: 2 });
 
 /**
  * Commands that change state — files, history, the published artifact or the
- * running service. Their full text is worth its price; everything else is a
- * probe whose first line already carries the fact.
+ * running service. Their text is the fact, so it is rendered; a probe is
+ * dropped instead (see {@link commandAt}).
+ *
+ * Two rules keep this precise, both measured against a real 355-command
+ * archive where the naive form scored 88 and 22 of them were probes:
+ *
+ * 1. **A subcommand is matched only where it starts.** A bare
+ *    `(^|[;&|(\s])` prefix also matches inside a quoted argument, so
+ *    `pkill -f 'npm publish'` and `grep -i 'npm publish'` — both read-only —
+ *    scored as writes. {@link isWriteLike} therefore strips quoted spans before
+ *    testing: inside quotes a command name is data, not an invocation.
+ * 2. **`git tag` is a write only when it creates, moves or deletes one.** The
+ *    bare form, `-l`/`--list`, `-n` and `--sort` all list. The lookahead
+ *    excludes exactly those and keeps `git tag v1.2.3`, `-a`, `-d`, `-f`.
+ * 3. **A redirect writes only when it targets a tracked path.** Redirecting to
+ *    `/dev/null`, `/tmp/` or `/private/tmp/` is how a probe captures its own
+ *    output, so `… | sort > /tmp/all-specs.txt` is a read. On the measured
+ *    archive all five redirect-only matches were exactly that.
  */
 const WRITE_LIKE =
-  /(^|[;&|(\s])(git\s+(commit|push|add|rm|mv|checkout|restore|reset|tag|init|subtree|merge|rebase|stash|cherry-pick|apply|clean)|npm\s+(publish|install|i|ci|version|unpublish)|pnpm\s+(install|add|remove|publish|build)|node\s+build\.mjs|dsh-web\s+(restart|start|stop)|mkdir|rm\s|mv\s|cp\s|chmod|tee\s|patch\s|sed\s+-i|touch\s|>\s*\S)/m;
+  /(^|[;&|(\s])(git\s+(commit|push|add|rm|mv|checkout|restore|reset|init|subtree|merge|rebase|stash|cherry-pick|apply|clean)|git\s+tag\s+(?!(?:-l|--list|--sort|-n\d*)\b)\S|npm\s+(publish|install|i|ci|version|unpublish)|pnpm\s+(install|add|remove|publish|build)|node\s+build\.mjs|dsh-web\s+(restart|start|stop)|mkdir|rm\s|mv\s|cp\s|chmod|tee\s|patch\s+-|sed\s+-i|touch\s|>\s*(?!\/dev\/null\b|\/private\/tmp\/|\/tmp\/)\S)/m;
+
+/** Drop quoted spans so a command name inside an argument is not read as one. */
+const QUOTED = /'[^']*'|"[^"]*"/g;
 
 /**
  * True for a command whose own text (not just its first line) is the fact.
@@ -58,7 +86,7 @@ const WRITE_LIKE =
  * @returns {boolean}
  */
 export function isWriteLike(command) {
-  return typeof command === 'string' && WRITE_LIKE.test(command);
+  return typeof command === 'string' && WRITE_LIKE.test(command.replace(QUOTED, "''"));
 }
 
 /**
@@ -94,22 +122,28 @@ function capFirstLine(text, limit) {
 }
 
 /**
- * Render one command under one tier, or `undefined` when the tier drops it.
+ * Render one command under one tier, or `undefined` for a probe.
+ *
+ * A probe is dropped outright rather than capped. Its fact is its *output*,
+ * which the error list and the file list already carry; the probe text itself
+ * is a question whose answer the reader already has. Keeping it spends budget
+ * restating that question, and measured on the real archive it is the single
+ * largest source of noise in a rendered checkpoint (267 of 355 commands, and
+ * 87% of the command section's characters). Only a state-changing command's
+ * own text is a fact in its own right.
  *
  * @param {string} command
- * @param {{ writeVerbatim: number, firstLine: number, writeOnly: boolean }} tier
+ * @param {{ writeVerbatim: number, firstLine: number }} tier
  * @returns {string | undefined}
  */
 function commandAt(command, tier) {
-  const write = isWriteLike(command);
-  if (tier.writeOnly && !write) return undefined;
-  if (write && tier.writeVerbatim > 0) return capText(command, tier.writeVerbatim);
+  if (!isWriteLike(command)) return undefined;
+  if (tier.writeVerbatim > 0) return capText(command, tier.writeVerbatim);
   // A write-like command whose marker is not on its first line (`cd X` then
   // `cat > f <<EOF`) would otherwise be reduced to the leading `cd` and lose
   // the fact entirely. Keep its first line AND the line that carries the
   // marker, so the state change survives the degradation.
-  if (write) return capWriteFirstLine(command, tier.firstLine);
-  return capFirstLine(command, tier.firstLine);
+  return capWriteFirstLine(command, tier.firstLine);
 }
 
 /**
@@ -145,7 +179,7 @@ function priceOf(parts, estimate) {
 /**
  * Transform every fact under one tier's caps — no budget, no dropping.
  * @param {{ intents: string[], files: string[], commands: string[], errors: string[] }} facts
- * @param {{ writeVerbatim: number, firstLine: number, errorCap: number, writeOnly: boolean }} tier
+ * @param {{ writeVerbatim: number, firstLine: number, errorCap: number }} tier
  */
 function transformAll(facts, tier) {
   const commands = [];
@@ -155,6 +189,7 @@ function transformAll(facts, tier) {
   }
   return {
     intents: facts.intents,
+    contexts: cappedContexts(facts.contexts, tier),
     files: facts.files,
     commands,
     errors: facts.errors.map((error) => capText(error, tier.errorCap)),
@@ -162,19 +197,42 @@ function transformAll(facts, tier) {
 }
 
 /**
+ * Cap every paired assistant statement, preserving index alignment.
+ *
+ * Unlike intents and files — which are rendered verbatim and never trimmed —
+ * the context is bounded: it is a convenience referent, and an unbounded one
+ * would let a single verbose turn crowd out the commands. Its own cap keeps the
+ * cost of S6 to a fixed ceiling per intent.
+ *
+ * @param {string[]} contexts
+ * @param {{ contextCap: number }} tier
+ * @returns {string[]}
+ */
+function cappedContexts(contexts, tier) {
+  return contexts.map((context) => capText(context, tier.contextCap));
+}
+
+/**
  * Fill a budget greedily from the newest entry backwards.
  *
- * Errors are placed before commands because an error string is the fact that
- * cannot be re-derived, while most commands are probes whose first line already
- * survives. `floor` reports that even the intents+files base does not fit.
+ * Errors are placed before commands because an error string is a fact that
+ * cannot be re-derived, while a command is a record of an action the reader can
+ * also see reflected in the file list. `floor` reports that even the
+ * intents+files base does not fit.
  *
  * @param {{ intents: string[], files: string[], commands: string[], errors: string[] }} facts
- * @param {{ writeVerbatim: number, firstLine: number, errorCap: number, writeOnly: boolean }} tier
+ * @param {{ writeVerbatim: number, firstLine: number, errorCap: number }} tier
  * @param {number} budget
  * @param {(text: string) => number} estimate
  */
 function greedyFill(facts, tier, budget, estimate) {
-  const base = { intents: facts.intents, files: facts.files, commands: [], errors: [] };
+  const base = {
+    intents: facts.intents,
+    contexts: cappedContexts(facts.contexts, tier),
+    files: facts.files,
+    commands: [],
+    errors: [],
+  };
   if (priceOf(base, estimate) >= budget) return { floor: true, parts: base, originals: [] };
 
   const errors = [];
@@ -212,15 +270,14 @@ function result(parts, tier, floorHit, originals = []) {
 }
 
 /**
- * How many of a rendered command list came from a state-changing original.
+ * How many state-changing commands a candidate retained.
  *
  * The count is taken over the **original** facts, not the rendered text: T3
- * degrades a write-like command to its first line, and a marker that lived on a
- * later line (``echo setup`` then ``git commit -m ...``) disappears from the
- * rendering. A predicate over the rendered text would then score that command
- * as a probe, rank T3 below T2, and let a probe flood evict the very fact T3
- * exists to rescue. What matters is whether the underlying fact was
- * state-changing.
+ * degrades a command to its first line plus its marker line, and a marker that
+ * lived on a later line (``echo setup`` then ``git commit -m ...``) is
+ * truncated out of the rendering. A predicate over the rendered text would then
+ * score that command as a probe and rank the tier that kept it below the tier
+ * that dropped it.
  *
  * @param {string[]} originals The original commands.
  * @returns {number}
@@ -234,16 +291,15 @@ function writeLikeCount(originals) {
 /**
  * Pick the better of two budget-fitted candidates.
  *
- * Retention is newest-first, so a flood of recent probes evicts the older
- * state-changing commands that actually carry facts. T3 exists to reverse that
- * trade: it keeps only write-like commands, so it can reach deeper into the
- * history for them. So the candidate that preserves more state-changing
- * commands wins, and only on a tie does the larger total win — which, given the
- * iteration order, leaves the richer tier in place.
+ * Retention is newest-first, so under a tight budget the oldest entries are the
+ * ones that fall off. A tier with a smaller per-item cap reaches further back
+ * and so retains more of them, at the cost of keeping less of each. The
+ * candidate that preserves more state-changing commands wins, because each one
+ * is a separate fact while the detail inside one is a matter of degree.
  *
- * On a tie the **richer** tier wins, not the one with more entries: a lower
- * per-item cap fits more (worse) entries into the same budget, so "more
- * commands" would systematically prefer the degraded tier. See {@link TIER_RANK}.
+ * On a tie the **richer** tier wins. That is the case where two tiers retained
+ * the same commands, and the one that kept more of each is strictly better. See
+ * {@link TIER_RANK}.
  *
  * @param {{ commands: string[], originals: string[], tier: string }} candidate
  * @param {{ commands: string[], originals: string[], tier: string }} incumbent
@@ -261,17 +317,16 @@ function prefer(candidate, incumbent) {
  *
  * Two rules, in order:
  *
- * 1. **Fidelity ladder (T1 → T2).** Both tiers keep every fact and differ only
- *    in per-item detail, so the first one that holds the whole set loses
- *    nothing. This is the preferred outcome and covers every healthy fold. T3
- *    is deliberately NOT on this ladder: it discards probe commands, which is a
- *    fact loss, and a tier that drops facts always "fits" — putting it here
- *    would silently return an empty command list instead of degrading.
+ * 1. **Fidelity ladder (T1 → T2 → T3).** Every tier keeps the same fact set and
+ *    differs only in per-item detail, so the first one that holds the whole set
+ *    loses nothing but detail. This is the preferred outcome and covers every
+ *    healthy fold. Because no tier drops a fact, a poorer tier that holds
+ *    everything is strictly better than a richer tier that has to drop an
+ *    entry — so the ladder runs to its end before rule 2 applies.
  * 2. **Budget-driven truncation (T1 → T2 → T3).** No tier holds everything, so
  *    render at that tier's caps and drop the oldest entries until it fits, then
  *    keep the candidate that best preserves state-changing commands (see
- *    {@link prefer}). Probes give way before state-changing commands, and
- *    errors give way last of all.
+ *    {@link prefer}). Commands give way before errors, which give way last.
  *
  * The floor tier (intents + files only) is returned with `floorHit: true` when
  * even that base does not fit. This function never throws — the host's own
@@ -289,7 +344,7 @@ export function renderCheckpoint(facts, budget, estimate) {
   // rather than silently degrading the checkpoint.
   if (typeof estimate !== 'function') return result(transformAll(all, TIERS.T1), 'T1', false);
 
-  for (const name of ['T1', 'T2']) {
+  for (const name of ['T1', 'T2', 'T3']) {
     const parts = transformAll(all, TIERS[name]);
     if (priceOf(parts, estimate) < budget) return result(parts, name, false);
   }

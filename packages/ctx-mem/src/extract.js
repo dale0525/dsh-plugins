@@ -21,10 +21,13 @@
  * @property {Map<string, SessionEvent[]>} dispatchesByRoot
  *
  * @typedef {object} Facts
- * @property {string[]} intents  Verbatim user intent texts, in order.
- * @property {string[]} files    Verbatim file paths touched, first-seen order, deduped.
- * @property {string[]} commands Verbatim shell commands, in execution order (duplicates kept).
- * @property {string[]} errors   Verbatim error first-lines, each prefixed with its tool name.
+ * @property {string[]} intents   Verbatim user intent texts, in order.
+ * @property {string[]} contexts  The assistant statement immediately preceding each
+ *   intent, index-aligned with `intents`; `''` when the region holds no assistant
+ *   text before that turn (e.g. the first user message). Same length as `intents`.
+ * @property {string[]} files     Verbatim file paths touched, first-seen order, deduped.
+ * @property {string[]} commands  Verbatim shell commands, in execution order (duplicates kept).
+ * @property {string[]} errors    Verbatim error first-lines, each prefixed with its tool name.
  */
 
 /** Argument keys carrying a file path (first present non-empty string wins). */
@@ -39,6 +42,39 @@ const ERROR_PATTERN_EN =
 
 /** Chinese error signal, applied in addition to the English one. */
 const ERROR_PATTERN_ZH = /(失败|错误|报错|异常|找不到|未找到|不存在|无法|拒绝|超时|崩溃|致命)/
+
+/**
+ * A line reporting a test case that PASSED. The runner's own verdict, which
+ * outranks a failure keyword appearing in the case name — see
+ * {@link isMisclassifiedError}.
+ */
+const PASS_LINE = /[\u2714\u2713]/
+
+/** A line reporting a test case that FAILED. Vetoes both drop rules. */
+const FAIL_LINE = /[\u2718\u2717\u00d7]/
+
+/**
+ * Start of a serialized tool payload (`[{"conclusion":"failure",...}]`) — data
+ * rather than a diagnostic.
+ */
+const JSON_BLOB = /^\[\s*\{/
+
+/**
+ * How much of a line {@link isMisclassifiedError} judges.
+ *
+ * Both shape predicates are claims about how a line *starts* — a checkmark the
+ * runner printed in front of a case name, or a payload that opens with `[`.
+ * Applied to the whole line they also fire on a checkmark buried tens of
+ * thousands of characters into a heredoc leak, which drops the entry for a
+ * reason the predicate does not describe. Bounding the window to the line's
+ * head makes the test mean what it says.
+ *
+ * Measured on the real archive: two 46K-character heredoc leaks were being
+ * dropped only because a `✔` sat ~37,600 characters in. Bounding restores both,
+ * so the archive replay yields 43 entries rather than 41 — see
+ * `tests/extract.test.js` A5d.
+ */
+const MISCLASSIFIED_HEAD_LIMIT = 200
 
 /**
  * Failure keyword, matched anywhere in a line to exempt it from the
@@ -65,7 +101,7 @@ const RUN_CODE_TOOL = 'run_code'
  */
 export function extractFacts(region) {
   /** @type {Facts} */
-  const facts = { intents: [], files: [], commands: [], errors: [] }
+  const facts = { intents: [], contexts: [], files: [], commands: [], errors: [] }
 
   const own = Array.isArray(region?.own) ? region.own : []
   if (own.length === 0) return facts
@@ -96,6 +132,11 @@ export function extractFacts(region) {
 
   const seenFiles = new Set()
 
+  // The most recent non-empty assistant statement, waiting to be paired with the
+  // next genuine user intent. Reset to '' once consumed (see the
+  // `user/message` branch) so a statement is never reused across turns.
+  let pendingAssistant = ''
+
   // Root call ids that already have at least one recorded dispatch. A `run_code`
   // call in this set sources its facts from the dispatches alone; parsing its
   // program source as well would double-count the same sub-calls.
@@ -112,6 +153,13 @@ export function extractFacts(region) {
   for (const event of own) {
     switch (event?.type) {
       case 'assistant/message': {
+        // The statement an intent is answering. Recorded BEFORE the tool-call
+        // walk below so a message that both speaks and calls tools keeps its
+        // text; only a non-empty text overwrites, so a tool-call-only turn
+        // cannot erase the last thing actually said.
+        const statement = concatenatedText(event.data?.message?.content)
+        if (statement !== '') pendingAssistant = statement
+
         // Path B: default-mode calls, arguments carried as a JSON string.
         for (const block of assistantBlocks(event)) {
           if (block.type !== 'tool-call' || typeof block.name !== 'string') continue
@@ -153,7 +201,13 @@ export function extractFacts(region) {
       case 'user/message': {
         if (isGenuineUserMessage(event)) {
           const text = concatenatedText(event.data?.content)
-          if (text !== '') facts.intents.push(text)
+          if (text !== '') {
+            facts.intents.push(text)
+            facts.contexts.push(pendingAssistant)
+            // Pair each intent with only the statement immediately before it:
+            // reusing it would attach turn N's words to turn N+1's question.
+            pendingAssistant = ''
+          }
         }
         break
       }
@@ -395,8 +449,51 @@ function recordError(facts, name, content, isError = false) {
   const line = firstMeaningfulLine(content)
   if (line === '') return
   if (isNoiseExitError(content, line, isError)) return
+  if (isMisclassifiedError(content, line, isError)) return
   const prefix = typeof name === 'string' && name !== '' ? name : UNKNOWN_TOOL_PREFIX
   facts.errors.push(`${prefix}: ${line}`)
+}
+
+/**
+ * True when an entry reached `recordError` on an error signal that does not
+ * actually describe a failure.
+
+ * Two shapes produce that, both measured on the real archive:
+
+ * - **A passing test line.** A test runner prints `✔ zip-security: 重复条目名拒绝`
+ *   for a case that *passed*, and the case name carries a Chinese failure word
+ *   (`拒绝`), so `ERROR_PATTERN_ZH` fires on the name and the success line is
+ *   recorded as an error. The checkmark is the runner's own verdict, which
+ *   outranks a keyword in a case name.
+ * - **A serialized tool payload.** A `--json` tool result such as
+ *   `[{"conclusion":"failure",...}]` is data, not a diagnostic; the word
+ *   `failure` inside it is a field value. Its first line begins with `[`.
+
+ * Both predicates are **shape** tests, never "the line matched no error
+ * pattern" — that weaker rule is what the previous plan already disproved: a
+ * genuine `ls: /x: No such file or directory` matches no pattern either, so
+ * absence of a match would silently discard real diagnostics.
+
+ * The host's own `isError` ruling always wins, and any explicit failure
+ * checkmark anywhere in the content vetoes both rules — a run that both passed
+ * and failed some case must keep its error.
+ *
+ * Both shape tests read only the line's first {@link MISCLASSIFIED_HEAD_LIMIT}
+ * characters, because both are claims about how the line starts. A checkmark
+ * deep inside a leaked heredoc is not a runner verdict, and the veto above
+ * (which reads the *whole* content, deliberately) is what keeps a genuine
+ * failure from being masked.
+
+ * @param {unknown} content
+ * @param {string} line
+ * @param {boolean} isError
+ * @returns {boolean}
+ */
+function isMisclassifiedError(content, line, isError) {
+  if (isError) return false
+  if (FAIL_LINE.test(joinedText(content))) return false
+  const head = line.trim().slice(0, MISCLASSIFIED_HEAD_LIMIT)
+  return PASS_LINE.test(head) || JSON_BLOB.test(head)
 }
 
 /**
