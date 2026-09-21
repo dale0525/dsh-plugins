@@ -914,4 +914,17 @@ patch 注释全部同步。
 三者都不依赖 ctx-mem，单独跑 config-manager 1270/1270、market 1456/1456 全绿，agy-link 失败是
 `node: bad option: --experimental-transform-types`（本机 Node 版本不支持该 flag）。
 
-**A16 真实界面复验**：见 §10.9。
+**A16 真实界面复验：通过（2026-09-21）。** 装 0.5.5（带出 ctx-mem 0.4.0）并重启宿主后，
+在真实界面逐条核验此前失败的判据：
+
+| 判据 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `window.__DSH_BOOT__` 含本包 | 否（68 条 / 6 个 @logictan） | **是**（69 条 / 7 个 @logictan） |
+| 客户端 bundle 可取 | 404 | **200**（9955 B，URL 即 boot 图请求的那条，含 `rev`） |
+| 插件页该行有配置入口 | 无（标题非按钮） | **有**：`ctx-mem-bridge` 标题被包进 `X_2TxG_rowOpen` BUTTON，点开渲染出「检查点渲染上限」表单 |
+| 插件页可搜到「检查点」 | 否 | **是** |
+
+boot 条目实测：`{"id":"@logictan/dsh-ctx-mem","url":"/plugins/??@logictan/dsh-ctx-mem/client.js&rev=…","inject":["slots","settingsScope"]}`。
+这也正面印证了 S1 的修法判据——**加载器行是裸包名，客户端半边才进加载图**。
+
+**本次交付结论**：S0–S6 与三处缺陷修复全部落地，A14 与 A16 均在真实宿主通过；门禁见 §10.8。
