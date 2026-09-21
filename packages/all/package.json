@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -20,6 +20,7 @@
   ],
   "dependencies": {
     "@logictan/dsh-agy-link": "^0.4.37",
+    "@logictan/dsh-browser-agent": "^0.1.1",
     "@logictan/dsh-config-manager": "^0.1.63",
     "@logictan/dsh-ctx-mem": "^0.5.1",
     "@logictan/dsh-easyrewrite": "^2.5.4",

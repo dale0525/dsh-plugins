@@ -10,6 +10,7 @@ patchFrom:
   - ../dsh-fakeip-fetch
   - ../ctx-mem
   - ../dsh-agy-link
+  - ../dsh-browser-agent
 deps:
   - ../dsh-config-manager
   - ../dsh-workbuddy-connect
@@ -26,3 +27,4 @@ deps:
   # profile.
   - ../ctx-mem
   - ../dsh-agy-link
+  - ../dsh-browser-agent

@@ -1,0 +1,18 @@
+# dsh-browser-agent bundle patch layer.
+#
+# One bare plugin row. The package ships two halves — the host half
+# (exports ".") registers the `browser-agent` settings namespace and the
+# `browser_agent` model tool, the browser half (exports "./client") registers
+# the Plugins-page configuration card.
+#
+# The row must stay a BARE package name: the web plugin table locates each
+# package's `dsh.client` manifest from the specifier of the loader row that
+# mounts it, and that lookup accepts only a bare name — a subpath row resolves
+# to no manifest, so the browser half would silently never load.
+#
+# Row id `browser-agent` equals the host half's `export const name` in
+# src/index.js. It is checked by hand against every other row id in this
+# repository; `aggregate.mjs --check` does not validate id uniqueness.
+- insert:
+    - id: browser-agent
+      name: '@logictan/dsh-browser-agent'
