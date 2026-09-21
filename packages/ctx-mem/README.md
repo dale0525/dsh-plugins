@@ -102,7 +102,9 @@ PTC（programmatic tool calling）模式下，模型写的是 `run_code` 脚本�
       fillModel: deepseek-v4.1-flash
 ```
 
-引擎的配置只认 bridge 行的 `config.engine`——注入行由 bridge 生成，是它唯一的落点，而注入行本身**不带 `config:`**：上表每个键都已经等于继承来的默认值（或按设计不设置），写出来只会把默认值钉死在上游的当前取值上。
+引擎的配置有**两个来源，设置界面优先**：bridge 行的 `config.engine` 是组合层基线，插件设置界面（落盘在 `~/.dsh/settings.yaml` 的 `ctx-mem:` 段）是用户层，后者按字段覆盖前者。注入行本身**不带 `config:`**——它的配置由 bridge 在注入时写入，写出来只会把默认值钉死在上游的当前取值上。
+
+设置界面只列**压缩可控**的九个键：`thresholdRatio` / `retainRatio` / `retainTokens` / `maxCheckpointTokens` / `maxTokens` / `fillEnabled` / `fillProvider` / `fillModel` / `language`。其余键（`modelPolicies` / `compactionRetries` / `maxOverflowRetries` / `auto`）是组合层结构配置，只在 `config.engine` 里写。界面字段留空 = 清除该字段的覆盖，回落到 `config.engine` 或引擎默认值；`retainRatio` 与 `retainTokens` 互斥，写其中一个会清掉另一个。保存后需重启 DSH 生效。
 
 本包的 `cordis.patch.yml` 只声明一行：bridge 行 **enabled**（它的正确挂载点就是 profile 平面）。引擎**不声明 profile 平面的行**：在该平面挂载会与 preset 的后端并存，两个引擎同时监听压缩同一个会话；声明成 disabled 也不会挂载，反而让插件界面多出一条无用条目。bridge 行是唯一的行，其 id 等于它宿主半边的 `export const name`。包本身必须被安装，因为 preset 内注入的行按包名从 profile 根解析它。
 

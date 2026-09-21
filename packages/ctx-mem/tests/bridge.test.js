@@ -275,6 +275,23 @@ test('A17: the resolved settings section drives the injected row config', () => 
   assert.deepEqual(inject(), { fillModel: 'deepseek-v4.1-flash', maxCheckpointTokens: 12345 });
 });
 
+test('A17: a section-stated retention form replaces the composition\'s other one', () => {
+  const { events, installs } = applyBridgePlugin({ retainRatio: 0.16, fillModel: 'x' });
+  const listener = events[0][1];
+  const inject = () => {
+    const input = { path: 'file:///Users/x/.dsh/presets/standard/agent.cordis.yml' };
+    listener(input, () => input);
+    return input.patches[1].insert[0].config;
+  };
+
+  assert.deepEqual(inject(), { retainRatio: 0.16, fillModel: 'x' });
+
+  // The user states the absolute form. Carrying the composition's ratio through
+  // the merge would hand the host engine a config it refuses outright.
+  installs[0][4].setSource(() => ({ retainTokens: 50000 }));
+  assert.deepEqual(inject(), { fillModel: 'x', retainTokens: 50000 });
+});
+
 test('A17: an absent or empty engine config adds no config key to the injected row', () => {
   for (const engine of [undefined, {}, null]) {
     const patches = buildPatches(engine);

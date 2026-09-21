@@ -20,7 +20,7 @@
 import { basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { SETTINGS_NAMESPACE, SettingsSection } from './config.js'
+import { SETTINGS_NAMESPACE, SettingsSection, mergeEngineConfig } from './config.js'
 
 export const name = 'ctx-mem-bridge'
 
@@ -122,9 +122,19 @@ export function onInternalConfig(config, next, engine) {
 /**
  * Composition base for the settings section.
  *
- * What the card's reset returns to: whatever the bridge row's `config.engine`
- * already carries. An absent key stays absent, so the section's own schema
- * default applies rather than a literal restated here.
+ * Only `maxCheckpointTokens` is forwarded, and only because it carries a schema
+ * default: without a base value the card would always display the constant
+ * 10,000, hiding a composition that sets something else.
+ *
+ * Every other key stays ABSENT on purpose. The resolved section is what the card
+ * reads, and for these keys "absent" is the honest answer — it means the user has
+ * not overridden them. Forwarding the composition value would make an inherited
+ * value indistinguishable from a stated one, and for the mutually exclusive
+ * retention pair it would display both forms at once.
+ *
+ * The engine still receives the composition's values: `mergeEngineConfig` takes
+ * the row's `config.engine` as the base and layers the section over it, so a key
+ * the section omits keeps the composition's value.
  * @param {Record<string, unknown>} [engine]
  * @returns {Record<string, unknown>}
  */
@@ -138,11 +148,11 @@ const plugin = {
   name,
   apply(ctx, config) {
     const engine = config?.engine
-    // The settings section is the source for the ceiling knob once the settings
-    // service is up; before that — or in a profile shipping no settings
-    // provider — the row's own engine config stands alone. The source is read
-    // on every waterfall pass rather than captured, so a composition mounted
-    // after a settings change already sees it.
+    // The settings section is the source for the compression knobs once the
+    // settings service is up; before that — or in a profile shipping no
+    // settings provider — the row's own engine config stands alone. The source
+    // is read on every waterfall pass rather than captured, so a composition
+    // mounted after a settings change already sees it.
     let section = () => engine
     ctx.inject(['settings'], (settingsCtx) => {
       settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, SettingsSection, sectionBase(engine), {
@@ -156,7 +166,7 @@ const plugin = {
     })
     ctx.on(
       'internal/config',
-      (c, next) => onInternalConfig(c, next, { ...(engine ?? {}), ...section() }),
+      (c, next) => onInternalConfig(c, next, mergeEngineConfig(engine, section())),
       { global: true },
     )
   },

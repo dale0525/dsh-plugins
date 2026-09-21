@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { Context } from '@deepseek-ai/cordis';
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic';
 import CtxMemEngine, { name } from '../src/index.js';
-import { Config, DEFAULT_MAX_CHECKPOINT_TOKENS, SettingsSection, resolveFillTarget, splitConfig } from '../src/config.js';
+import { Config, DEFAULT_MAX_CHECKPOINT_TOKENS, SettingsSection, mergeEngineConfig, resolveFillTarget, splitConfig } from '../src/config.js';
 import { CAUSAL_SECTIONS } from '../src/causal.js';
 
 /* ------------------------------------------------------------------ helpers */
@@ -189,6 +189,35 @@ test('A15 — the default cap is 10,000, and every surface agrees on it', () => 
   // rather than inheriting one from the row config.
   const section = SettingsSection({})
   assert.equal(section.maxCheckpointTokens, 10000)
+})
+
+test('the settings section leaves unstated keys absent so the composition value stands', () => {
+  // A schema default on any of these would make the resolved section always
+  // carry the key, pinning it against the composition's own value in the merge.
+  assert.deepEqual(Object.keys(SettingsSection({})), ['maxCheckpointTokens'])
+
+  const stated = SettingsSection({ thresholdRatio: 0.7, language: 'en', fillEnabled: false })
+  assert.equal(stated.thresholdRatio, 0.7)
+  assert.equal(stated.language, 'en')
+  assert.equal(stated.fillEnabled, false)
+})
+
+test('mergeEngineConfig lets the section win and keeps the retention forms exclusive', () => {
+  // No retention stated by the section: the engine's own choice stands.
+  assert.deepEqual(
+    mergeEngineConfig({ thresholdRatio: 0.8, fillModel: 'x' }, { maxCheckpointTokens: 12345 }),
+    { thresholdRatio: 0.8, fillModel: 'x', maxCheckpointTokens: 12345 },
+  )
+
+  // A stated retention form drops the engine's other representation: the host
+  // engine rejects retainRatio and retainTokens together.
+  assert.deepEqual(mergeEngineConfig({ retainRatio: 0.16 }, { retainTokens: 50000 }), { retainTokens: 50000 })
+  assert.deepEqual(mergeEngineConfig({ retainTokens: 50000 }, { retainRatio: 0.2 }), { retainRatio: 0.2 })
+
+  // The merge must not mutate the row config it is handed.
+  const engine = { retainRatio: 0.16 }
+  mergeEngineConfig(engine, { retainTokens: 50000 })
+  assert.deepEqual(engine, { retainRatio: 0.16 })
 })
 
 test('A10 — retainTokens: 0 is accepted, enabling the hard cutoff', () => {

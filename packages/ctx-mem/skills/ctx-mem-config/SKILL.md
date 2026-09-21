@@ -34,7 +34,11 @@ bridge 给该组合注入一段 `patches`——关掉官方 `compaction-basic`�
 `cordis`；`minimal` 与用户自建 preset 不覆盖，无 preset 的 profile 不经过 preset
 子树，bridge 自然 inert。覆盖名单见包内 `src/bridge.js` 的 `COVERED_PRESETS`。
 
-配置写在 **bridge 行的 `config.engine`** 下，它会被转发到注入的引擎行：
+配置有**两个来源，插件设置界面优先**：
+
+1. **设置界面**（推荐）：插件页 `ctx-mem-bridge` 行的「配置」卡片，落盘在
+   `~/.dsh/settings.yaml` 的 `ctx-mem:` 段。可改九个压缩可控键，留空即清除覆盖。
+2. **bridge 行的 `config.engine`**（组合层基线）：设置界面没覆盖的字段回落到它。
 
 ```yaml
 - id: ctx-mem-bridge
@@ -45,7 +49,13 @@ bridge 给该组合注入一段 `patches`——关掉官方 `compaction-basic`�
 ```
 
 不要改 preset 文件，也不要给 `ctx-mem` 行写 `config:`——引擎**没有** profile 平面的
-行（它由 bridge 注入到 preset 的 `isolate` 组内），配置只认 bridge 行的 `config.engine`。
+行（它由 bridge 注入到 preset 的 `isolate` 组内），配置只认上面两个来源。
+
+设置界面可改的九键：`thresholdRatio` / `retainRatio` / `retainTokens` /
+`maxCheckpointTokens` / `maxTokens` / `fillEnabled` / `fillProvider` / `fillModel` /
+`language`。`modelPolicies` / `compactionRetries` / `maxOverflowRetries` / `auto`
+只在 `config.engine` 里写。**保存后需重启 DSH 生效**（引擎在 preset 组合挂载时一次性
+捕获配置，不是 live 的）。
 
 ## 配置键
 
@@ -96,7 +106,8 @@ ctx-mem 与官方后端一致地这样取值。
 | 压缩报错 `produced no text` | 填空模型返回空文本 |
 | 宿主启动报 `service "compaction" has been registered` | 同一 realm 内注册了两次 `compaction`：preset 里手工留了 `ctx-mem` 行，bridge 又插了一行 |
 | 压缩仍是官方行为 | 会话用的 preset 不在 `COVERED_PRESETS` 里（如 `minimal`），或 profile 没有 `agent-presets` 行 |
-| 改了 `config.engine` 但没生效 | 写在了 `ctx-mem` 行上；配置只认 bridge 行的 `config.engine` |
+| 改了 `config.engine` 但没生效 | 写在了 `ctx-mem` 行上；配置只认 bridge 行的 `config.engine` 与设置界面两个来源 |
+| 在设置界面改了参数但没生效 | 引擎在 preset 挂载时捕获配置；需重启 DSH |
 
 ## 调整压缩行为时
 

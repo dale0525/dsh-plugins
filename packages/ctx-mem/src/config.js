@@ -44,19 +44,36 @@ export const DEFAULT_MAX_CHECKPOINT_TOKENS = 10000;
  * Settings namespace the bridge row registers for the Web GUI.
  *
  * The Plugins page renders a configuration card for the namespace under the row
- * that registers it. Only {@link SettingsSection}'s single field is exposed —
- * this backend's other own keys stay composition-only.
+ * that registers it.
  */
 export const SETTINGS_NAMESPACE = 'ctx-mem';
 
 /**
- * Schema of the {@link SETTINGS_NAMESPACE} section.
+ * Schema of the {@link SETTINGS_NAMESPACE} section: the compression-controllable
+ * subset of {@link Config}, so the Plugins page can edit it.
  *
- * The same default as {@link Config}'s maxCheckpointTokens and
+ * The structural keys (`auto`, `modelPolicies`, `compactionRetries`,
+ * `maxOverflowRetries`) stay composition-only — they configure how the engine is
+ * wired, not how a checkpoint reads.
+ *
+ * Every key except `maxCheckpointTokens` is declared WITHOUT a default. A default
+ * would make the resolved section always carry the key, pinning it against the
+ * composition's own value in {@link mergeEngineConfig}; an absent key lets the
+ * composition value (or the engine's own default) stand.
+ *
+ * `maxCheckpointTokens` keeps the same default as {@link Config} and
  * {@link splitConfig}'s fallback: one constant, three surfaces.
  */
 export const SettingsSection = z.object({
+  thresholdRatio: z.number(),
+  retainRatio: z.number(),
+  retainTokens: z.number().step(1).min(0),
   maxCheckpointTokens: z.number().step(1).min(1).default(DEFAULT_MAX_CHECKPOINT_TOKENS),
+  maxTokens: z.number().step(1).min(1),
+  fillEnabled: z.boolean(),
+  fillProvider: z.string(),
+  fillModel: z.string(),
+  language: z.union(LANGUAGES.map((code) => z.const(code))),
 });
 
 /**
@@ -172,4 +189,27 @@ export function resolveFillTarget(own, agent) {
   }
 
   return undefined;
+}
+
+/**
+ * Merge the settings section over the bridge row's engine config.
+ *
+ * The two sources overlap: the section is the user-facing layer, the row's
+ * `config.engine` is the composition layer, and the section must win.
+ *
+ * `retainRatio` and `retainTokens` are two representations of one retention
+ * choice, and the host rejects them together (`retainRatio and retainTokens are
+ * mutually exclusive`). The section only carries them when the user set one, so
+ * a stated retention form drops the engine's other representation rather than
+ * letting the merge produce a config the engine refuses.
+ *
+ * @param {Record<string, unknown>} [engine] Row config forwarded to the engine.
+ * @param {Record<string, unknown>} [section] Resolved settings section.
+ * @returns {Record<string, unknown>}
+ */
+export function mergeEngineConfig(engine, section) {
+  const merged = { ...(engine ?? {}), ...(section ?? {}) };
+  if (section?.retainTokens !== undefined) delete merged.retainRatio;
+  else if (section?.retainRatio !== undefined) delete merged.retainTokens;
+  return merged;
 }
