@@ -345,18 +345,33 @@ test('a paired context is a continuation of its intent, not a second entry', () 
   assert.ok(text.includes(expected), text)
 })
 
-test('paired context is truncated to its first non-empty line, discarding remaining lines', () => {
-  const context = '\n\n## 结论\n\nctx-mem 检查点可读性计划...\n\n### 关键发现'
+test('a lead-in context keeps its opening and its conclusion, dropping only the interior', () => {
+  const context = '\n\n## 结论\n\nctx-mem 检查点可读性计划...\n\n三个缺陷已修复。'
   const facts = { intents: ['deploy'], contexts: [context], files: [], commands: [], errors: [] }
 
   const { text } = renderCheckpoint(facts, 40000, estimate)
 
-  assert.ok(text.includes('- deploy\n  \u2191 ## 结论\n'), text)
-  assert.ok(!text.includes('ctx-mem 检查点可读性计划'), 'subsequent lines must be discarded')
-  assert.ok(!text.includes('### 关键发现'), 'markdown headings in later lines must not appear')
+  assert.ok(text.includes('- deploy\n  \u2191 ## 结论 \u2026 '), text)
+  assert.ok(text.includes('三个缺陷已修复。'), 'the conclusion line is the referent the intent answered')
+  assert.ok(!text.includes('ctx-mem 检查点可读性计划'), 'interior lines must be discarded')
 })
 
-test('a multi-line context applies contextCap only to the retained first line', () => {
+test('a paired context stays one physical line, so a heading tail never reads as a heading', () => {
+  // A multi-line context rendered as-is would let a later `## …` line parse as a
+  // section heading and truncate the whole User Intents section for a Markdown
+  // reader. Both retained halves are joined on one line, so that cannot happen.
+  const context = '开场。\n\ninterior\n\n## 末尾小节'
+  const facts = { intents: ['go'], contexts: [context], files: [], commands: [], errors: [] }
+
+  const { text } = renderCheckpoint(facts, 40000, estimate)
+  const lines = text.split('\n')
+  const at = lines.findIndex((line) => line.includes('开场。'))
+
+  assert.equal(lines[at + 1], '', 'the context line ends where it is written')
+  assert.ok(lines[at].includes('## 末尾小节'), 'the tail is inline, never at the start of a line')
+})
+
+test('an over-long head is capped, and no later line is consulted', () => {
   const head = 'E'.repeat(500)
   const context = `${head}\nsecond line\nthird line`
   const facts = { intents: ['review'], contexts: [context], files: [], commands: [], errors: [] }
@@ -366,6 +381,105 @@ test('a multi-line context applies contextCap only to the retained first line', 
   const expected = '\u2191 ' + 'E'.repeat(TIERS.T1.contextCap) + ' \u2026[+' + dropped + ' chars]'
 
   assert.ok(text.includes(expected), text)
-  assert.ok(!text.includes('second line'), 'later lines are discarded without inflating dropped char count')
+  assert.ok(!text.includes('second line'), 'a head that overflows the cap leaves no room to pair a tail')
+})
+
+test('A22 — a lead-in first line keeps the statement last line as the referent', () => {
+  // The reported defect: the assistant turn opens with a banner ("Done.") and
+  // carries its actual conclusion many lines below. Keeping the first line
+  // alone shows the reader a contentless sign-off and loses what the intent
+  // was answering. The interior section heading is dropped with the rest of the
+  // middle — the tail line is what states the conclusion.
+  const context = ['\u4fee\u590d\u5b8c\u6210\u3002', '', '## \u987a\u5e26\u53d1\u73b0', 'src/client/index.ts:47 \u7684 TS2430 \u662f\u65e2\u6709\u95ee\u9898\u3002'].join('\n')
+  const facts = { intents: ['\u8fd9\u4e2a\u987a\u5e26\u53d1\u73b0\u6709\u4ec0\u4e48\u5f71\u54cd\u5417\uff1f'], contexts: [context], files: [], commands: [], errors: [] }
+
+  const { text } = renderCheckpoint(facts, 40000, estimate)
+
+  assert.ok(text.includes('\u4fee\u590d\u5b8c\u6210\u3002'), 'the lead-in must survive as the statement opening')
+  assert.ok(
+    text.includes('src/client/index.ts:47 \u7684 TS2430 \u662f\u65e2\u6709\u95ee\u9898\u3002'),
+    'the last line is the conclusion the intent answered, so it must survive too',
+  )
+  assert.ok(text.includes('\u2026'), 'the elision between the two halves must be marked')
+})
+
+test('A22 — a long first line ending in a sentence is not paired with the last line', () => {
+  const head = '\u8bc1\u636e\u9f50\u4e86\u3002\u4f60\u7684\u62c5\u5fc3\u662f\u5bf9\u7684\uff0c\u800c\u4e14\u6211\u5b9e\u6d4b\u5230\u4e86\u5b83\u7684\u673a\u5236\u3002' + '\u6211\u628a\u7ed3\u8bba\u548c\u8bc1\u636e\u90fd\u5199\u5728\u4e0b\u9762\u4e86\u3002'
+  const context = `${head}\ninterior detail\nthe last line that must not be appended`
+  const facts = { intents: ['go'], contexts: [context], files: [], commands: [], errors: [] }
+
+  const { text } = renderCheckpoint(facts, 40000, estimate)
+
+  assert.ok(head.length > 25, 'the fixture must exceed the lead-in threshold to test the rule')
+  assert.ok(text.includes(head.slice(0, 40)), 'the head is kept')
+  assert.ok(!text.includes('the last line that must not be appended'), 'a self-contained head needs no tail')
+})
+
+test('A22 — a dot inside a path or a version does not make a lead-in self-contained', () => {
+  // Both shapes are lead-ins whose text merely *contains* a period, so a test
+  // for sentence-final punctuation must not accept them.
+  const cases = [
+    '## \u63a8\u8350\u65b9\u6848\uff1a\u6539 packages/ctx-mem/src/render.js \u7684\u53d6\u884c\u903b\u8f91',
+    '\u5df2\u53d1\u5e03 @logictan/dsh-ctx-mem v1.2.3\uff0c\u63a5\u4e0b\u6765\u9700\u8981\u4f60\u5728\u8bbe\u7f6e\u91cc\u91cd\u542f\u5bbf\u4e3b',
+  ]
+  const tail = 'the conclusion the intent was asking about'
+
+  for (const head of cases) {
+    const facts = { intents: ['go'], contexts: [`${head}\ninterior\n${tail}`], files: [], commands: [], errors: [] }
+    const { text } = renderCheckpoint(facts, 40000, estimate)
+    assert.ok(text.includes(tail), `head must be treated as a lead-in: ${head.slice(0, 40)}`)
+  }
+})
+
+test('A22 — a sentence-final line behind Markdown emphasis is still self-contained', () => {
+  // `…结论错了。**` ends in `*`, not `。`. Reading the raw line would call a
+  // complete statement an unterminated fragment and append a tail it needs not.
+  const head = '\u8bc1\u636e\u94fe\u95ed\u5408\u3002**\u4f60\u7684\u5224\u65ad\u6210\u7acb\uff0c\u6211\u4e0a\u4e00\u8f6e\u7684\u7ed3\u8bba\u9519\u4e86\u3002**'
+  const facts = { intents: ['go'], contexts: [`${head}\ninterior\nmust not be appended`], files: [], commands: [], errors: [] }
+
+  const { text } = renderCheckpoint(facts, 40000, estimate)
+
+  assert.ok(text.includes(head), 'the whole head survives')
+  assert.ok(!text.includes('must not be appended'), 'a terminated statement needs no tail')
+})
+
+test('A22 — an over-long head still marks the tail it could not fit', () => {
+  // The head alone fills the cap, so no part of the tail fits. The loss must be
+  // visible: a reader who cannot tell a cut-off statement from a whole one will
+  // reason about it as if complete.
+  const head = 'H'.repeat(TIERS.T1.contextCap - 2)
+  const context = `${head}\nTHE CONCLUSION THAT DOES NOT FIT`
+  const facts = { intents: ['go'], contexts: [context], files: [], commands: [], errors: [] }
+
+  const { text } = renderCheckpoint(facts, 40000, estimate)
+  const marker = /\u2191 ([^\n]*)/.exec(text)
+
+  assert.ok(marker, 'the context line must be present')
+  assert.ok(/\u2026/.test(marker[1]), 'the unfitted tail must be marked, never silently dropped')
+})
+
+test('A22 — a fully shown pair is not reported as having dropped characters', () => {
+  const context = 'Done.\nEverything is fine.'
+  const facts = { intents: ['go'], contexts: [context], files: [], commands: [], errors: [] }
+
+  const { text } = renderCheckpoint(facts, 40000, estimate)
+  const marker = /\u2191 ([^\n]*)/.exec(text)
+
+  assert.equal(marker[1], 'Done. \u2026 Everything is fine.', 'both lines are whole, so nothing was truncated')
+})
+
+test('A22 — the paired context never exceeds contextCap plus its dropped-count marker', () => {
+  // Both halves are cut to the same ceiling the single-line form used, so the
+  // per-intent cost stays bounded however verbose the statement is.
+  const context = `${'A'.repeat(40)}\n${'B'.repeat(4000)}`
+  const facts = { intents: ['go'], contexts: [context], files: [], commands: [], errors: [] }
+
+  const { text } = renderCheckpoint(facts, 40000, estimate)
+  const marker = /\u2191 ([^\n]*)/.exec(text)
+
+  assert.ok(marker, 'the context line must be present')
+  const body = marker[1].replace(/ \u2026\[\+\d+ chars\]$/, '')
+  assert.ok(body.length <= TIERS.T1.contextCap, `context body ${body.length} must fit contextCap`)
+  assert.ok(/ \u2026\[\+\d+ chars\]$/.test(marker[1]), 'the dropped characters must be counted')
 })
 

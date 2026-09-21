@@ -196,11 +196,98 @@ function transformAll(facts, tier) {
   };
 }
 
-function firstNonEmptyLine(text) {
-  for (const line of text.split(/\r?\n/)) {
-    if (line.trim() !== '') return line;
+/**
+ * A first line short enough to be a banner rather than the statement itself.
+ *
+ * On the real archive a large fraction of paired statements open with a line
+ * that carries no sentence of its own — a banner or a section heading — and
+ * many of those do have a distinct last line holding the conclusion. Those are
+ * exactly the statements a first-line-only context reduces to nothing.
+ */
+const CONTEXT_LEAD_IN_MAX = 25;
+
+/**
+ * Decoration that can trail a sentence's final punctuation without being part
+ * of it: Markdown emphasis, and a closing quote or bracket.
+ *
+ * Needed because `**…结论错了。**` ends in `*`, not `。` — testing the raw line
+ * would read a complete sentence as an unterminated fragment.
+ */
+const TRAILING_DECORATION = /[*_`~"'”’）)】\]]+$/;
+
+/**
+ * Sentence-final punctuation, in both scripts the backend writes.
+ *
+ * Anchored, and deliberately without `；`/`;`: a head ending in a semicolon is a
+ * clause whose sentence continues, so it is a lead-in, not a whole statement.
+ * The same anchor is what keeps a `.` inside a path or a version number
+ * (`…/render.js 的取行逻辑`, `v1.2.3，接下来…`) from passing as sentence-final.
+ */
+const SENTENCE_END = /[。！？.!?]$/;
+
+/** Joins the statement's opening to its conclusion. */
+const CONTEXT_ELISION = ' … ';
+
+/**
+ * True when a first line is a whole statement the reader can act on alone.
+ *
+ * A lead-in (`## 推荐方案：…`, `修复完成。`) is not: the first names a section and
+ * the second is a banner, and in both cases what the intent was answering sits
+ * further down. Only a line that is both long enough to hold a sentence and
+ * actually terminated by one stands on its own.
+ *
+ * @param {string} head
+ * @returns {boolean}
+ */
+function isSelfContained(head) {
+  if (head.length <= CONTEXT_LEAD_IN_MAX) return false;
+  return SENTENCE_END.test(head.replace(TRAILING_DECORATION, ''));
+}
+
+/**
+ * Reduce one paired assistant statement to a bounded referent.
+ *
+ * The intent above the context is often a bare back-reference (`这个顺带发现
+ * 有什么影响吗？`), so the context's job is to carry the statement it answered.
+ * Keeping only the first line fails that job whenever the statement opens with a
+ * lead-in: the reader gets `修复完成。` and loses the conclusion below it, which is
+ * the thing being asked about.
+ *
+ * So a statement that opens with a lead-in keeps BOTH its opening and its last
+ * line — the two ends that carry the answer — joined on one line. A
+ * self-contained first line is kept alone, exactly as before. The retained text
+ * is bounded by `limit`; only the markers below add to it.
+ *
+ * Two losses are marked differently, and neither is left silent: the ` … `
+ * separator stands for the omitted middle, and ` …[+N chars]` counts characters
+ * actually cut off the end. The separator is what makes counting the middle
+ * unnecessary — and counting it would report a loss the reader cannot see.
+ *
+ * @param {string} text
+ * @param {number} limit
+ * @returns {string}
+ */
+function contextText(text, limit) {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim() !== '');
+  const head = lines[0] ?? '';
+  if (lines.length < 2 || isSelfContained(head)) return capText(head, limit);
+
+  const room = limit - head.length - CONTEXT_ELISION.length;
+  if (room <= 0) {
+    // The head leaves no room for the separator plus any of the tail. A head
+    // longer than the cap is over-long on its own, so it is not a lead-in and
+    // is simply capped; one that fits keeps the separator alone, because a
+    // reader who cannot tell a cut-off statement from a whole one reasons
+    // about it as if whole.
+    return head.length > limit ? capText(head, limit) : `${head}\u2026`;
   }
-  return '';
+
+  const tail = lines[lines.length - 1];
+  const kept = tail.length <= room ? tail : tail.slice(0, room);
+  const elided = `${head}${CONTEXT_ELISION}${kept}`;
+  return kept.length < tail.length
+    ? `${elided} \u2026[+${tail.length - kept.length} chars]`
+    : elided;
 }
 
 /**
@@ -211,17 +298,17 @@ function firstNonEmptyLine(text) {
  * would let a single verbose turn crowd out the commands. Its own cap keeps the
  * cost of S6 to a fixed ceiling per intent.
  *
- * Line truncation belongs here rather than in the skeleton renderer because
+ * Line selection belongs here rather than in the skeleton renderer because
  * token estimation during tier evaluation and budget filling prices the output
- * of capped parts; stripping subsequent lines downstream would cause phantom
- * tokens to distort pricing and premature tier degradation.
+ * of capped parts; stripping lines downstream would cause phantom tokens to
+ * distort pricing and premature tier degradation.
  *
  * @param {string[]} contexts
  * @param {{ contextCap: number }} tier
  * @returns {string[]}
  */
 function cappedContexts(contexts, tier) {
-  return contexts.map((context) => capText(firstNonEmptyLine(context), tier.contextCap));
+  return contexts.map((context) => contextText(context, tier.contextCap));
 }
 
 /**
