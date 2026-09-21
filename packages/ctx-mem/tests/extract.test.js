@@ -503,6 +503,36 @@ test('errors — a result consisting of nothing but [exit code: 1] is kept', () 
   assert.equal(facts.errors[0], 'bash: [exit code: 1]')
 })
 
+test('errors — real error line is picked instead of leading progress line', () => {
+  const content = [
+    '✓ Lockfile passes supply-chain policies (verified 14h ago)',
+    'Error: ERR_PNPM_NO_MATCHING_VERSION',
+    '',
+    '  × adding a new package',
+    '  ╰─▶ Failed to resolve dependency tree: No matching version found for ...',
+    '[exit code: 1]',
+  ].join('\n')
+  const own = [
+    assistantMsg(1, [callBlock('call_pnpm', 'bash', { command: 'pnpm add missing-pkg' })]),
+    toolResult(2, 'call_pnpm', content, false),
+  ]
+
+  const facts = extractFacts(stubRegion(own))
+
+  assert.deepEqual(facts.errors, ['bash: Error: ERR_PNPM_NO_MATCHING_VERSION'])
+})
+
+test('errors — picks first non-empty line unchanged when no line has error signal', () => {
+  const own = [
+    assistantMsg(1, [callBlock('call_ls', 'bash', { command: 'ls /missing' })]),
+    toolResult(2, 'call_ls', 'ls: /x: No such file or directory\n[exit code: 1]', false),
+  ]
+
+  const facts = extractFacts(stubRegion(own))
+
+  assert.deepEqual(facts.errors, ['bash: ls: /x: No such file or directory'])
+})
+
 test('ordering — commands follow seq order and duplicates are kept', () => {
   const own = [
     assistantMsg(1, [callBlock('call_ord_1', 'run_code', { code: 'await tools.bash({ command: "first" })' })]),
@@ -580,6 +610,11 @@ test('A5b — a pure-numeric first line is a real error and must be kept', () =>
 })
 
 test('A5c — the host ruling wins: an isError result is kept even with a checkmark', () => {
+  // Two facts, both required. The host ruling outranks the shape predicates, so
+  // the entry survives the leading checkmark that would otherwise drop it; and
+  // the entry names the line carrying the failure, not the passing banner above
+  // it. Before the error-line rule this pinned the banner text, which was only
+  // ever the first line recordError happened to read.
   const own = [
     assistantMsg(1, [callBlock('call_forced', 'bash', { command: 'runner --all' })]),
     toolResult(2, 'call_forced', '✔ suite started\nboom 失败', true),
@@ -587,8 +622,8 @@ test('A5c — the host ruling wins: an isError result is kept even with a checkm
 
   assert.deepEqual(
     extractFacts(stubRegion(own)).errors,
-    ['bash: ✔ suite started'],
-    'isError must outrank both shape predicates',
+    ['bash: boom 失败'],
+    'isError must outrank both shape predicates, and the entry must name the failure',
   )
 })
 

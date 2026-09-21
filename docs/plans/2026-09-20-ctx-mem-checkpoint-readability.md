@@ -874,5 +874,44 @@ S0 的探针丢弃在真实产物上生效。`### Errors Seen` 的偏移也从 1
 `buildPatches` 注入的行名改为 `@logictan/dsh-ctx-mem/engine`。
 这样 profile 平面上的裸名行即可被扫描到。需按 minor 破坏性升版（0.3.0 → 0.4.0）并重走发布。
 
-> **未做**：以上两处缺陷**均未修改代码**——用户本轮的授权是「发布 + 本地验收」，修缺陷超出范围。
-> 本计划到此为止；是否修、按什么判据修，待用户裁定。
+> 以上三处缺陷当时**未修改代码**——本轮授权是「发布 + 本地验收」，修缺陷超出范围。
+> 用户随后裁定「三处缺陷都修」，§10.8 记录落地结果。
+
+### 10.8 三处缺陷的修复与复验（2026-09-21）
+
+**S1 — A16 阻断（客户端产物未进加载图）。** 按上述修法落地：`exports["."]` 与 `./bridge` 互换
+（`.` → `lib/bridge.js`，新增 `./engine` → `lib/index.js`，`main` 同步改指 bridge），
+patch 行改裸名 `@logictan/dsh-ctx-mem`，`buildPatches` 注入行改 `@logictan/dsh-ctx-mem/engine`。
+包 0.3.0 → 0.4.0、聚合包 0.5.4 → 0.5.5（依赖收敛到 `^0.4.0`），README / SKILL.md / 聚合清单 /
+patch 注释全部同步。
+
+根 `AGENTS.md` 的「客户端产物 entry `id` 等于包名」这条约束**已被本轮证伪为不充分**，并已在
+包内 patch 注释与 README 里写下真正的约束：**加载器行必须是裸包名**。
+
+**S2 — 配对上下文横跨多行。** 在 `src/render.js` 的 `cappedContexts` 里先取首个非空行再按
+`contextCap` 截字符（放这一层而非 skeleton 层，是因为分档估价读的就是这一层的产出，
+在下游丢弃行会造成幽灵 token 并提前降级）。回放本会话六折：续行 0、标题形上下文 0。
+
+**S3 — 错误条目取到进度行。** `recordError` 改用新的 `firstErrorLine`：优先取第一条命中
+`ERROR_PATTERN_EN`/`ERROR_PATTERN_ZH` 的行，无命中时**原样退回** `firstMeaningfulLine`
+（`ls: /x: No such file or directory` 一类无关键词的真诊断因此不受影响）。
+`looksLikeFailure` 与 `isMisclassifiedError` 的谓词未动——「算不算失败」与「该显示哪一行」是两件事。
+
+**实测复验**（真实归档，非构造用例）：`session-b21ec2c4` seq 2197 是产生该条目的真实记录
+（首行 `✓ Lockfile passes… (verified 14h ago)`，次行 `Error: ERR_PNPM_NO_MATCHING_VERSION`）。
+按折叠区间 [1533, 2333] 用修复后代码复算：`### Errors Seen` **不再含** `Lockfile passes`，
+**含** `bash: Error: ERR_PNPM_NO_MATCHING_VERSION`。同一记录在修复前产出的正是被引用的那条误导条目
+（该文本作为交付产物存于同一会话 seq 2347 / 2794 / 3434 三折）。
+
+**A5c 断言的裁定。** S3 使既有用例 `A5c — the host ruling wins` 失败：它硬编码了
+`['bash: ✔ suite started']`。该用例**声称的契约**是「`isError` 压过两个形状谓词」，而这条契约
+**并未被破坏**——条目仍在，只是文本改指真正的失败行 `boom 失败`。硬编码的那一行文本在旧实现下
+只是「恰好被读到的首行」。故判定为**断言陈旧**而非实现违约：更新期望值并在注释里同时钉住两条事实
+（条目存活 + 条目指向失败行）。
+
+**门禁**：ctx-mem 174/174 PASS；`pnpm typecheck` 0 error；`aggregate.mjs --check` 无 drift。
+`pnpm test` 里 dsh-agy-link / dsh-config-manager / dsh-market 三个包失败，**与本轮无关且为既有状态**：
+三者都不依赖 ctx-mem，单独跑 config-manager 1270/1270、market 1456/1456 全绿，agy-link 失败是
+`node: bad option: --experimental-transform-types`（本机 Node 版本不支持该 flag）。
+
+**A16 真实界面复验**：见 §10.9。

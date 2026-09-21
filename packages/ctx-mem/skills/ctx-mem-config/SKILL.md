@@ -26,7 +26,7 @@ tool-pairing 边界），只覆写 `summarize()`。
 
 压缩后端是**服务替换**，`preset` 的 `isolate` realm 决定 profile 层的引擎行无法
 覆盖它。本插件因此把替换动作交给 **bridge 行** `ctx-mem-bridge`
-（`@logictan/dsh-ctx-mem/bridge`，挂在 profile 平面）：宿主挂载 preset 组合时，
+（`@logictan/dsh-ctx-mem`，挂在 profile 平面）：宿主挂载 preset 组合时，
 bridge 给该组合注入一段 `patches`——关掉官方 `compaction-basic`，并在同一个
 `compaction` 组内插入 `ctx-mem`。
 
@@ -38,7 +38,7 @@ bridge 给该组合注入一段 `patches`——关掉官方 `compaction-basic`�
 
 ```yaml
 - id: ctx-mem-bridge
-  name: '@logictan/dsh-ctx-mem/bridge'
+  name: '@logictan/dsh-ctx-mem'
   config:
     engine:
       fillModel: deepseek-v4.1-flash

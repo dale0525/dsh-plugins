@@ -20,8 +20,8 @@ deps:
   # ctx-mem declares ONE row (its bridge). The engine is mounted by the row the
   # bridge injects into a preset's `isolate: { compaction: true }` group, which
   # no profile-plane row can reach — but the package must still be INSTALLED:
-  # the bridge row names `@logictan/dsh-ctx-mem/bridge`, and the injected row
-  # names `@logictan/dsh-ctx-mem` — both resolve by package name from the profile
+  # the bridge row names `@logictan/dsh-ctx-mem`, and the injected row
+  # names `@logictan/dsh-ctx-mem/engine` — both resolve by package name from the profile
   # root. patchFrom alone would ship a row whose package is absent from a fresh
   # profile.
   - ../ctx-mem

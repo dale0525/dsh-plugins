@@ -345,3 +345,27 @@ test('a paired context is a continuation of its intent, not a second entry', () 
   assert.ok(text.includes(expected), text)
 })
 
+test('paired context is truncated to its first non-empty line, discarding remaining lines', () => {
+  const context = '\n\n## 结论\n\nctx-mem 检查点可读性计划...\n\n### 关键发现'
+  const facts = { intents: ['deploy'], contexts: [context], files: [], commands: [], errors: [] }
+
+  const { text } = renderCheckpoint(facts, 40000, estimate)
+
+  assert.ok(text.includes('- deploy\n  \u2191 ## 结论\n'), text)
+  assert.ok(!text.includes('ctx-mem 检查点可读性计划'), 'subsequent lines must be discarded')
+  assert.ok(!text.includes('### 关键发现'), 'markdown headings in later lines must not appear')
+})
+
+test('a multi-line context applies contextCap only to the retained first line', () => {
+  const head = 'E'.repeat(500)
+  const context = `${head}\nsecond line\nthird line`
+  const facts = { intents: ['review'], contexts: [context], files: [], commands: [], errors: [] }
+
+  const { text } = renderCheckpoint(facts, 40000, estimate)
+  const dropped = head.length - TIERS.T1.contextCap
+  const expected = '\u2191 ' + 'E'.repeat(TIERS.T1.contextCap) + ' \u2026[+' + dropped + ' chars]'
+
+  assert.ok(text.includes(expected), text)
+  assert.ok(!text.includes('second line'), 'later lines are discarded without inflating dropped char count')
+})
+

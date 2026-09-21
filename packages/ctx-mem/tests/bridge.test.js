@@ -111,7 +111,7 @@ test('presetIdFromPath is not special-cased when there is no preset directory', 
 test('buildPatches returns the exact patch list', () => {
   assert.deepEqual(buildPatches(), [
     { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic', disabled: true },
-    { id: 'compaction', insert: [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem' }] },
+    { id: 'compaction', insert: [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem/engine' }] },
   ]);
 });
 
@@ -130,7 +130,7 @@ test('buildPatches returns a fresh, unshared tree on every call', () => {
 
   assert.deepEqual(second, [
     { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic', disabled: true },
-    { id: 'compaction', insert: [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem' }] },
+    { id: 'compaction', insert: [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem/engine' }] },
   ]);
 });
 
@@ -159,17 +159,17 @@ test('applyBridge leaves a profile-plane composition untouched', () => {
 });
 
 test('applyBridge is idempotent when a top-level ctx-mem row is already present', () => {
-  const patches = [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem' }];
+  const patches = [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem/engine' }];
   const input = { path: 'file:///Users/x/.dsh/presets/ptc/agent.cordis.yml', patches };
   const result = applyBridge(input);
   assert.equal(result.patched, false);
   assert.equal(result.config, input);
   assert.equal(input.patches, patches);
-  assert.deepEqual(input.patches, [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem' }]);
+  assert.deepEqual(input.patches, [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem/engine' }]);
 });
 
 test('applyBridge is idempotent when ctx-mem is nested inside an insert', () => {
-  const patches = [{ id: 'compaction', insert: [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem' }] }];
+  const patches = [{ id: 'compaction', insert: [{ id: 'ctx-mem', name: '@logictan/dsh-ctx-mem/engine' }] }];
   const input = { path: 'file:///Users/x/.dsh/presets/cordis/agent.cordis.yml', patches };
   const result = applyBridge(input);
   assert.equal(result.patched, false);
@@ -307,7 +307,7 @@ for (const id of ['standard', 'ptc', 'cordis']) {
     assert.ok(Array.isArray(group?.config), `${id} compaction row must be a group with a config list`);
     const inserted = group.config.find((row) => row.id === 'ctx-mem');
     assert.ok(inserted, `${id} compaction group must gain a ctx-mem row`);
-    assert.equal(inserted.name, '@logictan/dsh-ctx-mem');
+    assert.equal(inserted.name, '@logictan/dsh-ctx-mem/engine');
   });
 }
 

@@ -437,8 +437,27 @@ function matchesErrorPattern(line) {
 }
 
 /**
- * Push a `"<tool>: <first non-empty line>"` error entry, when there is a line
- * and the entry is not dropped noise.
+ * Pick the line representing the error in a tool result.
+ *
+ * Scans for the first line carrying an explicit error signal, so progress lines
+ * or banners preceding the diagnostic do not mask the real error. Falls back to
+ * the first meaningful non-marker line when no error pattern matches (preserving
+ * diagnostics that carry no keyword, such as `ls: /x: No such file or directory`).
+ *
+ * @param {unknown} content
+ * @returns {string}
+ */
+function firstErrorLine(content) {
+  for (const line of joinedText(content).split('\n')) {
+    if (line.trim() === '' || isWrapperMarker(line)) continue
+    if (matchesErrorPattern(line)) return line
+  }
+  return firstMeaningfulLine(content)
+}
+
+/**
+ * Push a `"<tool>: <error line>"` error entry, when there is a line and the
+ * entry is not dropped noise.
  *
  * @param {Facts} facts
  * @param {unknown} name
@@ -446,7 +465,7 @@ function matchesErrorPattern(line) {
  * @param {boolean} [isError=false]
  */
 function recordError(facts, name, content, isError = false) {
-  const line = firstMeaningfulLine(content)
+  const line = firstErrorLine(content)
   if (line === '') return
   if (isNoiseExitError(content, line, isError)) return
   if (isMisclassifiedError(content, line, isError)) return

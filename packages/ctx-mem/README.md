@@ -81,8 +81,13 @@ PTC（programmatic tool calling）模式下，模型写的是 `run_code` 脚本�
 
 压缩后端是 `ctx.compaction` 服务替换，而每个 preset 都在 `isolate: { compaction: true }` 组里组合自己的后端，profile 层的行无法覆盖该 realm。本插件因此由两部分组成：
 
-1. **引擎** `ctx-mem`（`@logictan/dsh-ctx-mem`）——真正的后端，必须落在 preset 的 `isolate` 组内。它由 bridge 注入的行挂载，自身**没有** profile 平面的行。
-2. **bridge** `ctx-mem-bridge`（`@logictan/dsh-ctx-mem/bridge`）——挂在 profile 平面，在宿主挂载 preset 组合时给该组合注入一段 `patches`：关掉官方的 `compaction-basic`，并在同一个 `compaction` 组内插入 `ctx-mem`。
+1. **引擎** `ctx-mem`（`@logictan/dsh-ctx-mem/engine`）——真正的后端，必须落在 preset 的 `isolate` 组内。它由 bridge 注入的行挂载，自身**没有** profile 平面的行。
+2. **bridge** `ctx-mem-bridge`（`@logictan/dsh-ctx-mem`）——挂在 profile 平面，在宿主挂载 preset 组合时给该组合注入一段 `patches`：关掉官方的 `compaction-basic`，并在同一个 `compaction` 组内插入 `ctx-mem`。
+
+> bridge 占用**裸包名**（`exports["."]`）是硬约束，不是风格选择：web 插件表用**加载器行的
+> specifier** 定位包的 `dsh.client` 清单（`dsh-client-modules` 的 `exactPackageSpecifier`），
+> 该函数只接受裸包名。行名写成子路径时清单定位失败、`dsh.client` 永不被发现，浏览器半边
+> 静默不加载（症状是「插件」页里该行没有配置入口）。引擎因此挪到 `./engine`。
 
 因此**任何模式都直接生效**，无需新建或选择专用 preset：`standard` / `ptc` / `cordis` 三个预设会被 bridge 自动替换后端。`minimal` 与用户自建预设**不在覆盖范围内**——它们的设计意图里没有上下文压缩，bridge 不替它们做决定。无 preset 的 profile（如 `headless`）不经过 preset 子树，bridge 自然不生效。
 
@@ -91,7 +96,7 @@ PTC（programmatic tool calling）模式下，模型写的是 `run_code` 脚本�
 ```yaml
 # 覆盖的预设 id 由 src/bridge.js 的 COVERED_PRESETS 决定
 - id: ctx-mem-bridge
-  name: '@logictan/dsh-ctx-mem/bridge'
+  name: '@logictan/dsh-ctx-mem'
   config:
     engine:
       fillModel: deepseek-v4.1-flash

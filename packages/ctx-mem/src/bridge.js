@@ -1,6 +1,13 @@
 /**
  * Host-plane bridge for `ctx-mem` (slice S1: the pure decision layer).
  *
+ * This is the package's ROOT face (`exports["."]`), and it must be: the web
+ * plugin table locates a package's `dsh.client` manifest from the specifier of
+ * the loader row that mounts it, and it only accepts a bare package name
+ * (`dsh-client-modules`'s `exactPackageSpecifier`). A row named with a subpath
+ * resolves to no manifest, so the browser half would never load. The engine
+ * therefore lives at `./engine`, which no client scan needs to see.
+ *
  * The host's `cordis` loader resolves every loader entry's config through the
  * synchronous `internal/config` waterfall. This bridge hangs off that waterfall
  * and injects a `patches` array into a covered preset composition, so the
@@ -54,7 +61,7 @@ export function presetIdFromPath(path) {
  * @returns {Array<object>} a fresh array each call
  */
 export function buildPatches(engine) {
-  const row = { id: CTX_MEM_ID, name: '@logictan/dsh-ctx-mem' }
+  const row = { id: CTX_MEM_ID, name: '@logictan/dsh-ctx-mem/engine' }
   if (engine !== undefined && engine !== null && Object.keys(engine).length > 0) row.config = { ...engine }
   return [
     { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic', disabled: true },

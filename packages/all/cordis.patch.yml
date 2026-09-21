@@ -110,7 +110,7 @@
 # `compaction` group. That is what makes the backend work in ANY mode without a
 # dedicated preset copy.
 #
-# The ENGINE (`@logictan/dsh-ctx-mem`) has no row here on purpose. A compaction
+# The ENGINE (`@logictan/dsh-ctx-mem/engine`) has no row here on purpose. A compaction
 # backend is a `ctx.compaction` SERVICE replacement, and every shipped preset
 # composes its own backend inside an `isolate: { compaction: true }` group
 # (`dsh-agent-presets/presets/*/agent.cordis.yml`), so an agent context resolves
@@ -126,9 +126,16 @@
 # entry beside the bridge row in the plugin UI.
 #
 # The package must still be INSTALLED even though no row here names the engine:
-# this row names `@logictan/dsh-ctx-mem/bridge`, and the row the bridge injects
-# names `@logictan/dsh-ctx-mem` — both resolve by package name from the profile
+# this row names `@logictan/dsh-ctx-mem`, and the row the bridge injects names
+# `@logictan/dsh-ctx-mem/engine` — both resolve by package name from the profile
 # root.
+#
+# This row must stay a BARE package name. The web plugin table locates each
+# package's `dsh.client` manifest from the specifier of the loader row that
+# mounts it (`dsh-client-modules`'s `exactPackageSpecifier`), and that function
+# accepts only a bare name: a subpath row resolves to no manifest, so the
+# package's browser half would silently never load. That is why the bridge owns
+# `exports["."]` and the engine was moved to `./engine`.
 #
 # The bridge only covers `standard`, `ptc` and `cordis` (see COVERED_PRESETS in
 # src/bridge.js). `minimal` and user-authored presets have no compaction group
@@ -136,7 +143,7 @@
 # at all, so the bridge is inert there.
 - insert:
     - id: ctx-mem-bridge
-      name: '@logictan/dsh-ctx-mem/bridge'
+      name: '@logictan/dsh-ctx-mem'
       config:
         engine: {}
 

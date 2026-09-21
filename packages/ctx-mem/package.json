@@ -1,12 +1,12 @@
 {
   "name": "@logictan/dsh-ctx-mem",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "DSH 上下文交接压缩后端：程序抽取硬事实（路径/命令/报错逐字保留）+ 模型只补四节因果，PTC 感知。衍生自 fan56/dsh-dcp（MIT），主体已重写。",
   "type": "module",
-  "main": "lib/index.js",
+  "main": "lib/bridge.js",
   "exports": {
-    ".": "./lib/index.js",
-    "./bridge": "./lib/bridge.js",
+    ".": "./lib/bridge.js",
+    "./engine": "./lib/index.js",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },

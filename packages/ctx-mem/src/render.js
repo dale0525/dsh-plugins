@@ -196,6 +196,13 @@ function transformAll(facts, tier) {
   };
 }
 
+function firstNonEmptyLine(text) {
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() !== '') return line;
+  }
+  return '';
+}
+
 /**
  * Cap every paired assistant statement, preserving index alignment.
  *
@@ -204,12 +211,17 @@ function transformAll(facts, tier) {
  * would let a single verbose turn crowd out the commands. Its own cap keeps the
  * cost of S6 to a fixed ceiling per intent.
  *
+ * Line truncation belongs here rather than in the skeleton renderer because
+ * token estimation during tier evaluation and budget filling prices the output
+ * of capped parts; stripping subsequent lines downstream would cause phantom
+ * tokens to distort pricing and premature tier degradation.
+ *
  * @param {string[]} contexts
  * @param {{ contextCap: number }} tier
  * @returns {string[]}
  */
 function cappedContexts(contexts, tier) {
-  return contexts.map((context) => capText(context, tier.contextCap));
+  return contexts.map((context) => capText(firstNonEmptyLine(context), tier.contextCap));
 }
 
 /**

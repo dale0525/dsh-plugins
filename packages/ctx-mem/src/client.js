@@ -27,6 +27,10 @@ window.__ModuleLoader__.load({
      * differs between them. Both are registered; the key whose bundle is not
      * installed never renders, because the page dispatches only the keys its
      * own bundles declare.
+     *
+     * This half only reaches the browser at all because the bridge row is a
+     * BARE package name: `dsh-client-modules` locates `dsh.client` from the
+     * row's specifier and accepts no subpath. See `src/bridge.js`.
      */
     var BUNDLE_NAMES = ["@logictan/dsh-plugins-all", "@logictan/dsh-ctx-mem"];
 

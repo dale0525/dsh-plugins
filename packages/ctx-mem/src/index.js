@@ -24,7 +24,7 @@
  * Because the skeleton is rebuilt from raw events on every compaction, facts
  * from the first span survive into the second (no cascade decay).
  *
- * @module @logictan/dsh-ctx-mem
+ * @module @logictan/dsh-ctx-mem/engine
  */
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic';
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm';
