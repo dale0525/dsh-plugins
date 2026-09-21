@@ -1,8 +1,8 @@
 # jev-ultrafast 浏览器 Agent 子插件方案
 
-> 状态：**本地实施完成，A1–A7d 已验收通过；A8 已用真实 Key 端到端跑通**（见 §10.8）；A9–A11 待人工首发与聚合包重新发布（§6.2）。
-> 首发已发生（`0.1.0`，2026-09-21T12:40Z），但**该版本带缺陷 6**（见 §10.8），必须升 `0.1.1` 后重发；trust 尚未配置（`npm trust list` 需 OTP，Agent 不能代跑）。
-> **T6 剩余的唯一动作在用户侧**：配置 trust，然后由 CI 发布 `0.1.1` 与升版后的聚合包。
+> 状态：**T6 发布闭环完成** —— A1–A8 全部验收通过（A8 见 §10.8），`0.1.1` 与聚合包 `0.5.8` 已由 CI 发布上线，A9 已验收（§10.9）。
+> A10/A11 依赖 config-manager 的导出→导入流程，尚未执行。
+> profile 中的临时独立挂载已摘除，插件现由聚合包提供（§10.9）。
 > 上游评估对象：`https://github.com/browser-use/jev-ultrafast`（MIT，Python 3.12，未发布 PyPI）。
 
 ## 1. 问题与目标
@@ -265,7 +265,7 @@ DevTools remote debugging requires a non-default data directory. Specify this us
 | T4 | 设置命名空间 + 工具注册 + `inject` + 错误路径 **已完成** | Root（跨文件不变量） |
 | T4b | 客户端半边：`dsh.client` 声明 + `plugins.row.config` 注册（key `<bundle>#browser-agent`）+ 设置卡（**含必做的模型下拉**，数据源 `remote.session.modelCatalog()`）**已完成** | 可外派（照 `ctx-mem/src/client.js:503-505` 与 `dsh-workbuddy-connect/src/client/index.tsx:67` 先例，触点 ≤2） |
 | T5 | 本地验收 A1–A8（含 `dsh-web restart`；T4b 改 `src/client/**` 走 `dev:watch` 免重启）**已完成** | Root（最终判据） |
-| T6 | 人工首发（**已完成**：`0.1.0`）→ 配 trust（**待办**，需 OTP）→ 修缺陷 6 后升 `0.1.1` → 升聚合包版本 → CI 发布 → 验收 A9–A11（见 §10.8） | Root（发布闭环，Agent 不得代发） |
+| T6 | 人工首发 + 配 trust（用户完成）→ 修缺陷 6 升 `0.1.1` → 升聚合包 `0.5.8` → tag + CI 发布（**已完成**）→ A9 验收通过（**A10/A11 待 config-manager 同步流程**），见 §10.9 | Root（发布闭环，Agent 不得代发） |
 
 ## 9. 参考
 
@@ -433,4 +433,27 @@ npm trust github @logictan/dsh-browser-agent --file publish.yml --repo dale0525/
 **门禁复跑**（修复后）：`aggregate.mjs --check` 退出 0；`pnpm test` 退出 0（插件测试 41 → 46 例）；`pnpm typecheck` 退出 0；`diff -rq src lib` 无差异。
 
 **发布侧结论**：`0.1.0` 已上线且**带缺陷 6**，因此不能直接配 trust 了事——须先升 `0.1.1` 再走 CI。
+
+### 10.9 发布闭环（本轮，T6 完成）
+
+用户配好 trust 后，按 `AGENTS.md`「📤 发布」走 tag + CI 发布，**两个包均已上线**：
+
+| 包 | 版本 | 发布方式 | 证据 |
+| --- | --- | --- | --- |
+| `@logictan/dsh-browser-agent` | `0.1.1` | CI（run `35607535856`，success） | 日志 `##[group]publishing @logictan/dsh-browser-agent@0.1.1`；registry packument 含 `0.1.1` |
+| `@logictan/dsh-plugins-all` | `0.5.8` | 同上（拓扑序：子插件在前） | 日志 `+ @logictan/dsh-plugins-all@0.5.8`；`dependencies` 含 `@logictan/dsh-browser-agent: ^0.1.1` |
+
+**修复确实随包上线**（不只看 CI 绿）：拉取线上 tarball 复核 `lib/config.js:67` 为 `resolveTextRoute(config, exec)` 且含 `const agent = exec?.agent`——即修复后的形状，而非 `0.1.0` 的旧签名。
+
+**提交边界**：工作树当时混有另一条在飞工作线的 `dsh-config-manager` 改动（28 文件 / 2893 行删除，其配套修改尚未暂存）。本次只按路径提交发布相关项（`packages/dsh-browser-agent/`、`packages/all/*`、`pnpm-lock.yaml`、本计划文档），并**把误入暂存区的 config-manager 删除条目撤出**——否则 CI 会因引用已删模块而挂。提交后另建 `git worktree` 在干净的 HEAD 树上复跑四道门禁（`--frozen-lockfile` 安装、typecheck、test、aggregate check）全部退出 0，确认 CI 所见即所验。
+
+**A9 已验收**（零额外下载）：干净 `DSH_HOME` 下装 `@logictan/dsh-plugins-all@0.5.8`，`~/Library/Caches/ms-playwright` 前后逐项无差异，且依赖链带出 `@logictan/dsh-browser-agent@0.1.1`。
+
+> **`@latest` 解析陷阱（本地环境，与发布无关）**：本机 `pnpm add @logictan/dsh-plugins-all@latest` 会解析成 `^0.5.0`，而同一目录的 `pnpm view ... dist-tags` 与 registry 均报 `0.5.8`，即 pnpm 侧元数据缓存陈旧。A9 因此改用**显式版本**验证——显式版本不受该缓存影响，结论成立。
+
+**profile 临时挂载已摘除**（本节的必要收尾）：`~/.dsh/profiles/web` 原以 `dsh.profile.bundles` 独立条目 + `link:` 本地路径挂着本插件（§10.8 所述「临时开发态」）。聚合包 `0.5.8` 已自带 `- id: browser-agent`，两者并存即 `duplicate loader entry id: browser-agent` 硬崩（`cordis-plugin-loader` 对重复行 id 直接 throw）。已按**不可颠倒的顺序**处理：先摘独立条目（此时聚合仍是 `0.5.7`、不含该行，不会中途消失）→ 再升聚合到 `^0.5.8` 并装好 → 重启。
+
+**重启后运行期验收**：`dsh-web status` 为 `Verdict: OK`（作业 PID == 端口 owner PID）；`browser_agent` 工具实际调用成功——真实 Chrome + 真实 Key，Wikipedia 搜索任务 `TYPE_TEXT → CLICK → CLICK → DONE`，`status=done`。该工具现由 registry 安装的 `0.1.1` 提供，不再是 `link:` 本地路径。
+
+> **历史日志辨析**：`~/.dsh/dsh-web.err` 中有一条 `duplicate loader entry id: fakeip-fetch`。按行号定位它在本次启动的 PID 标记（`node:16913`）**之前**，属历史启动残留；`dsh-fakeip-fetch` 的独立挂载段在 profile patch 中早已注释掉，本次改动未触及。
 
