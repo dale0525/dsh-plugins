@@ -39,6 +39,7 @@
     "pnpm-lock.yaml"
   ],
   "added": [
+    "scripts/ts-test-loader.mjs",
     "test/run-code-view.test.ts"
   ]
 }

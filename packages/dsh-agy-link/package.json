@@ -89,7 +89,7 @@
   "scripts": {
     "build": "tsdown",
     "check": "tsc --noEmit",
-    "test": "node --experimental-transform-types --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "test": "node --import ./scripts/ts-test-loader.mjs --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "prepare": "npm run build",
     "prepack": "npm run build"
   },
