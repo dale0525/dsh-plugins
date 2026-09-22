@@ -1,7 +1,6 @@
 /**
- * The wire shape lives in one module now, so it is pinned in one place too.
- * `wire-headers.test.mjs` proves each harness still sends what this builds;
- * this proves what it builds.
+ * The wire shape lives in one module now, so it is pinned in one place too:
+ * this proves what `lib/ov-http.mjs` builds.
  */
 
 import assert from "node:assert/strict";

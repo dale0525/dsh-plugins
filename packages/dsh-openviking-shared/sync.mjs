@@ -5,7 +5,7 @@ import { dirname, join, relative, resolve as resolvePath, sep } from "node:path"
 import { fileURLToPath } from "node:url";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-export const SHARED_DIR = join(ROOT, "examples", "memory-plugin-shared", "lib");
+export const SHARED_DIR = join(ROOT, "packages", "dsh-openviking-shared", "lib");
 
 // What a plugin ships equals what it imports, and neither side is written down.
 // Hand-kept lists were the drift: a group named after one harness got spread
@@ -21,101 +21,19 @@ export const SHARED_DIR = join(ROOT, "examples", "memory-plugin-shared", "lib");
 // files git has, so those copies are committed and a bot regenerates them on
 // main. A plugin published as an npm package or assembled into a tarball builds
 // its copies at pack time, so committing them would only tax every review diff.
+// Only the DSH bundle is forked into this repository. Upstream's seven other
+// copies (claude-code, codex, opencode, pi, openclaw, agent-plugins and the
+// agent-hook plugin) are not here, so their entries are gone rather than left
+// pointing at directories that do not exist.
 export const TARGETS = [
   {
-    root: join(ROOT, "examples", "claude-code-memory-plugin"),
-    dir: join(ROOT, "examples", "claude-code-memory-plugin", "scripts", "shared"),
-    committed: true,
-  },
-  {
-    root: join(ROOT, "examples", "codex-memory-plugin"),
-    dir: join(ROOT, "examples", "codex-memory-plugin", "scripts", "shared"),
-    committed: true,
-  },
-  {
-    root: join(ROOT, "agent-plugins"),
-    dir: join(ROOT, "agent-plugins", "servers", "shared"),
-    committed: true,
-  },
-  {
-    root: join(ROOT, "examples", "opencode-plugin"),
-    dir: join(ROOT, "examples", "opencode-plugin", "lib", "shared"),
+    root: join(ROOT, "packages", "dsh-openviking"),
+    dir: join(ROOT, "packages", "dsh-openviking", "shared"),
     committed: false,
-  },
-  {
-    root: join(ROOT, "examples", "dsh-memory-plugin"),
-    dir: join(ROOT, "examples", "dsh-memory-plugin", "shared"),
-    committed: false,
-  },
-  {
-    root: join(ROOT, "examples", "pi-coding-agent-extension"),
-    dir: join(ROOT, "examples", "pi-coding-agent-extension", "shared"),
-    committed: false,
-  },
-  // Published as a package too, but ov-install's GitHub source downloads the
-  // plugin file by file at a git ref, and it has no way to run this generator.
-  {
-    root: join(ROOT, "examples", "openclaw-plugin"),
-    dir: join(ROOT, "examples", "openclaw-plugin", "shared"),
-    committed: true,
   },
 ];
 
-// cursor, trae, trae-cn and zcode vendor nothing: the installer copies the
-// canonical runtime to `$OV_HOME/agent-integrations/memory-plugin-shared/lib`
-// and they import it by the relative path that resolves both there and here.
-export const ASSEMBLED_ROOTS = [
-  join(ROOT, "examples", "agent-hook-plugin"),
-];
-
-export const GENERATED_HEADER = "// GENERATED FROM examples/memory-plugin-shared/lib. DO NOT EDIT.\n";
-
-// Skills are copied verbatim — a generated-from banner ahead of the `---`
-// frontmatter would break every skill loader.
-//
-// One entry per copy, the shape TARGETS uses, so the same assertions reach both
-// kinds of generated file. `committed` is true for every skill copy: .gitignore
-// covers the vendored shared/ directories only, and each host installs a skill
-// by copying its path out of this repository, so a copy git does not hold ships
-// nothing. Being a skill under examples/skills is not what ships it — an entry
-// here is.
-export const SKILLS_DIR = join(ROOT, "examples", "skills");
-export const SKILL_TARGETS = [
-  // Not shipped to openclaw-plugin: its REST tool surface has its own operator
-  // skill (openviking-context-database) with different tool names. Nor to
-  // agent-plugins, whose copy is a deliberately different hook-free variant.
-  {
-    skill: "openviking-memory",
-    dir: join(ROOT, "examples", "codex-memory-plugin", "skills"),
-    committed: true,
-  },
-  {
-    skill: "openviking-memory",
-    dir: join(ROOT, "examples", "claude-code-memory-plugin", "skills"),
-    committed: true,
-  },
-  {
-    skill: "openviking-memory",
-    dir: join(ROOT, "examples", "agent-hook-plugin", "hosts", "cursor", "skills"),
-    committed: true,
-  },
-  {
-    skill: "openviking-memory",
-    dir: join(ROOT, "examples", "dsh-memory-plugin", "skills"),
-    committed: true,
-  },
-  // Only the two harnesses that ship the experience workflow today.
-  {
-    skill: "ov-experience-memory",
-    dir: join(ROOT, "examples", "codex-memory-plugin", "skills"),
-    committed: true,
-  },
-  {
-    skill: "ov-experience-memory",
-    dir: join(ROOT, "examples", "claude-code-memory-plugin", "skills"),
-    committed: true,
-  },
-];
+export const GENERATED_HEADER = "// GENERATED FROM packages/dsh-openviking-shared/lib. DO NOT EDIT.\n";
 
 const SOURCE_EXTENSIONS = new Set([".mjs", ".js", ".cjs", ".ts", ".mts"]);
 const SKIPPED_DIRS = new Set(["node_modules", ".git", "dist", "coverage"]);
@@ -213,25 +131,6 @@ export async function sharedClosure(seeds) {
   return [...generated].sort();
 }
 
-// The installer reads this file instead of computing the closure itself: it
-// runs against a marketplace archive, a flat layout where this generator finds
-// no plugin sources and would silently resolve an empty list.
-export const MANIFEST_PATH = join(SHARED_DIR, "MANIFEST");
-
-/** The closure the installer has to assemble for the harnesses that vendor nothing. */
-export async function assembledClosure() {
-  const seeds = new Set();
-  for (const root of ASSEMBLED_ROOTS) {
-    const { seeds: found, missing } = await directSharedImports({ root, dir: SHARED_DIR });
-    if (missing.length) {
-      const detail = missing.map((m) => `${m.name} (imported by ${m.importer})`).join(", ");
-      throw new Error(`the assembled runtime is missing: ${detail}`);
-    }
-    for (const seed of found) seeds.add(seed);
-  }
-  return sharedClosure([...seeds]);
-}
-
 /** Every target with the file set its own imports resolve to. */
 export async function resolveTargets() {
   const resolved = [];
@@ -277,26 +176,6 @@ async function copySharedFile(file, targetDir, typed) {
   }
 }
 
-async function writeManifest(files) {
-  const staging = `${MANIFEST_PATH}.${process.pid}.tmp`;
-  await writeFile(staging, files.map((file) => `${file}\n`).join(""), "utf-8");
-  await rename(staging, MANIFEST_PATH);
-}
-
-async function copySkill(skill, targetDir) {
-  const sourceDir = join(SKILLS_DIR, skill);
-  for (const file of (await readdir(sourceDir)).sort()) {
-    const target = join(targetDir, skill);
-    await mkdir(target, { recursive: true });
-    // Through a rename, for the reason the module copies are: a test can be
-    // byte-comparing this file while the staging script runs the generator.
-    const path = join(target, file);
-    const staging = `${path}.${process.pid}.tmp`;
-    await writeFile(staging, await readFile(join(sourceDir, file), "utf-8"), "utf-8");
-    await rename(staging, path);
-  }
-}
-
 /** Vendored copies the target no longer imports; the sync would never touch them again. */
 async function staleCopies(target, keep) {
   const stale = [];
@@ -322,21 +201,11 @@ async function main() {
     }
   }
 
-  const assembled = await assembledClosure();
-  await writeManifest(assembled);
-  process.stdout.write(`wrote ${relative(ROOT, MANIFEST_PATH)}\n`);
-  for (const file of assembled) claimed.add(file);
-
   const unclaimed = (await readdir(SHARED_DIR))
     .filter((file) => file.endsWith(".mjs") && !claimed.has(file))
     .sort();
   for (const file of unclaimed) {
     process.stdout.write(`unused lib/${file} — no target imports it\n`);
-  }
-
-  for (const { skill, dir } of SKILL_TARGETS) {
-    await copySkill(skill, dir);
-    process.stdout.write(`synced ${skill}/ -> ${relative(ROOT, dir)}\n`);
   }
 }
 

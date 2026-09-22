@@ -1,0 +1,5 @@
+# The root .gitignore ignores `lib/` as build output. This package has no build
+# step: lib/ IS the source the generator copies from, tracked upstream. Without
+# this negation a module added by an upstream sync is silently dropped by git.
+!lib/
+!lib/**

@@ -1,12 +1,26 @@
 # Memory Plugin Shared Library
 
-For contributor guidance on adding and maintaining hook + MCP integrations, see the [Agent plugin development and maintenance standard](../../docs/en/agent-integrations/18-plugin-development.md) ([中文](../../docs/zh/agent-integrations/18-plugin-development.md)). When using a coding agent, have it read and follow this standard before making changes.
+This is the upstream shared library, forked into this repository to serve exactly one
+consumer: `packages/dsh-openviking`. It is not an npm package — there is no
+`package.json` — so the workspace never installs it; `sync.mjs` is the whole interface.
 
-This directory contains shared JavaScript modules. `sync.mjs` vendors each module into the plugins whose code imports it — Claude Code, Codex, OpenCode, dsh, pi, openclaw and the bundled `agent-plugins` servers — together with the matching `lib/*.d.mts` declaration for the targets written in TypeScript. cursor, trae, trae-cn and zcode vendor nothing: the installer copies the modules `lib/MANIFEST` names — the same sync writes it — to `$OV_HOME/agent-integrations/memory-plugin-shared/lib`, and they import it from there.
+`sync.mjs` vendors each module `packages/dsh-openviking` imports, plus that module's
+transitive imports, into `packages/dsh-openviking/shared/`, each copy stamped with a
+generated-from banner. It runs on the plugin's `prepare` and `prepack` hooks, so
+`pnpm install` and `npm pack` both rebuild the copies. Those copies are gitignored —
+they are build output, and the published tarball carries them because the plugin's
+`files` lists `shared/`.
 
-`lib/install/` is the exception: it holds the installer's own JavaScript — the JSONC editor OpenCode's config needs and the hooks/mcp merge cursor, trae, trae-cn and zcode install through — which runs from `install.sh` and never from a hook. No shared module imports it, so it stays out of every closure and out of `lib/MANIFEST`.
+Upstream ships this library to eight harnesses (Claude Code, Codex, OpenCode, dsh, pi,
+openclaw, the bundled `agent-plugins` servers, and cursor/trae/trae-cn/zcode through
+`install.sh`). Only the DSH plugin is forked here, so `TARGETS` names it alone and the
+rest of upstream's machinery — the installer, `lib/install/`, the `lib/MANIFEST` the
+installer read, and the tests that covered those harnesses — is deleted. See
+`sync-policy.json`: every one of those paths is listed in `deleted` and is re-removed on
+each upstream sync, so an upstream change cannot quietly bring them back.
 
-When the copies are made follows how the plugin is delivered. Claude Code, Codex and `agent-plugins` are installed by pointing a host at a directory in this repository, so their copies are committed and a push to main regenerates them. OpenCode, dsh and openclaw publish as npm packages and pi is tarred by the installer, so those build their copies at pack time and keep none in git — run `node examples/memory-plugin-shared/sync.mjs` once in a fresh checkout before running their tests.
+Modules in `lib/` that no DSH plugin imports are dead here; `sync.mjs` reports them as
+`unused lib/<file>` when it runs.
 
 > **Requires an OpenViking server with `viking://~` home-alias support.** Recall targets the
 > caller's own context space through `viking://~/memories` and `viking://~/skills`; the uid-less
