@@ -429,6 +429,7 @@ export const Config: z<Config> = z.object({
     preset: z.string().default(''),
     name: z.string().default(''),
     apiUrl: z.string().default(''),
+    apiUrlFull: z.boolean().default(false),
     models: z.array(z.object({
       alias: z.string(),
       id: z.string(),
@@ -516,6 +517,7 @@ function normalizeChannels(value: unknown): ChannelConfig[] {
       preset: typeof raw.preset === 'string' ? raw.preset : '',
       name: typeof raw.name === 'string' ? raw.name.trim() : '',
       apiUrl: typeof raw.apiUrl === 'string' ? raw.apiUrl.trim() : '',
+      apiUrlFull: raw.apiUrlFull === true,
       models,
     })
   }
@@ -573,7 +575,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
           .map(model => ({ alias: model.trim(), id: model.trim() }))
         : []
       if (legacyUrl !== '' || legacyModels.length > 0) {
-        channels = [{ id: 'default', preset: '', name: '默认渠道', apiUrl: legacyUrl, models: legacyModels }]
+        channels = [{ id: 'default', preset: '', name: '默认渠道', apiUrl: legacyUrl, apiUrlFull: false, models: legacyModels }]
         const legacyKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : ''
         if (legacyKey !== '') secrets['default'] = legacyKey
       }
@@ -680,7 +682,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
             const value = resolve()
             const channel = value.channels.find(candidate => candidate.id === value.defaultChannelId) ?? value.channels[0]
             return {
-              apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : (channel?.apiUrl ?? ''),
+              apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : (channel?.apiUrlFull === true ? '' : channel?.apiUrl ?? ''),
               apiKey: value.promptApiKey !== '' ? value.promptApiKey : (channel?.apiKey ?? ''),
               model: value.promptModel,
             }
@@ -977,7 +979,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
             const value = resolve()
             const channel = value.channels.find(candidate => candidate.id === value.defaultChannelId) ?? value.channels[0]
             return {
-              apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : (channel?.apiUrl ?? ''),
+              apiUrl: value.promptApiUrl !== '' ? value.promptApiUrl : (channel?.apiUrlFull === true ? '' : channel?.apiUrl ?? ''),
               apiKey: value.promptApiKey !== '' ? value.promptApiKey : (channel?.apiKey ?? ''),
               model: value.promptModel,
             }

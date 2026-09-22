@@ -8,7 +8,7 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.6.1'
+export const PLUGIN_VERSION = '1.6.2'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
@@ -941,8 +941,10 @@ export interface ChannelConfig {
   preset: string
   /** Display name shown in the list, the panel, and Agent guidance. */
   name: string
-  /** OpenAI-compatible base URL. */
+  /** OpenAI-compatible base URL, or the exact generation URL when apiUrlFull is true. */
   apiUrl: string
+  /** Use apiUrl verbatim instead of appending /images/generations or /images/edits. */
+  apiUrlFull: boolean
   /** The channel's model catalog (alias → upstream id). */
   models: ModelMapping[]
 }

@@ -832,6 +832,7 @@ function newChannelDraft(preset: PresetProviderView | undefined): ChannelDraft {
     preset: preset?.id ?? '',
     name: preset?.name ?? '',
     apiUrl: preset?.apiUrl ?? '',
+    apiUrlFull: false,
     models: (preset?.models ?? []).map(model => ({ ...model })),
   }
 }
@@ -928,6 +929,7 @@ function ChannelEditor(props: {
   }
 
   const detect = (): void => {
+    if (channel.apiUrlFull) return
     setDetecting(true)
     setDetectError(null)
     const payload: Record<string, unknown> = { channelId: channel.id }
@@ -948,7 +950,7 @@ function ChannelEditor(props: {
   useEffect(() => {
     if (autoDetected.current) return
     autoDetected.current = true
-    if (channel.apiUrl.trim() !== '' && (props.keyHeld || keyDraft.trim() !== '')) detect()
+    if (!channel.apiUrlFull && channel.apiUrl.trim() !== '' && (props.keyHeld || keyDraft.trim() !== '')) detect()
   }, [])
 
   const addManual = (): void => {
@@ -994,7 +996,12 @@ function ChannelEditor(props: {
         </div>
         <div className={css.editorField}>
           <label className={css.label} htmlFor="dsh-imagegen-channel-url">{t('channels.apiUrl')}</label>
-          <input id="dsh-imagegen-channel-url" className={css.input} value={channel.apiUrl} placeholder="https://api.example.com/v1" disabled={!props.writable} onChange={event => { props.onPatch({ apiUrl: event.target.value }) }} />
+          <input id="dsh-imagegen-channel-url" className={css.input} value={channel.apiUrl} placeholder={channel.apiUrlFull ? 'https://api.example.com/v1/wand/si-image/generation' : 'https://api.example.com/v1'} disabled={!props.writable} onChange={event => { props.onPatch({ apiUrl: event.target.value }) }} />
+          <label className={css.checkboxRow}>
+            <input type="checkbox" checked={channel.apiUrlFull} disabled={!props.writable} onChange={event => { props.onPatch({ apiUrlFull: event.target.checked }) }} />
+            <span>{t('channels.apiUrlFull')}</span>
+          </label>
+          <p className={css.fieldHint}>{t('channels.apiUrlFullHint')}</p>
         </div>
         <div className={css.editorField}>
           <div className={css.head}>
@@ -1023,7 +1030,7 @@ function ChannelEditor(props: {
 
         <div className={css.editorSectionHeader}>
           <h4 className={css.label}>{t('channels.modelCatalogTitle')}</h4>
-          <button type="button" className={css.modelFetch} disabled={!props.writable || detecting} onClick={detect}>
+          <button type="button" className={css.modelFetch} disabled={!props.writable || detecting || channel.apiUrlFull} onClick={detect}>
             {detecting ? t('channels.detecting') : t('channels.detect')}
           </button>
         </div>

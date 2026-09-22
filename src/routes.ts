@@ -529,7 +529,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     const models: ModelMapping[] = normalizeImageModels(resolveImageModels()).map(id => ({ alias: id, id }))
     if (upstream.apiUrl.trim() === '' && models.length === 0) return { channels: [], defaultChannelId: '' }
     return {
-      channels: [{ id: 'default', preset: '', name: '默认渠道', apiUrl: upstream.apiUrl, apiKey: upstream.apiKey, models }],
+      channels: [{ id: 'default', preset: '', name: '默认渠道', apiUrl: upstream.apiUrl, apiUrlFull: false, apiKey: upstream.apiKey, models }],
       defaultChannelId: 'default',
     }
   }

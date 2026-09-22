@@ -165,6 +165,17 @@ const upstream = createServer(async (req, res) => {
     ] }))
     return
   }
+  if (url.pathname === '/v1/wand/si-image/generation') {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    assert.equal(req.headers.authorization, 'Bearer sk-test')
+    assert.equal(body.model, 'si-image')
+    assert.equal(body.prompt, 'full endpoint')
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ data: [{ b64_json: pngBytes.toString('base64') }] }))
+    return
+  }
   if (url.pathname === '/v1/images/generations') {
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
@@ -289,6 +300,15 @@ await check('B1 text generation normalizes b64_json + url items', async () => {
   assert.equal(result.images[1].b64, pngBytes.toString('base64'))
   assert.equal(result.images[1].mime, 'image/png')
   assert.equal(resultAuthHeaders.at(-1), 'Bearer sk-test', 'same-origin result URLs keep the channel API key')
+})
+
+await check('B1b exact URL channels use the configured endpoint verbatim (#26)', async () => {
+  const result = await host.generateImage(
+    { apiUrl: `http://127.0.0.1:${upstreamPort}/v1/wand/si-image/generation`, apiKey: 'sk-test', apiUrlFull: true },
+    { mode: 'text', model: 'si-image', prompt: 'full endpoint', size: 'auto', quality: 'auto', n: 1, detail: '' },
+  )
+  assert.equal(result.images.length, 1)
+  assert.equal(result.images[0].b64, pngBytes.toString('base64'))
 })
 
 await check('B2 signed URLs bypass API-key auth and empty base64 falls back to URL', async () => {
@@ -3859,6 +3879,15 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
     const face = sectionRegistration.inject()
     const initialSettings = face.hooks.imageGenSettingsCard.getSnapshot()
     assert.equal(initialSettings.channels.defaultModel, 'gpt-image-2-alt', 'settings select shows the configured default model')
+    assert.equal(initialSettings.channels.channels[0].apiUrlFull, false, 'existing channels default to base-URL mode')
+    face.channels.setChannels(initialSettings.channels.channels.map(channel => ({ ...channel, apiUrlFull: true })))
+    await face.channels.commit()
+    assert.ok(
+      mutateCalls.some(m => m.ops.some(o => o.path[0] === 'channels' && o.op === 'set' && o.value[0]?.apiUrlFull === true)),
+      'exact URL mode reaches the channel settings document (#26)',
+    )
+    face.channels.setChannels(initialSettings.channels.channels.map(channel => ({ ...channel, apiUrlFull: false })))
+    await face.channels.commit()
     face.channels.setDefaultModel('gpt-image-2')
     await face.channels.commit()
     assert.ok(
@@ -3956,6 +3985,58 @@ await check('E1 client apply mounts the sidebar entry and studio (jsdom)', async
       while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
       return predicate()
     }
+
+    // Regression for the runaway Dock magnification (#27): a browser can give
+    // requestAnimationFrame a timestamp older than performance.now(), which
+    // used to produce a negative frame delta. Drive that exact case through the
+    // mounted toolbar and require every tile to stay within its 34-50px range.
+    const dockToolbar = view.querySelector('[data-canvas-workspace] [role="toolbar"]')
+    assert.ok(dockToolbar !== null, 'canvas dock toolbar is mounted')
+    // Let the dock's initial spring settle before replacing RAF so the stale
+    // timestamp we inject cannot be ignored by an already-running loop.
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const originalRequestAnimationFrame = jsdomWindow.requestAnimationFrame
+    const queuedDockFrames = []
+    jsdomWindow.requestAnimationFrame = callback => {
+      queuedDockFrames.push(callback)
+      return queuedDockFrames.length
+    }
+    const drainDockFrames = (count) => {
+      for (let frame = 0; frame < count && queuedDockFrames.length > 0; frame += 1) queuedDockFrames.shift()(0)
+    }
+    dockToolbar.dispatchEvent(new jsdomWindow.MouseEvent('pointermove', { bubbles: true, clientX: 0, clientY: 0 }))
+    drainDockFrames(12)
+    const dockSizes = [...dockToolbar.querySelectorAll('[data-dock-item]')].map(item => Number.parseFloat(item.style.width))
+    assert.ok(dockSizes.length > 0, 'dock tiles are present')
+    assert.ok(
+      dockSizes.every(size => Number.isFinite(size) && size >= 34 && size <= 50),
+      `dock tiles stay bounded after a stale frame timestamp: ${dockSizes.join(',')}`,
+    )
+    dockToolbar.dispatchEvent(new jsdomWindow.MouseEvent('pointerleave', { bubbles: true }))
+    drainDockFrames(12)
+    jsdomWindow.requestAnimationFrame = originalRequestAnimationFrame
+
+    // The background menu exposes an explicit performance-off action, and the
+    // blank mode unmounts every animated background implementation (#27).
+    const backgroundDockButton = view.querySelector('[data-dock-item][data-label="画布背景"] button')
+    assert.ok(backgroundDockButton !== null, 'canvas background dock action is rendered')
+    backgroundDockButton.click()
+    await waitForSelector(view, '[role="menu"]')
+    const backgroundMenu = view.querySelector('[role="menu"]')
+    const disableBackground = [...backgroundMenu.querySelectorAll('button')]
+      .find(button => button.textContent?.includes('关闭背景渲染'))
+    assert.ok(disableBackground !== undefined, 'background menu has an explicit off action (#27)')
+    disableBackground.click()
+    assert.ok(await waitUntil(() => view.querySelector('[data-mode="blank"]') !== null), 'animated background is disabled')
+    backgroundDockButton.click()
+    await waitForSelector(view, '[role="menu"]')
+    const restoredBackgroundMenu = view.querySelector('[role="menu"]')
+    const dotsBackground = [...restoredBackgroundMenu.querySelectorAll('button')]
+      .find(button => button.textContent?.trim() === '点阵')
+    assert.ok(dotsBackground !== undefined, 'background menu still exposes visual modes')
+    dotsBackground.click()
+    assert.ok(await waitUntil(() => view.querySelector('[data-mode="dots"]') !== null), 'visual background mode can be restored')
+
     const nodeTool = (nodeId, label) => view.querySelector(`[data-node-id="${nodeId}"] [title^="${label}"]`)
     assert.ok(nodeTool('node-image', '标注') !== null, '标注 button rendered')
     assert.ok(nodeTool('node-image', '移除背景') !== null, '移除背景 button rendered')

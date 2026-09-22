@@ -51,7 +51,7 @@ export class ImageGenerationRuntime {
     if (channel === undefined) {
       throw new ImageGenError('尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥', 'no-channels')
     }
-    const upstream: UpstreamConfig = { apiUrl: channel.apiUrl, apiKey: channel.apiKey }
+    const upstream: UpstreamConfig = { apiUrl: channel.apiUrl, apiKey: channel.apiKey, apiUrlFull: channel.apiUrlFull }
     const result = await generateImage(upstream, request, { signal })
     try {
       const history = await this.history.append({
