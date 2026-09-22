@@ -9,6 +9,60 @@ This file records release highlights of dsh-config-manager (bilingual: 中文 + 
 > **Release workflow**: on tag push, CI extracts the current version's section as the release notes highlights;
 > the build fails fast if the section is missing, so you cannot forget to update it.
 
+## [0.1.64] - 2026-09-23
+
+### 💥 破坏性变更：同步收敛为推送 / 拉取两条直连路径
+
+同步页从「一键同步 + 差异确认 + 自动同步 + 历史快照」收窄为推送与拉取，两者都是**直接覆盖**。
+
+**移除的子系统**（实现、测试与 UI 一并删除）：
+
+| 移除项 | 说明 |
+|---|---|
+| 一键同步确认会话 | `SyncConfirmView.tsx`、`SyncSessionStore`、`/sync/sync` / `/sync/apply-items` / `/sync/cancel` / `/sync/snapshots-list` 路由 |
+| 自动同步 | `src/sync/autosync-config.ts` + `autosync-scheduler.ts`（5m–24h 排期、失败计数、通道级状态） |
+| 同步历史 | `src/sync/sync-history.ts` 与历史条目读取路径 |
+| 推送预览 | `SyncPushPreview` / `previewPush()`（推送不再给只读预览） |
+
+**新行为**：
+
+- `SyncEngine.pullAndApply()`：下载远端最新快照 → 恒 `replace` 直接覆盖本地；应用前强制落回滚快照，
+  任一失败整体回滚（`restoreId` 非空即回滚入口）。
+- 推送同样直接覆盖远端（无预览、无确认）。
+- `config_sync_pull` 模型工具随之从「零写入差异预览」改为写本地。
+
+### 🔑 凭据随快照明文携带（跨机恢复的前提）
+
+此前同步快照声称含凭据、实际被 SecretScanner 剥成空值。本版把这条路打通：
+
+- `includeSecrets=true` 时 `CredentialsAdapter` 读 `.credentials.yaml` 的 `refs` 段，导出
+  `hasValue: true` + `value`；ref 集合 = settings 引用到的 ∪ 凭据文件登记的。
+- `credentialsStatus` 成为**唯一被豁免 `SecretScanner` 剥离的结构化分区**（`credentialsCarryValues`）。
+  这不是优化而是必需：扫描器按值形状（`sk-`/`ghp_`/JWT…）剥离，正好会抹掉要传的值。
+- `manifest.security.containsSecrets` 判据扩展为「文件类分区实扫命中 **或** 凭据分区 `hasValue=true`」
+  —— 自定密码等无强形状的值扫描器认不出，必须由分区形状如实标注。
+- 导入侧：快照自带明文 → 直接 `credentials.set()` 写回；`ensureMissingSecrets` 跳过 `hasValue=true`
+  的条目，不再要求用户为已携带的凭据补录。
+- **普通备份 ZIP 仍然不含任何凭据值**（`includeSecrets=false` 不读凭据文件）。
+
+### 🎨 UI
+
+去掉页签导航（只剩一个页面），同步页移除确认 / 自动同步 / 预览分支，配套删除相应 CSS 与中英文案。
+
+### 契约影响判定
+
+`src/sync/` 下的 `SyncPullReport` / `SyncPushPreview` / `previewPush` / `pull` / `listSnapshots` /
+`hasNewRemoteSnapshot` / `hasLocalChanges` 均**不在 `package.json#exports` 的任何入口**
+（`.` / `./core` / `./schema` / `./client` 都不可达），属包内实现细节；
+对外可见的是路由族与模型工具语义，已在上文写明。按 0.x 惯例升 patch 位。
+
+### Verification / 验证
+
+- `npm run typecheck`：**0 error**
+- `TMPDIR=/private/tmp/realhome/ npm test`：全绿
+- `node scripts/aggregate.mjs --check`：**check OK**
+
+
 ## [0.1.63] - 2026-09-21
 
 ### 🧹 死代码清理：收窄改造遗留的孤立注释与常量

@@ -27,7 +27,7 @@ importers:
         specifier: ^0.2.0
         version: link:../dsh-browser-agent
       '@logictan/dsh-config-manager':
-        specifier: ^0.1.63
+        specifier: ^0.1.64
         version: link:../dsh-config-manager
       '@logictan/dsh-easyrewrite':
         specifier: ^2.5.4
@@ -39,13 +39,13 @@ importers:
         specifier: ^1.5.13
         version: link:../dsh-imagegen
       '@logictan/dsh-loop-guard':
-        specifier: ^1.1.1
+        specifier: ^1.1.2
         version: link:../dsh-loop-guard
       '@logictan/dsh-openviking':
         specifier: ^0.4.5
         version: link:../dsh-openviking
       '@logictan/dsh-workbuddy-connect':
-        specifier: ^0.5.4
+        specifier: ^0.5.5
         version: link:../dsh-workbuddy-connect
 
   packages/dsh-agy-link:
