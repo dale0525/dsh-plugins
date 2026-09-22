@@ -53,6 +53,15 @@ jobs:
           - id: agy-link
             pkg: '@logictan/dsh-agy-link'
             test: 'pnpm --filter @logictan/dsh-agy-link test'
+          # OpenViking 是 monorepo：两个 fork 各有自己的 policy，故各占一行。
+          # 插件行跑包测试（它会先经 prepare 钩子跑生成器，再跑自己的测试）。
+          - id: openviking
+            pkg: '@logictan/dsh-openviking'
+            test: 'pnpm --filter @logictan/dsh-openviking test'
+          - id: openviking-shared
+            # 无 pkg：该目录不是 npm 包（没有 package.json），只是生成器的源载体，
+            # 所以 pnpm --filter 够不到它，测试要直接点名。
+            test: 'node --test packages/dsh-openviking-shared/*.test.mjs'
     # 按目标区分并发组：不同目标互不阻塞，同一目标不会并发两次
     concurrency:
       group: sync-upstream-${{ matrix.id }}

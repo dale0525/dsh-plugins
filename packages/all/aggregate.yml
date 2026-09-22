@@ -11,6 +11,7 @@ patchFrom:
   - ../ctx-mem
   - ../dsh-agy-link
   - ../dsh-browser-agent
+  - ../dsh-openviking
 deps:
   - ../dsh-config-manager
   - ../dsh-workbuddy-connect
@@ -28,3 +29,4 @@ deps:
   - ../ctx-mem
   - ../dsh-agy-link
   - ../dsh-browser-agent
+  - ../dsh-openviking
