@@ -278,10 +278,17 @@ export function discoverTargets(root = REPO_ROOT) {
     if (t.prefix !== 'packages/' + entry.name) {
       fail(1, policyPath + ': target.prefix must be ' + 'packages/' + entry.name + ' (got ' + t.prefix + ')')
     }
+    // 上游是 monorepo 时子包所在的子目录（如 examples/dsh-memory-plugin）。缺省 = 上游树根
+    // 就是子包本身，走原路径。类型错必须当场报：写成非字符串会静默退化成「按整棵上游树算
+    // 清单」，产出一个几千条的 deleted 与错配的 owned（见 computeLists 的 scoped 说明）。
+    if (t.subdir !== undefined && (typeof t.subdir !== 'string' || t.subdir.trim() === '')) {
+      fail(1, policyPath + ': target.subdir 若存在必须是非空字符串')
+    }
     targets.push({
       id: t.id,
       url: t.url,
       prefix: t.prefix,
+      subdir: t.subdir,
       baseline: t.baseline,
       baselineCommit: t.baselineCommit,
       owned: Array.isArray(policy.owned) ? policy.owned : [],
@@ -368,11 +375,40 @@ function versionConstantFiles(target, listFork) {
  * （第 2 步 --theirs 把上游全部取回，第 4 步按 deleted 重删 —— 名单漏了就不删）。
  * 因此凡是改动过 fork 文件集的提交，都应重跑本函数。
  */
+/** 上游树中「本子包」那棵子树的 spec（`<commit>` 或 `<commit>:<subdir>`）。 */
+function upstreamTreeSpec(target, commit) {
+  return target.subdir === undefined ? commit : commit + ':' + target.subdir
+}
+
+/**
+ * 上游树里某个**包相对路径**的 spec（`git show` 用）。
+ *
+ * 与 upstreamTreeSpec 分开：后者是「一棵树」，本函数是「树里的一个文件」。
+ *
+ * 不能写成 `upstreamTreeSpec(target, commit) + ':' + relPath`：subdir 目标会拼出
+ * `<commit>:<subdir>:<relPath>`，而 git **不解析路径段里的第二个冒号**（实测 2.50.1：
+ * `fatal: path 'examples/dsh-memory-plugin:package.json' does not exist`）。
+ * 调用方 readUpstreamPkg catch 成 `{}`，于是上游新增依赖的预检对 subdir 目标**静默失效** ——
+ * 退出码 0、源码同步成上游版本而依赖缺失，症状要到构建/运行期才炸。
+ * 两个 OpenViking fork 都是 subdir 目标，故这条路径正是它们唯一的依赖防线。
+ */
+function upstreamFileSpec(target, commit, relPath) {
+  return commit + ':' + (target.subdir === undefined ? '' : target.subdir + '/') + relPath
+}
+
 export function computeLists(target, baselineCommit) {
   // 批量取哈希（各一次 git 调用）：5 个包 × 数百个文件时，逐文件 spawn 会跑到分钟级。
   // 用 -z 分隔，避免文件名里的特殊字符被 git 转义成带引号的形式。
   const splitZ = (out) => out.split('\0').filter((s) => s !== '')
-  const upstreamRows = splitZ(git(['ls-tree', '-r', '-z', baselineCommit])).map((row) => {
+  // 上游是 monorepo 时只取 subdir 子树 —— 否则上游整棵树（OpenViking 有几千个文件）
+  // 都会被算成「我方删除」，清单当场失真。
+  //
+  // 用 `<commit>:<subdir>` 而不是 `-r <commit> -- <subdir>`：后者要扫整棵树再过滤。
+  // 两者**返回的路径形态不同**（实测）：`<commit>:<subdir>` → `a.txt`（相对该子树），
+  // `-r <commit> -- <subdir>` → `<subdir>/a.txt`（相对仓库根）。
+  // 这里取的是前者，所以**不做**二次剥前缀 —— 剥了会把 `a.txt` 截成空串，每个文件都对不上；
+  // 反过来若照后者的形态做剥前缀，清单会整体错位。
+  const upstreamRows = splitZ(git(['ls-tree', '-r', '-z', upstreamTreeSpec(target, baselineCommit)])).map((row) => {
     const tab = row.indexOf('\t')
     return { hash: row.slice(0, tab).split(/\s+/)[2], path: row.slice(tab + 1) }
   })
@@ -445,8 +481,75 @@ function refreshPolicy(target, baselineCommit) {
 
 /* ------------------------------------------------------------ 单个目标 */
 
+/**
+ * 把上游 monorepo 的某个子目录拆成一个独立分支，供 `subtree pull` 使用。
+ *
+ * ## 为什么不能直接 `subtree pull <上游 url> <tag>`
+ *
+ * 实测（计划 §1.7）：对插件目录直接 pull 上游 v0.4.21 灌入 **4269 个文件、1,191,186 行**，
+ * 子包目录被替换成整棵上游仓库根。subtree 的 `--prefix` 只决定「合进哪里」，上游侧永远
+ * 按**整棵树**参与三方合并。
+ *
+ * ## 为什么 split 必须在临时 worktree 里跑
+ *
+ * `git subtree split` 先要求 `--prefix` **在当前工作区存在**（实测在只 fetch 了对象的仓库里
+ * 跑 → `fatal: 'examples/dsh-memory-plugin' does not exist; use 'git subtree add'`）。主仓库的
+ * `packages/dsh-openviking` 只有子目录内容、没有 `examples/` 这一层，所以必须把上游树检出到
+ * 一个 worktree 里再拆。
+ *
+ * worktree 与主仓库共享对象库与 `refs/heads` ⇒ split 出来的分支主仓库直接可见，
+ * `subtree pull . <branch>` 无需再 fetch。代价是 split 的历史会写进主仓库对象库（实测该上游约
+ * 100MB），这与本脚本对既有 fork 的做法一致 —— `subtree pull` 本来就会把上游历史拉进来。
+ *
+ * @returns { dir, branch } —— 调用方负责在 finally 里 removeSplitBranch
+ */
+function splitSubdirBranch(target, upstreamCommit) {
+  const dir = mkdtempSync(join(tmpdir(), 'sync-upstream-wt-'))
+  const branch = 'sync-upstream-split/' + target.id + '-' + Date.now()
+  // 失败也要把 worktree 收掉：留着的 detached worktree 会让下一次 `git worktree add`
+  // 在同一路径上撞车，也会让 `git status` 多出一堆噪声。
+  const bail = (err) => {
+    rmSync(dir, { recursive: true, force: true })
+    try {
+      git(['worktree', 'prune'])
+    } catch {
+      // prune 失败不影响判定：worktree 目录已删，剩下的只是 .git/worktrees 里的一条元数据。
+    }
+    gitFailure(
+      err,
+      '无法把 ' + target.subdir + ' 拆成独立分支 —— 上游结构可能已变（见 sync-policy.json 的 target.subdir）。',
+    )
+  }
+  try {
+    git(['worktree', 'add', '-q', '--detach', dir, upstreamCommit], { stdio: 'inherit' })
+  } catch (err) {
+    bail(err)
+  }
+  try {
+    // -q：split 默认在 stderr 上打每个提交一行进度（该上游 2400+ 行），CI 日志里全是噪声。
+    git(['-C', dir, 'subtree', 'split', '-q', '--prefix=' + target.subdir, upstreamCommit, '-b', branch], {
+      stdio: 'inherit',
+    })
+  } catch (err) {
+    bail(err)
+  }
+  return { dir, branch }
+}
+
+/** 收掉 splitSubdirBranch 造出的 worktree 与分支（幂等，失败不掩盖真正的错误）。 */
+function removeSplitBranch(split) {
+  try {
+    git(['worktree', 'remove', '--force', split.dir])
+  } catch {
+    rmSync(split.dir, { recursive: true, force: true })
+    git(['worktree', 'prune'])
+  }
+  git(['branch', '-D', split.branch])
+}
+
 function printPlan(target, targetRef, refSource) {
   log('[sync-upstream] prefix   : ' + target.prefix)
+  log('[sync-upstream] subdir   : ' + (target.subdir ?? '(上游树根)'))
   log('[sync-upstream] upstream : ' + target.url)
   log('[sync-upstream] baseline : ' + target.baseline + ' (' + target.baselineCommit.slice(0, 12) + ')')
   log('[sync-upstream] owned    : ' + target.owned.length + ' file(s)')
@@ -465,7 +568,16 @@ function dryRunOne(target, ref) {
   log('  1. 检查 added 冲突 / 上游新增依赖（检出即退出码 2）')
   log('     ↑ 第 0/1 步**在 dry-run 下不执行**（需要访问上游）；真实执行时才会跑。')
   log('       所以 dry-run 不能预演 exit-2 的条件，只预演 policy 应用本身。')
-  log('  2. git subtree pull --prefix=' + target.prefix + ' ' + target.url + ' ' + targetRef)
+  if (target.subdir === undefined) {
+    log('  2. git subtree pull --prefix=' + target.prefix + ' ' + target.url + ' ' + targetRef)
+  } else {
+    // 上游是 monorepo：不能直接 pull 上游 ref（实测会把整棵上游树灌进子包目录，
+    // 4269 文件 / 119 万行）。先在本仓库的临时 worktree 里把 subdir 拆成独立分支，
+    // 再 pull 那个分支（见 splitSubdirBranch）。
+    log('  2. git worktree add --detach <tmp> ' + targetRef + '   # 上游树')
+    log('     git -C <tmp> subtree split --prefix=' + target.subdir + ' <commit> -b <split>')
+    log('     git subtree pull --prefix=' + target.prefix + ' . <split>')
+  }
   log('  3. git checkout --theirs -- ' + target.prefix + '   # 只对未合并条目生效，干净合并的路径无需处理')
   log('  4. git checkout <pull 前的 HEAD> -- <' + target.owned.length + ' owned 文件>   # 非 --ours，见文件头')
   log('  5. git rm -f --ignore-unmatch <' + target.deleted.length + ' deleted 文件>')
@@ -634,7 +746,12 @@ function syncOne(target, ref) {  log('')
     // 先取上游树：下面两项检查必须在**动分支之前**做，失败即零副作用退出。
     git(['fetch', target.url, targetRef], { stdio: 'inherit' })
     upstreamCommit = git(['rev-parse', 'FETCH_HEAD^{commit}']).trim()
-    upstreamPaths = git(['ls-tree', '-r', '--name-only', upstreamCommit]).trim().split('\n').filter(Boolean)
+    // 上游是 monorepo 时只取 subdir 子树，并相对化：added 冲突检测与依赖检查比对的都是
+    // **包相对**路径 / 包自己的 package.json，拿上游整棵树比会同时误报与漏报。
+    upstreamPaths = git(['ls-tree', '-r', '--name-only', upstreamTreeSpec(target, upstreamCommit)])
+      .trim()
+      .split('\n')
+      .filter(Boolean)
   } catch (err) {
     gitFailure(err, '预检失败：尚未创建分支、未改动工作区。')
   }
@@ -655,7 +772,7 @@ function syncOne(target, ref) {  log('')
   // §10.2：package.json 在 owned 里，上游新增依赖不会被我方带入。
   const readUpstreamPkg = (commit) => {
     try {
-      return JSON.parse(git(['show', commit + ':package.json']))
+      return JSON.parse(git(['show', upstreamFileSpec(target, commit, 'package.json')]))
     } catch {
       return {}
     }
@@ -691,7 +808,18 @@ function syncOne(target, ref) {  log('')
 
   // 被忽略的 deleted 路径要在 pull **之前**快照：merge 一落地，磁盘与 HEAD 都已是上游版本。
   const ignoredSnapshot = snapshotIgnoredDeleted(target)
+  // 上游是 monorepo 时的拆分工作区（见 splitSubdirBranch）。非 subdir 目标恒为 null，
+  // 走原来「直接 pull 上游 url + ref」的路径。
+  let split = null
   try {
+    let pullRepo = target.url
+    let pullRef = targetRef
+    if (target.subdir !== undefined) {
+      log('[sync-upstream] 0/4 拆分上游 ' + target.subdir + ' 为独立分支 ...')
+      split = splitSubdirBranch(target, upstreamCommit)
+      pullRepo = '.'
+      pullRef = split.branch
+    }
     log('[sync-upstream] 1/4 subtree pull ...')
     // 无冲突也**必须**继续走 2/3/4：git 的自动合并不会重删我们删过的文件，
     // 也不会恢复被上游覆盖的我方改造。提前 return 会让 policy 整段失效。
@@ -708,7 +836,7 @@ function syncOne(target, ref) {  log('')
     // `ls-files -u` 为空）。用「索引里有没有未合并条目」而不是「MERGE_HEAD 在不在」更贴近
     // 本脚本真正依赖的性质，故两者取或。
     try {
-      git(['subtree', 'pull', '--prefix=' + target.prefix, target.url, targetRef], { stdio: 'inherit' })
+      git(['subtree', 'pull', '--prefix=' + target.prefix, pullRepo, pullRef], { stdio: 'inherit' })
       log('[sync-upstream] subtree pull 无冲突完成（仍需应用 policy：重删 + 恢复我方改造）')
     } catch (err) {
       if (!isMergeInProgress()) {
@@ -786,6 +914,7 @@ function syncOne(target, ref) {  log('')
     gitFailure(err, '当前在分支 ' + branch + '；处理完冲突后手动 commit，或 git checkout - 放弃。')
   } finally {
     rmSync(ignoredSnapshot.dir, { recursive: true, force: true })
+    if (split !== null) removeSplitBranch(split)
   }
 }
 
@@ -884,7 +1013,7 @@ export function runCli(argv) {
     log('[sync-upstream] ' + all.length + ' target(s)：')
     for (const t of all) {
       log(
-        '  ' + t.id.padEnd(16) + t.prefix.padEnd(32) + t.baseline.padEnd(10) +
+        '  ' + t.id.padEnd(18) + t.prefix.padEnd(32) + t.baseline.padEnd(10) +
           'owned=' + t.owned.length + ' deleted=' + t.deleted.length + ' added=' + t.added.length +
           '  ' + t.url,
       )

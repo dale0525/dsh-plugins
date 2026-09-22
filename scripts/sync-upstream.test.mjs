@@ -926,3 +926,428 @@ test('restoreOwned：被 git 干净合并的 owned 文件也必须还原成我�
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+/**
+ * 上游是 **monorepo** 时的完整契约：`target.subdir` 决定同步的范围与清单。
+ *
+ * 两条断言各自钉一个**静默故障**（都实测过）：
+ *  1. 直接把上游 url+tag 丢给 `subtree pull` → 整棵上游树灌进子包目录（实测 4269 文件 /
+ *     119 万行插入），子包被替换成上游仓库根结构；
+ *  2. `computeLists` 不按 subdir 收敛 → 上游几千个无关文件全被算成「我方删除」，清单失真。
+ *
+ * 依赖预检在 subdir 目标上的契约由「subdir：上游子目录里新增的依赖被预检拦下」单独覆盖 ——
+ * 本测试的上游 package.json 没有 `dependencies`，预检在这里触发不了，顺带断言会变成空转。
+ *
+ * 用真实仓库对（上游 monorepo + fork）复刻，而不是引用真实上游 commit：真实对象不在 main 的
+ * 历史里，浅克隆（CI）取不到。
+ */
+test('subdir：上游 monorepo 只同步子目录，且清单按子目录收敛', () => {
+  const upstream = mkdtempSync(join(tmpdir(), 'subdir-up-'))
+  const fork = mkdtempSync(join(tmpdir(), 'subdir-fork-'))
+  const g = (cwd) => (...args) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' })
+  const up = g(upstream)
+  const fk = g(fork)
+  const write = (cwd, rel, content) => {
+    mkdirSync(join(cwd, dirname(rel)), { recursive: true })
+    writeFileSync(join(cwd, rel), content)
+  }
+  try {
+    // ---------- 上游 monorepo：两个子目录 + 一个根文件 ----------
+    up('init', '-q', '-b', 'main')
+    up('config', 'user.email', 'up@example.com')
+    up('config', 'user.name', 'Up')
+    write(upstream, 'examples/pkg/a.txt', 'pkg-a-v1\n')
+    write(upstream, 'examples/pkg/package.json', '{"name":"pkg","version":"1.0.0"}\n')
+    write(upstream, 'examples/other/o.txt', 'other-v1\n')
+    write(upstream, 'package.json', '{"name":"monorepo","version":"1.0.0"}\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v1')
+    up('tag', 'v1.0.0')
+    const v1 = up('rev-parse', 'HEAD').trim()
+
+    write(upstream, 'examples/pkg/a.txt', 'pkg-a-v2\n')
+    write(upstream, 'examples/pkg/new.txt', 'pkg-new\n')
+    write(upstream, 'examples/other/o.txt', 'other-v2\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v2')
+    up('tag', 'v1.1.0')
+
+    // ---------- fork：按 AGENTS.md 的收养配方（worktree + subtree split）建子树祖先 ----------
+    fk('init', '-q', '-b', 'main')
+    fk('config', 'user.email', 'fk@example.com')
+    fk('config', 'user.name', 'Fk')
+    mkdirSync(join(fork, 'scripts'), { recursive: true })
+    copyFileSync(join(REPO_ROOT, 'scripts/sync-upstream.mjs'), join(fork, 'scripts/sync-upstream.mjs'))
+    write(fork, 'README.md', 'fork root\n')
+    write(fork, 'packages/foo/a.txt', 'OURS-a\n')
+    write(fork, 'packages/foo/ours.txt', 'OURS-only\n')
+    write(fork, 'packages/foo/package.json', '{"name":"@ours/foo","version":"9.9.9"}\n')
+    write(
+      fork,
+      'packages/foo/sync-policy.json',
+      JSON.stringify(
+        {
+          target: {
+            id: 'foo',
+            url: 'file://' + upstream,
+            prefix: 'packages/foo',
+            subdir: 'examples/pkg',
+            baseline: 'v1.0.0',
+            baselineCommit: v1,
+          },
+          owned: ['a.txt', 'package.json'],
+          deleted: [],
+          added: ['ours.txt'],
+        },
+        null,
+        2,
+      ) + '\n',
+    )
+    fk('add', '-A')
+    fk('commit', '-q', '-m', 'ours')
+    const preAdopt = fk('rev-parse', 'HEAD').trim()
+
+    // 收养：按 AGENTS.md 的配方 —— 先把 plain-import 目录整个挪开（`subtree add` 拒绝已存在的
+    // prefix），再 `subtree add`，最后把我方内容整份恢复回来。
+    fk('rm', '-r', '--quiet', '--cached', '--', 'packages/foo')
+    rmSync(join(fork, 'packages/foo'), { recursive: true, force: true })
+    fk('commit', '-q', '-m', 'stage away plain import')
+
+    fk('fetch', '-q', 'file://' + upstream, 'refs/tags/v1.0.0')
+    const wt = mkdtempSync(join(tmpdir(), 'subdir-wt-'))
+    fk('worktree', 'add', '-q', '--detach', wt, v1)
+    execFileSync('git', ['-C', wt, 'subtree', 'split', '-q', '--prefix=examples/pkg', v1, '-b', 'split/pkg'], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+    })
+    fk('worktree', 'remove', '--force', wt)
+    fk('subtree', 'add', '--prefix=packages/foo', 'split/pkg')
+    fk('checkout', preAdopt, '--', 'packages/foo')
+    fk('add', '-A')
+    fk('commit', '-q', '-m', 'restore ours')
+    fk('branch', '-D', 'split/pkg')
+
+    // 前置条件：收养后包内**只有**子目录内容，上游的 examples/other 与根文件都不在。
+    const adopted = fk('ls-files', 'packages/foo').trim().split('\n')
+    assert.ok(adopted.includes('packages/foo/a.txt'), '前置条件：子目录内容应已收养')
+    assert.ok(
+      !adopted.some((f) => f.startsWith('packages/foo/examples/')),
+      '前置条件：上游树结构不得被灌进子包目录（实测反例：整棵上游树 4269 文件）',
+    )
+
+    // ---------- 同步到 v1.1.0 ----------
+    let r
+    try {
+      const stdout = execFileSync(
+        process.execPath,
+        ['scripts/sync-upstream.mjs', '--target', 'foo', '--ref', 'v1.1.0'],
+        { cwd: fork, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      )
+      r = { status: 0, stdout, stderr: '' }
+    } catch (err) {
+      r = { status: err.status, stdout: String(err.stdout ?? ''), stderr: String(err.stderr ?? '') }
+    }
+    assert.equal(r.status, 0, '同步应成功（实际 stderr: ' + r.stderr.slice(-400) + '）')
+
+    // 1) 上游在子目录里的改动进来了，我方独有文件与 owned 保持我方版本
+    assert.equal(fk('show', 'HEAD:packages/foo/a.txt').trim(), 'OURS-a', 'owned 必须逐字节还原成我方版本')
+    assert.equal(fk('show', 'HEAD:packages/foo/ours.txt').trim(), 'OURS-only', '我方独有文件必须存活')
+    assert.equal(fk('show', 'HEAD:packages/foo/new.txt').trim(), 'pkg-new', '上游子目录里新增的文件必须同步进来')
+    assert.equal(
+      fk('show', 'HEAD:packages/foo/package.json').trim(),
+      '{"name":"@ours/foo","version":"9.9.9"}',
+      'owned 里的 package.json 不得被上游覆盖',
+    )
+
+    // 2) 上游子目录**之外**的改动一个都不许进来
+    const after = fk('ls-files', 'packages/foo').trim().split('\n')
+    assert.ok(
+      !after.some((f) => f.startsWith('packages/foo/examples/')),
+      '上游树结构不得被灌进子包目录：' + after.join(', '),
+    )
+    assert.ok(!after.includes('packages/foo/package-lock.json'), '上游根文件不得进来')
+    // 前置条件：上游确实改了子目录之外的文件 —— 否则上面两条断言证明不了「没带进来」。
+    // 查上游仓库而不是 fork：fork 里本来就没有这一层（正是本测试要保住的性质）。
+    assert.equal(
+      up('show', 'v1.1.0:examples/other/o.txt').trim(),
+      'other-v2',
+      '前置条件：上游确实改了子目录之外的文件',
+    )
+
+    // 3) 清单按子目录收敛：上游子目录里的文件是 2 个，不是上游整棵树的文件数
+    const policy = JSON.parse(readFileSync(join(fork, 'packages/foo/sync-policy.json'), 'utf8'))
+    assert.deepEqual(policy.deleted, [], '子目录内没有我方删除的文件 → deleted 必须为空')
+    assert.deepEqual(policy.owned, ['a.txt', 'package.json'], 'owned 必须逐条对应子目录内的文件')
+    assert.equal(policy.target.baseline, 'v1.1.0', 'baseline 必须推进到本次同步的上游 tag')
+    assert.equal(policy.target.subdir, 'examples/pkg', '--refresh-policy 重写 policy 时必须保留 target.subdir')
+  } finally {
+    rmSync(upstream, { recursive: true, force: true })
+    rmSync(fork, { recursive: true, force: true })
+  }
+})
+
+/**
+ * `subdir` 写错必须当场报错，不得静默退化成「按整棵上游树算清单」。
+ *
+ * 空串是**唯一会静默**的形态：拼出的 spec 是 `<commit>:`，git 视其为合法（整棵上游树），
+ * 清单会变成几千条 deleted（实测真实上游 4263 文件 vs 子目录 29 文件）。
+ * 数字/空白串由 git 自己响亮拦下，但仍应在这里就 fail(1) —— 报错要指向 policy 而不是
+ * 一条 git 内部信息。
+ */
+test('subdir：空串与非字符串的 target.subdir → 退出码 1', () => {
+  for (const bad of ['', '   ', 7]) {
+    const dir = mkdtempSync(join(tmpdir(), 'subdir-bad-'))
+    try {
+      mkdirSync(join(dir, 'packages/foo'), { recursive: true })
+      writeFileSync(
+        join(dir, 'packages/foo/sync-policy.json'),
+        JSON.stringify(
+          {
+            target: {
+              id: 'foo',
+              url: 'https://example.invalid/x',
+              prefix: 'packages/foo',
+              subdir: bad,
+              baseline: 'v1',
+              baselineCommit: 'deadbeef',
+            },
+            owned: [],
+            deleted: [],
+            added: [],
+          },
+          null,
+          2,
+        ),
+      )
+      assert.throws(
+        () => discoverTargets(dir),
+        (err) => err.code === 1 && /target\.subdir/.test(err.message),
+        'subdir ' + JSON.stringify(bad) + ' 必须 fail(1) 并点名该键',
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
+
+/**
+ * 非 subdir 目标（上游树根**就是**子包）的依赖预检必须照常生效。
+ *
+ * 上游 package.json 的 spec 由 `upstreamFileSpec` 拼装，它必须随目标形态变化：
+ * subdir 目标取 `<commit>:<subdir>/package.json`，非 subdir 目标取 `<commit>:package.json`。
+ * 拼错任一侧，调用方 `readUpstreamPkg` 都会 `catch` 成 `{}`，于是上游新增依赖的预检
+ * **静默失效**：退出码 0、policy 照写，源码同步成上游版本而依赖缺失，症状要等到构建/运行期才炸。
+ *
+ * 这条测试覆盖非 subdir 一侧；subdir 一侧由「subdir：上游 monorepo 只同步子目录」里的
+ * 依赖预检断言覆盖（两边都会真的触发预检，不是顺带覆盖）。
+ */
+test('非 subdir 目标：上游新增依赖仍然被预检拦下（退出码 2）', () => {
+  const upstream = mkdtempSync(join(tmpdir(), 'nodep-up-'))
+  const fork = mkdtempSync(join(tmpdir(), 'nodep-fork-'))
+  const g = (cwd) => (...args) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' })
+  const up = g(upstream)
+  const fk = g(fork)
+  const write = (cwd, rel, content) => {
+    mkdirSync(join(cwd, dirname(rel)), { recursive: true })
+    writeFileSync(join(cwd, rel), content)
+  }
+  try {
+    // ---------- 上游：v1.0.0 只有 alpha，v1.1.0 新增 beta ----------
+    up('init', '-q', '-b', 'main')
+    up('config', 'user.email', 'up@example.com')
+    up('config', 'user.name', 'Up')
+    write(upstream, 'package.json', '{"name":"up","version":"1.0.0","dependencies":{"alpha":"^1.0.0"}}\n')
+    write(upstream, 'index.js', 'v1\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v1')
+    up('tag', 'v1.0.0')
+
+    write(upstream, 'package.json', '{"name":"up","version":"1.1.0","dependencies":{"alpha":"^1.0.0","beta":"^2.0.0"}}\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v2')
+    up('tag', 'v1.1.0')
+
+    // ---------- fork：非 subdir 目标，上游树根即子包，直接 subtree add ----------
+    fk('init', '-q', '-b', 'main')
+    fk('config', 'user.email', 'fk@example.com')
+    fk('config', 'user.name', 'Fk')
+    mkdirSync(join(fork, 'scripts'), { recursive: true })
+    copyFileSync(join(REPO_ROOT, 'scripts/sync-upstream.mjs'), join(fork, 'scripts/sync-upstream.mjs'))
+    write(fork, 'README.md', 'fork root\n')
+    fk('add', '-A')
+    fk('commit', '-q', '-m', 'init')
+
+    fk('subtree', 'add', '--prefix=packages/foo', 'file://' + upstream, 'v1.0.0')
+
+    // 我方改造：package.json 在 owned 里（要改 name），且**不含** beta ——
+    // 上游新增的 beta 不会被同步带进来，预检必须拦下。
+    write(
+      fork,
+      'packages/foo/package.json',
+      '{"name":"@ours/foo","version":"9.9.9","dependencies":{"alpha":"^1.0.0"}}\n',
+    )
+    write(
+      fork,
+      'packages/foo/sync-policy.json',
+      JSON.stringify(
+        {
+          target: {
+            id: 'foo',
+            url: 'file://' + upstream,
+            prefix: 'packages/foo',
+            baseline: 'v1.0.0',
+            baselineCommit: up('rev-parse', 'v1.0.0').trim(),
+          },
+          owned: ['package.json'],
+          deleted: [],
+          added: [],
+        },
+        null,
+        2,
+      ) + '\n',
+    )
+    fk('add', '-A')
+    fk('commit', '-q', '-m', 'ours')
+
+    // ---------- 同步到 v1.1.0：必须被依赖预检拦下 ----------
+    let r
+    try {
+      const stdout = execFileSync(
+        process.execPath,
+        ['scripts/sync-upstream.mjs', '--target', 'foo', '--ref', 'v1.1.0'],
+        { cwd: fork, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      )
+      r = { status: 0, stdout, stderr: '' }
+    } catch (err) {
+      r = { status: err.status, stdout: String(err.stdout ?? ''), stderr: String(err.stderr ?? '') }
+    }
+    assert.equal(
+      r.status,
+      2,
+      '上游新增依赖必须 fail(2)（预检静默失效时这里会是 0）；实际 stderr: ' + r.stderr.slice(-500),
+    )
+    assert.match(r.stderr, /beta/, '报错必须点名缺的那个依赖（beta）')
+  } finally {
+    rmSync(upstream, { recursive: true, force: true })
+    rmSync(fork, { recursive: true, force: true })
+  }
+})
+
+
+/**
+ * subdir 目标的依赖预检必须照常生效 —— 这是 `upstreamFileSpec` 拼错 spec 的唯一防线。
+ *
+ * 上游是 monorepo 时，子包的 package.json 在 `<subdir>/package.json`。若按
+ * `<commit>:<subdir>:package.json` 拼（路径段里出现第二个冒号），git 不解析该形态，
+ * 报 `fatal: path ... does not exist`，调用方 `catch` 成 `{}` → 预检**静默失效**：
+ * 退出码 0、上游新增依赖既没带入也没报，症状要等到构建/运行期才炸。
+ *
+ * 两个 OpenViking fork 都是 subdir 目标，所以这条契约对本次交付的两个包就是全部防线。
+ * 上一条非 subdir 测试用的是上游树根形态，**发现不了**本故障。
+ */
+test('subdir：上游子目录里新增的依赖被预检拦下（退出码 2）', () => {
+  const upstream = mkdtempSync(join(tmpdir(), 'subdep-up-'))
+  const fork = mkdtempSync(join(tmpdir(), 'subdep-fork-'))
+  const g = (cwd) => (...args) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' })
+  const up = g(upstream)
+  const fk = g(fork)
+  const write = (cwd, rel, content) => {
+    mkdirSync(join(cwd, dirname(rel)), { recursive: true })
+    writeFileSync(join(cwd, rel), content)
+  }
+  try {
+    // ---------- 上游 monorepo：子包的 v1.0.0 只有 alpha，v1.1.0 新增 beta ----------
+    up('init', '-q', '-b', 'main')
+    up('config', 'user.email', 'up@example.com')
+    up('config', 'user.name', 'Up')
+    write(upstream, 'examples/pkg/package.json', '{"name":"pkg","version":"1.0.0","dependencies":{"alpha":"^1.0.0"}}\n')
+    write(upstream, 'examples/pkg/a.txt', 'v1\n')
+    write(upstream, 'package.json', '{"name":"monorepo","version":"1.0.0"}\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v1')
+    up('tag', 'v1.0.0')
+    const v1 = up('rev-parse', 'HEAD').trim()
+
+    write(upstream, 'examples/pkg/package.json', '{"name":"pkg","version":"1.1.0","dependencies":{"alpha":"^1.0.0","beta":"^2.0.0"}}\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v2')
+    up('tag', 'v1.1.0')
+
+    // ---------- fork：subdir 目标，按收养配方建子树祖先 ----------
+    fk('init', '-q', '-b', 'main')
+    fk('config', 'user.email', 'fk@example.com')
+    fk('config', 'user.name', 'Fk')
+    mkdirSync(join(fork, 'scripts'), { recursive: true })
+    copyFileSync(join(REPO_ROOT, 'scripts/sync-upstream.mjs'), join(fork, 'scripts/sync-upstream.mjs'))
+    write(fork, 'README.md', 'fork root\n')
+    write(fork, 'packages/foo/package.json', '{"name":"@ours/foo","version":"9.9.9","dependencies":{"alpha":"^1.0.0"}}\n')
+    write(
+      fork,
+      'packages/foo/sync-policy.json',
+      JSON.stringify(
+        {
+          target: {
+            id: 'foo',
+            url: 'file://' + upstream,
+            prefix: 'packages/foo',
+            subdir: 'examples/pkg',
+            baseline: 'v1.0.0',
+            baselineCommit: v1,
+          },
+          owned: ['package.json'],
+          deleted: [],
+          added: [],
+        },
+        null,
+        2,
+      ) + '\n',
+    )
+    fk('add', '-A')
+    fk('commit', '-q', '-m', 'ours')
+    const preAdopt = fk('rev-parse', 'HEAD').trim()
+
+    fk('rm', '-r', '--quiet', '--cached', '--', 'packages/foo')
+    rmSync(join(fork, 'packages/foo'), { recursive: true, force: true })
+    fk('commit', '-q', '-m', 'stage away plain import')
+    fk('fetch', '-q', 'file://' + upstream, 'refs/tags/v1.0.0')
+    const wt = mkdtempSync(join(tmpdir(), 'subdep-wt-'))
+    fk('worktree', 'add', '-q', '--detach', wt, v1)
+    execFileSync('git', ['-C', wt, 'subtree', 'split', '-q', '--prefix=examples/pkg', v1, '-b', 'split/pkg'], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+    })
+    fk('worktree', 'remove', '--force', wt)
+    fk('subtree', 'add', '--prefix=packages/foo', 'split/pkg')
+    fk('checkout', preAdopt, '--', 'packages/foo')
+    fk('add', '-A')
+    fk('commit', '-q', '-m', 'restore ours')
+    fk('branch', '-D', 'split/pkg')
+
+    // ---------- 同步到 v1.1.0：上游在子目录里新增了 beta，必须被预检拦下 ----------
+    let r
+    try {
+      const stdout = execFileSync(
+        process.execPath,
+        ['scripts/sync-upstream.mjs', '--target', 'foo', '--ref', 'v1.1.0'],
+        { cwd: fork, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      )
+      r = { status: 0, stdout, stderr: '' }
+    } catch (err) {
+      r = { status: err.status, stdout: String(err.stdout ?? ''), stderr: String(err.stderr ?? '') }
+    }
+    assert.equal(
+      r.status,
+      2,
+      'subdir 目标的上游新增依赖必须 fail(2)（spec 拼错时预检静默失效，这里会是 0）；实际 stderr: ' +
+        r.stderr.slice(-500),
+    )
+    assert.match(r.stderr, /beta/, '报错必须点名缺的那个依赖（beta）')
+  } finally {
+    rmSync(upstream, { recursive: true, force: true })
+    rmSync(fork, { recursive: true, force: true })
+  }
+})
