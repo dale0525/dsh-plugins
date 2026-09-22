@@ -1,9 +1,12 @@
 # The dsh-loop-guard bundle patch: the guard needs no deployment-specific
 # config to mount (its defaults detect reasoning-only steps and steer on the
-# second strike). Every key below is also editable from the Plugins page — the
-# guard registers the `loop-guard` settings namespace, and that user layer is
-# layered over this composition layer. Use this file for values that must be
-# baked into the deployment; use the Plugins page for the rest.
+# second strike). Every key below is also editable from the Plugins page — as of
+# the 0.1.7-alpha.1 settings redesign the guard's own `Config` schema is the one
+# configuration surface, and `dsh-settings` derives that page's form from it,
+# keyed by this row's id. There is no separate settings namespace and no
+# precedence rule between layers: the row's `config` IS the entry's config, and
+# the page edits that same entry. Use this file for values that must be baked
+# into the deployment; use the Plugins page for the rest.
 #
 #   - insert:
 #       - id: loop-guard

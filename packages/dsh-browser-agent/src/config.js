@@ -1,11 +1,24 @@
 /**
  * Configuration surface of the browser agent.
  *
- * The settings namespace is the one contract three surfaces share: the host
- * half reads it when a run starts, the Plugins-page card edits it, and the
- * client half's field list mirrors it. The card ships as plain browser code and
- * cannot import this module, so the two field lists are kept in step by hand —
- * changing a key here means changing `src/client.js` too.
+ * As of the 0.1.7-alpha.1 settings redesign this schema is the ONE contract
+ * every surface shares: the host half reads it when a run starts, and
+ * `dsh-settings` derives the Plugins-page form from it — keyed by the loader
+ * entry id, which is why {@link ENTRY_ID} must equal both the row id in
+ * `cordis.patch.yml` and the host half's `export const name`. The card ships as
+ * plain browser code and cannot import this module, so its field list is kept in
+ * step by hand — changing a key here means changing `src/client.js` too.
+ *
+ * Two rules follow from the redesign, and both are load-bearing:
+ *
+ *  - The schema must be reachable as `entry.fiber.runtime.Config`, i.e. exported
+ *    from the PACKAGE ENTRY (`lib/index.js`), not merely from this module. That
+ *    is where `dsh-settings` looks; a schema exported only from a subpath is
+ *    invisible and the entry simply has no form.
+ *  - Every field must be `volatile()`. The marker is what makes the field
+ *    editable without a remount — and it is also what makes the Loader hand
+ *    `apply` a live `{ get() }` reference instead of a value, which is the only
+ *    shape the host half reads.
  *
  * @module @logictan/dsh-browser-agent/config
  */
@@ -14,11 +27,18 @@ import { DEFAULT_ENDPOINT as DEFAULT_CDP_ENDPOINT } from './cdp.js';
 import { DEFAULT_MAX_STEPS } from './loop.js';
 import { DEFAULT_ENDPOINT as DEFAULT_TYPESAFE_ENDPOINT, DEFAULT_MODEL } from './typesafe.js';
 
-/** Settings namespace the host half registers and the card binds. */
-export const SETTINGS_NAMESPACE = 'browser-agent';
+/**
+ * The loader entry id this plugin's configuration form is keyed by.
+ *
+ * `dsh-settings` keys a form by the profile entry id, which the repo convention
+ * pins to the host half's `export const name`; the browser half passes the same
+ * string to `configForms.get`. A mismatch does not throw — the card simply binds
+ * a form that is never served, and every field renders as unset.
+ */
+export const ENTRY_ID = 'browser-agent';
 
 /**
- * Schema of the `browser-agent` settings section.
+ * Schema of the `browser-agent` configuration.
  *
  * The TypeSafe key is `role('secret')`: it is stored in the local settings
  * document and stripped by every redacting surface, including config sync. That
@@ -35,16 +55,20 @@ export const SETTINGS_NAMESPACE = 'browser-agent';
  * "use the session's own current route", which is the only default that stays
  * correct after config sync moves the file to a machine with different
  * providers; a hard-coded model would point at a model the target may not have.
+ *
+ * `volatile()` order matters for the secret: `role()` must come first, because
+ * `volatile()` wraps the schema and a second wrap throws `volatile schema is
+ * already wrapped`.
  */
 export const Config = z.object({
-  typesafeApiKey: z.string().role('secret'),
-  typesafeEndpoint: z.string().default(DEFAULT_TYPESAFE_ENDPOINT),
-  typesafeModel: z.string().default(DEFAULT_MODEL),
-  cdpEndpoint: z.string().default(DEFAULT_CDP_ENDPOINT),
-  maxSteps: z.number().step(1).min(1).default(DEFAULT_MAX_STEPS),
-  textProvider: z.string().default(''),
-  textModel: z.string().default(''),
-  textReasoningEffort: z.string().default(''),
+  typesafeApiKey: z.string().role('secret').volatile(),
+  typesafeEndpoint: z.string().default(DEFAULT_TYPESAFE_ENDPOINT).volatile(),
+  typesafeModel: z.string().default(DEFAULT_MODEL).volatile(),
+  cdpEndpoint: z.string().default(DEFAULT_CDP_ENDPOINT).volatile(),
+  maxSteps: z.number().step(1).min(1).default(DEFAULT_MAX_STEPS).volatile(),
+  textProvider: z.string().default('').volatile(),
+  textModel: z.string().default('').volatile(),
+  textReasoningEffort: z.string().default('').volatile(),
 });
 
 /**
@@ -60,7 +84,8 @@ export const Config = z.object({
  * agent fields off the context short-circuits every optional chain and silently
  * reports "unconfigured" on a session that has a perfectly good route.
  *
- * @param config - the resolved settings section.
+ * @param config - the configuration in effect, as plain values (the host half
+ *   unwraps the live references before calling).
  * @param exec - the tool execution context; its `agent` is the caller.
  * @returns the route to call; empty provider/model means "unconfigured".
  */

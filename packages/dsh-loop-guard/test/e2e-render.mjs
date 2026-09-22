@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import * as plugin from '../lib/index.js'
+import { configRefs } from './helpers/refs.mjs'
 
 // `BlockAssembler` has no exported subpath, so resolve the real file the way the
 // harness does. This is the assembler `agent-loop` feeds every chunk into, so
@@ -35,7 +36,7 @@ const ctx = {
   agents: { get: () => agent },
   get: () => undefined,
 }
-plugin.apply(ctx, CONFIG)
+plugin.apply(ctx, configRefs(CONFIG))
 
 async function* source() {
   yield { type: 'block-start', index: 0, blockType: 'reasoning' }

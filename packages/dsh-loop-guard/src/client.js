@@ -9,8 +9,26 @@
  * `<bundle>#loop-guard`, the key the Plugins page derives from the bundle that
  * declares the row and the row id as its patch declares it.
  *
- * The field list mirrors `SettingsSection` in `src/settings.ts`; the two are
- * kept in step by hand because this half ships as plain browser code.
+ * The field list mirrors `Config` in `src/index.ts`; the two are kept in step
+ * by hand because this half ships as plain browser code.
+ *
+ * ## Why the settings service is a NESTED inject, and why it is `configForms`
+ *
+ * Two separate lessons, both learned the hard way:
+ *
+ *  1. Naming the settings service in this plugin's own `inject` parks the WHOLE
+ *     browser half — and because the page's boot audit turns one pending entry
+ *     into a thrown error, it takes the entire Web UI down with it
+ *     (`web boot: N entries did not activate`). A host that lacks the service
+ *     must cost the guard its configuration CARD, not its mount.
+ *  2. The service was renamed. `dsh-client-ui-settings` provided
+ *     `settingsScope` up to 0.1.6-alpha.2 and provides `configForms` from
+ *     0.1.7-alpha.1; the old name exists nowhere in the newer tree. The method
+ *     moved with it: `settingsScope.bind({ namespace })` became
+ *     `configForms.get(entryId)`, because a form is now keyed by the LOADER
+ *     ENTRY id — which for this row is `loop-guard`, the same string the old
+ *     namespace used. Everything the card reads off the returned controller
+ *     (snapshot, subscribe, set, unset) is unchanged.
  */
 window.__ModuleLoader__.load({
   id: "@logictan/dsh-loop-guard",
@@ -19,7 +37,15 @@ window.__ModuleLoader__.load({
 
     /** Settings namespace the host half registers. */
     var NS = "loop-guard";
-    /** The patch row this card configures (`src/index.ts`'s `name`). */
+    /**
+     * The patch row this card configures (`src/index.ts`'s `name`).
+     *
+     * Since the 0.1.7-alpha.1 settings redesign the row id is ALSO the
+     * namespace: a configuration form is keyed by the loader entry id, and this
+     * row's entry id is exactly this string. The two constants stay separate
+     * because they answer different questions — one names the settings form,
+     * the other the slot key — but they must remain equal.
+     */
     var ROW_ID = "loop-guard";
     /**
      * Bundle package names whose row `ROW_ID` this card configures.
@@ -563,27 +589,33 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Client plugin body: bind the settings namespace and register the card.
+     * Client plugin body: register the card once the settings service is up.
+     *
+     * The settings service is requested through a NESTED inject so a host
+     * without it loses only the card — see the file header.
+     *
      * @param ctx - client root context.
      */
     function apply(ctx) {
-      var scope = ctx.settingsScope.bind({ namespace: NS });
-      BUNDLE_NAMES.forEach(function (bundle) {
-        ctx.slots.inject("plugins.row.config", function () {
-          return ctx.slots.register(
-            {
-              name: "plugins.row.config",
-              key: bundle + "#" + ROW_ID,
-              inject: function () {
-                return { scope: scope };
+      ctx.inject(["configForms"], function (scoped) {
+        var scope = scoped.configForms.get(NS);
+        BUNDLE_NAMES.forEach(function (bundle) {
+          scoped.slots.inject("plugins.row.config", function () {
+            return scoped.slots.register(
+              {
+                name: "plugins.row.config",
+                key: bundle + "#" + ROW_ID,
+                inject: function () {
+                  return { scope: scope };
+                },
               },
-            },
-            LoopGuardSettingsCard,
-          );
+              LoopGuardSettingsCard,
+            );
+          });
         });
       });
     }
 
-    return { name: "dsh-loop-guard", inject: ["slots", "settingsScope"], apply: apply };
+    return { name: "dsh-loop-guard", inject: ["slots"], apply: apply };
   },
 });

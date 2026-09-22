@@ -11,13 +11,29 @@
  *
  * The field list mirrors the schema in `src/config.js`; the two are kept in
  * step by hand because this half ships as plain browser code.
+ *
+ * As of the 0.1.7-alpha.1 settings redesign the settings service is
+ * `configForms`, not `settingsScope`: a form is addressed by loader ENTRY ID
+ * (`configForms.get(entryId)`) rather than bound by namespace, and the shared
+ * describe mirror is reached through `configForms.describe()`. The service is
+ * injected NESTED inside `apply` rather than declared in `inject`, so a host
+ * without the settings UI loses only this card instead of failing the page's
+ * boot audit.
  */
 window.__ModuleLoader__.load({
   id: "@logictan/dsh-browser-agent",
   factory: function (require) {
     var React = require("react");
 
-    /** Settings namespace the host half registers. */
+    /**
+     * Loader entry id this card's form is keyed by.
+     *
+     * `configForms.get(entryId)` addresses the entry the Host serves, and
+     * `dsh-settings` keys that entry by profile entry id — which the repo
+     * convention pins to the host half's `export const name`. It is the same
+     * string the mirror rows carry as `ns`, which is how the secret sidecar
+     * below is found.
+     */
     var NS = "browser-agent";
     /** The patch row this card configures (cordis.patch.yml). */
     var ROW_ID = "browser-agent";
@@ -256,14 +272,17 @@ window.__ModuleLoader__.load({
      * whether a key is set — overridden() is false for a saved key, which would
      * make the reset button skip it and silently leave it stored. The describe
      * sidecar is the one read that carries the fact: a { path, set } entry per
-     * schema-declared secret, with the value itself never sent. The bound
-     * namespace scope does not project the sidecar, so this reads the shared
-     * describe mirror directly.
+     * schema-declared secret, with the value itself never sent.
+     *
+     * The shared describe mirror is reached through `configForms.describe()`.
+     * It exposes the whole document — `view.namespaces`, one row per served
+     * entry — and the form controller bound to this entry does NOT project the
+     * sidecar, so the lookup is done here against the mirror's own snapshot.
      *
      * @returns a map from field key to whether that secret currently has a value.
      */
     function useSecretStatus(ctx) {
-      var mirror = ctx.settingsScope.describe();
+      var mirror = ctx.configForms.describe();
       var subscribe = React.useCallback(
         function (onChange) {
           return mirror.subscribe(onChange);
@@ -276,9 +295,13 @@ window.__ModuleLoader__.load({
         },
         [mirror],
       );
-      React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+      var snapshot = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
-      var row = mirror.namespace(NS);
+      var namespaces = (snapshot && snapshot.view && snapshot.view.namespaces) || [];
+      var row = null;
+      for (var i = 0; i < namespaces.length; i++) {
+        if (namespaces[i].ns === NS) row = namespaces[i];
+      }
       var set = {};
       ((row && row.secrets) || []).forEach(function (secret) {
         if (secret.path.length === 1 && secret.set) set[secret.path[0]] = true;
@@ -312,8 +335,9 @@ window.__ModuleLoader__.load({
     /**
      * The row's configuration card.
      *
-     * `scope` is the settings namespace bound on this plugin's own fiber by
-     * `apply`; `ctx` supplies the live model directory.
+     * `scope` is the configuration form `apply` obtained for this entry from
+     * `configForms.get(NS)`; `ctx` is the scoped context it was obtained on,
+     * which supplies the live model directory.
      */
     function BrowserAgentSettingsCard(props) {
       var scope = props.scope;
@@ -793,30 +817,44 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Client plugin body: bind the settings namespace and register the card.
+     * Client plugin body: bind the configuration form and register the card.
+     *
+     * `configForms` is injected NESTED rather than declared in this plugin's
+     * `inject` list. A plugin that waits on a service the profile does not
+     * provide never activates, and the Web UI's boot audit turns that into a
+     * hard failure for the WHOLE page ("web boot: N entries did not activate"),
+     * not just for this card. Nested, a host without the settings UI loses only
+     * this card — which is the same trade `dsh-market` makes.
+     *
+     * The nested context inherits the services declared here (`slots`,
+     * `remote`), so the card is handed the scoped context and can reach both the
+     * form and the model directory through it.
+     *
      * @param ctx - client root context.
      */
     function apply(ctx) {
-      var scope = ctx.settingsScope.bind({ namespace: NS });
-      BUNDLE_NAMES.forEach(function (bundle) {
-        ctx.slots.inject("plugins.row.config", function () {
-          return ctx.slots.register(
-            {
-              name: "plugins.row.config",
-              key: bundle + "#" + ROW_ID,
-              inject: function () {
-                return { scope: scope, ctx: ctx };
+      ctx.inject(["configForms"], function (scoped) {
+        var scope = scoped.configForms.get(NS);
+        BUNDLE_NAMES.forEach(function (bundle) {
+          scoped.slots.inject("plugins.row.config", function () {
+            return scoped.slots.register(
+              {
+                name: "plugins.row.config",
+                key: bundle + "#" + ROW_ID,
+                inject: function () {
+                  return { scope: scope, ctx: scoped };
+                },
               },
-            },
-            BrowserAgentSettingsCard,
-          );
+              BrowserAgentSettingsCard,
+            );
+          });
         });
       });
     }
 
     return {
       name: "dsh-browser-agent",
-      inject: ["slots", "settingsScope", "remote", "remote.session"],
+      inject: ["slots", "remote", "remote.session"],
       apply: apply,
     };
   },

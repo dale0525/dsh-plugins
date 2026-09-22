@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import { markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import * as plugin from '../lib/index.js'
 import { TextRepetitionDetector, countRepeatedText } from '../lib/index.js'
+import { configRefs } from './helpers/refs.mjs'
 
 const CONFIG = {
   maxThinkingSteps: 3,
@@ -141,7 +142,7 @@ async function* textStream(count, text = 'The `register` API matches. ', termina
 /** Run one stream through the installed listener and collect every chunk. */
 async function collect(agent, count, config = CONFIG, text) {
   const ctx = fakeContext(agent)
-  plugin.apply(ctx, { ...CONFIG, ...config })
+  plugin.apply(ctx, configRefs({ ...CONFIG, ...config }))
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const out = []
   for await (const chunk of ctx.fire(options, () => textStream(count, text))) out.push(chunk)
@@ -250,7 +251,7 @@ test('the break finish is protocol-legal: the shipped llm invariant accepts it',
   // wrong ("finished with 1 open block(s)").
   const { ctx, listeners } = chainContext(fakeAgent())
   const failures = await installInvariant(ctx)
-  plugin.apply(ctx, CONFIG)
+  plugin.apply(ctx, configRefs(CONFIG))
   assert.equal(listeners.length, 2, 'the chain must be invariant -> plugin')
 
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
@@ -287,7 +288,7 @@ test('a call inside the threshold is left completely alone', async () => {
 test('varying visible output never trips the breaker', async () => {
   const agent = fakeAgent()
   const ctx = fakeContext(agent)
-  plugin.apply(ctx, CONFIG)
+  plugin.apply(ctx, configRefs(CONFIG))
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   async function* varying() {
     for (let i = 0; i < 200; i++) yield { type: 'text-delta', index: 0, text: `chunk number ${i} ` }
@@ -395,7 +396,7 @@ test('a cycled stream is cut through apply() with a terminal error finish', asyn
   // this is the assertion that fails if the breaker counts but never emits.
   const agent = fakeAgent()
   const ctx = fakeContext(agent)
-  plugin.apply(ctx, CYCLE_ON)
+  plugin.apply(ctx, configRefs(CYCLE_ON))
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const deltas = lineDeltas(CYCLE_ZH, 40)
   async function* cycled() {
@@ -414,9 +415,9 @@ test('a cycled stream is cut through apply() with a terminal error finish', asyn
 
 test('the schema ships the cycle rule on, with its documented defaults', () => {
   const resolved = plugin.Config({})
-  assert.equal(resolved.maxRepeatedCycleChars, 512)
-  assert.equal(resolved.minRepeatedCycleChars, 256)
-  assert.equal(plugin.Config({ maxRepeatedCycleChars: 0 }).maxRepeatedCycleChars, 0, '0 must survive as the off switch')
+  assert.equal(resolved.maxRepeatedCycleChars.get(), 512)
+  assert.equal(resolved.minRepeatedCycleChars.get(), 256)
+  assert.equal(plugin.Config({ maxRepeatedCycleChars: 0 }).maxRepeatedCycleChars.get(), 0, '0 must survive as the off switch')
   assert.throws(() => plugin.Config({ minRepeatedCycleChars: 1 }))
 })
 
@@ -428,10 +429,10 @@ test('the schema accepts the breaker keys and applies their defaults', () => {
   // Guards a real failure mode: schemastery reserves some key names, and a
   // collision fails at plugin *load* rather than in a type check.
   const resolved = plugin.Config({})
-  assert.equal(resolved.maxRepeatedText, 60)
-  assert.equal(resolved.breakCode, 'REPETITIVE_OUTPUT')
-  assert.equal(resolved.breakCorrection, true)
-  assert.equal(plugin.Config({ maxRepeatedText: 0 }).maxRepeatedText, 0, '0 must survive as the documented off switch')
+  assert.equal(resolved.maxRepeatedText.get(), 60)
+  assert.equal(resolved.breakCode.get(), 'REPETITIVE_OUTPUT')
+  assert.equal(resolved.breakCorrection.get(), true)
+  assert.equal(plugin.Config({ maxRepeatedText: 0 }).maxRepeatedText.get(), 0, '0 must survive as the documented off switch')
 })
 
 test('the schema rejects a negative repetition threshold', () => {
@@ -480,7 +481,7 @@ test('the shipped period cap must exceed every measured visible-output period', 
   // below a real period fails silently. Measured periods on this side: 12 and 26
   // (discussion #7043), and 172 (the 44 387-character bleed).
   const MEASURED_PERIODS = [12, 26, 172]
-  const cap = plugin.Config({}).maxRepeatedCycleChars
+  const cap = plugin.Config({}).maxRepeatedCycleChars.get()
   for (const period of MEASURED_PERIODS) {
     assert.ok(cap > period, `cap ${cap} must exceed the measured period ${period}`)
   }
@@ -493,7 +494,7 @@ test('the real 172-period bleed is cut mid-stream through apply()', async () => 
   const config = { ...CONFIG, maxRepeatedText: 0, maxRepeatedCycleChars: 512, minRepeatedCycleChars: 256 }
   const agent = fakeAgent()
   const ctx = fakeContext(agent)
-  plugin.apply(ctx, config)
+  plugin.apply(ctx, configRefs(config))
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const total = BLEED_PERIOD.repeat(60)
   async function* bleeding() {

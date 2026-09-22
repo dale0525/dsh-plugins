@@ -1,9 +1,9 @@
 # dsh-browser-agent bundle patch layer.
 #
 # One bare plugin row. The package ships two halves — the host half
-# (exports ".") registers the `browser-agent` settings namespace and the
-# `browser_agent` model tool, the browser half (exports "./client") registers
-# the Plugins-page configuration card.
+# (exports ".") registers the `browser_agent` model tool and exports the
+# `Config` schema the Plugins page derives its form from, the browser half
+# (exports "./client") registers the Plugins-page configuration card.
 #
 # The row must stay a BARE package name: the web plugin table locates each
 # package's `dsh.client` manifest from the specifier of the loader row that

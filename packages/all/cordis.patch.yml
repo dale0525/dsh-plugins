@@ -168,9 +168,9 @@
 # dsh-browser-agent bundle patch layer.
 #
 # One bare plugin row. The package ships two halves — the host half
-# (exports ".") registers the `browser-agent` settings namespace and the
-# `browser_agent` model tool, the browser half (exports "./client") registers
-# the Plugins-page configuration card.
+# (exports ".") registers the `browser_agent` model tool and exports the
+# `Config` schema the Plugins page derives its form from, the browser half
+# (exports "./client") registers the Plugins-page configuration card.
 #
 # The row must stay a BARE package name: the web plugin table locates each
 # package's `dsh.client` manifest from the specifier of the loader row that
@@ -192,10 +192,13 @@
 # from ../dsh-loop-guard
 # The dsh-loop-guard bundle patch: the guard needs no deployment-specific
 # config to mount (its defaults detect reasoning-only steps and steer on the
-# second strike). Every key below is also editable from the Plugins page — the
-# guard registers the `loop-guard` settings namespace, and that user layer is
-# layered over this composition layer. Use this file for values that must be
-# baked into the deployment; use the Plugins page for the rest.
+# second strike). Every key below is also editable from the Plugins page — as of
+# the 0.1.7-alpha.1 settings redesign the guard's own `Config` schema is the one
+# configuration surface, and `dsh-settings` derives that page's form from it,
+# keyed by this row's id. There is no separate settings namespace and no
+# precedence rule between layers: the row's `config` IS the entry's config, and
+# the page edits that same entry. Use this file for values that must be baked
+# into the deployment; use the Plugins page for the rest.
 #
 #   - insert:
 #       - id: loop-guard

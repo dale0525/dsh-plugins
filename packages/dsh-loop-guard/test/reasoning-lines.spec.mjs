@@ -48,8 +48,19 @@ const FIXTURE = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures-reasoning-lines.json'), 'utf8'),
 )
 
-/** The shipped defaults, resolved by the schema rather than restated by hand. */
-const SHIPPED = plugin.Config({})
+/**
+ * The shipped defaults, resolved by the schema rather than restated by hand.
+ *
+ * Unwrapped, because a `volatile()` field's schema output is a live reference
+ * rather than the value: `apply` reads through `.get()`, while this suite drives
+ * the breaker classes directly, which take plain values. `unwrap` is the bridge,
+ * and it also means a field that lost its `volatile()` marker would throw here
+ * instead of quietly handing the breaker a reference.
+ */
+const unwrap = (refs) => Object.fromEntries(Object.entries(refs).map(([key, ref]) => [key, ref.get()]))
+
+/** The shipped defaults as the breaker classes expect them. */
+const SHIPPED = unwrap(plugin.Config({}))
 
 /** The line rule alone: both cycle rules and both visible-output rules off. */
 const LINES_ONLY = {

@@ -17,5 +17,9 @@ linkWorkspacePackages: true
 # 服务（如 `ctx.get('attachments')`）拿到的就是那一份。工作区里各子插件自带的旧
 # 世代副本会被 pnpm 各留一份，声明合并（Context / SlotMap）因此落进不同模块，类型
 # 互不兼容。这里把参与声明合并的宿主包收敛到宿主当前世代，与运行时形态一致。
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/cosmokit@1.8.4'
+  - '@deepseek-ai/schemastery@3.18.3'
+
 overrides:
   '@deepseek-ai/dsh-attachment': 0.1.6-alpha.2

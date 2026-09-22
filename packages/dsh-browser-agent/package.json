@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-browser-agent",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "DSH browser agent: a dynamic operation+target decision loop. TypeSafe picks the action, this plugin executes it over CDP against the user's own Chrome. DSH 浏览器 Agent 子插件。",
   "type": "module",
   "main": "lib/index.js",
@@ -16,7 +16,6 @@
     "client": {
       "inject": [
         "slots",
-        "settingsScope",
         "remote",
         "remote.session"
       ],
@@ -59,18 +58,14 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-llm": "^0.1.6-alpha.2",
-    "@deepseek-ai/dsh-settings": "^0.1.6-alpha.2",
     "@deepseek-ai/dsh-tools": "^0.1.6-alpha.2",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.3"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
       "optional": true
     },
     "@deepseek-ai/dsh-llm": {
-      "optional": true
-    },
-    "@deepseek-ai/dsh-settings": {
       "optional": true
     },
     "@deepseek-ai/dsh-tools": {
@@ -83,8 +78,7 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-llm": "^0.1.6-alpha.2",
-    "@deepseek-ai/dsh-settings": "^0.1.6-alpha.2",
     "@deepseek-ai/dsh-tools": "^0.1.6-alpha.2",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.3"
   }
 }

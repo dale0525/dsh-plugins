@@ -164,12 +164,6 @@ import z from '@deepseek-ai/schemastery'
 import type { Agent, AgentCancelCause } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { LlmFailure, StreamChunk } from '@deepseek-ai/dsh-llm'
-// Type-only, and load-bearing: `dsh-settings` augments `Context` with the
-// `settings` service through declaration merging, which only takes effect once
-// the module is in the program. Without this import `settingsCtx.settings` does
-// not typecheck even though it exists at runtime.
-import type { SettingsSectionHooks } from '@deepseek-ai/dsh-settings'
-import { SETTINGS_NAMESPACE, SettingsSection } from './settings.js'
 
 type UserMessage = ReturnType<typeof createUserMessage>
 
@@ -382,23 +376,69 @@ export interface Config {
 /** Resolved config: every field carries its validated default. */
 type ResolvedConfig = Required<Config>
 
+/**
+ * A live reference to one volatile field, as the Loader hands it to `apply`.
+ *
+ * Declared structurally rather than imported: `Volatile` is a `cordis` 4.0.3
+ * export and this package declares the whole `^4.0.2` range, so naming the
+ * vendor type here would narrow the peer range for a cosmetic gain.
+ */
+export interface ConfigRef<T> {
+  /** The field's value right now; re-read on every call. */
+  get(): T
+}
+
+/**
+ * The live references `apply` receives, one per {@link Config} field.
+ *
+ * Cordis's Loader replaces every `volatile()` field of a plugin's `Config` with
+ * a reference of this shape, so a value the user edits on the Plugins page is
+ * committed into the RUNNING plugin (`loader/volatile-update`) instead of
+ * remounting it. Reading through `.get()` at the point of use is therefore what
+ * makes an edit take effect without a restart.
+ */
+export type ConfigRefs = { [K in keyof ResolvedConfig]: ConfigRef<ResolvedConfig[K]> }
+
+/**
+ * Plugin configuration — and, as of the 0.1.7-alpha.1 settings redesign, the
+ * ONE schema behind every configuration surface.
+ *
+ * The host's `dsh-settings` no longer has a namespace registry: it derives the
+ * Plugins-page form for a loader entry from that entry's own `Config`, keyed by
+ * the entry id (which is this package's {@link name}, `loop-guard`). Marking
+ * every field `volatile()` is what puts it in that form — a field left plain
+ * would still configure the guard through `cordis.patch.yml`, but the Plugins
+ * page could neither show nor edit it.
+ *
+ * Two consequences follow, both deliberate:
+ *
+ *  - The row's `config` in `cordis.patch.yml` is no longer a "composition
+ *    layer" that the guard merges a settings section over. It is simply the
+ *    entry's config, and the Plugins page edits that same entry, so there is
+ *    exactly one layer and no precedence rule left to get wrong.
+ *  - The guard no longer registers a settings namespace at all. The former
+ *    `settings.installSection(ctx, 'loop-guard', SettingsSection, …)` seam —
+ *    present in `dsh-settings` 0.1.2-alpha.2 through 0.1.6-alpha.2 — was
+ *    removed in 0.1.7-alpha.1, which is why this plugin failed to activate on
+ *    that harness generation.
+ */
 export const Config: z<Config> = z.object({
-  maxThinkingSteps: z.number().min(2).default(3),
-  minReasoningChars: z.number().min(256).default(2048),
-  similarityThreshold: z.number().min(0).max(1).default(0.8),
-  escalate: z.union(['warn', 'steer', 'cancel']).default('steer'),
-  maxFires: z.number().min(1).default(4),
-  cancelCause: z.string().default('thinking-loop'),
-  maxRepeatedText: z.number().step(1).min(0).default(60),
-  maxRepeatedCycleChars: z.number().step(1).min(0).default(512),
-  minRepeatedCycleChars: z.number().step(1).min(2).default(256),
-  maxRepeatedReasoningCycleChars: z.number().step(1).min(0).default(512),
-  minRepeatedReasoningCycleChars: z.number().step(1).min(2).default(512),
-  maxRepeatedReasoningLineChars: z.number().step(1).min(0).default(2048),
-  minRepeatedReasoningLineCoverage: z.number().min(0).max(1).default(0.6),
-  breakCode: z.string().default('REPETITIVE_OUTPUT'),
-  breakCorrection: z.boolean().default(true),
-  resumeAfterBreak: z.boolean().default(false),
+  maxThinkingSteps: z.number().min(2).default(3).volatile(),
+  minReasoningChars: z.number().min(256).default(2048).volatile(),
+  similarityThreshold: z.number().min(0).max(1).default(0.8).volatile(),
+  escalate: z.union(['warn', 'steer', 'cancel']).default('steer').volatile(),
+  maxFires: z.number().min(1).default(4).volatile(),
+  cancelCause: z.string().default('thinking-loop').volatile(),
+  maxRepeatedText: z.number().step(1).min(0).default(60).volatile(),
+  maxRepeatedCycleChars: z.number().step(1).min(0).default(512).volatile(),
+  minRepeatedCycleChars: z.number().step(1).min(2).default(256).volatile(),
+  maxRepeatedReasoningCycleChars: z.number().step(1).min(0).default(512).volatile(),
+  minRepeatedReasoningCycleChars: z.number().step(1).min(2).default(512).volatile(),
+  maxRepeatedReasoningLineChars: z.number().step(1).min(0).default(2048).volatile(),
+  minRepeatedReasoningLineCoverage: z.number().min(0).max(1).default(0.6).volatile(),
+  breakCode: z.string().default('REPETITIVE_OUTPUT').volatile(),
+  breakCorrection: z.boolean().default(true).volatile(),
+  resumeAfterBreak: z.boolean().default(false).volatile(),
 })
 
 export const name = 'loop-guard'
@@ -1028,14 +1068,22 @@ export class TextRepetitionDetector {
 /* Plugin                                                                     */
 /* -------------------------------------------------------------------------- */
 
+/** The shape of one row of `settings.describe()`, narrowed to what is read here. */
+interface SettingsDescriptorLike {
+  /** Loader entry id; since the 0.1.7-alpha.1 redesign this IS the namespace. */
+  ns?: unknown
+  /** The entry's resolved live values. */
+  value?: unknown
+}
+
 /**
  * The language the guard speaks to the model in. Default `zh`.
  *
  * Chinese is the default and the fallback in every direction: this guard's
  * primary audience reads Chinese, and a wrong guess costs more than a default
  * does. Only an explicit `en` preference selects English; an absent settings
- * service, an unregistered namespace, a malformed section, an unknown id or a
- * throwing reader all resolve to `zh`.
+ * service, a missing `locale` entry, a malformed section or a throwing reader
+ * all resolve to `zh`.
  *
  * The service is read with `ctx.get('settings')` rather than `ctx.settings`:
  * Cordis's context proxy throws `cannot get property "settings" without inject`
@@ -1043,14 +1091,23 @@ export class TextRepetitionDetector {
  * `agents`. Reading through `get` is the non-throwing accessor, so the settings
  * service stays genuinely optional — a profile without it works, and one with it
  * gets the user's real choice.
+ *
+ * The preference is read from `describe()` rather than from a namespace lookup,
+ * because `dsh-settings` 0.1.7-alpha.1 removed the per-namespace reader
+ * (`settings.get(ns)`): an entry's live values are now reported only as one row
+ * of the describe projection, keyed by entry id — and the locale entry's id is
+ * `locale`, which is also its settings namespace.
  */
 function readLanguage(ctx: Context): 'zh' | 'en' {
   try {
     const settings = (ctx as { get?: (name: string) => unknown }).get?.('settings') as
-      | { get?: (ns: string) => unknown }
+      | { describe?: () => unknown }
       | undefined
-    if (settings === undefined || typeof settings.get !== 'function') return 'zh'
-    const section = settings.get('locale')
+    if (settings === undefined || typeof settings.describe !== 'function') return 'zh'
+    const rows = settings.describe()
+    if (!Array.isArray(rows)) return 'zh'
+    const row = (rows as SettingsDescriptorLike[]).find((candidate) => candidate.ns === 'locale')
+    const section = row?.value
     if (section === null || typeof section !== 'object') return 'zh'
     const preference = (section as { preference?: unknown }).preference
     if (typeof preference !== 'string') return 'zh'
@@ -1129,52 +1186,36 @@ function whatFor(lang: 'zh' | 'en', rule: BreakRule): string {
  * Install the listener. Per-`Agent` state is keyed in a `WeakMap` so a disposed
  * agent is collected; detectors are scoped to one agent lifecycle.
  *
- * `compositionConfig` is the row's own config, i.e. the composition layer. The
- * settings section (`loop-guard`) is layered over it before the listeners are
- * installed, so a value the user set in the Plugins page is the one in effect.
- * A change made later is picked up on the next model call: the per-call breakers
- * and the per-agent detector are both built from the live value.
+ * `config` carries the entry's LIVE references, so the value a user saved on
+ * the Plugins page — or wrote into the row's `cordis.patch.yml` config — is the
+ * one in effect, and a later edit is picked up on the next model call: the
+ * per-call breakers and the per-agent detector are both built from a fresh read.
+ *
+ * Every field is resolved INSIDE the thunk rather than captured once, because
+ * the Loader commits a volatile edit into these very references (`updateVolatile`
+ * → `loader/volatile-update`) instead of remounting the plugin. A snapshot taken
+ * at activation would pin the values the profile started with, and the page's
+ * save button would appear to do nothing.
  */
-export function apply(ctx: Context, compositionConfig: ResolvedConfig): void {
-  /**
-   * The effective configuration, composition first and the user's settings
-   * section layered over it.
-   *
-   * Read through a live lookup rather than captured, because `ctx.inject` is
-   * NOT synchronous even when the service is already present (verified: the
-   * callback runs on a later tick). Installing eagerly against the composition
-   * value would therefore pin the defaults in place and the user's section would
-   * never be seen. Every reader below resolves this at the point of use, which
-   * is after registration has run — the section is installed long before the
-   * first model call.
-   */
-  let effective = compositionConfig
-  let announced = false
-
-  /** Only the keys the user actually stated; absent means "inherit". */
-  type StatedSection = Partial<ResolvedConfig>
-
-  ctx.inject(['settings'], (settingsCtx) => {
-    const hooks: SettingsSectionHooks<StatedSection> = {
-      // `setSource` hands over a THUNK (the currently authoritative value),
-      // not the value itself — calling it is what makes the section win over
-      // the composition layer, and what makes a later change visible.
-      setSource(source) {
-        effective = { ...compositionConfig, ...source() }
-      },
-      onChange() {
-        // `installSection` invokes this once at registration, right after
-        // `setSource`; only a change after that is a real edit. Detectors are
-        // built per call and per agent from `effective`, so a change is picked
-        // up on the next call — no restart needed for it to take effect.
-        if (announced) ctx.logger.info('dsh-loop-guard: configuration reloaded from settings')
-        announced = true
-      },
-    }
-    settingsCtx.settings.installSection(ctx, SETTINGS_NAMESPACE, SettingsSection, compositionConfig, hooks)
-  })
-
-  installListeners(ctx, () => effective)
+export function apply(ctx: Context, config: ConfigRefs): void {
+  installListeners(ctx, () => ({
+    maxThinkingSteps: config.maxThinkingSteps.get(),
+    minReasoningChars: config.minReasoningChars.get(),
+    similarityThreshold: config.similarityThreshold.get(),
+    escalate: config.escalate.get(),
+    maxFires: config.maxFires.get(),
+    cancelCause: config.cancelCause.get(),
+    maxRepeatedText: config.maxRepeatedText.get(),
+    maxRepeatedCycleChars: config.maxRepeatedCycleChars.get(),
+    minRepeatedCycleChars: config.minRepeatedCycleChars.get(),
+    maxRepeatedReasoningCycleChars: config.maxRepeatedReasoningCycleChars.get(),
+    minRepeatedReasoningCycleChars: config.minRepeatedReasoningCycleChars.get(),
+    maxRepeatedReasoningLineChars: config.maxRepeatedReasoningLineChars.get(),
+    minRepeatedReasoningLineCoverage: config.minRepeatedReasoningLineCoverage.get(),
+    breakCode: config.breakCode.get(),
+    breakCorrection: config.breakCorrection.get(),
+    resumeAfterBreak: config.resumeAfterBreak.get(),
+  }))
 }
 
 /** The listener body, resolving the effective configuration at each use. */
