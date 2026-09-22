@@ -83,99 +83,6 @@
 
 /* ================================================================ §2 Shell */
 
-/* —— 顶部导航条：左侧页签（圆角分段条），右侧图标动作 ——
-   刻意**不铺背景色**：宿主设置面板底色随主题变化（暗色面板 = #2c2c2e，
-   而 --dsw-alias-bg-base = #151517），铺底色会在导航条两侧形成一条比面板更暗的
-   通栏色块（亮色下两者同为 #fff 才看不出来）。页签分组感由 .navStrip 自身的
-   底色 + 描边承担，与底部 .statusBar 的「不铺底色」保持一致。 */
-.shellNav {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-  padding: 8px;
-}
-
-.navStrip {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 2px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-2);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.navStrip::-webkit-scrollbar {
-  display: none;
-}
-
-/* 页签：分段条内的圆角药丸，激活态 = 主色淡底 + 主色描边 */
-.navTab {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex: none;
-  height: 24px;
-  padding: 0 10px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--dsw-alias-label-secondary);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.navTab:hover {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.navTab:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
-  outline-offset: 1px;
-  border-radius: 6px;
-}
-
-.navTab[data-active] {
-  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-business-primary) 45%, transparent);
-  color: var(--dsw-alias-label-primary);
-  font-weight: 600;
-}
-
-/* 页签上的告警点（如恢复待处理） */
-.navDot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--dsw-alias-state-error-primary);
-  flex: none;
-}
-
-/* 导航条右侧图标动作 */
-.navActions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
-  margin-left: 4px;
-}
-
-/* 导航条动作按钮激活态（抽屉打开时对应按钮高亮） */
-.navActions .ghostButton[data-active] {
-  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 55%, transparent);
-  color: var(--dsw-alias-state-business-primary);
-}
-
 /* —— 图标按钮（工具栏/导航通用） —— */
 .iconBtn {
   display: inline-flex;
@@ -1240,7 +1147,6 @@ button.statCard:focus-visible {
 }
 
 /* —— 限高滚动容器（大报告/列表通用） —— */
-.planScroll,
 .reportScroll,
 .confirmScroll,
 .pullScroll,
@@ -1532,12 +1438,6 @@ button.statCard:focus-visible {
   border-radius: 7px;
   background: var(--dsw-alias-bg-base);
   margin: 10px 0 10px;
-}
-
-/* 同步页「选择历史快照」空态提示行（原为行内 hint，独立成行以保持下拉与按钮同基线） */
-.snapshotPickerHint {
-  margin-top: 4px;
-  margin-bottom: 10px;
 }
 
 /* 卡头单行（标题 + 右侧动作/徽章）：标题左、其余右。
@@ -2561,30 +2461,6 @@ button.statCard:focus-visible {
 .secretsList {
   display: flex;
   flex-direction: column;
-}
-
-/* 快照选择行（同步页）：下拉 + 「刷新快照列表」按钮强制同一行 ——
-   nowrap + 下拉列可收缩（minWidth:0）+ 按钮列 flex:none。
-   窄画布下宁可下拉变窄，也不让按钮换到下一行。 */
-.snapshotPickerRow {
-  display: flex;
-  align-items: flex-end;
-  flex-wrap: nowrap;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-/* 该行内的字段标签归零底部外边距：.field 自带 margin-bottom:10px，
-   会让标签的 margin-box 比 select 低 10px，flex-end 对齐时按钮
-   被一并推低 10px（实测 select 底 1042 vs 按钮底 1052）→ 视觉上「不在一条线上」。 */
-.snapshotPickerRow .field {
-  margin-bottom: 0;
-}
-
-.pickerAction {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
 }
 
 /* 导入日志面板 */

@@ -74,25 +74,31 @@ test('S-02 api.push()：POST /sync/push，请求体携带 repoUrl/token', async 
   assert.equal(sent['gitBin'], undefined);
 });
 
-test('S-03 api.pull()：POST /sync/pull，strategy 缺省透传 merge，响应含差异摘要', async () => {
+test('S-03 api.pull()：POST /sync/pull（恒 replace 直接覆盖本地），响应含写入分区与回滚入口', async () => {
   const calls: FetchCall[] = [];
   installFetchMock((call) => {
     calls.push(call);
     return jsonResponse(200, {
       ok: true, snapshotId: 'sync-9',
-      changes: [{ id: 'a', adapter: 'settings', kind: 'Conflict', description: '冲突', severity: 'warning' }],
-      needsReview: true,
+      applied: ['settings'],
+      changes: [{ id: 'a', adapter: 'settings', kind: 'Update', description: '更新', severity: 'info' }],
+      restoreId: 'rest-9',
+      rolledBack: false,
+      warnings: [],
+      failed: [],
+      needsRestart: false,
     });
   });
 
   const api = new SyncApi();
-  const result = await api.pull({ repoUrl: 'https://github.com/u/r.git', strategy: 'merge' });
-  assert.equal(result.changes.length, 1);
-  assert.equal(result.changes[0]?.kind, 'Conflict');
-  assert.equal(result.needsReview, true);
+  const result = await api.pull({ repoUrl: 'https://github.com/u/r.git' });
+  assert.deepEqual(result.applied, ['settings']);
+  assert.equal(result.restoreId, 'rest-9');
+  assert.equal(result.changes[0]?.kind, 'Update');
   assert.equal(calls[0]?.url, SYNC_API.pull);
+  // 不再有差异确认参数：请求体只带通道配置
   const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent['strategy'], 'merge');
+  assert.equal(sent['strategy'], undefined);
 });
 
 test('S-04 错误映射：4xx 携带 error → ConfigManagerApiError', async () => {
@@ -178,158 +184,11 @@ test('S-09 api.githubCancel()：POST /sync/github/cancel 携带 flowId', async (
   assert.equal(sent['flowId'], 'flow-1');
 });
 
-/* ------------------------------------------------ 一键同步（方案 A）端点契约 */
-
-test('S-10 api.snapshotsList()：POST /sync/snapshots-list，解析倒序快照列表 + currentSnapshotId', async () => {
-  const body = {
-    ok: true,
-    snapshots: [
-      { id: 'sync-2', createdAt: '2026-08-17T10:00:00.000Z', sectionCount: 3, platform: 'darwin', dshVersion: '1.0.0' },
-      { id: 'sync-1', createdAt: '2026-08-16T10:00:00.000Z', sectionCount: 2, platform: 'darwin', dshVersion: '1.0.0' },
-    ],
-    currentSnapshotId: 'sync-1',
-  };
-  const calls: FetchCall[] = [];
-  installFetchMock((call) => {
-    calls.push(call);
-    return jsonResponse(200, body);
-  });
-  const api = new SyncApi();
-  const result = await api.snapshotsList({ repoUrl: 'https://github.com/u/r.git' });
-  assert.equal(result.ok, true);
-  assert.equal(result.snapshots.length, 2);
-  assert.equal(result.snapshots[0]?.id, 'sync-2');
-  assert.equal(result.currentSnapshotId, 'sync-1');
-  assert.equal(calls[0]?.url, SYNC_API.snapshotsList);
-  assert.equal(calls[0]?.init?.method, 'POST');
-});
-
-test('S-11 api.sync()：POST /sync/sync，请求体携带 snapshotId；响应含 items/needsReview/compatibility', async () => {
-  const body = {
-    ok: true,
-    syncSessionId: 'sess-1',
-    snapshotId: 'sync-3',
-    items: [{ itemId: 'settings:a', adapter: 'settings', kind: 'Update', description: '更新', severity: 'info', defaultAdopt: true, adopt: true }],
-    needsReview: false,
-    compatibility: 'good',
-  };
-  const calls: FetchCall[] = [];
-  installFetchMock((call) => {
-    calls.push(call);
-    return jsonResponse(200, body);
-  });
-  const api = new SyncApi();
-  const result = await api.sync({ repoUrl: 'https://github.com/u/r.git', snapshotId: 'sync-3' });
-  assert.equal(result.syncSessionId, 'sess-1');
-  assert.equal(result.items.length, 1);
-  assert.equal(result.compatibility, 'good');
-  assert.equal(calls[0]?.url, SYNC_API.sync);
-  const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent['snapshotId'], 'sync-3');
-});
-
-test('S-12 api.applyItems()：POST /sync/apply-items，携带 adoptions（含 Conflict resolution）', async () => {
-  const body = {
-    ok: true, applied: ['settings'], skipped: ['plugin:x'], needsRestart: false,
-    warnings: [], restoreId: 'rest-1', rolledBack: false, failed: [], result: {},
-  };
-  const calls: FetchCall[] = [];
-  installFetchMock((call) => {
-    calls.push(call);
-    return jsonResponse(200, body);
-  });
-  const api = new SyncApi();
-  const result = await api.applyItems({
-    syncSessionId: 'sess-1',
-    adoptions: [
-      { itemId: 'settings:a', adopt: true },
-      { itemId: 'plugin:x', adopt: true, resolution: 'useRemote' },
-    ],
-  });
-  assert.equal(result.applied[0], 'settings');
-  assert.equal(result.restoreId, 'rest-1');
-  assert.equal(calls[0]?.url, SYNC_API.applyItems);
-  const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent['syncSessionId'], 'sess-1');
-  const adoptions = sent['adoptions'] as Array<Record<string, unknown>>;
-  assert.equal(adoptions[1]?.['resolution'], 'useRemote');
-});
-
-test('S-13 api.cancel()：POST /sync/cancel 携带 syncSessionId', async () => {
-  const calls: FetchCall[] = [];
-  installFetchMock((call) => {
-    calls.push(call);
-    return jsonResponse(200, { ok: true });
-  });
-  const api = new SyncApi();
-  const result = await api.cancel('sess-1');
-  assert.equal(result.ok, true);
-  assert.equal(calls[0]?.url, SYNC_API.cancel);
-  const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent['syncSessionId'], 'sess-1');
-});
-
-/* ------------------------------------------------ 自动同步端点契约 */
-
-test('S-14 api.autosyncStatus()：GET /sync/autosync 返回 { git, webdav }，按通道取状态', async () => {
-  const body = {
-    git: {
-      enabled: true, interval: '30m', lastRunAt: '2026-08-17T10:00:00.000Z',
-      lastRunStatus: 'success', consecutiveFailures: 0, elapsedMs: 60000,
-    },
-    webdav: { enabled: false, interval: '30m', consecutiveFailures: 0, elapsedMs: -1 },
-  };
-  let called: FetchCall | null = null;
-  installFetchMock((call) => {
-    called = call;
-    return jsonResponse(200, body);
-  });
-  const lastCall = (): FetchCall | null => called;
-  const api = new SyncApi();
-  const result = await api.autosyncStatus('git');
-  assert.equal(result.enabled, true);
-  assert.equal(result.interval, '30m');
-  assert.equal(result.consecutiveFailures, 0);
-  assert.equal(result.elapsedMs, 60000);
-  assert.equal(lastCall()?.url, SYNC_API.autosync);
-  // 全量返回：webdav 通道独立
-  const all = await api.autosyncStatusAll();
-  assert.equal(all.git.enabled, true);
-  assert.equal(all.webdav.enabled, false, 'webdav 通道自动同步独立');
-});
-
-test('S-15 api.autosyncUpdate()：POST /sync/autosync，请求体携带 transport + enabled/interval', async () => {
-  const body = {
-    enabled: true, interval: '60m', consecutiveFailures: 0, elapsedMs: -1,
-  };
-  const calls: FetchCall[] = [];
-  installFetchMock((call) => {
-    calls.push(call);
-    return jsonResponse(200, body);
-  });
-  const api = new SyncApi();
-  const result = await api.autosyncUpdate({ transport: 'webdav', enabled: true, interval: '60m' });
-  assert.equal(result.enabled, true);
-  assert.equal(result.interval, '60m');
-  assert.equal(calls[0]?.url, SYNC_API.autosync);
-  assert.equal(calls[0]?.init?.method, 'POST');
-  const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent['transport'], 'webdav', '按通道写入 autosync 配置');
-  assert.equal(sent['enabled'], true);
-  assert.equal(sent['interval'], '60m');
-});
-
-test('S-16 api.history()：GET /sync/history，解析 { entries }（含 autosync 记录）', async () => {
+test('S-16 api.history()：GET /sync/history，解析 { entries }（快照记录）', async () => {
   const body = {
     entries: [
-      { id: 'sync-1', createdAt: '2026-08-17T10:00:00.000Z', kind: 'apply', sectionCount: 3, reviewCount: 0 },
-      {
-        id: '2026-08-17T09:00:00.000Z', createdAt: '2026-08-17T09:00:00.000Z', kind: 'autosync',
-        autosync: {
-          direction: 'both', status: 'skipped', skipReason: 'conflict',
-          conflictedSections: ['settings'], failureCountAtRun: 0, createdAt: '2026-08-17T09:00:00.000Z',
-        },
-      },
+      { id: 'sync-2', createdAt: '2026-08-17T10:00:00.000Z', kind: 'apply', sectionCount: 3, reviewCount: 0 },
+      { id: 'sync-1', createdAt: '2026-08-17T09:00:00.000Z', kind: 'push', sectionCount: 2, reviewCount: 0, transport: 'git' },
     ],
   };
   installFetchMock(() => jsonResponse(200, body));
@@ -337,8 +196,8 @@ test('S-16 api.history()：GET /sync/history，解析 { entries }（含 autosync
   const result = await api.history();
   assert.equal(result.entries.length, 2);
   assert.equal(result.entries[0]?.kind, 'apply');
-  assert.equal(result.entries[1]?.kind, 'autosync');
-  assert.deepEqual(result.entries[1]?.autosync?.conflictedSections, ['settings']);
+  assert.equal(result.entries[1]?.kind, 'push');
+  assert.equal(result.entries[1]?.transport, 'git');
 });
 
 /* ------------------------------------------------ WebDAV 通道契约 */
@@ -399,7 +258,10 @@ test('S-20 api.pull()：transport=webdav 请求体透传扁平 webdav 配置', a
   const calls: FetchCall[] = [];
   installFetchMock((call) => {
     calls.push(call);
-    return jsonResponse(200, { ok: true, snapshotId: 'sync-w1', changes: [], needsReview: false });
+    return jsonResponse(200, {
+      ok: true, snapshotId: 'sync-w1', applied: [], changes: [], restoreId: '', rolledBack: false,
+      warnings: [], failed: [], needsRestart: false,
+    });
   });
   const api = new SyncApi();
   await api.pull({ transport: 'webdav', url: 'https://dav.example.com/dav/config', username: 'alice', password: 'secret-pass' });
@@ -521,30 +383,29 @@ test('S-26 api.push()：明文同步 → 请求体只带通道与分区，不带
   assert.equal('encryptPassword' in sent, false);
 });
 
-test('S-27 api.pull()：请求体只带通道与 snapshotId（无解密密码字段）', async () => {
+test('S-27 api.pull()：请求体只带通道配置（恒取远端最新，无解密密码字段）', async () => {
   const calls: FetchCall[] = [];
   installFetchMock((call) => {
     calls.push(call);
-    return jsonResponse(200, { ok: true, snapshotId: 'sync-1', changes: [], needsReview: false });
+    return jsonResponse(200, {
+      ok: true, snapshotId: 'sync-1', applied: ['settings'], changes: [], restoreId: 'r-1',
+      rolledBack: false, warnings: [], failed: [], needsRestart: false,
+    });
   });
   const api = new SyncApi();
-  await api.pull({ repoUrl: 'https://github.com/u/r.git', snapshotId: 'sync-1' });
+  await api.pull({ repoUrl: 'https://github.com/u/r.git' });
   assert.equal(calls[0]?.url, SYNC_API.pull);
   const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent['snapshotId'], 'sync-1');
+  assert.equal(sent['repoUrl'], 'https://github.com/u/r.git');
   assert.equal('decryptPassword' in sent, false, '明文同步不携带 decryptPassword');
 });
 
-test('S-28b api.status()：syncSelectionByChannel / autosyncByChannel 按通道独立解析（子 tab UI 回填）', async () => {
+test('S-28b api.status()：syncSelectionByChannel 按通道独立解析（子 tab UI 回填）', async () => {
   const body = {
     ok: true, configured: true, credentialConfigured: true, credentialWritable: true, sectionCount: 2,
     syncSelectionByChannel: {
       git: { mode: 'default', sections: [] },
       webdav: { mode: 'advanced', sections: ['settings'] },
-    },
-    autosyncByChannel: {
-      git: { enabled: true, interval: '30m', consecutiveFailures: 0, elapsedMs: 60000 },
-      webdav: { enabled: false, interval: '5m', consecutiveFailures: 0, elapsedMs: -1 },
     },
   };
   installFetchMock(() => jsonResponse(200, body));
@@ -552,9 +413,6 @@ test('S-28b api.status()：syncSelectionByChannel / autosyncByChannel 按通道�
   const result = await api.status();
   assert.equal(result.syncSelectionByChannel?.git.mode, 'default', 'git 通道选择独立');
   assert.equal(result.syncSelectionByChannel?.webdav.mode, 'advanced');
-  assert.equal(result.autosyncByChannel?.git.enabled, true, 'git 通道自动同步独立');
-  assert.equal(result.autosyncByChannel?.webdav.enabled, false);
-  assert.equal(result.autosyncByChannel?.webdav.interval, '5m');
 });
 
 test('S-29 api.saveUiPrefs()：POST /sync/ui-prefs 携带 lastSyncChannel（磁盘持久化）', async () => {
@@ -583,3 +441,22 @@ test('S-30 api.status()：lastSyncChannel 回填（磁盘 ui-prefs；UI 通道�
   const result = await api.status();
   assert.equal(result.lastSyncChannel, 'webdav');
 });
+
+
+test('S-31 api.rollback()：POST /sync/rollback 携带 restoreId，解析 ok/full（撤销本次覆盖）', async () => {
+  const calls: FetchCall[] = [];
+  installFetchMock((call) => {
+    calls.push(call);
+    return jsonResponse(200, { ok: true, full: false });
+  });
+  const api = new SyncApi();
+  const result = await api.rollback({ restoreId: 'restore-42' });
+  assert.equal(result.ok, true);
+  assert.equal(result.full, false, '部分恢复时 full=false 必须如实透传');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.url, SYNC_API.rollback);
+  assert.equal(calls[0]?.init?.method, 'POST');
+  const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
+  assert.equal(sent['restoreId'], 'restore-42');
+});
+

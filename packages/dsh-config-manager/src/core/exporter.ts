@@ -4,6 +4,8 @@
  *
  * 安全不变量：
  *  - Secret 值默认永不进入导出数据（结构化分区逐一过 SecretScanner 剥离值）；
+ *  - **例外**：credentialsStatus 在 includeSecrets=true 时按设计携带凭据明文
+ *    （同步通道的明文语义），必须豁免扫描器剥离，否则「声称带值」会变成静默空值；
  *  - 备份恒为明文（encrypted=false / encryption=null）：本插件不再有加密层；
  *  - 秘密值绝不写入 manifest 与日志。
  */
@@ -12,7 +14,7 @@ import path from 'node:path';
 import { buildChecksums } from '../utils/hashing.ts';
 import { stringifyJsonSafe } from '../utils/json.ts';
 import { buildManifest, CHECKSUMS_FILE, MANIFEST_FILE, EXPORTER_NAME } from '../schema/manifest.ts';
-import { SECTION_JSON_PATHS, SECTION_FILE_PREFIXES, isFileSection } from '../schema/config.ts';
+import { SECTION_JSON_PATHS, SECTION_FILE_PREFIXES, isFileSection, credentialsCarryValues } from '../schema/config.ts';
 import { DEFAULT_SENSITIVE_RELS, refreshVault } from '../security/vault.ts';
 import { writeZip } from '../utils/zip.ts';
 import { msgOf } from './messages.ts';
@@ -207,6 +209,8 @@ export class Exporter {
     const redactedHits: SensitiveHit[] = [];
     /** 文件类分区实扫到的命中数：只有它能让 containsSecrets 为真（结构化分区已被剥离） */
     let fileSectionSecretHits = 0;
+    /** 同步通道明文携带的凭据条数（豁免剥离的分区；同样必须让 containsSecrets 为真） */
+    let credentialsSectionSecrets = 0;
     const included: ExportReport['included'] = [];
     const excluded: SectionId[] = this.adapters.filter((a) => !selected.includes(a.id)).map((a) => a.id);
 
@@ -233,7 +237,11 @@ export class Exporter {
       //    文件类分区（skills/agentPresets/agentInstructions/pluginFiles/sessions/self）是用户的真实文件，
       //    只做**文本级扫描 + 告警**，绝不改写/剥离内容（见 scanFileSectionText）。
       let sanitized = section.data;
-      if (!isFileSection(adapter.id)) {
+      if (credentialsCarryValues(adapter.id, section.data)) {
+        // 同步通道的明文凭据：按设计原样保留（扫描器会按值形状 sk-/ghp_ 剥离，正好抹掉要传的值）。
+        // 本分区「携带秘密」由下面的 credentialsSectionHasSecrets 如实标注。
+        credentialsSectionSecrets += (section.data as { credentials?: unknown[] }).credentials?.length ?? 0;
+      } else if (!isFileSection(adapter.id)) {
         const scanned = this.scanner.scanAndRedact(section.data);
         redactedHits.push(...scanned.hits);
         sanitized = scanned.sanitized;
@@ -278,7 +286,7 @@ export class Exporter {
     // 备份恒为明文：本插件不再有加密层。containsSecrets 只认「文件类分区实扫到的命中」——
     // 结构化分区的敏感值已被 scanner 剥离，不构成「含秘密」；文件类分区只报告不改写，
     // 命中即代表归档里确有明文，必须如实标注。
-    const containsSecrets = fileSectionSecretHits > 0;
+    const containsSecrets = fileSectionSecretHits > 0 || credentialsSectionSecrets > 0;
 
     for (const section of sections) {
       if (isFileSection(section.sectionId)) {

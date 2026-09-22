@@ -7,8 +7,8 @@
  * 端点契约（Host 半 src/index.ts 的 makeRoutes 按此实现）：
  * ```
  * GET  /api/dsh-config-manager/sync/status → SyncStatusResponse （配置/凭据/上次同步）
- * POST /api/dsh-config-manager/sync/push    → SyncPushReport    （body: { repoUrl, token?, snapshotId? }）
- * POST /api/dsh-config-manager/sync/pull    → SyncPullReport    （body: { repoUrl, token?, strategy?, snapshotId? }）
+ * POST /api/dsh-config-manager/sync/push    → SyncPushReport    （body: { repoUrl, token?, snapshotId? }；直接覆盖远端）
+ * POST /api/dsh-config-manager/sync/pull    → SyncPullApplyReport（body: { repoUrl, token?, snapshotId? }；直接覆盖本地）
  * POST /api/dsh-config-manager/sync/github/start   → GithubDeviceFlowStartResponse（GitHub OAuth 设备码）
  * POST /api/dsh-config-manager/sync/github/poll    → GithubPollResponse（凭 flowId 轮询；成功时 token 已由 Host 写入 credentials）
  * POST /api/dsh-config-manager/sync/github/cancel  → { ok: true }
@@ -22,7 +22,7 @@
  *  - 错误消息由 Host 侧已脱敏（GitTransport 统一 [REDACTED]），UI 侧再经 ErrorBanner redact 兜底；
  *  - 本文件不 import 任何 node 模块（纯浏览器 bundle；sync-engine 仅作 type-only 引用）。
  */
-import type { SyncPullReport, SyncPushPreview, SyncPushReport } from '../../sync/sync-engine.ts';
+import type { SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts';
 import type { PlanItemKind } from '../../core/types.ts';
 import type { SectionId } from '../../schema/types.ts';
 import { ConfigManagerApiError } from '../api.ts';
@@ -38,11 +38,6 @@ export const SYNC_API = {
   githubCancel: '/api/dsh-config-manager/sync/github/cancel',
   githubValidate: '/api/dsh-config-manager/sync/github/validate',
   history: '/api/dsh-config-manager/sync/history',
-  snapshotsList: '/api/dsh-config-manager/sync/snapshots-list',
-  sync: '/api/dsh-config-manager/sync/sync',
-  applyItems: '/api/dsh-config-manager/sync/apply-items',
-  cancel: '/api/dsh-config-manager/sync/cancel',
-  autosync: '/api/dsh-config-manager/sync/autosync',
   selection: '/api/dsh-config-manager/sync/selection',
   config: '/api/dsh-config-manager/sync/config',
   uiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
@@ -80,14 +75,10 @@ export interface SyncStatusResponse {
   lastSyncChannel?: 'git' | 'webdav';
   /** 可同步分区目录（自定义同步勾选列表；host adapters 唯一事实源） */
   syncSections?: SyncSectionInfo[];
-  /** 当前分区选择（当前激活通道；UI 回填用，自动同步与手动 push 共用） */
+  /** 当前分区选择（当前激活通道；UI 回填用，与手动 push 共用） */
   syncSelection?: SyncSelectionPayload;
   /** 全部通道的分区选择（git/webdav 各自独立；UI 按当前 tab 取对应通道） */
   syncSelectionByChannel?: Record<SyncTransportType, SyncSelectionPayload>;
-  /** 自动同步当前状态（当前激活通道；供 UI 顶部开关回填；§3.9） */
-  autosync?: AutosyncStatusResponse;
-  /** 全部通道的自动同步状态（git/webdav 各自独立；UI 按当前 tab 取对应通道） */
-  autosyncByChannel?: Record<SyncTransportType, AutosyncStatusResponse>;
 }
 
 /** 同步分区选择（POST /sync/selection 请求体 + status.syncSelection 响应；持久化于 Host）。
@@ -153,177 +144,20 @@ export interface SyncPushPayload {
   sections?: SectionId[];
 }
 
-/** pull 请求体（strategy 缺省 replace：远端值覆盖本地；snapshotId 缺省 = 最新）。 */
-export interface SyncPullPayload extends SyncPushPayload {
-  strategy?: 'merge' | 'replace' | 'skipExisting';
-  snapshotId?: string;
-}
-
-/* ---------------------------------------------------------------- 一键同步（方案 A） */
-
-/** GET /sync/snapshots-list 响应：远端历史快照列表（按 createdAt 倒序）。 */
-export interface SyncSnapshotsListResponse {
-  ok: boolean;
-  /** 按 createdAt 倒序（最新在前） */
-  snapshots: SyncSnapshotLite[];
-  /** 当前本地祖先指针（sync-state.lastSnapshotId），用于高亮当前基线 */
-  currentSnapshotId?: string;
-}
-
-/** 远端快照摘要（「选择历史快照」下拉项）。 */
-export interface SyncSnapshotLite {
-  id: string;
-  createdAt: string;
-  sectionCount: number;
-  platform: string;
-  dshVersion: string;
-}
-
-/** POST /sync/sync 请求体（一键同步第一步：拉取 → 差异确认会话）。 */
-export interface SyncStartPayload extends SyncPushPayload {
-  /** 缺省 = 最新快照；传入则对该历史快照拉取 */
-  snapshotId?: string;
-}
-
-/** POST /sync/sync 响应：差异确认会话（items 供 UI 逐项确认）。 */
-export interface SyncStartResponse {
-  ok: boolean;
-  /** 差异确认会话 id：后续 apply-items / cancel 引用 */
-  syncSessionId: string;
-  /** 被拉取的远端快照 id */
-  snapshotId: string;
-  items: SyncConfirmItem[];
-  /** 是否包含任何需人工决策项 */
-  needsReview: boolean;
-  compatibility: 'excellent' | 'good' | 'partial' | 'unsupported';
-  message?: string;
-}
-
-/** 单条可确认的差异项（由 ImportPlan.item 投影 + 冲突详情）。 */
-export interface SyncConfirmItem {
-  itemId: string;
-  adapter: SectionId;
-  kind: PlanItemKind;
-  description: string;
-  /** 变更详情（如插件「当前 1.1 vs 导入 1.6」），与导入恢复向导展示一致 */
-  detail?: string;
-  severity: 'info' | 'warning' | 'error';
-  /** 默认采纳方向；Conflict/MissingSecret 等人工项默认 false */
-  defaultAdopt: boolean;
-  /** 用户最终决策（缺省 = defaultAdopt） */
-  adopt: boolean;
-  /** 冲突项内联解决所需详情（仅 Conflict 项非空） */
-  conflict?: SyncConflictDetail;
-  /** 该项若采用将写入的目标摘要 */
-  target?: { adapter: SectionId; ref: string };
-}
-
-/** 冲突项内联解决详情（来源 MergeConflict + 可读 diff）。 */
-export interface SyncConflictDetail {
-  path: string;
-  kind: 'key' | 'file' | 'section';
-  local?: unknown;
-  remote?: unknown;
-  ancestor?: unknown;
-  diff?: string;
-}
-
-/** POST /sync/apply-items 请求体（一键同步第二步：按逐项决策执行导入）。 */
-export interface ApplyItemsPayload {
-  syncSessionId: string;
-  /** 每项的最终采纳决策（未列出项视为 adopt=false） */
-  adoptions: SyncItemAdoption[];
-}
-
-/** 单条采纳决策。 */
-export interface SyncItemAdoption {
-  itemId: string;
-  adopt: boolean;
-  /** 冲突项解决方案（仅当该项是 Conflict 且 adopt=true 时必须）。
-   *  与导入恢复向导一致：keepLocal=保留当前 / useRemote=使用导入；跳过 = adopt=false。 */
-  resolution?: 'useRemote' | 'keepLocal';
-}
-
-/** POST /sync/apply-items 响应。 */
-export interface ApplyItemsResponse {
-  ok: boolean;
-  applied: string[];
-  skipped: string[];
-  needsRestart: boolean;
-  warnings: string[];
-  /** 应用前快照 id（UI 一键回滚用） */
-  restoreId: string;
-  /** 任一失败是否整体回滚 */
-  rolledBack: boolean;
-  failed: { itemId: string; message?: string }[];
-  result: unknown;
-}
-
-/* ---------------------------------------------------------------- 自动同步 */
-
-/** 统一间隔类型。 */
-export type AutosyncInterval = '5m' | '15m' | '30m' | '60m' | '6h' | '12h' | '24h';
-
-/** 最近一次自动同步执行状态。 */
-export type AutosyncRunStatus = 'success' | 'skipped' | 'failed' | 'partial';
-
-/** GET/POST /sync/autosync 响应：自动同步状态。 */
-export interface AutosyncStatusResponse {
-  enabled: boolean;
-  interval: AutosyncInterval;
-  lastRunAt?: string;
-  lastRunStatus?: AutosyncRunStatus;
-  lastRunMessage?: string;
-  consecutiveFailures: number;
-  /** 距上次自动同步已过 ms（host 计算，供 UI 倒计时/立即触发判断） */
-  elapsedMs: number;
-  lastRunHistoryId?: string;
-}
-
-/** POST /sync/autosync 请求体（transport 指定目标通道；git/webdav 各自独立）。 */
-export interface AutosyncUpdatePayload {
-  /** 目标通道（git/webdav 各自独立的开关/间隔/状态；缺省 git） */
-  transport?: SyncTransportType;
-  enabled: boolean;
-  interval?: AutosyncInterval;
-  startupMinIntervalMs?: number;
-}
+/** POST /sync/pull 响应：拉取并直接覆盖本地（含应用前的变更摘要与回滚入口）。 */
+export type SyncPullApplyResponse = SyncPullApplyReport;
 
 /* ---------------------------------------------------------------- 同步历史 */
 
-/** 自动同步执行记录（§3.7 AutosyncHistoryEntry）。 */
-export interface AutosyncHistoryEntry {
-  /** 触发该次运行的同步通道（git / webdav；旧记录缺省 undefined） */
-  transport?: SyncTransportType;
-  direction: 'pull' | 'push' | 'both';
-  status: 'success' | 'skipped' | 'failed' | 'partial';
-  /** 跳过原因（冲突项 / 缺失依赖 / Install / 错误 / 无远端 / 网络） */
-  skipReason?: string;
-  /** 被跳过的冲突分区 id（冲突跳过时列出） */
-  conflictedSections?: string[];
-  /** 本次自动合并实际写入的分区 */
-  appliedSections?: string[];
-  /** 本次 push 产生的快照 id */
-  pushedSnapshotId?: string;
-  /** 本次 pull 来源快照 id */
-  pulledSnapshotId?: string;
-  error?: string;
-  notifiedAt?: string;
-  /** 本次触发时的连续失败计数 */
-  failureCountAtRun: number;
-  createdAt: string;
-}
-
-/** 同步历史条目（Host 端返回；kind='autosync' 时 autosync 非空）。 */
+/** 同步历史条目（Host 端返回）。 */
 export interface SyncHistoryEntry {
   id: string;
   createdAt: string;
-  kind: 'push' | 'pull' | 'apply' | 'autosync' | 'rollback';
+  kind: 'push' | 'pull' | 'apply' | 'rollback';
   sectionCount?: number;
   reviewCount?: number;
   /** 快照类条目的触发通道（git / webdav；旧快照缺省 undefined） */
   transport?: string;
-  autosync?: AutosyncHistoryEntry;
 }
 
 /** GET /sync/history 响应：{ entries }。 */
@@ -442,14 +276,9 @@ export class SyncApi {
     return postJson<SyncPushReport>(SYNC_API.push, payload, this.t);
   }
 
-  /** P0-②：push 前只读预览（「将推送什么」，零写入远端）——body.preview=true 触发 */
-  async pushPreview(payload: SyncPushPayload): Promise<SyncPushPreview> {
-    return postJson<SyncPushPreview>(SYNC_API.push, { ...payload, preview: true }, this.t);
-  }
-
-  /** 拉取差异预览：拉取远端最新快照 → 只读分析（绝不执行导入） */
-  async pull(payload: SyncPullPayload): Promise<SyncPullReport> {
-    return postJson<SyncPullReport>(SYNC_API.pull, payload, this.t);
+  /** 拉取：远端快照直接覆盖本地（应用前落回滚快照，失败整体回滚）。 */
+  async pull(payload: SyncPushPayload): Promise<SyncPullApplyReport> {
+    return postJson<SyncPullApplyReport>(SYNC_API.pull, payload, this.t);
   }
 
   /** GitHub OAuth device flow：发起登录，返回一次性用户码 + 授权页 URL + flowId */
@@ -473,51 +302,14 @@ export class SyncApi {
     return postJson<GithubValidateResponse>(SYNC_API.githubValidate, {}, this.t);
   }
 
-  /** 同步历史：列出本地祖先快照 + 自动同步执行记录（按 createdAt 倒序合并）。 */
+  /** 同步历史：列出本地祖先快照（按 createdAt 倒序）。 */
   async history(): Promise<SyncHistoryResponse> {
     const response = await fetch(SYNC_API.history);
     return readJson<SyncHistoryResponse>(response, this.t);
   }
 
-  /** 远端历史快照列表（供「选择历史快照」下拉）。 */
-  async snapshotsList(payload: SyncPushPayload): Promise<SyncSnapshotsListResponse> {
-    return postJson<SyncSnapshotsListResponse>(SYNC_API.snapshotsList, payload, this.t);
-  }
-
-  /** 一键同步第一步：拉取 → 差异确认会话（items 逐项确认，暂不导入）。 */
-  async sync(payload: SyncStartPayload): Promise<SyncStartResponse> {
-    return postJson<SyncStartResponse>(SYNC_API.sync, payload, this.t);
-  }
-
-  /** 一键同步第二步：按用户对差异项的逐项决策执行导入。 */
-  async applyItems(payload: ApplyItemsPayload): Promise<ApplyItemsResponse> {
-    return postJson<ApplyItemsResponse>(SYNC_API.applyItems, payload, this.t);
-  }
-
-  /** 取消/清理差异确认会话（丢弃临时 ZIP，零副作用）。 */
-  async cancel(syncSessionId: string): Promise<{ ok: boolean }> {
-    return postJson<{ ok: boolean }>(SYNC_API.cancel, { syncSessionId }, this.t);
-  }
-
-  /** 自动同步状态（GET /sync/autosync 返回全部通道的 { git, webdav }，各自独立）。 */
-  async autosyncStatusAll(): Promise<Record<SyncTransportType, AutosyncStatusResponse>> {
-    const response = await fetch(SYNC_API.autosync);
-    return readJson<Record<SyncTransportType, AutosyncStatusResponse>>(response, this.t);
-  }
-
-  /** 自动同步状态（指定通道；从全部通道状态中取）。 */
-  async autosyncStatus(transport: SyncTransportType = 'git'): Promise<AutosyncStatusResponse> {
-    const all = await this.autosyncStatusAll();
-    return all[transport];
-  }
-
-  /** 自动同步配置更新（POST /sync/autosync；payload.transport 指定目标通道）。 */
-  async autosyncUpdate(payload: AutosyncUpdatePayload): Promise<AutosyncStatusResponse> {
-    return postJson<AutosyncStatusResponse>(SYNC_API.autosync, payload, this.t);
-  }
-
   /** 保存同步分区选择（POST /sync/selection）：模式 + 勾选分区持久化到 Host。
-   *  自动同步调度器与手动 push 共用此配置（刷新/重启后仍然生效）。 */
+   *  push 与 pull 共用此配置（刷新/重启后仍然生效）。 */
   async saveSelection(payload: SyncSelectionPayload): Promise<SyncSelectionPayload> {
     return postJson<SyncSelectionPayload>(SYNC_API.selection, payload, this.t);
   }

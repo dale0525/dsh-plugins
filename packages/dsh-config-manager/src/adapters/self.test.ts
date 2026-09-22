@@ -15,8 +15,7 @@ test('self: 白名单收集（存在才收，子目录路径保留，白名单�
   await src.fs.writeFile('dsh-config-manager/sync/sync-config.json', Buffer.from('{"transport":"git","git":{"repoUrl":"https://x"},"webdav":{}}', 'utf8'));
   await src.fs.writeFile('dsh-config-manager/sync/sync-selection.json', Buffer.from('{"schemaVersion":1,"mode":"default"}', 'utf8'));
   await src.fs.writeFile('dsh-config-manager/sync/ui-prefs.json', Buffer.from('{"schemaVersion":1,"lastSyncChannel":"webdav"}', 'utf8'));
-  // 白名单外：历史/缓存/快照/临时产物不得收集
-  await src.fs.writeFile('dsh-config-manager/sync/sync-history.json', Buffer.from('{"schemaVersion":1}', 'utf8'));
+  // 白名单外：缓存/快照/临时产物不得收集
   await src.fs.writeFile('dsh-config-manager/market/cache/index.json', Buffer.from('{}', 'utf8'));
   await src.fs.writeFile('dsh-config-manager/snapshots/x/snapshot.json', Buffer.from('{}', 'utf8'));
   await src.fs.writeFile('dsh-config-manager/tmp/tmp.zip', Buffer.from('PK', 'utf8'));
@@ -31,8 +30,8 @@ test('self: 白名单收集（存在才收，子目录路径保留，白名单�
   ]);
   assert.equal(out.counts.files, 3);
   assert.equal(out.warnings.length, 0, '存在文件时不告警');
-  // 白名单常量齐全（sync-autosync 未创建时自然跳过）
-  assert.ok(SELF_CONFIG_FILES.includes('sync/sync-autosync.json'));
+  // 白名单常量齐全（未创建的文件自然跳过）
+  assert.ok(SELF_CONFIG_FILES.includes('sync/sync-selection.json'));
 });
 
 test('self: 默认包含 + portable（Quick Export 推荐项）', () => {

@@ -991,13 +991,15 @@ function judgePath(p: string, sourcePlatform: string, targetPlatform: string): P
   return { kind: 'missing', value: p };
 }
 
-/** MissingSecret 兜底：credentialsStatus 分区已配置凭据若无对应计划项，补占位 */
+/** MissingSecret 兜底：credentialsStatus 分区已配置凭据若无对应计划项，补占位。
+ *  快照自带明文值（hasValue=true）的凭据由 adapter 产出写回项，不得再要求用户补录。 */
 function ensureMissingSecrets(items: PlanItem[], sections: Map<SectionId, unknown>, msg: MsgFunc): void {
-  const creds = sections.get('credentialsStatus') as { credentials?: { ref?: string; configured?: boolean }[] } | undefined;
+  const creds = sections.get('credentialsStatus') as { credentials?: { ref?: string; configured?: boolean; hasValue?: boolean }[] } | undefined;
   if (!creds?.credentials) return;
   const existing = new Set(items.filter((i) => i.kind === 'MissingSecret').map((i) => i.id));
   for (const c of creds.credentials) {
     if (!c.ref || c.configured !== true) continue;
+    if (c.hasValue === true) continue; // 已随快照携带明文 → 无需补录
     const id = `secret:${c.ref}`;
     if (existing.has(id)) continue;
     items.push({

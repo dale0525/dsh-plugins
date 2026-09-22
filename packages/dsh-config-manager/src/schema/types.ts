@@ -214,14 +214,18 @@ export interface WorkspaceRecord {
 
 export interface WorkspacesSection { version: 1; workspaces: WorkspaceRecord[]; }
 
-/* —— credentials 状态分区（永不含值） —— */
+/* —— credentials 分区 ——
+ * includeSecrets=false（普通备份）：只带状态，hasValue 恒 false；
+ * includeSecrets=true（同步快照）：hasValue=true 且 value = 凭据明文，供跨机写回。 */
 
 export interface CredentialStatus {
   ref: string;
   required: boolean;
   configured: boolean;
   source?: 'env' | 'file' | 'projectEnv' | 'other';
-  hasValue: boolean; // 普通备份恒 false（值未导出）
+  hasValue: boolean; // true 表示 value 携带了明文
+  /** 凭据明文；仅 hasValue=true 时存在（同步通道的明文语义） */
+  value?: string;
 }
 
 export interface CredentialsSection { version: 1; credentials: CredentialStatus[]; }

@@ -7,13 +7,10 @@
  */
 import type { PlanItem, PlanItemKind } from '../../core/types.ts';
 import type { SectionId } from '../../schema/types.ts';
-import type { PullChange, SyncPullReport, SyncPushPreview, SyncPushReport } from '../../sync/sync-engine.ts';
+import type { PullChange, SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts';
 import { DEFAULT_CATEGORIES } from '../../ui/export-flow.ts';
 import { EXPORT_GROUPS, type ExportGroup } from '../../ui/types.ts';
-import type {
-  ApplyItemsResponse, AutosyncInterval, AutosyncStatusResponse, GithubPollResponse, SyncConfirmItem,
-  SyncItemAdoption, SyncSectionInfo, SyncSnapshotLite, SyncStatusResponse,
-} from './sync-api.ts';
+import type { GithubPollResponse, SyncSectionInfo, SyncStatusResponse } from './sync-api.ts';
 import { zhUiT, type UiT } from '../../ui/i18n.ts';
 
 /* ---------------------------------------------------------------- 私有仓库提示 */
@@ -152,25 +149,13 @@ export type SyncChannel = 'git' | 'webdav';
 
 /**
  * 每个同步通道（git/webdav）各自独立的设置状态：
- * 自动同步、同步模式（默认/高级 + 分区勾选）、远端快照互不共享。
+ * 同步模式（默认/高级 + 分区勾选）两通道互不共享。
  */
 export interface ChannelSyncState {
   /** 同步模式：默认（快速导出推荐分区） / 高级（自定义勾选分区） */
   syncMode: SyncMode
   /** 高级模式勾选的同步分区（初始 = 推荐分区；空 = 未勾选任何分区） */
   syncSections: SectionId[]
-  /** 当前选中的历史快照 id（'' = 最新） */
-  selectedSnapshotId: string
-  /** 该通道远端历史快照列表（「选择历史快照」下拉数据源） */
-  snapshots: SyncSnapshotLite[]
-  /** 该通道是否正在拉取远端快照列表 */
-  loadingSnapshots?: boolean
-  /** 该通道自动同步状态 */
-  autosync: AutosyncStatusResponse | null
-  /** 该通道自动同步开关（回填自 autosync） */
-  autosyncEnabled: boolean
-  /** 该通道自动同步间隔（回填自 autosync） */
-  autosyncInterval: AutosyncInterval
 }
 
 /** 缺省每通道状态（未配置时各字段默认值）。 */
@@ -178,12 +163,6 @@ export function defaultChannelSyncState(): ChannelSyncState {
   return {
     syncMode: 'default',
     syncSections: [],
-    selectedSnapshotId: '',
-    snapshots: [],
-    loadingSnapshots: false,
-    autosync: null,
-    autosyncEnabled: false,
-    autosyncInterval: '30m',
   }
 }
 
@@ -302,14 +281,14 @@ export function computeRemoteReady(channel: SyncChannel, gitUrl: string, webdavU
  * - 活动通道远端地址未就绪（remoteReady=false）→ 禁用（无从同步）；
  * - busy 时按钮文案切换为「正在推送/拉取…」（配 Spinner）。
  */
-export function computeSyncButtons(busy: 'sync' | 'push' | 'pull' | 'apply' | 'rollback' | null, remoteReady: boolean, t: UiT = zhUiT): SyncButtons {
+export function computeSyncButtons(busy: 'push' | 'pull' | 'rollback' | null, remoteReady: boolean, t: UiT = zhUiT): SyncButtons {
   const idle = busy === null;
   const enabled = idle && remoteReady;
   return {
     canPush: enabled,
     canPull: enabled,
-    pushLabel: busy === 'push' ? t('sync.pushing') : busy === 'sync' ? t('sync.syncing') : t('sync.pushLabel'),
-    pullLabel: busy === 'pull' ? t('sync.pulling') : busy === 'sync' ? t('sync.syncing') : t('sync.pullLabel'),
+    pushLabel: busy === 'push' ? t('sync.pushing') : t('sync.pushLabel'),
+    pullLabel: busy === 'pull' ? t('sync.pulling') : t('sync.pullLabel'),
   };
 }
 
@@ -389,69 +368,49 @@ export function pushReportView(report: SyncPushReport | null, t: UiT = zhUiT): P
   };
 }
 
-/* ------------------------------------------------ P0-② push 前只读预览渲染模型 */
-
-export interface PushPreviewView {
-  ok: boolean;
-  /** 将推送的分区行（含计数 + 是否相对基线有变化） */
-  rows: { section: string; count: number; changed: boolean }[];
-  /** 变更分区数（要展示「新增/更新 N 个分区」） */
-  changedCount: number;
-  /** 远端现有快照数（0 = 首次推送创建首个基线） */
-  remoteSnapshotCount: number;
-  /** 只读提示（预览不写远端） */
-  previewHint: string;
-  headline: string;
-  error: string | null;
-}
-
-/** push 预览 → 渲染模型（P0-②）：列分区 + 变更计数 + 远端基线提示。 */
-export function pushPreviewView(preview: SyncPushPreview | null, t: UiT = zhUiT): PushPreviewView | null {
-  if (preview === null) return null;
-  if (!preview.ok) {
-    return {
-      ok: false, rows: [], changedCount: 0, remoteSnapshotCount: preview.remoteSnapshotCount,
-      previewHint: '', headline: '', error: preview.message ?? t('sync.pushFailed'),
-    };
-  }
-  const rows = preview.sections.map((s) => ({ section: s.section, count: s.count, changed: s.changed }));
-  const changedCount = preview.sections.filter((s) => s.changed).length;
-  return {
-    ok: true,
-    rows,
-    changedCount,
-    remoteSnapshotCount: preview.remoteSnapshotCount,
-    previewHint: t('sync.pushPreviewHint'),
-    headline: t('sync.pushPreviewHeadline', {
-      total: String(preview.sections.length),
-      changed: String(changedCount),
-    }),
-    error: null,
-  };
-}
-
 export interface PullReportView {
   kind: 'ok' | 'empty' | 'error';
   headline: string;
+  /** 本次实际写入本地的分区（ok 时非空） */
+  applied: string[];
+  /** 远端快照相对本地的变更摘要（应用前计算；仅展示） */
   summary: PullChangeSummary | null;
-  /** 只读预览提示（ok 时非空：明确「预览不执行导入」） */
-  previewHint: string;
+  /** 失败时是否已整体回滚 */
+  rolledBack: boolean;
+  /** 回滚入口提示（restoreId 非空时展示） */
+  restoreHint: string;
 }
 
-/** pull 报告 → 渲染模型（差异预览；empty = 无变更；error = 拉取失败） */
-export function pullReportView(report: SyncPullReport | null, t: UiT = zhUiT): PullReportView | null {
+/** 拉取结果 → 渲染模型（直接覆盖本地：applied = 写入了什么；失败显示是否已回滚） */
+export function pullApplyReportView(report: SyncPullApplyReport | null, t: UiT = zhUiT): PullReportView | null {
   if (report === null) return null;
   if (!report.ok) {
-    return { kind: 'error', headline: report.message ?? t('sync.pullFailed'), summary: null, previewHint: '' };
+    return {
+      kind: 'error',
+      headline: report.message ?? t('sync.pullFailed'),
+      applied: [],
+      summary: report.changes.length > 0 ? summarizePullChanges(report.changes) : null,
+      rolledBack: report.rolledBack,
+      restoreHint: '',
+    };
   }
-  if (report.changes.length === 0) {
-    return { kind: 'empty', headline: report.message ?? t('sync.pullEmpty'), summary: null, previewHint: '' };
+  if (report.applied.length === 0) {
+    return {
+      kind: 'empty',
+      headline: report.message ?? t('sync.pullEmpty'),
+      applied: [],
+      summary: report.changes.length > 0 ? summarizePullChanges(report.changes) : null,
+      rolledBack: false,
+      restoreHint: '',
+    };
   }
   return {
     kind: 'ok',
-    headline: t('sync.pullOk', { id: report.snapshotId, count: String(report.changes.length) }),
+    headline: t('sync.pullOk', { id: report.snapshotId, count: String(report.applied.length) }),
+    applied: report.applied,
     summary: summarizePullChanges(report.changes),
-    previewHint: t('sync.previewHint'),
+    rolledBack: false,
+    restoreHint: report.restoreId !== '' ? t('sync.pullRestoreHint') : '',
   };
 }
 
@@ -541,219 +500,4 @@ export function githubPollMessage(poll: GithubPollResponse, t: UiT = zhUiT): str
     default:
       return '';
   }
-}
-
-/* ---------------------------------------------------------------- 一键同步差异确认（方案 A） */
-
-/** 需要人工决策的 PlanItemKind（与 Host /sync/sync 的 needsReview 判定对齐）。
- * 注意：'Install'（安装插件）不在其中 —— 插件安装默认自动采用（defaultAdopt=true）、
- * 不逐项展示、无需手动选择（product requirement）。 */
-const CONFIRM_REVIEW_KINDS: ReadonlySet<PlanItemKind> = new Set([
-  'Conflict', 'MissingSecret', 'MissingDependency', 'Error', 'PathMapping',
-  // issue #35：Warning 也进确认列表 —— 它承载「本次同步会剔除哪些无法满足的
-  // patchedDependencies 声明」这类改变配置语义的信息，不能默默自动采用。
-  // 与宿主 REVIEW_KINDS 必须保持一致（两处同源，勿单改一处）。
-  'Warning',
-]);
-
-/**
- * 是否需要人工决策（是否进入差异确认列表）。
- * 非决策项（Create / Update / Skip 等）默认自动采用（defaultAdopt=true），
- * 不逐项展示但 apply-items 时照常导入；Warning 例外 —— 见 CONFIRM_REVIEW_KINDS。
- */
-export function isReviewItem(kind: PlanItemKind): boolean {
-  return CONFIRM_REVIEW_KINDS.has(kind);
-}
-
-/**
- * issue #35：会**改变工具链行为**的项 —— pnpm-workspace.yaml 本次移除了无法满足的
- * patchedDependencies 声明时（宿主会带上 detail）。这类项此前默认自动采用且不展示，
- * 用户即使已知风险也无法否决；现在进确认列表（可取消），默认仍采用（sanitize 结果更安全，
- * 默认不采用会静默丢掉 allowBuilds / 冷静期配置）。
- * 注意：与宿主 src/index.ts 的同名判定必须保持一致（两侧刻意重复，避免跨端 import）。
- */
-export function isToolchainChangeItem(item: { itemId: string; detail?: string | undefined }): boolean {
-  return item.itemId === 'plugins:pnpm-workspace' && item.detail !== undefined && item.detail !== '';
-}
-
-/**
- * 仅保留需人工决策的项（差异确认列表只渲染这些）。
- * 统计（summarizeConfirmItems）仍基于全量 items，不受影响。
- * issue #35：除 kind 命中外，**改变工具链行为**的项（pnpm-workspace 剔除声明）也进列表。
- */
-export function reviewItems(items: readonly SyncConfirmItem[]): SyncConfirmItem[] {
-  return items.filter((it) => CONFIRM_REVIEW_KINDS.has(it.kind) || isToolchainChangeItem(it));
-}
-
-/** 冲突解决方式：与导入恢复向导（ConflictList）完全一致的两项（保留当前 / 使用导入）。
- *  - keepLocal = keepCurrent（保留本地现有值，不写入）；
- *  - useRemote = useImported（采用远端快照值，写入本地）。
- */
-export type SyncConflictResolution = 'keepLocal' | 'useRemote';
-
-/** 单条 Conflict 项的批量决策（resolution + adopt）。 */
-export interface ConflictDecision {
-  itemId: string;
-  resolution: SyncConflictResolution;
-  adopt: boolean;
-}
-
-/**
- * 「全部保留本地」：所有 Conflict 项 → resolution=keepLocal、adopt=false。
- * 仅作用于 Conflict 项，非 Conflict 项的 adopt 保持默认。
- */
-export function keepLocalAll(items: readonly SyncConfirmItem[]): ConflictDecision[] {
-  return items
-    .filter((it) => it.kind === 'Conflict')
-    .map((it) => ({ itemId: it.itemId, resolution: 'keepLocal', adopt: false }));
-}
-
-/**
- * 「全部采用远端」：所有 Conflict 项 → resolution=useRemote、adopt=true。
- * 仅作用于 Conflict 项，非 Conflict 项的 adopt 保持默认。
- */
-export function useRemoteAll(items: readonly SyncConfirmItem[]): ConflictDecision[] {
-  return items
-    .filter((it) => it.kind === 'Conflict')
-    .map((it) => ({ itemId: it.itemId, resolution: 'useRemote', adopt: true }));
-}
-
-export interface SyncConfirmSummary {
-  total: number;
-  info: number;
-  warning: number;
-  error: number;
-  /** 默认/当前采用数（adopt=true 的项数）。 */
-  adopted: number;
-  /** 是否包含任何需人工决策项。 */
-  needsReview: boolean;
-}
-
-/** 差异确认列表摘要（按 severity 计数 + 采用数 + needsReview 徽章数据源）。 */
-export function summarizeConfirmItems(items: readonly SyncConfirmItem[]): SyncConfirmSummary {
-  let info = 0;
-  let warning = 0;
-  let error = 0;
-  let adopted = 0;
-  let needsReview = false;
-  for (const it of items) {
-    if (it.severity === 'error') error += 1;
-    else if (it.severity === 'warning') warning += 1;
-    else info += 1;
-    if (it.adopt) adopted += 1;
-    if (CONFIRM_REVIEW_KINDS.has(it.kind)) needsReview = true;
-  }
-  return { total: items.length, info, warning, error, adopted, needsReview };
-}
-
-/**
- * 收集用户逐项决策 → apply-items 请求体 adoptions[]。
- * 仅包含 adopt=true 的项；Conflict 项 adopt=true 且未给 resolution → 抛错（强制先解决）。
- * 与导入恢复向导一致：只提供「保留当前 / 使用导入」两项，跳过 = 取消勾选（adopt=false）。
- */
-export function buildAdoptions(
-  items: readonly SyncConfirmItem[],
-  adopted: ReadonlyMap<string, boolean>,
-  resolutions: ReadonlyMap<string, SyncConflictResolution>,
-): SyncItemAdoption[] {
-  const out: SyncItemAdoption[] = [];
-  for (const it of items) {
-    if (adopted.get(it.itemId) !== true) continue; // adopt=false / 未列出 → 跳过
-    const adoption: SyncItemAdoption = { itemId: it.itemId, adopt: true };
-    if (it.kind === 'Conflict') {
-      const resolution = resolutions.get(it.itemId);
-      if (resolution === undefined) {
-        throw new Error(`冲突项 ${it.itemId} 必须先选择解决方式（保留当前 / 使用导入）`);
-      }
-      adoption.resolution = resolution;
-    }
-    out.push(adoption);
-  }
-  return out;
-}
-
-export type ApplyItemsViewKind = 'ok' | 'failed' | 'rolledBack';
-
-export interface ApplyItemsView {
-  kind: ApplyItemsViewKind;
-  headline: string;
-  sections: string[];
-  warnings: string[];
-  restoreId: string;
-  needsRestart: boolean;
-}
-
-/** apply-items 执行结果 → 渲染模型（ok / failed / 整体回滚）。 */
-export function applyItemsReportView(
-  report: ApplyItemsResponse | null,
-  t: UiT = zhUiT,
-): ApplyItemsView | null {
-  if (report === null) return null;
-  const failedOnly = report.failed.length > 0 && !report.ok;
-  const kind: ApplyItemsViewKind = !report.ok && report.rolledBack ? 'rolledBack' : failedOnly ? 'failed' : 'ok';
-  const headline = kind === 'ok'
-    ? t('sync.importDone', { n: String(report.applied.length) })
-    : kind === 'rolledBack'
-      ? t('sync.importFailed')
-      : t('sync.importFailed');
-  return {
-    kind,
-    headline,
-    sections: report.applied,
-    warnings: report.warnings,
-    restoreId: report.restoreId,
-    needsRestart: report.needsRestart,
-  };
-}
-
-/* ---------------------------------------------------------------- 自动同步（方案 A） */
-
-/** AutosyncInterval → ms。 */
-export function autosyncIntervalMs(interval: AutosyncInterval): number {
-  switch (interval) {
-    case '5m': return 5 * 60 * 1000;
-    case '15m': return 15 * 60 * 1000;
-    case '60m': return 60 * 60 * 1000;
-    case '6h': return 6 * 60 * 60 * 1000;
-    case '12h': return 12 * 60 * 60 * 1000;
-    case '24h': return 24 * 60 * 60 * 1000;
-    default: return 30 * 60 * 1000;
-  }
-}
-
-/** 距下次自动同步剩余 ms（已到期 → 0）。elapsedMs 为 host 计算的「距上次执行已过 ms」。 */
-export function computeAutosyncCountdown(elapsedMs: number, intervalMs: number): number {
-  if (elapsedMs < 0) return -1; // 从未运行
-  return Math.max(0, intervalMs - elapsedMs);
-}
-
-/**
- * 剩余时长 → 可读文案（向上取整，避免出现「0 分钟」；≤0 视为 1 分钟兜底）。
- * 例：4 分钟 →「4 分钟」；90 分钟 →「2 小时」；30 小时 →「2 天」。
- */
-export function formatIntervalDuration(ms: number, t: UiT = zhUiT): string {
-  const totalMinutes = Math.max(1, Math.ceil(ms / 60000));
-  if (totalMinutes < 60) return t('sync.duration.min', { n: totalMinutes });
-  const totalHours = Math.ceil(totalMinutes / 60);
-  if (totalHours < 24) return t('sync.duration.hour', { n: totalHours });
-  const totalDays = Math.ceil(totalHours / 24);
-  return t('sync.duration.day', { n: totalDays });
-}
-
-/** 自动同步状态行的可读文案（未运行 / 上次状态 / 连续失败计数）。 */
-export function autosyncStatusText(status: AutosyncStatusResponse, t: UiT = zhUiT): string {
-  if (status.lastRunAt === undefined || status.lastRunAt === '' || status.lastRunStatus === undefined) {
-    return t('sync.autosyncNever');
-  }
-  const statusText = status.lastRunStatus === 'success'
-    ? t('sync.autosyncSuccess')
-    : status.lastRunStatus === 'skipped'
-      ? t('sync.autosyncSkipped')
-      : status.lastRunStatus === 'partial'
-        ? t('sync.autosyncPartial')
-        : t('sync.autosyncFailed');
-  const time = formatDateTime(status.lastRunAt);
-  const base = t('sync.autosyncLastRun', { time });
-  const fail = status.consecutiveFailures > 0 ? ` · ${t('sync.autosyncFailCount', { n: String(status.consecutiveFailures) })}` : '';
-  return `${statusText} · ${base}${fail}`;
 }

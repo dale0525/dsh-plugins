@@ -4,11 +4,9 @@
  * 宽读法改造：仅保留 sync 相关状态。
  * PanelId 收敛为 'sync'。
  */
-import type { SyncPushReport, SyncPullReport, SyncPushPreview } from '../sync/sync-engine.ts'
-import type { SyncStartResponse } from './sync/sync-api.ts'
+import type { SyncPushReport, SyncPullApplyReport } from '../sync/sync-engine.ts'
 import type { ChannelSyncState, SyncChannel } from './sync/sync-view.ts'
 import { defaultChannelSyncState } from './sync/sync-view.ts'
-import type { SyncConflictResolution } from './sync/sync-view.ts'
 import type { ConfigManagerApi } from './api.ts'
 
 /* ---------------------------------------------------------------- 基础类型 */
@@ -42,20 +40,13 @@ export interface SyncStoreSlice {
   busy: SyncBusyState
   savingConfig: boolean
   pushReport: SyncPushReport | null
-  pullReport: SyncPullReport | null
-  pushPreview: { preview: SyncPushPreview | null; open: boolean }
-  confirmSession: SyncStartResponse | null
-  confirmDecisions: SyncConfirmDecisions | null
+  pullReport: SyncPullApplyReport | null
   lastRestoreId: string | null
   error: string | null
   loadError: string | null
 }
 
-export type SyncBusyState = 'sync' | 'push' | 'pull' | 'rollback' | null
-
-export type SyncConfirmDecision = { adopted: boolean; resolution?: SyncConflictResolution }
-
-export type SyncConfirmDecisions = Record<string, SyncConfirmDecision>
+export type SyncBusyState = 'push' | 'pull' | 'rollback' | null
 
 export type PersistedChannelSyncState = ChannelSyncState
 
@@ -99,9 +90,6 @@ export function defaultSyncStoreSlice(): SyncStoreSlice {
     savingConfig: false,
     pushReport: null,
     pullReport: null,
-    pushPreview: { preview: null, open: false },
-    confirmSession: null,
-    confirmDecisions: null,
     lastRestoreId: null,
     error: null,
     loadError: null,
@@ -125,16 +113,13 @@ export function toSyncStoreSlice(s: SyncStoreSlice): SyncStoreSlice {
     webdavUsername: s.webdavUsername,
     webdavPassword: s.webdavPassword,
     byChannel: {
-      git: { ...s.byChannel.git, snapshots: Array.isArray(s.byChannel.git?.snapshots) ? [...s.byChannel.git.snapshots] : [] },
-      webdav: { ...s.byChannel.webdav, snapshots: Array.isArray(s.byChannel.webdav?.snapshots) ? [...s.byChannel.webdav.snapshots] : [] },
+      git: { ...s.byChannel.git, syncSections: [...s.byChannel.git.syncSections] },
+      webdav: { ...s.byChannel.webdav, syncSections: [...s.byChannel.webdav.syncSections] },
     },
     busy: s.busy,
     savingConfig: s.savingConfig,
     pushReport: s.pushReport,
     pullReport: s.pullReport,
-    pushPreview: s.pushPreview,
-    confirmSession: s.confirmSession,
-    confirmDecisions: s.confirmDecisions,
     lastRestoreId: s.lastRestoreId,
     error: s.error,
     loadError: s.loadError,
@@ -159,27 +144,14 @@ export function toPersistedState(state: StoreState): PersistedState {
         git: {
           syncSections: Array.isArray(git.syncSections) ? [...git.syncSections] : [],
           syncMode: git.syncMode,
-          selectedSnapshotId: git.selectedSnapshotId ?? '',
-          autosync: git.autosync ?? null,
-          autosyncEnabled: git.autosyncEnabled,
-          autosyncInterval: git.autosyncInterval,
-          snapshots: Array.isArray(git.snapshots) ? [...git.snapshots] : [],
         },
         webdav: {
           syncSections: Array.isArray(webdav.syncSections) ? [...webdav.syncSections] : [],
           syncMode: webdav.syncMode,
-          selectedSnapshotId: webdav.selectedSnapshotId ?? '',
-          autosync: webdav.autosync ?? null,
-          autosyncEnabled: webdav.autosyncEnabled,
-          autosyncInterval: webdav.autosyncInterval,
-          snapshots: Array.isArray(webdav.snapshots) ? [...webdav.snapshots] : [],
         },
       },
       pushReport: s.pushReport,
       pullReport: s.pullReport,
-      pushPreview: s.pushPreview,
-      confirmSession: s.confirmSession,
-      confirmDecisions: s.confirmDecisions,
       lastRestoreId: s.lastRestoreId,
       error: s.error,
       loadError: s.loadError,
@@ -229,21 +201,16 @@ export function parsePersistedState(raw: string): PersistedState | null {
             ...gitRaw,
             syncSections: gitSections,
             syncMode: gitMode,
-            snapshots: Array.isArray(gitRaw['snapshots']) ? (gitRaw['snapshots'] as any[]) : [],
           },
           webdav: {
             ...defaultSync.byChannel.webdav,
             ...webdavRaw,
             syncSections: Array.isArray(webdavRaw['syncSections']) ? (webdavRaw['syncSections'] as any[]) : [...defaultSync.byChannel.webdav.syncSections],
             syncMode: webdavMode,
-            snapshots: Array.isArray(webdavRaw['snapshots']) ? (webdavRaw['snapshots'] as any[]) : [],
           },
         },
         pushReport: (parsedSync['pushReport'] as any) ?? null,
         pullReport: (parsedSync['pullReport'] as any) ?? null,
-        pushPreview: (parsedSync['pushPreview'] as any) ?? { preview: null, open: false },
-        confirmSession: (parsedSync['confirmSession'] as any) ?? null,
-        confirmDecisions: (parsedSync['confirmDecisions'] as any) ?? null,
         lastRestoreId: typeof parsedSync['lastRestoreId'] === 'string' ? parsedSync['lastRestoreId'] : null,
         error: typeof parsedSync['error'] === 'string' ? parsedSync['error'] : null,
         loadError: typeof parsedSync['loadError'] === 'string' ? parsedSync['loadError'] : null,

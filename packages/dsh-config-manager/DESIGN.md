@@ -123,7 +123,7 @@ Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏。
   `Modal.Footer`。Radix Content 用 `.dialogContentCenter` 自居中（Portal 下与 Overlay 平级）；
   旧 `.dialogMask/.dialogCard` 类保留供未迁移弹窗兼容。busy 时守卫 `onOpenChange` +
   `onEscapeKeyDown/onPointerDownOutside/onInteractOutside` 双保险禁闭。
-  **当前弹窗**：`SyncSettingsView` 的 5 个弹窗（通道配置 / 推送预览 / 推送结果 / 拉取差异 / 一键同步确认）
+  **当前弹窗**：`SyncSettingsView` 的 3 类弹窗（通道配置 / 推送结果 / 拉取结果）
   均走 `<Modal>`，自定义宽度用 `cardStyle`、限高用 `Modal.Body style`。全仓无手写 `dialogMask+dialogCard` 弹窗。
 - **构建接线**：`tsdown.config.ts` 的 `deps.alwaysBundle: [/^lucide-react(\/.*)?$/, /^@radix-ui\//]`
   强制把二者打进单文件 cjs（否则被当 dependencies 外部化 → 运行时 `require` 命中 DSH loader
@@ -145,12 +145,8 @@ Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏。
 - **进度条**：`.progressTrack` 5px + 确定宽度过渡 / `.progressIndeterminate`。
 
 ### Shell 与 Overlays
-- Shell：`.shellNav/.navStrip/.navTab/.navActions/.shellMain/.pagePad/.statusBar`；
+- Shell：`.shellMain/.pagePad/.statusBar`（插件只有同步一个页面，故无页签导航条）；
   `.shellMain` 与 `.pagePad` 构成纵向 flex 链，页面可伸展填充（`.fillCard/.fillViewport`）。
-  - **`.shellNav` 不铺背景色**（与 `.statusBar` 一致）：宿主设置面板底色随主题变化，
-    实测暗色下 `--dsw-alias-bg-base`=#151517 而面板底色=#2c2c2e，铺底色会在导航条两侧
-    形成一条比面板更暗的通栏色块（亮色下两者同为 #fff 才看不出来）。页签分组感由
-    `.navStrip` 自身的 `bg-layer-2` 底色 + 描边承担。
 - Dialog：`.dialogMask/.dialogCard(.dialogWide)/.dialogHeaderRow/.dialogBody(.dialogBodyScroll)`，
   遮罩点击/Esc/取消三途径关闭，busy 禁闭，focus trap，焦点还原。
   - **尺寸**（2026-09 放大，长内容可读性）：`.dialogCard` = `min(640px, calc(100vw - 48px), 95%)`
@@ -178,19 +174,21 @@ Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏。
 - `.authorRow`：标签 + 值的居中行（关于页作者行），同样带 `.groupLabel{margin-bottom:0}`。
 - **教训（本轮踩到）**：`.field` 自带 `margin-bottom:10px`，任何用 `align-items:flex-end`
   把「字段」与「按钮」并排的对齐都会因此差 10px（实测 select 底 1042 / 按钮底 1052）。
-  在并排容器里必须把该字段的 margin 归零（见 `.snapshotPickerRow .field`）。
+  在并排容器里必须把该字段的 margin 归零。
 
 ### 表单宽度纪律（本轮修正的回归）
-`.input/.select` **不得**全局 `width:100%`：它们大量出现在行内 flex 容器里
-（同步快照下拉），全局满宽会让每个控件各占一整行。
+`.input/.select` **不得**全局 `width:100%`：它们大量出现在行内 flex 容器里，
+全局满宽会让每个控件各占一整行。
 满宽只在**纵向**容器内按需生效：`.field > .input/.select { width:100% }`
 （`.field` 是 column flex），路径映射则用 `.pathOld/.pathNew { display:flex;
 flex-direction:column }` 让内部 input 拉满。
 
 ### 页面级模式
 - **同步页**：通道子 tab（Git / WebDAV）→ 远端地址与凭据卡 → 同步范围卡（默认 / 高级 + 分区勾选）
-  → 一键同步 + 手动推送/拉取动作行 → 自动同步卡 → 历史快照与同步历史。
-  推送前先给「将推送什么」的只读预览；一键同步走「拉取 → 差异确认 → 逐项采纳」流程。
+  → 推送 / 拉取动作行 → 同步历史。
+  两个按钮都不弹确认：推送直接覆盖远端，拉取直接覆盖本地（应用前落回滚快照）。
+  拉取结果弹窗内提供「撤销本次覆盖」（danger + 二次确认，用该回滚快照恢复）——这是拉取的退路，
+  故该弹窗关闭即放弃撤销入口（快照 id 随 `lastRestoreId` 持久化，撤销成功后清空）。
 
 ---
 

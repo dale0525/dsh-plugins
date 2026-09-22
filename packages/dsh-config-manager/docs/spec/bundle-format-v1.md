@@ -773,16 +773,22 @@ THROW 备份 schema v2（高于当前 1，需升级插件），无法导入（�
 
 ### 5.1 秘密如何进入 bundle（安全不变量）
 
-**核心事实：本实现没有任何「凭据值写入归档」的通道。** 凭据值（token / password / API key）在导出时**永不进归档**——这一点与上游不同：上游用 `includeSecrets=true` + 加密把 `.credentials.yaml` 原文塞进 `secrets.enc`，本实现删掉了那条通道。
+**凭据值只有一条进入归档/快照的通道：`credentialsStatus` 分区在 `includeSecrets=true` 时携带明文。**
+这条通道服务于**同步**（私有通道自用），普通备份 ZIP（`includeSecrets=false`）仍然不含任何凭据值。
+上游那套「加密 `.credentials.yaml` 进 `secrets.enc`」的通道在本实现中已删除，且**不会**以明文形式复活。
 
 | 规则 | 取证（**当前工作区**行号 + 符号锚点） |
 |---|---|
-| `includeSecrets` 的**当前实际作用**只剩「是否刷新本机 vault 镜像」——结构化分区的秘密值**始终**被 `SecretScanner` 剥离 | `src/core/types.ts:18-24`（`ExportOptions.includeSecrets` 的注释明写此语义）；`src/core/exporter.ts:236-239`（结构化分区一律 `scanAndRedact`） |
+| `credentialsStatus` 是**唯一**被豁免 `SecretScanner` 剥离的结构化分区，且仅当它确实携带明文时 | `src/adapters/credentials.ts`（`credentialsCarryValues`，判定与 `export` 写出的形状一一对应）；`src/core/exporter.ts`（豁免分支先于 `scanAndRedact`） |
+| 豁免是**必需**的：扫描器按值形状（`sk-`/`ghp_`/JWT…）剥离，正好会抹掉要传的凭据值，把「声称带值」变成静默空值 | `src/security/secret-scanner.ts`（`matchSecretValuePattern` 优先于字段名判定） |
+| `includeSecrets=true` 时 `CredentialsAdapter.export` 读 `.credentials.yaml` 的 `refs` 段，导出 `hasValue: true` + `value`；ref 集合 = settings 引用到的 ∪ 凭据文件登记的 | `src/adapters/credentials.ts`（`readCredentialValues` / `export`） |
+| `includeSecrets=false` 时 `hasValue` 恒 `false`、绝不读凭据文件、`value` 不存在 | `src/adapters/credentials.ts`；`src/schema/types.ts` |
 | `includeSecrets=false` → 导出后把敏感文件镜像到**本机** vault（明文**不进**归档） | `src/core/exporter.ts:300-316`（`if (!includeSecrets)` → `refreshVault`）；敏感清单 `src/security/vault.ts:32-34`（当前仅 `.credentials.yaml`） |
-| `includeSecrets=true` → **不**刷新 vault；但秘密值同样**不进**归档（没有加密层可承载它） | `src/core/exporter.ts:303`（`if (!includeSecrets)` 的反面即跳过 vault）；无任何写 `secrets.enc` 的代码路径 |
-| `security.containsSecrets` 只由**文件类分区实扫到的命中**决定（结构化分区已被剥离，不构成「含秘密」） | `src/core/exporter.ts:278-281`（`containsSecrets = fileSectionSecretHits > 0`，注释明写该判据） |
+| `includeSecrets=true` → **不**刷新 vault（明文随分区走，无需本机镜像） | `src/core/exporter.ts`（`if (!includeSecrets)` 的反面即跳过 vault） |
+| `security.containsSecrets` = 文件类分区实扫命中 **或** 凭据分区携带明文（后者值可能无强形状，扫描器认不出，必须按 `hasValue` 显式判定） | `src/core/exporter.ts`；`src/sync/sync-engine.ts`（`sectionsCarrySecrets`） |
 | `security.encrypted` 恒 `false`、`security.encryption` 恒 `null` | `src/core/exporter.ts:330-331` |
-| `credentialsStatus` 分区的 `hasValue` **恒 `false`**（值未导出） | `src/schema/types.ts`；产出点 `src/adapters/credentials.ts:91`（`hasValue: false, // 值未导出（安全不变量）`） |
+| `hasValue` 与 `value` 必须一致：`true` 必须带 `value`，`false` 不得带（`validate` 强制） | `src/adapters/credentials.ts`（`validate`） |
+| 导入时快照自带明文 → 直接 `credentials.set()`，**不再**要求用户补录 | `src/adapters/credentials.ts`（`analyzeImport` / `applyItem`，优先级：用户补录 > 快照明文 > 旧版解密通道）；`src/core/analyzer.ts`（`ensureMissingSecrets` 跳过 `hasValue=true`） |
 | 凭据值经 `ctx.credentials` **永不回读**，只经文件级读 | `src/core/types.ts`（`HostContext.credentials` 只有 `describe`/`set`，无 getter） |
 
 > **本机 vault 不是 bundle 的一部分**：它落在 `<dataDir>/vault`（`src/security/vault.ts:37-39`），仅在**同一台机器**上导入时用于回填 `$DSH_HOME`（`src/core/analyzer.ts:729-742`）。把 bundle 拷到另一台机器时 vault 不跟随，敏感文件需重新配置。**第三方 importer 不必实现 vault**：它是本实现的本地辅助机制，不是格式的一部分。

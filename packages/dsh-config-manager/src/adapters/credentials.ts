@@ -3,10 +3,14 @@
  * 数据源 = ctx.credentials.describe(ref) 的状态（configured/source/writable），
  * 以及 settings secrets 标记 / llm apiKeyEnv 中引用的凭据 ref 名。
  *
- * 安全不变量：永不导出值（hasValue 恒 false）；导入生成 MissingSecret 清单，
- * 用户补录值经 ctx.secretInputs / decryptedCredentials（仅内存）→ credentials.set()。
- * .credentials.yaml 文件字节由 Exporter 的文件级 vault 处理，本 adapter 不触碰。
+ * 值语义：
+ *  - includeSecrets=false（普通备份）：永不导出值，hasValue 恒 false；
+ *  - includeSecrets=true（同步快照）：携带 .credentials.yaml 里的凭据明文
+ *    （refs 段，含仅在该文件登记、未被 settings 引用的 ref），跨机拉取时直接写回。
+ * 导入：快照带值即直接 credentials.set()；无值（旧快照/普通备份）回退
+ * ctx.secretInputs / decryptedCredentials 补录。
  */
+import * as yaml from 'js-yaml';
 import type { CredentialStatus, CredentialsSection } from '../schema/types.ts';
 import { msgOf, zhMsg } from '../core/messages.ts';
 import type { MsgFunc } from '../core/messages.ts';
@@ -17,6 +21,27 @@ import type {
 import { resolveNamespaces, type NamespaceProvider } from './settings.ts';
 
 export type CredentialRefsProvider = (ctx: HostContext) => Promise<string[]>;
+
+/** 凭据文件相对 $DSH_HOME 的路径（整文件即秘密；refs 段是「名字 → 明文值」映射） */
+export const CREDENTIALS_FILE_REL = '.credentials.yaml';
+
+/**
+ * 读取 .credentials.yaml 的 refs 段（名字 → 明文值）。
+ * 只认 refs（顶层映射）；records 段是内部不透明载荷，不参与导入导出。
+ * 文件不存在 / 非对象 / 段缺失 → 空映射（无凭据可携带不是错误）。
+ */
+async function readCredentialValues(ctx: HostContext): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!(await ctx.fs.exists(CREDENTIALS_FILE_REL))) return out;
+  const doc = yaml.load(Buffer.from(await ctx.fs.readFile(CREDENTIALS_FILE_REL)).toString('utf8'));
+  if (doc === null || typeof doc !== 'object') return out;
+  const refs = (doc as { refs?: unknown }).refs;
+  if (refs === null || typeof refs !== 'object') return out;
+  for (const [ref, value] of Object.entries(refs as Record<string, unknown>)) {
+    if (typeof value === 'string' && value !== '') out.set(ref, value);
+  }
+  return out;
+}
 
 /** 缺省 ref 收集：遍历 settings namespace，收集 llm apiKeyEnv / providers[].apiKeyEnv，
  * 以及 secrets 标记中「引用类字段」（apiKeyEnv/tokenEnv…）的字段值。
@@ -77,10 +102,16 @@ export class CredentialsAdapter implements ConfigAdapter<CredentialsSection> {
     this.refs = options.refs ?? defaultCredentialRefs(options.namespaces ?? []);
   }
 
-  async export(ctx: HostContext, _options: ExportOptions): Promise<ExportSection<CredentialsSection>> {
+  async export(ctx: HostContext, options: ExportOptions): Promise<ExportSection<CredentialsSection>> {
     const credentials: CredentialStatus[] = [];
     const warnings: string[] = [];
-    for (const ref of await this.refs(ctx)) {
+    // includeSecrets=true 才读凭据文件：普通备份绝不让明文进入内存导出数据。
+    const values = options.includeSecrets ? await readCredentialValues(ctx) : new Map<string, string>();
+    // refs 并集：settings 引用到的 + 凭据文件里登记的（后者可能未被任何 namespace 引用）
+    const allRefs = new Set(await this.refs(ctx));
+    for (const ref of values.keys()) allRefs.add(ref);
+    for (const ref of allRefs) {
+      const value = values.get(ref);
       try {
         const status = await ctx.credentials.describe(ref);
         credentials.push({
@@ -88,7 +119,8 @@ export class CredentialsAdapter implements ConfigAdapter<CredentialsSection> {
           required: true,
           configured: status.configured,
           source: (status.source as CredentialStatus['source']) ?? 'file',
-          hasValue: false, // 值未导出（安全不变量）
+          hasValue: value !== undefined,
+          ...(value === undefined ? {} : { value }),
         });
       } catch (err) {
         warnings.push(msgOf(ctx)('adapter.credStatusReadFailed', { ref, reason: err instanceof Error ? err.message : String(err) }));
@@ -102,16 +134,27 @@ export class CredentialsAdapter implements ConfigAdapter<CredentialsSection> {
     };
   }
 
-  async analyzeImport(_data: CredentialsSection, _ctx: ImportContext): Promise<PlanItem[]> {
-    // MissingSecret 计划项由引擎在 createImportPlan 兜底生成（analyzer.ensureMissingSecrets），
-    // 依据 = 本分区里 configured=true 的凭据 → 用户补录清单。这里保持零写入纯计算。
-    return [];
+  async analyzeImport(data: CredentialsSection, _ctx: ImportContext): Promise<PlanItem[]> {
+    // 快照自带明文 → 直接写回项；无值 → 交给引擎的 MissingSecret 兜底（用户补录）。
+    return (data.credentials ?? [])
+      .filter((c) => c.hasValue === true && typeof c.value === 'string' && c.value !== '')
+      .map((c) => ({
+        id: `cred:${c.ref}`,
+        kind: 'Update' as const,
+        adapter: 'credentialsStatus' as const,
+        description: _ctx.msg('adapter.credentialWriteBack', { ref: c.ref }),
+        severity: 'info' as const,
+        target: { adapter: 'credentialsStatus' as const, ref: c.ref },
+      }));
   }
 
   async applyItem(item: PlanItem, ctx: ImportContext): Promise<ApplyResult> {
     const ref = item.target?.ref;
     if (!ref) return { ok: false, message: ctx.msg('adapter.missingTargetRef') };
-    const value = ctx.secretInputs[ref] ?? ctx.decryptedCredentials?.get(ref);
+    // 优先级：用户补录 > 快照明文 > 旧版解密通道
+    const carried = (ctx.sections.get('credentialsStatus') as CredentialsSection | undefined)
+      ?.credentials.find((c) => c.ref === ref)?.value;
+    const value = ctx.secretInputs[ref] ?? carried ?? ctx.decryptedCredentials?.get(ref);
     if (value === undefined || value === '') return { ok: false, message: ctx.msg('adapter.credentialValueMissing') };
     await ctx.target.credentials.set(ref, value);
     return { ok: true };
@@ -132,9 +175,11 @@ export class CredentialsAdapter implements ConfigAdapter<CredentialsSection> {
         if (c === null || typeof c !== 'object' || typeof c.ref !== 'string' || c.ref === '') {
           issues.push({ path: 'credentials[]', message: msg('adapter.validate.credentialRef'), severity: 'error' });
         }
-        if (c.hasValue === true) {
-          // 安全不变量：普通导出恒不携带值；若备份声称有值，视为结构异常
-          issues.push({ path: `credentials.${c.ref}.hasValue`, message: msg('adapter.validate.hasValueFalse'), severity: 'error' });
+        // hasValue 与 value 必须一致：声称有值却没带、或带了值却没标，都是结构异常
+        const hasValue = c.hasValue === true;
+        const hasLiteral = typeof c.value === 'string' && c.value !== '';
+        if (hasValue !== hasLiteral) {
+          issues.push({ path: `credentials.${c.ref}.hasValue`, message: msg('adapter.validate.hasValueMismatch'), severity: 'error' });
         }
       }
     }

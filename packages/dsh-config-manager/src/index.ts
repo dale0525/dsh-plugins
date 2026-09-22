@@ -109,12 +109,6 @@ import { GitTransport } from './sync/git/git-transport.ts'
 import { WebDavTransport } from './sync/webdav/webdav-transport.ts'
 import { DeviceFlowStore, GitHubAuthClient, GitHubAuthError } from './sync/github-auth.ts'
 import { SyncEngine } from './sync/sync-engine.ts'
-import type { ApplyItemsReport } from './sync/sync-engine.ts'
-import { SyncSessionStore } from './sync/sync-session.ts'
-import { AutoSyncScheduler } from './sync/autosync-scheduler.ts'
-import { readAllAutosyncConfigs, readAutosyncConfig, writeAutosyncConfig } from './sync/autosync-config.ts'
-import type { AutosyncConfig, AutosyncInterval, AutosyncRunStatus } from './sync/autosync-config.ts'
-import { appendAutosyncEntry, readSyncHistory } from './sync/sync-history.ts'
 import {
   MigrationStore, queryHistory, summarizeHistory, renderExport, parseHistoryQuery,
   type MigrationKind, type MigrationResult, type ReadMigrationResult,
@@ -227,13 +221,7 @@ const API = {
   // P2：同步历史 / 自动应用 / 一键回滚
   syncHistory: '/api/dsh-config-manager/sync/history',
   syncRollback: '/api/dsh-config-manager/sync/rollback',
-  // m-sync-v2：一键同步（差异确认会话）+ 自动同步 + 历史快照
-  syncSnapshotsList: '/api/dsh-config-manager/sync/snapshots-list',
-  syncSync: '/api/dsh-config-manager/sync/sync',
-  syncApplyItems: '/api/dsh-config-manager/sync/apply-items',
-  syncCancel: '/api/dsh-config-manager/sync/cancel',
-  syncAutosync: '/api/dsh-config-manager/sync/autosync',
-  // m-sync-selection：同步分区选择持久化（默认/高级模式 + 勾选分区；自动同步共用）
+  // m-sync-selection：同步分区选择持久化（默认/高级模式 + 勾选分区）
   syncSelection: '/api/dsh-config-manager/sync/selection',
   // m-sync-config：同步通道配置保存（UI 表单自动保存 /「保存配置」按钮；凭据写 DSH credentials）
   syncConfig: '/api/dsh-config-manager/sync/config',
@@ -1054,132 +1042,6 @@ export function extractSyncSections(
   return out
 }
 
-/** 需要人工决策的 PlanItemKind（一键同步 needsReview 判定 + 逐项确认标记）。
- * 注意：'Install'（安装插件）不在此列 —— 同步拉取差异时插件按「自动安装」处理：
- * 默认采纳、不逐项展示、无需手动选择（product requirement）。
- * issue #35：'Warning' 必须**可见**——它承载「本次同步会剔除哪些无法满足的声明」这类
- * 改变配置语义的信息；此前非决策项默认自动采用且不展示，用户只看到「同步成功」。 */
-const REVIEW_KINDS: ReadonlySet<PlanItemKind> = new Set([
-  'Conflict', 'MissingSecret', 'MissingDependency', 'Error', 'PathMapping', 'Warning',
-])
-
-/**
- * issue #35：会**改变工具链行为**的项 —— 只有 pnpm-workspace.yaml 在本次同步中
- * 移除了无法满足的 patchedDependencies 声明时，才带 detail。
- * 这类项此前属「非冲突项 → 自动采用且不展示」，用户即使已知风险也无法否决
- * （issue #35 正是这条自动采用把目标机 pnpm 弄坏的）。
- * 现在：进确认列表、可见、可取消；但**默认仍采用**（我们的 sanitize 结果严格更安全，
- * 默认不采用反而会静默丢掉 allowBuilds / 冷静期配置）。
- * 注意：与客户端 sync-view.ts 的同名判定必须保持一致（两侧刻意重复，避免跨端 import）。
- */
-function isToolchainChangeItem(item: { itemId: string; detail?: string | undefined }): boolean {
-  return item.itemId === 'plugins:pnpm-workspace' && item.detail !== undefined && item.detail !== ''
-}
-
-/** 一键同步差异项（client 逐项确认的最小契约；与 sync-api.ts SyncConfirmItem 对齐） */
-interface SyncConfirmItem {
-  itemId: string
-  adapter: SectionId
-  kind: PlanItemKind
-  description: string
-  /** 变更详情（如插件「当前 1.1 vs 导入 1.6」），与导入恢复向导展示一致 */
-  detail?: string
-  severity: 'info' | 'warning' | 'error'
-  defaultAdopt: boolean
-  adopt: boolean
-  conflict?: { path: string; kind: 'key' | 'file' | 'section'; local?: unknown; remote?: unknown; ancestor?: unknown; diff?: string }
-  target?: { adapter: SectionId; ref: string }
-}
-
-/** 把 ImportPlan 投影为逐项可确认的差异项（默认采用 Create/Update/Install；人工项默认不采用）。 */
-function planToConfirmItems(plan: ImportPlan): SyncConfirmItem[] {
-  return plan.items.map((item) => {
-    const manual = REVIEW_KINDS.has(item.kind)
-    let conflict: SyncConfirmItem['conflict']
-    if (item.kind === 'Conflict') {
-      const c = (item as { conflict?: { path?: string; kind?: string; local?: unknown; remote?: unknown; ancestor?: unknown } }).conflict
-      conflict = {
-        path: c?.path ?? '$',
-        kind: c?.kind === 'file' ? 'file' : c?.kind === 'section' ? 'section' : 'key',
-        ...(c?.local !== undefined ? { local: c.local } : {}),
-        ...(c?.remote !== undefined ? { remote: c.remote } : {}),
-        ...(c?.ancestor !== undefined ? { ancestor: c.ancestor } : {}),
-      }
-    }
-    return {
-      itemId: item.id,
-      adapter: item.adapter,
-      kind: item.kind,
-      description: item.description,
-      detail: item.detail,
-      severity: item.severity,
-      defaultAdopt: !manual,
-      adopt: !manual,
-      ...(conflict !== undefined ? { conflict } : {}),
-      ...(item.target !== undefined ? { target: item.target } : {}),
-    }
-  })
-}
-
-/** autosync interval 类型守卫 */
-function isAutosyncInterval(v: unknown): v is AutosyncInterval {
-  return v === '5m' || v === '15m' || v === '30m' || v === '60m' || v === '6h' || v === '12h' || v === '24h'
-}
-
-/** 自动同步状态响应（GET /sync/autosync 与 POST 回填；读盘计算 elapsedMs）。 */
-async function buildAutosyncStatus(dir: string, channel: SyncTransportType): Promise<AutosyncStatusResponse> {
-  const cfg = await readAutosyncConfig(dir, channel)
-  const elapsedMs = cfg.lastRunAt === undefined || cfg.lastRunAt === ''
-    ? -1
-    : Math.max(0, Date.now() - Date.parse(cfg.lastRunAt))
-  return {
-    enabled: cfg.enabled,
-    interval: cfg.interval,
-    ...(cfg.lastRunAt !== undefined ? { lastRunAt: cfg.lastRunAt } : {}),
-    ...(cfg.lastRunStatus !== undefined ? { lastRunStatus: cfg.lastRunStatus } : {}),
-    ...(cfg.lastRunMessage !== undefined ? { lastRunMessage: cfg.lastRunMessage } : {}),
-    consecutiveFailures: cfg.consecutiveFailures,
-    elapsedMs,
-    ...(cfg.lastRunHistoryId !== undefined ? { lastRunHistoryId: cfg.lastRunHistoryId } : {}),
-  }
-}
-
-/** 全部通道的自动同步状态（status 路由一次返回；UI 按当前 tab 取对应通道）。 */
-async function buildAutosyncStatusByChannel(dir: string): Promise<Record<SyncTransportType, AutosyncStatusResponse>> {
-  const all = await readAllAutosyncConfigs(dir)
-  const build = async (channel: SyncTransportType): Promise<AutosyncStatusResponse> => {
-    const cfg = all[channel]
-    const elapsedMs = cfg.lastRunAt === undefined || cfg.lastRunAt === ''
-      ? -1
-      : Math.max(0, Date.now() - Date.parse(cfg.lastRunAt))
-    return {
-      enabled: cfg.enabled,
-      interval: cfg.interval,
-      ...(cfg.lastRunAt !== undefined ? { lastRunAt: cfg.lastRunAt } : {}),
-      ...(cfg.lastRunStatus !== undefined ? { lastRunStatus: cfg.lastRunStatus } : {}),
-      ...(cfg.lastRunMessage !== undefined ? { lastRunMessage: cfg.lastRunMessage } : {}),
-      consecutiveFailures: cfg.consecutiveFailures,
-      elapsedMs,
-      ...(cfg.lastRunHistoryId !== undefined ? { lastRunHistoryId: cfg.lastRunHistoryId } : {}),
-    }
-  }
-  return { git: await build('git'), webdav: await build('webdav') }
-}
-
-/** GET /sync/autosync 响应类型（与 sync-api.ts AutosyncStatusResponse 对齐） */
-interface AutosyncStatusResponse {
-  enabled: boolean
-  interval: AutosyncInterval
-  lastRunAt?: string
-  lastRunStatus?: AutosyncRunStatus
-  lastRunMessage?: string
-  consecutiveFailures: number
-  elapsedMs: number
-  lastRunHistoryId?: string
-}
-
-/* -------------------------------------------------- restore 路由（M4） */
-
 /** POST /restore 请求体校验（纯函数；snapshotId 拒绝路径分隔符防 join 越界）。 */
 export type BuildRestoreBodyResult =
   | { ok: true; value: { snapshotId: string; dryRun: boolean } }
@@ -1360,7 +1222,7 @@ export function isGitHubAuthMissing(error: unknown): boolean {
 }
 
 /** Build the /api/dsh-config-manager route family. */
-function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSyncScheduler; makeSyncEngine: (cfg: SyncConfig) => SyncEngine; lifecycle: ConfigLifecycle } {
+function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cfg: SyncConfig) => SyncEngine; lifecycle: ConfigLifecycle } {
   const { host, adapters, exportsDir, tmpDir, snapshotsDir, runs, syncDir, dataDir, credentials, githubClientId, githubClientSecret, history } = deps
   /**
    * Phase 1 P0-1/P0-2：配置生命周期服务（自动快照 / 撤销 / 重做）。
@@ -1617,7 +1479,7 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
 
   /** 构造 SyncEngine：按 transport 分支构造对应传输（git → GitTransport；webdav → WebDavTransport）。
    *  同步范围（sections）来自持久化分区选择：advanced 模式 → 只处理勾选分区，
-   *  自动同步（merge/apply/push 全链路）与手动 push 共用此配置。 */
+   *  push 与 pull 共用此配置。 */
   const makeSyncEngine = (cfg: SyncConfig): SyncEngine => {
     let transport: SyncTransport
     if (isWebDavConfig(cfg)) {
@@ -1661,34 +1523,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
       ...(sections === undefined ? {} : { sections }),
     })
   }
-
-  /** 一键同步差异确认会话存储（进程内存；/sync/sync 预览 → /sync/apply-items 逐项执行解耦） */
-  const syncSessions = new SyncSessionStore()
-
-  /** 自动同步后台调度器（宿主进程生命周期，不依赖浏览器） */
-  const scheduler = new AutoSyncScheduler({
-    syncDir,
-    host,
-    makeSyncEngine,
-    msg,
-    runs,
-    mutationLock: host.mutationLock,
-    isBlocked: () => host.safeModeIsBlocked?.() ?? false,
-    phase3Recovery: host.phase3Recovery,
-    // Phase 6：autosync 既写 sync-history.json（既有语义），也写统一迁移历史（COMPLETE 不变量）。
-    appendHistoryFn: async (entry) => {
-      await appendAutosyncEntry(syncDir, entry).catch(() => undefined)
-      await history.append({
-        kind: 'autosync',
-        result: entry.status === 'success' ? 'success' : entry.status === 'skipped' ? 'skipped' : 'failed',
-        sections: entry.appliedSections ?? [],
-        source: 'autosync',
-        summary: `自动同步 ${entry.direction}${entry.transport !== undefined ? `（${entry.transport}）` : ''}`,
-        error: entry.status === 'failed' ? (entry.error ?? entry.skipReason) : undefined,
-      }).catch(() => undefined)
-    },
-  })
-  // P1-B：调度器不再在 makeRoutes 内同步 start —— 由 apply() 在「启动 recovery 分类完成后、仅 NORMAL」时启动。
 
   // ============================================================ Phase 5 recovery orchestration
   // Recovery 路由**禁用 withMutationGate**（避免 double-journal：recovery 复用被恢复 operation 的
@@ -1811,14 +1645,10 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
             lastSyncChannel: uiPrefs.lastSyncChannel,
             // 可同步分区目录（「高级/自定义导出」勾选列表；只含 portable，无 secret 值）
             syncSections: syncSectionCatalog,
-            // 当前分区选择（默认/高级模式 + 勾选分区；当前激活通道；UI 回填用，自动同步共用）
+            // 当前分区选择（默认/高级模式 + 勾选分区；当前激活通道；UI 回填用）
             syncSelection: await selectionView(transport),
             // 全部通道的分区选择（git/webdav 各自独立；UI 按当前 tab 取对应通道）
             syncSelectionByChannel: await selectionViewByChannel(),
-            // 自动同步当前状态（当前激活通道；供 UI 顶部开关回填；§3.9）
-            autosync: await buildAutosyncStatus(syncDir, transport),
-            // 全部通道的自动同步状态（git/webdav 各自独立；UI 按当前 tab 取对应通道）
-            autosyncByChannel: await buildAutosyncStatusByChannel(syncDir),
           })
         } catch (error) {
           writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -1906,23 +1736,15 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
           const snapshotId =
             typeof body['snapshotId'] === 'string' && body['snapshotId'] !== '' ? body['snapshotId'] : undefined
           const sections = extractSyncSections(body, knownSyncSectionIds)
-          // P0-②：push 前只读预览（body.preview === true → 不写远端，只返回「将推送什么」）
-          const preview = body['preview'] === true
-          // 分支调用以保证 withTimeout 的泛型结果类型正确（SyncPushReport | SyncPushPreview）
-          const report = preview
-            ? await withTimeout(
-                engine.previewPush({ ...(sections === undefined ? {} : { sections }) }),
-                ROUTE_TIMEOUT_MS,
-                msg('host.syncPushTimeout'),
-              )
-            : await withTimeout(
-                engine.push({
-                  ...(snapshotId === undefined ? {} : { snapshotId }),
-                  ...(sections === undefined ? {} : { sections }),
-                }),
-                ROUTE_TIMEOUT_MS,
-                msg('host.syncPushTimeout'),
-              )
+          // 推送即直接覆盖远端（无预览、无确认）：勾选即同步是本插件的产品语义。
+          const report = await withTimeout(
+            engine.push({
+              ...(snapshotId === undefined ? {} : { snapshotId }),
+              ...(sections === undefined ? {} : { sections }),
+            }),
+            ROUTE_TIMEOUT_MS,
+            msg('host.syncPushTimeout'),
+          )
           await writeSyncConfig(syncDir, syncCfg)
           writeJson(res, 200, report)
         } catch (error) {
@@ -1931,12 +1753,12 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
       }),
     },
     // ------------------------------------------------------ sync/pull
-    // m-sync-ui：拉取差异预览（只读：list/download → 转临时 ZIP → Importer 分析出计划摘要）。
-    // 绝不直接写配置、绝不执行导入（executeImportPlan 由上层按用户确认驱动）。
+    // 拉取 = **直接覆盖本地**：下载远端最新快照 → 应用前落回滚快照 → replace 写入本地。
+    // 无差异确认会话（远端值覆盖本地是本插件的产品语义）；失败整体回滚。
     {
       kind: 'exact',
       path: API.syncPull,
-      handler: async (req, res) => {
+      handler: withMutationGate('sync-pull', async (req, res, _lockCtx, journalCtx) => {
         if (!guard(req, res, 'POST')) return
         const body = await readJsonBody(req)
         if (body === undefined) {
@@ -1946,15 +1768,9 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
         try {
           const syncCfg = await prepareSync(body)
           const engine = makeSyncEngine(syncCfg)
-          // 缺省 replace：明文同步的产品语义是「远端值覆盖本地」，不做 diff/合并
-          const strategy =
-            body['strategy'] === 'merge' || body['strategy'] === 'skipExisting' ? body['strategy'] : 'replace'
-          const snapshotId =
-            typeof body['snapshotId'] === 'string' && body['snapshotId'] !== '' ? body['snapshotId'] : undefined
           const report = await withTimeout(
-            engine.pull({
-              strategy,
-              ...(snapshotId === undefined ? {} : { snapshotId }),
+            engine.pullAndApply({
+              ...(journalCtx === undefined ? {} : { snapshotBinding: journalCtx }),
             }),
             ROUTE_TIMEOUT_MS,
             msg('host.syncPullTimeout'),
@@ -1964,7 +1780,7 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
         } catch (error) {
           writeSyncRouteError(res, error)
         }
-      },
+      }, { deferredSnapshot: true }),
     },
     // -------------------------------------------------- sync/github/start
     // m-github-oauth：发起 GitHub OAuth device flow。请求 GitHub 取设备码，宿主登记
@@ -2143,281 +1959,15 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
           // reviewCount 恒 0：待审队列（sync-review-queue.json）已随合并逻辑一并删除，
           // 保留该字段仅为与客户端契约兼容。
           rows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
-          // 合并自动同步执行记录（sync-history.json）
-          const hist = await readSyncHistory(syncDir)
-          const merged = [
-            ...rows.map((r) => ({ ...r, kind: 'apply' as const })),
-            ...hist.autosyncEntries.map((e) => ({
-              id: e.createdAt,
-              createdAt: e.createdAt,
-              kind: 'autosync' as const,
-              autosync: e,
-            })),
-          ].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
-          writeJson(res, 200, { entries: merged })
+          writeJson(res, 200, { entries: rows.map((r) => ({ ...r, kind: 'apply' as const })) })
         } catch (error) {
           writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
         }
       },
     },
-    // ------------------------------------------------------ sync/snapshots-list
-    // m-sync-v2：远端历史快照列表（供「选择历史快照」下拉）。
-    {
-      kind: 'exact',
-      path: API.syncSnapshotsList,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        if (body === undefined) {
-          writeJson(res, 400, { error: 'invalid JSON body' })
-          return
-        }
-        try {
-          const syncCfg = await prepareSync(body)
-          const engine = makeSyncEngine(syncCfg)
-          const metas = await withTimeout(
-            engine.listSnapshots(),
-            ROUTE_TIMEOUT_MS,
-            msg('host.syncPullTimeout'),
-          )
-          const snapshots = [...metas]
-            .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
-            .map((m) => ({
-              id: m.id,
-              createdAt: m.createdAt,
-              sectionCount: m.manifest.sectionIds.length,
-              platform: m.manifest.platform,
-              dshVersion: m.manifest.dshVersion,
-            }))
-          const state = await loadSyncState(syncDir)
-          writeJson(res, 200, { ok: true, snapshots, currentSnapshotId: state.lastSnapshotId === '' ? undefined : state.lastSnapshotId })
-        } catch (error) {
-          writeSyncRouteError(res, error)
-        }
-      },
-    },
-    // ------------------------------------------------------ sync/sync
-    // m-sync-v2：一键同步第一步 —— 拉取 → 差异确认会话（内存登记临时 ZIP + ImportPlan）。
-    {
-      kind: 'exact',
-      path: API.syncSync,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        if (body === undefined) {
-          writeJson(res, 400, { error: 'invalid JSON body' })
-          return
-        }
-        try {
-          const syncCfg = await prepareSync(body)
-          const engine = makeSyncEngine(syncCfg)
-          const snapshotId = typeof body['snapshotId'] === 'string' && body['snapshotId'] !== '' ? body['snapshotId'] : undefined
-          const preview = await withTimeout(
-            engine.preview({ ...(snapshotId === undefined ? {} : { snapshotId }) }),
-            ROUTE_TIMEOUT_MS,
-            msg('host.syncPullTimeout'),
-          )
-          if (!preview.ok || preview.plan === null || preview.analysis === null) {
-            writeJson(res, 200, { ok: false, syncSessionId: '', snapshotId: preview.snapshotId, items: [], needsReview: false, compatibility: 'unsupported', message: preview.message ?? '同步预览失败' })
-            return
-          }
-          const syncSessionId = syncSessions.set({
-            zipPath: preview.zipPath,
-            plan: preview.plan,
-            analysis: preview.analysis,
-            snapshotId: preview.snapshotId,
-            config: syncCfg,
-          })
-          const items = planToConfirmItems(preview.plan)
-          const needsReview = items.some((i) => REVIEW_KINDS.has(i.kind) || isToolchainChangeItem(i))
-    || preview.analysis.pathIssues.length > 0
-          writeJson(res, 200, {
-            ok: true,
-            syncSessionId,
-            snapshotId: preview.snapshotId,
-            items,
-            needsReview,
-            compatibility: preview.analysis.compatibility,
-          })
-        } catch (error) {
-          writeSyncRouteError(res, error)
-        }
-      },
-    },
-    // ------------------------------------------------------ sync/apply-items
-    // m-sync-v2：一键同步第二步 —— 按用户对差异项的逐项决策执行导入。
-    {
-      kind: 'exact',
-      path: API.syncApplyItems,
-      handler: withMutationGate('sync-apply', async (req, res, lockCtx, journalCtx) => {
-        if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        if (body === undefined) {
-          writeJson(res, 400, { error: 'invalid JSON body' })
-          return
-        }
-        try {
-          const syncSessionId = typeof body['syncSessionId'] === 'string' ? body['syncSessionId'] : ''
-          const session = syncSessions.get(syncSessionId)
-          if (session === undefined) {
-            writeJson(res, 400, { error: '同步会话不存在或已过期，请重新拉取预览' })
-            return
-          }
-          const adoptions = Array.isArray(body['adoptions']) ? body['adoptions'] : []
-          // 构造子计划（仅含采纳项）
-          const byId = new Map<string, { adopt: boolean; resolution?: string }>()
-          for (const a of adoptions as Array<Record<string, unknown>>) {
-            if (typeof a?.['itemId'] !== 'string') continue
-            byId.set(a['itemId'], { adopt: a['adopt'] === true, resolution: typeof a['resolution'] === 'string' ? a['resolution'] : undefined })
-          }
-          // 构造子计划（仅含采纳项）。同步冲突决策 useRemote → 核心 importer 的
-          // useImported（item 转成 Update，applyOne 才会真正写远端值），
-          // keepLocal/skip 从子计划剔除（keepCurrent/skip 语义：不写）。
-          // 与导入恢复向导（ConflictList keepCurrent/useImported）的决策语义完全一致。
-          const subItems: PlanItem[] = session.plan.items.flatMap((item) => {
-            const d = byId.get(item.id)
-            if (d === undefined || !d.adopt) return []
-            // Conflict 项必须有 resolution；keepLocal/skip 不写入本地 → 剔除
-            if (item.kind === 'Conflict') {
-              if (d.resolution === undefined) throw new SyncRouteError(`冲突项 ${item.id} 必须提供 resolution（useRemote/keepLocal/skip）`)
-              if (d.resolution === 'keepLocal' || d.resolution === 'skip') return []
-              // useRemote → 转成 Update 计划项（镜像 analyzer.applyItemResolution 的
-              // useImported 分支），applyOne 才会把远端值真正写进本地。
-              const c = (item as { conflict?: { itemId?: string } }).conflict
-              return [{
-                ...item,
-                kind: 'Update' as const,
-                severity: 'info' as const,
-                conflict: { itemId: c?.itemId ?? item.id, resolution: 'useImported' as const },
-              } as PlanItem]
-            }
-            return [item]
-          })
-          const subPlan: ImportPlan = {
-            ...session.plan,
-            items: subItems,
-          }
-          // 消费会话（同一 session 只允许一次 apply-items）
-          syncSessions.delete(syncSessionId)
-          let engine: SyncEngine
-          let report: ApplyItemsReport
-          try {
-            engine = makeSyncEngine(session.config)
-            report = await engine.applyItems(session.zipPath, subPlan, {
-              onItem: (info) => { /* 进度可选：runs 已由 applyItems 内部处理 */ },
-              snapshotBinding: journalCtx,
-            })
-          } finally {
-            // 用完再清理临时 ZIP（此前在 applyItems 读取前就删除 → ENOENT：无法读取备份文件）
-            await fs.rm(dirname(session.zipPath), { recursive: true, force: true }).catch(() => { /* 尽力清理临时 ZIP */ })
-          }
-          const historyError = await tryAppendHistory({
-            kind: 'sync-apply',
-            result: report.ok ? 'success' : 'failed',
-            sections: Array.isArray(report.applied) ? report.applied.filter((s): s is string => typeof s === 'string') : subItems.map((i) => (i as { adapter?: string }).adapter).filter((s): s is string => typeof s === 'string' && s !== ''),
-            operationId: journalCtx?.operationId,
-            snapshotId: report.restoreId ?? undefined,
-            source: 'api',
-            summary: `一键同步应用：${(Array.isArray(report.applied) ? report.applied.length : subItems.length)} 项${report.rolledBack === true ? '（已回滚）' : ''}`,
-            error: report.ok ? undefined : '同步应用未完全成功',
-          })
-          writeJson(res, 200, historyError === undefined ? {
-            ok: report.ok,
-            applied: report.applied,
-            skipped: subItems.map((i) => i.id),
-            needsRestart: report.needsRestart === true,
-            warnings: report.warnings,
-            restoreId: report.restoreId,
-            rolledBack: report.rolledBack,
-            failed: report.failed,
-            result: report.result,
-          } : {
-            ok: report.ok,
-            applied: report.applied,
-            skipped: subItems.map((i) => i.id),
-            needsRestart: report.needsRestart === true,
-            warnings: report.warnings,
-            restoreId: report.restoreId,
-            rolledBack: report.rolledBack,
-            failed: report.failed,
-            result: report.result,
-            historyWriteError: historyError,
-          })
-        } catch (error) {
-          writeSyncRouteError(res, error)
-        }
-      }, { deferredSnapshot: true }),
-    },
-    // ------------------------------------------------------ sync/cancel
-    // m-sync-v2：取消 / 清理差异确认会话（丢弃临时 ZIP，零副作用）。
-    {
-      kind: 'exact',
-      path: API.syncCancel,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        if (body === undefined) {
-          writeJson(res, 400, { error: 'invalid JSON body' })
-          return
-        }
-        try {
-          const syncSessionId = typeof body['syncSessionId'] === 'string' ? body['syncSessionId'] : ''
-          if (syncSessionId !== '') {
-            const session = syncSessions.get(syncSessionId)
-            if (session !== undefined) {
-              await fs.rm(dirname(session.zipPath), { recursive: true, force: true }).catch(() => { /* 尽力清理临时 ZIP */ })
-            }
-            syncSessions.delete(syncSessionId)
-          }
-          writeJson(res, 200, { ok: true })
-        } catch (error) {
-          writeSyncRouteError(res, error)
-        }
-      },
-    },
-    // ------------------------------------------------------ sync/autosync
-    // m-sync-v2：自动同步配置读写（按通道：git/webdav 各自的开关 + 间隔 + 启动阈值 + 状态）。
-    // GET = 读全部通道状态（{ git, webdav }）；POST = 写指定通道（body.transport，缺省 git）。
-    // 同一路径注册为一个 exact 路由（方法内部分发），避免 webserver 对重复 exact 路径报错。
-    {
-      kind: 'exact',
-      path: API.syncAutosync,
-      handler: async (req, res) => {
-        if (req.method === 'GET') {
-          if (!guard(req, res, 'GET')) return
-          try {
-            writeJson(res, 200, await buildAutosyncStatusByChannel(syncDir))
-          } catch (error) {
-            writeSyncRouteError(res, error)
-          }
-          return
-        }
-        if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        if (body === undefined) {
-          writeJson(res, 400, { error: 'invalid JSON body' })
-          return
-        }
-        try {
-          // 按通道读写：git/webdav 各自的自动同步配置与运行状态独立（缺省 git 兜底）
-          const channel: SyncTransportType = body['transport'] === 'webdav' ? 'webdav' : 'git'
-          const cfg = await readAutosyncConfig(syncDir, channel)
-          if (typeof body['enabled'] === 'boolean') cfg.enabled = body['enabled']
-          if (typeof body['interval'] === 'string' && isAutosyncInterval(body['interval'])) cfg.interval = body['interval']
-          if (typeof body['startupMinIntervalMs'] === 'number' && Number.isFinite(body['startupMinIntervalMs']) && body['startupMinIntervalMs'] > 0) {
-            cfg.startupMinIntervalMs = body['startupMinIntervalMs']
-          }
-          await writeAutosyncConfig(syncDir, channel, cfg)
-          if (scheduler) scheduler.reload().catch(() => { /* 尽力而为 */ })
-          writeJson(res, 200, await buildAutosyncStatus(syncDir, channel))
-        } catch (error) {
-          writeSyncRouteError(res, error)
-        }
-      },
-    },
     // ------------------------------------------------------ sync/selection
     // m-sync-selection：保存同步分区选择（按通道：git/webdav 各自的模式 + 勾选分区）。
-    // 持久化到 sync-selection.json；自动同步调度器与手动 push 共用（makeSyncEngine 注入）。
+    // 持久化到 sync-selection.json；push/pull 共用（makeSyncEngine 注入）。
     // sections 元素必须是可同步（portable）分区 id；mode 非法 → 回退 default。
     {
       kind: 'exact',
@@ -2495,7 +2045,7 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; scheduler: AutoSync
       }),
     },
   ]
-  return { routes: routesList, scheduler, makeSyncEngine, lifecycle }
+  return { routes: routesList, makeSyncEngine, lifecycle }
 }
 
 /* ------------------------------------------------------------------ apply */
@@ -2569,7 +2119,7 @@ export function apply(ctx: Context, config?: Config): void {
   })
   const envLockManager = host.mutationLock as EnvironmentLockManager
   // Phase 3：启动 reconcile（只读）+ SAFE MODE。宿主 apply() 为同步 →
-  // ① 先同步探测 durable SAFE MODE 标记（scheduler.start() 前即被阻断），
+  // ① 先同步探测 durable SAFE MODE 标记（闸门开拍前即被阻断），
   // ② 再异步跑完整只读 reconcile，刷新标志与 durable 标记。不自动 recover stale lock（Rev 3 P1-NEW-2）。
   // Phase 4 F21/F11：注入真实 snapshotExists 正向校验——journal 引用的 snapshot 存在 + READY +
   // verified（manifest/blob hash）+ op/env/owner binding 匹配 journal，才视为可回滚的有效 recovery 证据。
@@ -2597,9 +2147,9 @@ export function apply(ctx: Context, config?: Config): void {
   if (phase3Recovery.safeModeActive) {
     host.log.warn('Phase 3 SAFE MODE 激活：存在未恢复的 transaction，destructive 操作被阻断（如需恢复请先显式处理）')
   }
-  // P1-B：启动 recovery 分类 barrier。调度器（AutoSync/Backup）只在分类完成且 state=NORMAL 时启动。
-  // schedulerGate.start 由 makeRoutes 返回 scheduler 后赋值；apply 为同步，
-  // 故在该异步分类块 await 完成前，schedulerGate.start 通常已就绪。fail-closed：分类抛错 → 不启动调度器。
+  // P1-B：启动 recovery 分类 barrier。后台任务（自动快照）只在分类完成且 state=NORMAL 时启动。
+  // schedulerGate.start 在 makeRoutes 返回后赋值；apply 为同步，
+  // 故在该异步分类块 await 完成前，schedulerGate.start 通常已就绪。fail-closed：分类抛错 → 不开拍。
   const schedulerGate = { start: null as (() => void) | null }
   let startupStateResolved = false
   let shouldStartSchedulers = false
@@ -2627,7 +2177,7 @@ export function apply(ctx: Context, config?: Config): void {
       phase3Recovery.safeModeActive = phase3Recovery.safeModeActive || ['RECOVERY_REQUIRED', 'NEEDS_ATTENTION', 'UNKNOWN_STATE'].includes(state.kind)
       shouldStartSchedulers = (state.kind === 'NORMAL')
       if (state.kind === 'RECOVERY_REQUIRED' || state.kind === 'NEEDS_ATTENTION') {
-        host.log.warn(`Phase 3 ${state.kind}：上次 destructive operation 崩溃残留，需显式恢复；destructive 调度器未启动（read-only host 存活）`)
+        host.log.warn(`Phase 3 ${state.kind}：上次 destructive operation 崩溃残留，需显式恢复；destructive 后台任务未启动（read-only host 存活）`)
       } else if (shouldStartSchedulers && schedulerGate.start !== null) {
         schedulerGate.start()
       }
@@ -2713,7 +2263,7 @@ export function apply(ctx: Context, config?: Config): void {
   const historyStore = new MigrationStore({ dir: historyDir })
   const runs = new RunRegistry({ msg: host.msg })
   const secretScanner = createConfiguredSecretScanner(config?.personalPatterns)
-  const { routes, scheduler, makeSyncEngine, lifecycle } = makeRoutes({
+  const { routes, makeSyncEngine, lifecycle } = makeRoutes({
     host,
     adapters,
     exportsDir,
@@ -2739,18 +2289,14 @@ export function apply(ctx: Context, config?: Config): void {
     syncDir,
     makeSyncEngine,
   })
-  // P1-B：调度器不同步 start —— 由启动 recovery 分类完成后（仅 NORMAL）启动。
+  // P1-B：闸门不同步 start —— 由启动 recovery 分类完成后（仅 NORMAL）启动。
   schedulerGate.start = () => {
-    scheduler.start();
     // Phase 1 P0-1：配置变更自动快照。放在同一闸门内，确保恢复/事务进行中不开拍。
     // 灾备总开关关闭时不启动监听（否则后台持续采集全部分区并刷「超出上限」告警）。
     if (LIFECYCLE_ENABLED) lifecycle.startAutoSnapshot();
   }
   // 若启动分类已在此构造完成前解析为 NORMAL（罕见竞态），立即补启动。
   if (startupStateResolved && shouldStartSchedulers && schedulerGate.start !== null) { schedulerGate.start(); }
-  // 自动同步调度器随插件生命周期停止：插件重载/卸载时清理定时器，
-  // 避免旧调度器残留导致重复后台同步。
-  ctx.effect(() => () => scheduler.stop(), 'config-manager: autosync scheduler')
   // Phase 1 P0-1：停止配置变更监听（dispose 后不再产生自动快照）。
   ctx.effect(() => () => lifecycle.dispose(), 'config-manager: config lifecycle watcher')
   const webServer = readService<WebServer>(ctx, 'webServer')

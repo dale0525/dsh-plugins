@@ -83,8 +83,63 @@ test('credentials: applyItem 用 secretInputs / decryptedCredentials 补录（�
   assert.equal(r3.ok, false);
 });
 
-test('credentials: validate 拒绝 hasValue=true（安全不变量）', async () => {
+test('credentials: includeSecrets=true 携带明文值（含仅存在于 .credentials.yaml 的 ref）', async () => {
+  const ctx = makeContext('win32', 'C:\\\\Users\\\\alice');
+  ctx.settings.ns.set('llm-deepseek', { value: { apiKeyEnv: 'DEEPSEEK_API_KEY' }, revision: 1, secrets: [] });
+  ctx.credentials.values.set('DEEPSEEK_API_KEY', 'sk-super-secret-123');
+  await ctx.fs.writeFile('.credentials.yaml', Buffer.from(
+    'version: 1\nrefs:\n  DEEPSEEK_API_KEY: sk-super-secret-123\n  DSH_CONFIG_MANAGER_SYNC_WEBDAV_PASSWORD: hunter2\n',
+  ));
+
+  const adapter = new CredentialsAdapter({ namespaces: NS });
+  const out = await adapter.export(ctx, { includeSecrets: true });
+  const byRef = new Map(out.data.credentials.map((c) => [c.ref, c]));
+  assert.equal(byRef.get('DEEPSEEK_API_KEY')?.value, 'sk-super-secret-123');
+  assert.equal(byRef.get('DEEPSEEK_API_KEY')?.hasValue, true);
+  assert.equal(byRef.get('DSH_CONFIG_MANAGER_SYNC_WEBDAV_PASSWORD')?.value, 'hunter2', '仅存在于凭据文件的 ref 也随导出');
+  const v = await adapter.validate(out.data);
+  assert.equal(v.valid, true);
+});
+
+test('credentials: includeSecrets=false 时凭据文件存在也不带值（普通备份不变）', async () => {
+  const ctx = makeContext('win32', 'C:\\\\Users\\\\alice');
+  ctx.settings.ns.set('llm-deepseek', { value: { apiKeyEnv: 'DEEPSEEK_API_KEY' }, revision: 1, secrets: [] });
+  await ctx.fs.writeFile('.credentials.yaml', Buffer.from('version: 1\nrefs:\n  DEEPSEEK_API_KEY: sk-super-secret-123\n'));
+
+  const adapter = new CredentialsAdapter({ namespaces: NS });
+  const out = await adapter.export(ctx, { includeSecrets: false });
+  assert.equal(out.data.credentials[0]?.hasValue, false);
+  assert.equal(out.data.credentials[0]?.value, undefined);
+  assert.ok(!JSON.stringify(out.data).includes('sk-super-secret-123'));
+});
+
+test('credentials: applyItem 直接用快照携带的明文值写回（无需补录）', async () => {
+  const dst = makeContext('linux', '/home/bob');
+  const adapter = new CredentialsAdapter({ namespaces: NS });
+  const sections = new Map([['credentialsStatus', {
+    version: 1,
+    credentials: [{ ref: 'DSH_CONFIG_MANAGER_SYNC_TOKEN', required: true, configured: true, hasValue: true, value: 'ghp_from_snapshot' }],
+  }]]);
+  const item: PlanItem = {
+    id: 'cred:DSH_CONFIG_MANAGER_SYNC_TOKEN', kind: 'Update', adapter: 'credentialsStatus',
+    description: '凭据写回', severity: 'info', target: { adapter: 'credentialsStatus', ref: 'DSH_CONFIG_MANAGER_SYNC_TOKEN' },
+  };
+  const r = await adapter.applyItem(item, makeImportContext(dst, sections));
+  assert.equal(r.ok, true);
+  assert.equal(dst.credentials.values.get('DSH_CONFIG_MANAGER_SYNC_TOKEN'), 'ghp_from_snapshot');
+
+  const dst2 = makeContext('linux', '/home/bob');
+  const r2 = await adapter.applyItem(item, makeImportContext(dst2, sections, { secretInputs: { DSH_CONFIG_MANAGER_SYNC_TOKEN: 'ghp_typed_by_user' } }));
+  assert.equal(r2.ok, true);
+  assert.equal(dst2.credentials.values.get('DSH_CONFIG_MANAGER_SYNC_TOKEN'), 'ghp_typed_by_user', '用户补录优先于快照值');
+});
+
+test('credentials: validate 校验 hasValue 与 value 必须一致', async () => {
   const adapter = new CredentialsAdapter();
-  const bad = await adapter.validate({ version: 1, credentials: [{ ref: 'X', required: true, configured: true, hasValue: true } as never] });
-  assert.equal(bad.valid, false);
+  const missing = await adapter.validate({ version: 1, credentials: [{ ref: 'X', required: true, configured: true, hasValue: true } as never] });
+  assert.equal(missing.valid, false, 'hasValue=true 但缺 value → 非法');
+  const stray = await adapter.validate({ version: 1, credentials: [{ ref: 'X', required: true, configured: true, hasValue: false, value: 'sk-1' } as never] });
+  assert.equal(stray.valid, false, '带 value 但 hasValue≠true → 非法');
+  const good = await adapter.validate({ version: 1, credentials: [{ ref: 'X', required: true, configured: true, hasValue: true, value: 'sk-1' } as never] });
+  assert.equal(good.valid, true);
 });

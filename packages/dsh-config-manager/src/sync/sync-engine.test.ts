@@ -3,8 +3,8 @@
  * - push：收集勾选分区（真实值）→ 组装 SyncSnapshot → 更新 sync-state → 上传 transport
  * - push：manifest.security.containsSecrets 按实际内容如实标注（含明文密钥即 true）
  * - push：sections 范围过滤（显式勾选 / 构造注入 / 未知分区告警）
- * - pull：复用 Importer 预览流程（analyzeImport/createImportPlan），绝不直接写配置、绝不执行导入
- * - pull：无远端快照 / 旧版加密快照拒绝 / 冲突 → needsReview
+ * - pullAndApply：下载远端最新快照 → 恒 replace 直接覆盖本地（应用前落回滚快照）
+ * - pullAndApply：无远端快照 / 旧版加密快照拒绝
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -197,6 +197,42 @@ test('sectionsCarrySecrets: 无敏感字段 → false；含 apiKey/token/passwor
   assert.equal(sectionsCarrySecrets({
     settings: { version: 1, namespaces: { general: { value: { apiKeyEnv: 'DEEPSEEK_API_KEY' }, revision: 1, secrets: [] } } },
   } as never), false, '仅环境变量引用名不算秘密');
+  // 凭据分区携带明文值 → 必须如实标注（值无强形状时扫描器认不出，靠 hasValue 判定）
+  assert.equal(sectionsCarrySecrets({
+    credentialsStatus: { version: 1, credentials: [{ ref: 'DSH_CONFIG_MANAGER_SYNC_WEBDAV_PASSWORD', required: true, configured: true, hasValue: true, value: 'hunter2' }] },
+  } as never), true, '携带明文凭据必须标注 containsSecrets');
+});
+
+test('凭据明文端到端：push 携带 .credentials.yaml 的 refs → pull 在另一台机器写回', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-cred-e2e-'));
+  try {
+    // 源机：settings 引用了 DEEPSEEK_API_KEY，另有仅在凭据文件登记的 WebDAV 口令
+    const src = makeContext('win32', 'C:\\\\Users\\\\alice');
+    src.settings.ns.set('llm-deepseek', { value: { apiKeyEnv: 'DEEPSEEK_API_KEY' }, revision: 1, secrets: [] });
+    src.credentials.values.set('DEEPSEEK_API_KEY', 'sk-super-secret-123');
+    await src.fs.writeFile('.credentials.yaml', Buffer.from(
+      'version: 1\nrefs:\n  DEEPSEEK_API_KEY: sk-super-secret-123\n  DSH_CONFIG_MANAGER_SYNC_WEBDAV_PASSWORD: hunter2\n',
+    ));
+    const transport = new MemSyncTransport();
+    const pushReport = await makeEngine({ ctx: src, transport, stateDir: path.join(tmp, 'state-src') })
+      .push({ snapshotId: 'sync-cred', sections: ['credentialsStatus'] });
+    assert.equal(pushReport.ok, true);
+    const snapshot = transport.snapshots.get('sync-cred')!;
+    assert.equal(snapshot.manifest.containsSecrets, true, '携带明文凭据必须如实标注');
+    const pushed = (snapshot.sections as Partial<Record<SectionId, SectionData>>).credentialsStatus as { credentials: { ref: string; hasValue: boolean; value?: string }[] };
+    assert.equal(pushed.credentials.find((c) => c.ref === 'DEEPSEEK_API_KEY')?.value, 'sk-super-secret-123', '值必须真的进了快照，不得被扫描器剥离');
+    assert.equal(pushed.credentials.find((c) => c.ref === 'DSH_CONFIG_MANAGER_SYNC_WEBDAV_PASSWORD')?.value, 'hunter2');
+
+    // 目标机：全新环境，无凭据文件、无 vault（模拟跨机）
+    const dst = makeContext('linux', '/home/bob');
+    const pullReport = await makeEngine({ ctx: dst, transport, stateDir: path.join(tmp, 'state-dst') })
+      .pullAndApply({ snapshotId: 'sync-cred' });
+    assert.equal(pullReport.ok, true);
+    assert.equal(dst.credentials.values.get('DEEPSEEK_API_KEY'), 'sk-super-secret-123', '跨机拉取后凭据可用');
+    assert.equal(dst.credentials.values.get('DSH_CONFIG_MANAGER_SYNC_WEBDAV_PASSWORD'), 'hunter2');
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
 });
 
 test('push: 默认范围 = 推荐分区（原 platformSpecific/deviceSpecific 也可同步，但 defaultIncluded=false 的仍不进）', async () => {
@@ -394,19 +430,19 @@ test('push: sections 缺省/空数组 → 全部分区（默认模式）', async
   }
 });
 
-test('push: 构造注入 sections（自动同步持久化配置）→ 未显式传 opts 也按注入范围同步', async () => {
+test('push: 构造注入 sections（持久化的高级模式勾选）→ 未显式传 opts 也按注入范围同步', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-ctor-sections-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
     seedSource(ctx);
     const transport = new MemSyncTransport();
-    // 模拟 autosync：makeSyncEngine 注入持久化的高级模式勾选（advanced + sections）
+    // makeSyncEngine 注入持久化的高级模式勾选（advanced + sections）
     const engine = makeEngine({
       ctx, transport, stateDir: tmp,
       extra: { sections: ['settings', 'skills'] },
     });
 
-    // 不传 opts.sections（调度器 Phase C 调用 engine.push() 的样子）
+    // 不传 opts.sections（宿主按持久化勾选调用 engine.push() 的样子）
     const report = await engine.push({ snapshotId: 'sync-auto' });
     assert.equal(report.ok, true);
     const uploaded = transport.snapshots.get('sync-auto')!;
@@ -420,7 +456,7 @@ test('push: 构造注入 sections（自动同步持久化配置）→ 未显式�
 
 /* ---------------- 旧版加密快照：明确拒绝 ---------------- */
 
-test('pull: 远端为旧版加密快照 → 明确拒绝（同步通道不再产生/读取加密快照）', async () => {
+test('pullAndApply: 远端为旧版加密快照 → 明确拒绝（同步通道不再产生/读取加密快照）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-pull-enc-'));
   try {
     const plain: SyncSnapshot = {
@@ -440,13 +476,13 @@ test('pull: 远端为旧版加密快照 → 明确拒绝（同步通道不再产
     transport.metas.push(computeSnapshotMeta(remote));
     const ctx = makeContext('win32', 'C:\\Users\\alice');
     const engine = makeEngine({ ctx, transport, stateDir: tmp });
-    await assert.rejects(() => engine.pull(), /旧版加密快照/);
+    await assert.rejects(() => engine.pullAndApply(), /旧版加密快照/);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('pull: 复用 Importer 预览流程，绝不直接写配置，产出差异报告', async () => {
+test('pullAndApply: 恒 replace 直接覆盖本地，并回报写入了哪些分区', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-pull-'));
   try {
     const remote: SyncSnapshot = {
@@ -466,24 +502,24 @@ test('pull: 复用 Importer 预览流程，绝不直接写配置，产出差异�
     for (const n of NS) ctx.settings.registered.add(n);
     const engine = makeEngine({ ctx, transport, stateDir: tmp });
 
-    const report = await engine.pull();
+    const report = await engine.pullAndApply();
     assert.equal(report.ok, true);
     assert.equal(report.snapshotId, 'remote-1');
     const createItem = report.changes.find((c) => c.id === 'settings:general');
-    assert.ok(createItem, '差异报告含 settings:general');
+    assert.ok(createItem, '变更摘要含 settings:general');
     assert.equal(createItem?.kind, 'Create');
     assert.equal(createItem?.adapter, 'settings');
-    assert.equal(report.needsReview, false, '纯 Create 无需人工决策');
+    assert.ok(report.applied.includes('settings'), 'settings 被实际写入');
 
-    // 零写入：目标配置未被修改，远端未被写
-    assert.equal(ctx.settings.ns.get('general'), undefined, '目标 settings 未被写入');
-    assert.deepEqual(transport.calls, ['list', 'download'], 'pull 只读远端（list/download），不 upload/delete');
+    // 直接覆盖：远端值已落到本地；远端只被读（list/download），不写
+    assert.deepEqual(ctx.settings.ns.get('general')?.value, { theme: 'dark', language: 'zh-CN' }, '远端值覆盖本地');
+    assert.deepEqual(transport.calls, ['list', 'download'], 'pullAndApply 只读远端（list/download），不 upload/delete');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('pull: 双侧都改 → replace 覆盖，仍零写入（pull 只预览）', async () => {
+test('pullAndApply: 双侧都改 → replace 覆盖本地（远端值胜出）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-conflict-'));
   try {
     const remote: SyncSnapshot = {
@@ -503,33 +539,32 @@ test('pull: 双侧都改 → replace 覆盖，仍零写入（pull 只预览）',
     ctx.settings.ns.set('general', { value: { theme: 'light' }, revision: 9, secrets: [] });
     const engine = makeEngine({ ctx, transport, stateDir: tmp });
 
-    const report = await engine.pull();
+    const report = await engine.pullAndApply();
     assert.equal(report.ok, true);
     assert.ok(report.changes.some((c) => c.kind === 'Update'), '本地与远端不同 → Update（replace 策略）');
-    assert.equal(report.needsReview, false, 'replace 策略无待决策项');
-    assert.deepEqual(ctx.settings.ns.get('general')?.value, { theme: 'light' }, 'pull 只预览，不写本地');
+    assert.deepEqual(ctx.settings.ns.get('general')?.value, { theme: 'dark' }, '远端值覆盖本地');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('pull: 远端无快照 → 空报告（不报错）', async () => {
+test('pullAndApply: 远端无快照 → 空报告（不写本地）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-none-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
     const engine = makeEngine({ ctx, transport: new MemSyncTransport(), stateDir: tmp });
-    const report = await engine.pull();
-    assert.equal(report.ok, true);
+    const report = await engine.pullAndApply();
+    assert.equal(report.ok, false);
     assert.equal(report.snapshotId, '');
+    assert.deepEqual(report.applied, []);
     assert.deepEqual(report.changes, []);
-    assert.equal(report.needsReview, false);
     assert.ok(report.message && report.message.includes('无快照'));
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('pull: 远端快照声明 containsSecrets=true → 正常拉取（明文同步为预期行为）', async () => {
+test('pullAndApply: 远端快照声明 containsSecrets=true → 正常拉取覆盖（明文同步为预期行为）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-leak-'));
   try {
     const remote: SyncSnapshot = {
@@ -544,9 +579,9 @@ test('pull: 远端快照声明 containsSecrets=true → 正常拉取（明文同
     const ctx = makeContext('win32', 'C:\\Users\\alice');
     for (const n of NS) ctx.settings.registered.add(n);
     const engine = makeEngine({ ctx, transport, stateDir: tmp });
-    const report = await engine.pull();
-    assert.equal(report.ok, true, '含秘密的明文快照可正常拉取');
-    assert.ok(report.changes.length > 0);
+    const report = await engine.pullAndApply();
+    assert.equal(report.ok, true, '含秘密的明文快照可正常拉取覆盖');
+    assert.ok(report.applied.length > 0);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -941,61 +976,6 @@ test('push: 裁剪单个 delete 失败 → 只告警不上抛，其余旧快照�
     // remote-02 仍残留（删除失败），其余旧快照被删
     assert.ok(transport.snapshots.has('remote-02'), '删除失败的 remote-02 应残留');
     assert.ok(!transport.snapshots.has('remote-01'), '其余旧快照照常删除');
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-// ─── t6：事件驱动触发检测（§3.1 本地变化 / §3.2 远端新快照） ─────────────────
-
-test('hasNewRemoteSnapshot: 空远端→false；从未同步且远端非空→true；远端最新=祖先→false；比祖先新→true', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-hasnew-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-
-    // 远端为空 → 无新生
-    assert.equal(await engine.hasNewRemoteSnapshot(), false, '空远端 → false');
-
-    // push：上传 sync-001 并记录祖先 = sync-001（远端最新即祖先）
-    await engine.push({ snapshotId: 'sync-001' });
-    assert.equal(await engine.hasNewRemoteSnapshot(), false, '远端最新=本地祖先 → 无新生');
-
-    // 远端出现比祖先更新的快照 → 有新生
-    const base = transport.snapshots.get('sync-001')!;
-    const newer: SyncSnapshot = {
-      ...base,
-      id: 'remote-newer',
-      createdAt: '2026-08-16T13:00:00.000Z',
-    };
-    transport.snapshots.set('remote-newer', newer);
-    transport.metas.push(computeSnapshotMeta(newer));
-    assert.equal(await engine.hasNewRemoteSnapshot(), true, '远端出现比祖先更新的快照 → 有新生');
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('hasLocalChanges: 从未同步→true；推后无改动→false；本地改动→true', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-haslocal-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-
-    // 从未同步（sync-state.sections 为空）→ 视为有改动
-    assert.equal(await engine.hasLocalChanges(), true, '从未同步 → true');
-
-    // push 记录基线后：本地与基线一致 → 无改动
-    await engine.push({ snapshotId: 'sync-001' });
-    assert.equal(await engine.hasLocalChanges(), false, '推后本地与基线一致 → false');
-
-    // 改动一个 portable 分区（settings.general theme dark→light）→ 有改动
-    ctx.settings.ns.set('general', { value: { theme: 'light', language: 'zh-CN' }, revision: 4, secrets: [] });
-    assert.equal(await engine.hasLocalChanges(), true, '改动 portable 分区 → true');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

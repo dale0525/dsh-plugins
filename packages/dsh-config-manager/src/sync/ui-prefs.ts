@@ -5,8 +5,8 @@
  * 当前存 lastSyncChannel（用户上次选择的同步通道 git/webdav）。
  *
  * 背景（self 分区设计）：此前该偏好只存浏览器 localStorage（键
- * dsh.configManager.syncChannel），换浏览器/换机器即丢失，且 Host 进程读不到
- * （自动同步在浏览器关闭时也运行）。迁移到磁盘后：
+ * dsh.configManager.syncChannel），换浏览器/换机器即丢失，且 Host 进程读不到。
+ * 迁移到磁盘后：
  *  - Host 侧可读可写（status 响应回填、POST /sync/ui-prefs 保存）；
  *  - 随 self 分区进入导出备份，迁移到新机器时恢复；
  *  - localStorage 仅保留为前端同步读取的降级通道（status 未带回填时的兜底）。

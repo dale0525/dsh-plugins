@@ -68,7 +68,7 @@ export const DEFAULT_CATEGORIES: readonly ExportCategory[] = [
   { id: 'providers', label: 'Providers & Models', description: 'LLM Provider / Model / 默认模型 / BaseURL', defaultIncluded: true, portability: 'portable', group: 'ai' },
   { id: 'plugins', label: 'Plugins', description: '已安装插件清单与启用状态（不含二进制）', defaultIncluded: true, portability: 'portable', group: 'extensions' },
   { id: 'pluginFiles', label: 'Plugin Files', description: '插件自有配置文件（白名单 + plugin-config/ 目录，整文件复制）', defaultIncluded: false, portability: 'deviceSpecific', group: 'extensions' },
-  { id: 'self', label: 'Plugin Self Config', description: '本插件自身配置（同步/自动同步/分区选择/UI 偏好/市场；sync-*.json 等，不含凭据值）', defaultIncluded: true, portability: 'portable', group: 'extensions' },
+  { id: 'self', label: 'Plugin Self Config', description: '本插件自身配置（同步/分区选择/UI 偏好/市场；sync-*.json 等，不含凭据值）', defaultIncluded: true, portability: 'portable', group: 'extensions' },
   { id: 'mcp', label: 'MCP Servers', description: 'MCP 服务器组合配置（需重启生效）', defaultIncluded: true, portability: 'platformSpecific', group: 'mcp' },
   { id: 'prompts', label: 'Prompts', description: 'System Prompt / Plan Mode 提示', defaultIncluded: true, portability: 'portable', group: 'customization' },
   { id: 'skills', label: 'Skills', description: '用户技能文件（~/.dsh/skills）', defaultIncluded: true, portability: 'portable', group: 'customization' },
@@ -76,7 +76,7 @@ export const DEFAULT_CATEGORIES: readonly ExportCategory[] = [
   { id: 'agentInstructions', label: 'Agent Instructions', description: '全局指令文件（~/.dsh/AGENTS.md，注入每个会话）', defaultIncluded: true, portability: 'portable', group: 'customization' },
   { id: 'workspaces', label: 'Workspaces', description: '工作区记录（含绝对路径，需路径映射）', defaultIncluded: true, portability: 'platformSpecific', group: 'workspace' },
   { id: 'ui', label: 'UI Preferences', description: 'UI 类 settings namespace（localStorage 项仅说明）', defaultIncluded: true, portability: 'portable', group: 'ui' },
-  { id: 'credentialsStatus', label: 'Credentials Status', description: '凭据状态（configured 标记，永不导出值）', defaultIncluded: true, portability: 'deviceSpecific', group: 'optional', sensitive: true },
+  { id: 'credentialsStatus', label: 'Credentials', description: '凭据（含明文值：普通备份只带状态，同步快照携带 .credentials.yaml 的值）', defaultIncluded: true, portability: 'deviceSpecific', group: 'optional', sensitive: true },
   { id: 'sessions', label: 'Sessions', description: '历史会话（默认关闭，含敏感内容）', defaultIncluded: false, portability: 'deviceSpecific', group: 'optional' },
 ] as const;
 

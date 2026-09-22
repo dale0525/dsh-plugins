@@ -1,13 +1,12 @@
 /**
- * P2c e2e：/sync/apply 完整链路（engine 级，真实 Importer + 内存 transport + 真实 makeContext）。
+ * e2e：拉取覆盖完整链路（engine 级，真实 Importer + 内存 transport + 真实 makeContext）。
  *
  * 链路：push（建立基线）→ 塞远端快照（模拟另一台机器改了 settings）→
- *       engine.pull()（只读差异预览）→ engine.preview() + engine.applyItems()（真实
- *       Importer.executeImportPlan 写本地）→ 验证：本地 settings 被写入 +
- *       sync-state.lastSnapshotId 更新。
+ *       engine.pullAndApply()（真实 Importer.executeImportPlan 直接覆盖本地）→
+ *       验证：本地 settings 被写入 + sync-state.lastSnapshotId 更新。
  *
  * 说明：不启动真实 HTTP server（那需要拉起 DSH 插件运行时）；以 SyncEngine 为边界走
- * 与 Host /sync/sync + /sync/apply-items 路由完全相同的代码路径。
+ * 与 Host /sync/pull 路由完全相同的代码路径。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,7 +19,6 @@ import { loadSyncState } from '../src/sync/sync-state.ts';
 import { createAdapters } from '../src/adapters/index.ts';
 import { makeContext, MemSnapshotStore } from '../src/adapters/test-helpers.ts';
 import { Importer } from '../src/core/importer.ts';
-import type { ImportPlan } from '../src/core/types.ts';
 import type { SyncSnapshot, SyncTransport, SyncSnapshotMeta } from '../src/sync/transport.ts';
 import { computeSnapshotMeta } from '../src/sync/transport.ts';
 
@@ -83,12 +81,7 @@ function remoteSnapshot(id: string, theme: string): SyncSnapshot {
   };
 }
 
-/** 取 preview 计划的非 Skip 项构成子计划（与 Host /sync/apply-items 同款过滤）。 */
-function acceptAll(plan: ImportPlan): ImportPlan {
-  return { ...plan, items: plan.items.filter((i) => i.kind !== 'Skip') };
-}
-
-test('e2e: push 建基线 → 远端改 → pull 预览 → preview/applyItems → 本地 settings 被写', async () => {
+test('e2e: push 建基线 → 远端改 → pullAndApply 直接覆盖 → 本地 settings 被写', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-e2e-apply-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -109,30 +102,23 @@ test('e2e: push 建基线 → 远端改 → pull 预览 → preview/applyItems �
     transport.snapshots.set(remote.id, remote);
     transport.metas.push(computeSnapshotMeta(remote));
 
-    // ③ pull：只读差异预览（零写入）
-    const pull = await engine.pull();
-    assert.equal(pull.ok, true);
-    assert.ok(pull.changes.some((c) => c.adapter === 'settings'), '差异报告含 settings');
-    assert.deepEqual(ctx.settings.ns.get('general')?.value, { theme: 'dark' }, 'pull 不写本地');
+    // ③ pullAndApply：下载远端最新快照 → 恒 replace 直接覆盖本地
+    const pull = await engine.pullAndApply();
+    assert.equal(pull.ok, true, '覆盖应成功');
+    assert.ok(pull.changes.some((c) => c.adapter === 'settings'), '变更摘要含 settings');
+    assert.ok(pull.applied.includes('settings'), 'settings 被写入');
+    assert.notEqual(pull.restoreId, '', 'restoreId 非空（回滚入口）');
+    assert.equal(pull.rolledBack, false);
 
-    // ④ preview + applyItems（真实 Importer 写本地）
-    const preview = await engine.preview();
-    assert.ok(preview.plan, 'preview 产出计划');
-    const report = await engine.applyItems(preview.zipPath, acceptAll(preview.plan!));
-    assert.equal(report.ok, true, 'apply 应成功');
-    assert.ok(report.applied.includes('settings'));
-    assert.notEqual(report.restoreId, '', 'restoreId 非空');
-    assert.equal(report.rolledBack, false);
-
-    // ⑤ 本地 settings 被真实 adapter 写回
+    // ④ 本地 settings 被真实 adapter 写回
     const local = ctx.settings.ns.get('general');
     assert.ok(local, 'general namespace 已存在');
     assert.equal((local!.value as { theme: string }).theme, 'light', '本地 theme 已被应用为远端 light');
 
-    // ⑥ sync-state.lastSnapshotId 已更新（applyItems 内部 recordBaseline）
+    // ⑤ sync-state.lastSnapshotId 已更新（内部 recordBaseline）
     const state = await loadSyncState(stateDir);
-    assert.notEqual(state.lastSnapshotId, '', 'apply 后基线已更新');
-    // ⑦ 本地快照副本目录有内容
+    assert.notEqual(state.lastSnapshotId, '', '覆盖后基线已更新');
+    // ⑥ 本地快照副本目录有内容
     const dirs = await fs.readdir(localSnapshotsDir);
     assert.ok(dirs.length > 0, '本地快照副本已写入');
   } finally {
@@ -160,15 +146,10 @@ test('e2e: 双侧都改 → 远端值覆盖本地（不合并、不询问）', a
     transport.snapshots.set(remote.id, remote);
     transport.metas.push(computeSnapshotMeta(remote));
 
-    // ③ pull：replace 策略下差异项为 Update，不需人工决策
-    const pull = await engine.pull();
-    assert.equal(pull.needsReview, false, 'replace 策略不产生待决策项');
+    // ③ pullAndApply：恒 replace，远端值直接覆盖本地
+    const pull = await engine.pullAndApply();
+    assert.equal(pull.ok, true);
     assert.ok(pull.changes.some((c) => c.kind === 'Update'), '双侧差异 → Update');
-
-    // ④ preview + applyItems：远端值覆盖本地
-    const preview = await engine.preview();
-    const report = await engine.applyItems(preview.zipPath, acceptAll(preview.plan!));
-    assert.equal(report.ok, true);
     const local = ctx.settings.ns.get('general');
     assert.equal((local!.value as { theme: string }).theme, 'red', '远端值覆盖本地');
   } finally {
@@ -176,7 +157,7 @@ test('e2e: 双侧都改 → 远端值覆盖本地（不合并、不询问）', a
   }
 });
 
-test('e2e: 远端无快照 → pull 空报告，preview 明确报错', async () => {
+test('e2e: 远端无快照 → pullAndApply 空报告，preview 明确报错', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-e2e-firstsync-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -186,8 +167,9 @@ test('e2e: 远端无快照 → pull 空报告，preview 明确报错', async () 
     const stateDir = path.join(tmp, 'sync');
     const engine = makeEngine(ctx, transport, stateDir, path.join(tmp, 'snapshots'));
 
-    const pull = await engine.pull();
-    assert.equal(pull.ok, true);
+    const pull = await engine.pullAndApply();
+    assert.equal(pull.ok, false, '远端无快照 → 不是成功覆盖');
+    assert.deepEqual(pull.applied, [], '未写入任何分区');
     assert.deepEqual(pull.changes, [], '远端无快照 → 空差异');
     const preview = await engine.preview();
     assert.equal(preview.ok, false);

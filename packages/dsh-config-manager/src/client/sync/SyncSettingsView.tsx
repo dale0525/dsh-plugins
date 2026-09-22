@@ -1,24 +1,22 @@
 /**
- * 远程同步面板（备份与迁移页的第 4 个 tab 内容）。
+ * 远程同步面板（设置页唯一页面）。
  *
- * 独立设置页壳（sectionHeader/close/自身 tab）已移除 —— tab 容器由
- * ConfigManagerSection 统一渲染，本组件只输出内容体：
+ * 独立设置页壳（sectionHeader/close/自身 tab）与顶部导航条均已移除 ——
+ * ConfigManagerSection 只输出本组件的内容体，本组件也只输出内容体：
  * - **同步通道入口卡**：展示当前通道 + 配置状态 + 凭据徽章；点「配置同步通道」
  *   → 弹出**通道配置弹窗**（弹窗体系与市场操作弹窗一致，DESIGN.md §8.12：
  *   dialogMask + dialogCard dialogWide + dialogHeaderRow + dialogClose +
  *   dialogBodyScroll，零新增样式）；
  * - **通道配置弹窗**：通道子 tab（GitHub（git）/ WebDAV）切换，两个通道的
- *   配置表单、自动同步、同步模式、远端快照**各自独立**；关闭弹窗
+ *   配置表单、同步模式**各自独立**；关闭弹窗
  *   = 放弃本次操作（GitHub 登录流程进行中则一并取消，§8.12 约定）；
  * - GitHub 子 tab：repoUrl（必填）+ 认证 token（可选，写入 DSH credentials 的提示）
  *   + **GitHub OAuth device flow 登录**（登录块跟随 git 通道配置放在弹窗内：
  *   未登录/失效时显示；git 可执行文件固定使用系统 PATH 中的 git）；
  * - WebDAV 子 tab：url + username + password（密码写入 DSH credentials）+ 常见服务器预设；
  * - 私有仓库强制提示横幅（仅 git 子 tab 常驻）；
- * - 推送按钮 → SyncPushReport；拉取按钮 → SyncPullReport.changes 差异摘要；
- * - 一键同步主按钮：拉取 → 差异确认会话（SyncConfirmView 逐项确认）→ 确认导入
- *   （apply-items）→ 执行结果 + 一键回滚（restoreId）；「选择历史快照」下拉；
- * - 自动同步设置（按通道）：总开关 + 间隔下拉 + 状态（上次运行 / 下次倒计时）；
+ * - **两个同步按钮**：拉取（直接覆盖本地，应用前落回滚快照）/ 推送（直接覆盖远端）；
+ *   两者都不弹确认：勾选即同步是本插件的产品语义；
  * - 状态行：凭据配置 + 上次同步时间 + 通道（来自 GET /sync/status，组件挂载时加载）。
  *
  * 全部渲染模型来自 ./sync-view.ts 纯函数（node 单测覆盖），组件只做装配；
@@ -31,7 +29,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import type { TranslateNS } from '../client-types.ts'
-import type { SyncPullReport, SyncPushPreview, SyncPushReport } from '../../sync/sync-engine.ts'
+import type { SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts'
 import type { UiT } from '../../ui/i18n.ts'
 import type { SectionId } from '../../schema/types.ts'
 import { Badge, Banner, Button, Card, Checkbox, SectionTitle, Spinner } from '../common/ui.tsx'
@@ -39,18 +37,15 @@ import { ErrorBanner } from '../common/ErrorBanner.tsx'
 import { toast } from '../common/toast-store.ts'
 import { redact } from '../../security/redaction.ts'
 import { Modal } from '../common/Modal.tsx'
-import { RefreshIcon } from '../common/Icon.tsx'
-import { runStore, toSyncStoreSlice, type SyncConfirmDecisions, type SyncStoreSlice } from '../run-store.ts'
+import { runStore, toSyncStoreSlice, type SyncStoreSlice } from '../run-store.ts'
 import { SYNC_CREDENTIAL_REF, SYNC_WEBDAV_CREDENTIAL_REF } from './sync-api.ts'
 import type {
-  AutosyncInterval, AutosyncStatusResponse, SyncApi, SyncPushPayload, SyncSectionInfo, SyncSnapshotLite,
-  SyncStartResponse, SyncStatusResponse,
+  SyncApi, SyncPushPayload, SyncSectionInfo, SyncStatusResponse,
 } from './sync-api.ts'
 import {
-  autosyncIntervalMs, autosyncStatusText, channelTabModels, computeAutosyncCountdown,
-  computeGithubLoginView, computeRemoteReady, computeSyncButtons,
-  defaultChannelSyncState, formatIntervalDuration, githubPollMessage, kindLabel, presetById,
-  presetIdForUrl, privateRepoHint, pullReportView, pushPreviewView, pushReportView, readStoredChannel,
+  channelTabModels, computeGithubLoginView, computeRemoteReady, computeSyncButtons,
+  defaultChannelSyncState, githubPollMessage, kindLabel, presetById,
+  presetIdForUrl, privateRepoHint, pullApplyReportView, pushReportView, readStoredChannel,
   recommendedSyncSections, severityLabel, syncSectionGroups, syncSectionOptions,
   WEBDAV_PRESETS, writeStoredChannel,
 } from './sync-view.ts'
@@ -58,20 +53,11 @@ import type {
   ChannelSyncState, GithubLoginPhase, SyncChannel, SyncMode, SyncSectionOption,
 } from './sync-view.ts'
 import { SyncHistoryView } from './SyncHistoryView.tsx'
-import { SyncConfirmView } from './SyncConfirmView.tsx'
 import css from '../config-manager.module.css'
 
 export interface SyncSettingsViewProps {
   api: SyncApi
   t: TranslateNS<'config-manager-sync'>
-}
-
-/** P0-②：push 前预览弹窗的视图数据（持久化切片；非敏感，刷新后可恢复确认态） */
-export interface PushPreviewSlice {
-  /** 预览结果（null = 尚未取到 */ 
-  preview: SyncPushPreview | null
-  /** 弹窗是否打开（预览完成后自动打开；确认/关闭后关闭） */
-  open: boolean
 }
 
 interface SyncUiState {
@@ -89,7 +75,7 @@ interface SyncUiState {
   webdavUsername: string
   /** 仅内存：成功后清空（已写入 DSH credentials），绝不持久化/回显 */
   webdavPassword: string
-  /** git/webdav 各自独立的设置状态（自动同步 / 同步模式 / 快照） */
+  /** git/webdav 各自独立的设置状态（同步模式） */
   byChannel: {
     git: ChannelSyncState
     webdav: ChannelSyncState
@@ -98,16 +84,10 @@ interface SyncUiState {
   catalog: SyncSectionOption[]
   /** 通道配置保存中（「保存配置」按钮 spinner；自动保存同用） */
   savingConfig: boolean
-  busy: 'sync' | 'push' | 'pull' | 'rollback' | null
+  busy: 'push' | 'pull' | 'rollback' | null
   pushReport: SyncPushReport | null
-  pullReport: SyncPullReport | null
-  /** P0-②：push 前只读预览弹窗（preview 结果 + 打开状态；非敏感，切 tab/刷新不丢） */
-  pushPreview: PushPreviewSlice
-  /** 一键同步差异确认会话（POST /sync/sync 结果；非空时渲染 SyncConfirmView） */
-  confirmSession: SyncStartResponse | null
-  /** 一键同步差异确认的逐项决策（adopted/resolution；与 confirmSession 生命周期绑定，切 tab/刷新不丢） */
-  confirmDecisions: SyncConfirmDecisions | null
-  /** 最近一次一键同步执行结果（回滚入口） */
+  pullReport: SyncPullApplyReport | null
+  /** 最近一次拉取执行的回滚快照 id（回滚入口；成功且实际写入时非空） */
   lastRestoreId: string | null
   /**
    * 动作失败文案（R-20 后**不再作为展示通道**）。
@@ -141,8 +121,6 @@ const initialGithub: GithubUiState = {
   phase: 'idle', flowId: '', userCode: '', verificationUri: '', interval: 5, error: null,
 }
 
-const AUTOSYNC_INTERVAL_OPTIONS: AutosyncInterval[] = ['5m', '15m', '30m', '60m', '6h', '12h', '24h'];
-
 const initial: SyncUiState = {
   loading: true,
   loadError: null,
@@ -163,9 +141,6 @@ const initial: SyncUiState = {
   busy: null,
   pushReport: null,
   pullReport: null,
-  pushPreview: { preview: null, open: false },
-  confirmSession: null,
-  confirmDecisions: null,
   lastRestoreId: null,
   error: null,
   github: initialGithub,
@@ -200,9 +175,6 @@ function initFromStore(): SyncUiState {
     savingConfig: s.savingConfig,
     pushReport: s.pushReport,
     pullReport: s.pullReport,
-    pushPreview: s.pushPreview ?? { preview: null, open: false },
-    confirmSession: s.confirmSession,
-    confirmDecisions: s.confirmDecisions,
     lastRestoreId: s.lastRestoreId,
     error: s.error,
     loadError: s.loadError,
@@ -218,6 +190,8 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   const mountedRef = useRef(true)
   /** 通道配置弹窗开关（瞬态 UI：切 tab/刷新不持久化，弹窗不自动重开；DESIGN.md §8.12 约定） */
   const [channelOpen, setChannelOpen] = useState(false)
+  /** 撤销本次覆盖的二次确认弹窗（DESIGN.md §6：回滚属危险操作，恒 danger + 二次确认） */
+  const [rollbackOpen, setRollbackOpen] = useState(false)
 
   /**
    * 统一提交入口：更新 stateRef → 挂载时 setState → **总是**镜像进 runStore。
@@ -240,7 +214,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   })
   /** 更新当前激活通道的 byChannel 状态。 */
   const patchChannel = (p: Partial<ChannelSyncState>): void => patchChannelState(state.channel, p)
-  /** 当前激活通道的设置状态（自动同步/模式/快照）。 */
+  /** 当前激活通道的设置状态（同步模式）。 */
   const chState: ChannelSyncState = state.byChannel[state.channel]
   /** GitHub 流程态（不进 store 切片；commit 的镜像写幂等无害）。 */
   const patchGithub = (p: Partial<GithubUiState>): void => commit({
@@ -254,10 +228,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   const pendingSave = useRef<SyncPushPayload | null>(null)
   /** 保存请求在途（防重入：保存中又排入新改动 → 完成后补发最新 payload） */
   const savingRef = useRef(false)
-  /** 正在拉取远端快照列表（按通道独立防抖/防并发） */
-  const loadingSnapshotsRef = useRef<Record<SyncChannel, boolean>>({ git: false, webdav: false })
-
-  /** 挂载时读取同步状态（配置回填 + 上次同步时间 + 凭据状态 + 两通道 autosync/selection） */
+  /** 挂载时读取同步状态（配置回填 + 上次同步时间 + 凭据状态 + 两通道 selection） */
   const loadStatus = async (): Promise<void> => {
     patch({ loading: true, loadError: null })
     try {
@@ -268,23 +239,16 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
       const remembered = info.lastSyncChannel ?? readStoredChannel()
       // 可同步分区目录回填（host adapters 唯一事实源；两通道共用）
       const catalog = info.syncSections !== undefined ? syncSectionOptions(info.syncSections) : []
-      // 每通道回填：优先该通道的持久化配置（syncSelectionByChannel / autosyncByChannel）；
+      // 每通道回填：优先该通道的持久化配置（syncSelectionByChannel）；
       // 无持久化 → 默认模式 + 推荐分区
       const selByCh = info.syncSelectionByChannel
-      const autoByCh = info.autosyncByChannel
-      const backfill = (ch: SyncChannel, cur: ChannelSyncState): Partial<ChannelSyncState> => {
+      const backfill = (ch: SyncChannel): Partial<ChannelSyncState> => {
         const sel = selByCh?.[ch]
-        const auto = autoByCh?.[ch]
         const persistedMode: SyncMode = sel?.mode === 'advanced' ? 'advanced' : 'default'
         const persistedSections = sel !== undefined
           ? sel.sections
           : recommendedSyncSections(info.syncSections ?? [])
-        return {
-          syncMode: persistedMode,
-          syncSections: persistedSections,
-          autosyncEnabled: auto?.enabled ?? false,
-          autosyncInterval: auto?.interval ?? '30m',
-        }
+        return { syncMode: persistedMode, syncSections: persistedSections }
       }
       patch({
         loading: false,
@@ -295,88 +259,14 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
         webdavUsername: info.webdav?.username ?? '',
         catalog,
         byChannel: {
-          git: { ...stateRef.current.byChannel.git, ...backfill('git', stateRef.current.byChannel.git) },
-          webdav: { ...stateRef.current.byChannel.webdav, ...backfill('webdav', stateRef.current.byChannel.webdav) },
+          git: { ...stateRef.current.byChannel.git, ...backfill('git') },
+          webdav: { ...stateRef.current.byChannel.webdav, ...backfill('webdav') },
         },
       })
-      // 独立拉取 autosync（若 status 未带按通道状态则补一次）
-      if (autoByCh === undefined) {
-        void loadAutosync()
-      }
-      // 当前激活通道已配置且远端地址就绪时，自动拉取远端快照填充下拉（无需先点一键同步）；
-      // 直接传 info 的地址（state.patch 尚未生效），避免竞态
-      const activeCh = remembered ?? savedChannel
-      const preset = activeCh === 'webdav' ? (info.webdav?.url ?? '') : (info.repoUrl ?? '')
-      if (info.configured && preset.trim() !== '') {
-        void loadSnapshots(preset, activeCh)
-      }
       // 校验 GitHub token 有效性：已登录（有效）→ 隐藏 GitHub 登录块；未配置/失效 → 显示
       void validateGithub()
     } catch (err) {
       patch({ loading: false, loadError: err instanceof Error ? err.message : String(err) })
-    }
-  }
-
-  /** 读取全部通道的自动同步状态（GET /sync/autosync 返回 { git, webdav }）。 */
-  const loadAutosync = async (): Promise<void> => {
-    try {
-      const all = await api.autosyncStatusAll()
-      patchChannelState('git', {
-        autosync: all.git, autosyncEnabled: all.git.enabled, autosyncInterval: all.git.interval,
-      })
-      patchChannelState('webdav', {
-        autosync: all.webdav, autosyncEnabled: all.webdav.enabled, autosyncInterval: all.webdav.interval,
-      })
-    } catch (err) {
-      // R-20：读取自动同步状态失败（此前写入页面最底部的共享 error Banner，常滚出视野）
-      toast.error(`${t('toast.autosyncLoadFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
-    }
-  }
-
-  /**
-   * 读取指定通道的远端历史快照列表（「选择历史快照」下拉数据源）。
-   * urlOverride / channelOverride：挂载时地址刚从 status 回填、state.patch 尚未生效，
-   * 直接传 info 的地址与通道避免竞态读旧值；缺省读当前 state。
-   * 无远端地址时静默跳过（不发无效请求，下拉留空）。
-   * announce：仅用户主动点「刷新快照」时为 true —— 成功给出回执，避免用户
-   * 在「远端确实没有快照」与「刷新没生效」之间无从判断（M-18）。 */
-  const loadSnapshots = async (urlOverride?: string, channelOverride?: SyncChannel, announce = false): Promise<void> => {
-    const ch = channelOverride ?? stateRef.current.channel
-    if (loadingSnapshotsRef.current[ch]) return
-    loadingSnapshotsRef.current[ch] = true
-    patchChannelState(ch, { loadingSnapshots: true })
-    try {
-      const s = stateRef.current
-      if (ch === 'webdav') {
-        const url = urlOverride ?? s.webdavUrl
-        if (url.trim() === '') return
-        // 带 username/password（非空时）：挂载早期 state 未回填 → undefined，Host 端回退持久化配置补 username
-        const res = await api.snapshotsList({
-          transport: 'webdav',
-          url: url.trim(),
-          username: s.webdavUsername.trim() !== '' ? s.webdavUsername.trim() : undefined,
-          password: s.webdavPassword !== '' ? s.webdavPassword : undefined,
-        })
-        patchChannelState('webdav', { snapshots: res.snapshots })
-      } else {
-        const repo = urlOverride ?? s.repoUrl
-        if (repo.trim() === '') return
-        const res = await api.snapshotsList({
-          transport: 'git',
-          repoUrl: repo.trim(),
-          token: s.token.trim() !== '' ? s.token.trim() : undefined,
-        })
-        patchChannelState('git', { snapshots: res.snapshots })
-      }
-      // M-18：用户主动点「刷新快照」成功后的回执（自动拉取/切换通道时不打扰）
-      if (announce) toast.ok(t('toast.snapshotsRefreshed'))
-    } catch (err) {
-      // M-18/M-21：拉取远端快照失败原先完全静默（下拉留空），用户无法区分
-      // 「远端确实没有快照」与「读取失败」。不阻断主流程，仅以 Toast 如实告知。
-      toast.error(`${t('toast.snapshotsLoadFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
-    } finally {
-      loadingSnapshotsRef.current[ch] = false
-      patchChannelState(ch, { loadingSnapshots: false })
     }
   }
 
@@ -639,7 +529,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     setChannelOpen(false)
   }
 
-  /** 组装 push/preview 的公共载荷（分区选择；快照恒为明文） */
+  /** 组装 push 的公共载荷（分区选择；快照恒为明文） */
   const buildPushPayload = (): SyncPushPayload => {
     // 默认模式：不传 sections（= 全部推荐分区）；高级模式：传勾选分区
     const selection =
@@ -649,37 +539,20 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     return { ...payload(), ...selection }
   }
 
-  /** P0-②：push 前只读预览（弹窗确认流程第一步）——不写远端，只展示「将推送什么」。 */
-  const runPushPreview = async (): Promise<void> => {
-    patch({ busy: 'push', pushReport: null, pullReport: null })
-    try {
-      const preview = await api.pushPreview(buildPushPayload())
-      patch({ busy: null, pushPreview: { preview, open: true } })
-    } catch (err) {
-      // R-20：预览失败（此前写共享 error Banner，渲染在页面最底部而按钮在中部）
-      patch({ busy: null })
-      toast.error(`${t('toast.pushPreviewFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
-    }
-  }
-
-  /** P0-②：确认弹窗里点「确认推送」→ 真正推送（复用既有 push 语义）。 */
+  /** 推送：直接覆盖远端（无预览、无确认）。 */
   const runPush = async (): Promise<void> => {
     patch({ busy: 'push', pushReport: null, pullReport: null })
     try {
       const report = await api.push(buildPushPayload())
       // 成功即清空 token/webdavPassword（已安全使用完；绝不持久化）；失败保留以便重试
       patch({
-        busy: null, pushReport: report, pushPreview: { preview: null, open: false },
-        ...(report.ok
-          ? { token: '', webdavPassword: '' }
-          : {}),
+        busy: null, pushReport: report,
+        ...(report.ok ? { token: '', webdavPassword: '' } : {}),
       })
       if (report.ok) {
-        // M-19：推送终局回执（结果弹窗关闭后不再有任何痕迹）
         toast.ok(t('toast.pushDone'))
-        void loadSnapshots()
       } else {
-        // 失败保留结果弹窗（K-15，含告警明细）；同时给出不依赖弹窗的回执
+        // 失败保留结果弹窗（含告警明细）；同时给出不依赖弹窗的回执
         toast.error(t('toast.pushFailed'))
       }
     } catch (err) {
@@ -688,22 +561,47 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     }
   }
 
+  /** 拉取：直接覆盖本地（宿主应用前已落回滚快照；失败整体回滚）。 */
   const runPull = async (): Promise<void> => {
     patch({ busy: 'pull', pullReport: null, pushReport: null })
     try {
       const report = await api.pull({ ...payload() })
-      patch({ busy: null, pullReport: report, token: '', webdavPassword: '' })
-      // M-19：拉取终局回执（弹窗关闭后无痕迹）
-      toast.ok(t('toast.pullDone'))
+      patch({
+        busy: null, pullReport: report, token: '', webdavPassword: '',
+        lastRestoreId: report.restoreId !== '' ? report.restoreId : null,
+      })
+      if (report.ok) toast.ok(t('toast.pullDone'))
+      else toast.error(t('toast.pullFailed'))
     } catch (err) {
       patch({ busy: null })
       toast.error(`${t('toast.pullFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
     }
   }
 
+  /**
+   * 撤销本次覆盖：用拉取前落下的回滚快照（lastRestoreId）恢复本地。
+   * 危险操作 —— 入口在拉取结果弹窗内，先经二次确认弹窗（DESIGN.md §6）。
+   */
+  const runRollback = async (): Promise<void> => {
+    const restoreId = stateRef.current.lastRestoreId
+    if (restoreId === null) return
+    setRollbackOpen(false)
+    patch({ busy: 'rollback' })
+    try {
+      const report = await api.rollback({ restoreId })
+      // 已恢复 → 快照消费完毕，入口关闭（避免对同一快照重复撤销）
+      patch({ busy: null, pullReport: null, lastRestoreId: null })
+      if (report.full) toast.ok(t('toast.rollbackDone'))
+      else toast.warn(t('toast.rollbackPartial'))
+    } catch (err) {
+      patch({ busy: null })
+      toast.error(`${t('toast.rollbackFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
+    }
+  }
+
   /* ------------------------------------------------ 同步模式（默认/高级） */
 
-  /** 保存当前通道的分区选择到 Host（持久化；自动同步与手动 push 共用；失败提示但不阻断本地 UI）。 */
+  /** 保存当前通道的分区选择到 Host（持久化；push 与 pull 共用；失败提示但不阻断本地 UI）。 */
   const saveSelection = async (mode: SyncMode, sections: SectionId[]): Promise<void> => {
     try {
       await api.saveSelection({ transport: state.channel, mode, sections })
@@ -732,87 +630,22 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   /** 默认模式的推荐分区数（渲染计数用）。 */
   const recommendedSectionCount = state.catalog.filter((c) => c.defaultIncluded).length
 
-  /* ------------------------------------------------ 一键同步（方案 A） */
-
-  /** 一键同步：拉取 → 差异确认会话（先取消旧会话，再发起新会话）。 */
-  const runSync = async (snapshotId?: string): Promise<void> => {
-    // 清理旧的差异确认会话（避免残留临时 ZIP / 同 key 冲突）
-    if (state.confirmSession !== null) {
-      try { await api.cancel(state.confirmSession.syncSessionId) } catch { /* 尽力清理 */ }
-    }
-    patch({ busy: 'sync', confirmSession: null, confirmDecisions: null, lastRestoreId: null })
-    try {
-      const session = await api.sync({
-        ...payload(),
-        ...(snapshotId !== undefined && snapshotId !== '' ? { snapshotId } : {}),
-      })
-      if (!session.ok) {
-        // R-20：一键同步启动失败（宿主明确回报 message，无异常抛出）
-        patch({ busy: null })
-        toast.error(`${t('toast.syncStartFailed')}：${redact(session.message ?? t('syncflow.syncFailed'))}`)
-        return
-      }
-      patch({ busy: null, confirmSession: session, confirmDecisions: null, token: '', webdavPassword: '' })
-      void loadSnapshots()
-    } catch (err) {
-      patch({ busy: null })
-      toast.error(`${t('toast.syncStartFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
-    }
-  }
-
-  /** 用户取消差异确认：清除会话，复位到空闲。 */
-  const cancelConfirm = (): void => {
-    patch({ confirmSession: null, confirmDecisions: null })
-  }
-
-  /** 从 SyncConfirmView 透传的一键回滚完成信号。 */
-  const onRollbackApplied = (): void => {
-    patch({ lastRestoreId: null })
-  }
-
   /* ------------------------------------------------ 通道子 tab 切换 */
 
-  /** 切换通道子 tab：记录偏好 + 拉取目标通道远端快照。busy 时禁用切换（防并发操作）。 */
+  /** 切换通道子 tab：记录偏好。busy 时禁用切换（防并发操作）。 */
   const switchChannel = (ch: SyncChannel): void => {
     if (ch === state.channel || state.busy !== null) return
     patch({ channel: ch })
     writeStoredChannel(ch) // 同步写 localStorage 立即生效（status 未带回填时的兜底）
     // 异步持久化到磁盘（ui-prefs.json，随 self 分区进导出备份）；失败静默降级
     void api.saveUiPrefs({ lastSyncChannel: ch }).catch(() => { /* 保存失败不阻断切换 */ })
-    void loadSnapshots(undefined, ch)
-  }
-
-  /* ------------------------------------------------ 自动同步（按通道） */
-
-  const toggleAutosync = async (enabled: boolean): Promise<void> => {
-    patchChannel({ autosyncEnabled: enabled })
-    try {
-      const updated = await api.autosyncUpdate({ transport: state.channel, enabled, interval: chState.autosyncInterval })
-      patchChannel({ autosync: updated, autosyncEnabled: updated.enabled, autosyncInterval: updated.interval })
-      // M-20：乐观更新已生效，补一条终局回执确认宿主已受理
-      toast.ok(t('toast.autosyncUpdated'))
-    } catch (err) {
-      // R-20/M-20：失败必须提示 —— 界面是乐观更新，用户会以为开关已生效
-      toast.error(`${t('toast.autosyncUpdateFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
-    }
-  }
-
-  const updateAutosyncInterval = async (interval: AutosyncInterval): Promise<void> => {
-    patchChannel({ autosyncInterval: interval })
-    try {
-      const updated = await api.autosyncUpdate({ transport: state.channel, enabled: chState.autosyncEnabled, interval })
-      patchChannel({ autosync: updated, autosyncEnabled: updated.enabled, autosyncInterval: updated.interval })
-      toast.ok(t('toast.autosyncUpdated'))
-    } catch (err) {
-      toast.error(`${t('toast.autosyncUpdateFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
-    }
   }
 
   /** 活动通道的远端地址是否就绪（git=repoUrl 非空；webdav=webdavUrl 非空） */
   const remoteReady = computeRemoteReady(state.channel, state.repoUrl, state.webdavUrl)
   const buttons = computeSyncButtons(state.busy, remoteReady, uiT)
   const pushView = pushReportView(state.pushReport, uiT)
-  const pullView = pullReportView(state.pullReport, uiT)
+  const pullView = pullApplyReportView(state.pullReport, uiT)
   const githubView = computeGithubLoginView(
     state.github.phase, state.github.userCode, state.github.verificationUri, state.github.error, uiT,
   )
@@ -822,12 +655,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
 
   /** 高级模式勾选为空 → 禁止推送（默认模式不受限）。 */
   const pushSelectionReady = chState.syncMode !== 'advanced' || chState.syncSections.length > 0
-
-  const autosyncText = chState.autosync !== null ? autosyncStatusText(chState.autosync, uiT) : t('autosync.statusNever')
-  /** 距下次自动同步剩余 ms（null = 从未运行；0 = 已到期） */
-  const autosyncCountdownMs = chState.autosync !== null && chState.autosync.elapsedMs >= 0
-    ? computeAutosyncCountdown(chState.autosync.elapsedMs, autosyncIntervalMs(chState.autosync.interval))
-    : null
 
   return (
     <div className={css.viewBody}>
@@ -903,7 +730,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
           </Card>
 
           {/* 通道配置弹窗（Radix Modal 统一 a11y：focus-trap / Esc / 焦点还原 / 滚动锁；
-              内含推送预览/推送结果/拉取结果/一键同步确认四个嵌套 Modal，Radix 支持嵌套弹窗） */}
+              内含推送结果/拉取结果等嵌套 Modal，Radix 支持嵌套弹窗） */}
           <Modal
             open={channelOpen}
             onClose={closeChannelDialog}
@@ -1202,168 +1029,25 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             )}
           </Card>
 
-          {/* 一键同步 + 手动推送/拉取（当前通道） */}
+          {/* 两个同步按钮（当前通道）：拉取 = 直接覆盖本地；推送 = 直接覆盖远端。
+              两者都不弹确认 —— 勾选即同步是本插件的产品语义。 */}
           <div className={css.actionRow}>
             <Button
               variant="primary"
-              disabled={state.busy !== null || !remoteReady}
-              onClick={() => { void runSync() }}
+              disabled={!buttons.canPull || githubBusy || state.busy !== null}
+              onClick={() => { void runPull() }}
             >
-              {state.busy === 'sync' ? <Spinner label={t('syncflow.syncing')} /> : t('syncflow.button')}
-            </Button>
-            <Button disabled={!buttons.canPush || githubBusy || !pushSelectionReady} onClick={() => { void runPushPreview() }}>
-              {state.busy === 'push' ? <Spinner label={buttons.pushLabel} /> : buttons.pushLabel}
-            </Button>
-            <Button disabled={!buttons.canPull || githubBusy} onClick={() => { void runPull() }}>
               {state.busy === 'pull' ? <Spinner label={buttons.pullLabel} /> : buttons.pullLabel}
             </Button>
+            <Button
+              disabled={!buttons.canPush || githubBusy || !pushSelectionReady || state.busy !== null}
+              onClick={() => { void runPush() }}
+            >
+              {state.busy === 'push' ? <Spinner label={buttons.pushLabel} /> : buttons.pushLabel}
+            </Button>
           </div>
 
-          {/* 选择历史快照下拉（当前通道远端快照，支持点击/展开即刷新与主动刷新按钮）
-              —— 下拉与刷新按钮强制同一行：容器 nowrap + label 可收缩（minWidth:0），
-              按钮包 flex:none 的 pickerAction 保宽度，窄画布下不再换行。
-              行距归属：空态 hint 存在时由它承担底部 10px，不存在时由本行承担，
-              保证与下一张卡片的间距在任何状态下都不丢 */}
-          <div
-            className={css.snapshotPickerRow}
-            style={{ marginBottom: chState.snapshots.length === 0 && !chState.loadingSnapshots ? 0 : 10 }}
-          >
-            {/* 同基线依赖两点，缺一仍差 10px（实测）：
-                ① 空态 hint 移出本 label（见下方独立一行），否则 label 高 = fieldLabel
-                   + select + hint，按钮底部对齐到含 hint 的 label 底；
-                ② 清掉 label 自带的 margin:0 0 10px —— 容器是 align-items:flex-end，
-                   按 margin box 对齐，该 margin 会把按钮再压低 10px。
-                两点均由 CSS 承担：label 的归零见 styles 里 `.snapshotPickerRow .field`，
-                本行底部 10px 间距由 `.snapshotPickerHint` 或下方容器的条件 marginBottom 提供。 */}
-            <label className={css.field} style={{ flex: '1 1 auto', minWidth: 0 }}>
-              <span className={css.fieldLabel}>{t('syncflow.selectSnapshot')}</span>
-              <select
-                className={css.select}
-                value={chState.selectedSnapshotId}
-                disabled={state.busy !== null}
-                onFocus={() => { void loadSnapshots() }}
-                onMouseDown={() => { void loadSnapshots() }}
-                onClick={() => { void loadSnapshots() }}
-                onChange={(e: ChangeEvent<HTMLSelectElement>) => {
-                  const id = e.target.value
-                  patchChannel({ selectedSnapshotId: id })
-                  void runSync(id === '' ? undefined : id)
-                }}
-              >
-                <option value="">{t('syncflow.latestSnapshot')}</option>
-                {chState.snapshots.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.id}{t('syncflow.snapshotOption', { date: s.createdAt.slice(0, 10), count: String(s.sectionCount) })}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span className={css.pickerAction}>
-              <Button
-                disabled={state.busy !== null || chState.loadingSnapshots || !remoteReady}
-                onClick={() => { void loadSnapshots(undefined, undefined, true) }}
-                title={t('syncflow.refreshSnapshots')}
-              >
-                {chState.loadingSnapshots ? (
-                  <Spinner label={t('syncflow.refreshingSnapshots')} />
-                ) : (
-                  <><RefreshIcon size={14} /> {t('syncflow.refreshSnapshots')}</>
-                )}
-              </Button>
-            </span>
-          </div>
-          {/* 空态提示独立成行（移出 label）：label 高度 = fieldLabel + select，
-              刷新按钮与之底部对齐即真正同一行，不再被 hint 顶高错位。
-              底部 10px 间距由本行承担，故上方容器的 marginBottom 归零 */}
-          {chState.snapshots.length === 0 && !chState.loadingSnapshots && (
-            <div className={`${css.hint} ${css.snapshotPickerHint}`}>{t('syncflow.noSnapshots')}</div>
-          )}
-
-          {/* R-20：原 `{state.error !== null && <ErrorBanner error={state.error} />}` 已移除 ——
-              该字段承载 10+ 个动作的失败、渲染在全部卡片之后（用户触发点常在其上方视野外），
-              且同文案会被 Toast 去重合并。现按动作分文案走右下角 Toast（见上方各 catch 分支）。 */}
-
-          {/* 自动同步设置（当前通道） */}
-          <Card>
-            <span className={css.groupLabel}>{t('autosync.title')}</span>
-            <span className={css.hint}>{t('autosync.description')}</span>
-            <label className={css.checkboxRow}>
-              <input
-                type="checkbox"
-                checked={chState.autosyncEnabled}
-                disabled={state.busy !== null}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => { void toggleAutosync(e.target.checked) }}
-              />
-              <span>{t('autosync.enable')}</span>
-            </label>
-            <label className={css.field}>
-              <span className={css.fieldLabel}>{t('autosync.interval')}</span>
-              <select
-                className={css.input}
-                value={chState.autosyncInterval}
-                disabled={state.busy !== null}
-                onChange={(e: ChangeEvent<HTMLSelectElement>) => {
-                  void updateAutosyncInterval(e.target.value as AutosyncInterval)
-                }}
-              >
-                {AUTOSYNC_INTERVAL_OPTIONS.map((iv) => (
-                  <option key={iv} value={iv}>{intervalLabel(iv, t)}</option>
-                ))}
-              </select>
-              <span className={css.hint}>{t('autosync.intervalHint')}</span>
-            </label>
-            <div className={css.statRow}>
-              <Badge kind={chState.autosync?.lastRunStatus === 'failed' ? 'error' : chState.autosync?.lastRunStatus === 'skipped' ? 'warn' : 'info'}>
-                {autosyncText}
-              </Badge>
-              {autosyncCountdownMs !== null && chState.autosyncEnabled && (
-                <Badge kind="info">
-                  {autosyncCountdownMs <= 0
-                    ? t('autosync.due')
-                    : t('autosync.nextRun', { time: formatIntervalDuration(autosyncCountdownMs, uiT) })}
-                </Badge>
-              )}
-            </div>
-          </Card>
-
-          {/* P2：同步历史视图（Host /sync/history 端点；全局，含两通道记录） */}
           <SyncHistoryView api={api} t={t} />
-
-          {/* P0-②：push 前只读预览确认弹窗（「将推送什么」→ 确认后才真正上传；Radix Modal） */}
-          <Modal
-            open={state.pushPreview.open}
-            onClose={() => { patch({ pushPreview: { preview: null, open: false } }) }}
-            title={t('syncflow.pushPreviewTitle')}
-            wide
-            busy={state.busy === 'push'}
-          >
-            <Modal.Header
-              title={t('syncflow.pushPreviewTitle')}
-              onClose={() => { patch({ pushPreview: { preview: null, open: false } }) }}
-              closeDisabled={state.busy === 'push'}
-            />
-            <Modal.Body scroll>
-              <PushPreviewCard preview={state.pushPreview.preview} t={t} uiT={uiT} />
-            </Modal.Body>
-            <Modal.Footer>
-              <Button
-                variant="ghost"
-                disabled={state.busy === 'push'}
-                onClick={() => { patch({ pushPreview: { preview: null, open: false } }) }}
-              >
-                {t('syncflow.cancel')}
-              </Button>
-              <Button
-                variant="primary"
-                disabled={state.busy === 'push'}
-                onClick={() => { void runPush() }}
-              >
-                {state.busy === 'push' ? <Spinner label={t('syncflow.pushing')} /> : t('syncflow.pushConfirm')}
-              </Button>
-            </Modal.Footer>
-          </Modal>
-
-          {/* 推送结果弹窗（Radix Modal） */}
           <Modal
             open={state.pushReport !== null && pushView !== null}
             onClose={() => { patch({ pushReport: null }) }}
@@ -1402,7 +1086,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             </Modal.Footer>
           </Modal>
 
-          {/* 拉取差异预览弹窗（Radix Modal） */}
+          {/* 拉取结果弹窗（Radix Modal）：本次覆盖写入了哪些分区 + 回滚入口 */}
           <Modal
             open={state.pullReport !== null && pullView !== null}
             onClose={() => { patch({ pullReport: null }) }}
@@ -1415,10 +1099,19 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             />
             <Modal.Body scroll style={{ maxHeight: '70vh' }}>
               {pullView !== null && (<>
-                <Banner kind={pullView.kind === 'ok' ? 'info' : pullView.kind === 'empty' ? 'ok' : 'error'}>
+                <Banner kind={pullView.kind === 'ok' ? 'ok' : pullView.kind === 'empty' ? 'info' : 'error'}>
                   {pullView.headline}
                 </Banner>
-                {pullView.summary !== null && (
+                {pullView.rolledBack && <Banner kind="warn">{t('pull.rolledBack')}</Banner>}
+                {pullView.applied.length > 0 && (
+                  <div>
+                    <span className={css.fieldLabel}>{t('sections.title')}</span>
+                    <div className={css.statRow}>
+                      {pullView.applied.map((s) => <Badge key={s} kind="info">{s}</Badge>)}
+                    </div>
+                  </div>
+                )}
+                {pullView.summary !== null && pullView.summary.items.length > 0 && (
                   <>
                     <div className={css.statRow}>
                       <Badge kind="info">{t('change.total', { total: pullView.summary.total })}</Badge>
@@ -1426,7 +1119,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                       {pullView.summary.warning > 0 && <Badge kind="warn">{severityLabel('warning', uiT)} × {pullView.summary.warning}</Badge>}
                       {pullView.summary.info > 0 && <Badge kind="info">{severityLabel('info', uiT)} × {pullView.summary.info}</Badge>}
                     </div>
-                    {pullView.summary.needsReview && <Banner kind="warn">{t('pull.needsReview')}</Banner>}
                     <div className={css.pullScroll}>
                       <div className={css.reportList}>
                         {pullView.summary.items.map((c) => (
@@ -1442,94 +1134,41 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                     </div>
                   </>
                 )}
-                {pullView.previewHint !== '' && <Banner kind="info">{pullView.previewHint}</Banner>}
+                {pullView.restoreHint !== '' && <Banner kind="info">{pullView.restoreHint}</Banner>}
               </>)}
             </Modal.Body>
             <Modal.Footer>
+              {state.lastRestoreId !== null && (
+                <Button variant="danger" disabled={state.busy !== null} onClick={() => { setRollbackOpen(true) }}>
+                  {t('pull.undo')}
+                </Button>
+              )}
               <Button variant="primary" onClick={() => { patch({ pullReport: null }) }}>
                 {t('common.close')}
               </Button>
             </Modal.Footer>
           </Modal>
 
-          {/* 一键同步差异确认弹窗（Radix Modal；SyncConfirmView 内含取消/确认按钮） */}
+          {/* 撤销本次覆盖的二次确认（DESIGN.md §6：回滚恒 danger + 二次确认） */}
           <Modal
-            open={state.confirmSession !== null}
-            onClose={cancelConfirm}
-            title={t('syncflow.title')}
-            cardStyle={{ width: 'min(820px, 100%)', maxHeight: '85vh' }}
-            busy={state.busy === 'sync'}
+            open={rollbackOpen}
+            onClose={() => { setRollbackOpen(false) }}
+            title={t('rollback.title')}
+            busy={state.busy !== null}
           >
-            <Modal.Header
-              title={t('syncflow.title')}
-              onClose={cancelConfirm}
-              closeDisabled={state.busy === 'sync'}
-            />
-            <Modal.Body scroll style={{ maxHeight: '72vh' }}>
-              {state.confirmSession !== null && (
-                <SyncConfirmView
-                  api={api}
-                  syncSessionId={state.confirmSession.syncSessionId}
-                  snapshotId={state.confirmSession.snapshotId}
-                  items={state.confirmSession.items}
-                  needsReview={state.confirmSession.needsReview}
-                  compatibility={state.confirmSession.compatibility}
-                  t={t}
-                  decisions={state.confirmDecisions}
-                  onDecisionsChange={(d) => { patch({ confirmDecisions: d }) }}
-                  onCancel={cancelConfirm}
-                  onRollbackDone={onRollbackApplied}
-                />
-              )}
+            <Modal.Header title={t('rollback.title')} onClose={() => { setRollbackOpen(false) }} />
+            <Modal.Body>
+              <Banner kind="warn">{t('rollback.body')}</Banner>
             </Modal.Body>
+            <Modal.Footer>
+              <Button variant="danger" disabled={state.busy !== null} onClick={() => { void runRollback() }}>
+                {state.busy === 'rollback' ? <Spinner label={t('rollback.running')} /> : t('rollback.confirm')}
+              </Button>
+              <Button disabled={state.busy !== null} onClick={() => { setRollbackOpen(false) }}>
+                {t('common.close')}
+              </Button>
+            </Modal.Footer>
           </Modal>
     </div>
   )
-}
-
-/** P0-②：push 预览内容（绑 src/ui/i18n.ts 的 UiT 文案；纯展示，无敏感字段）。 */
-function PushPreviewCard({ preview, t, uiT }: {
-  preview: SyncPushPreview | null
-  t: TranslateNS<'config-manager-sync'>
-  uiT: UiT
-}) {
-  const view = pushPreviewView(preview, uiT)
-  if (view === null) return null
-  if (view.error !== null) return <Banner kind="error">{view.error}</Banner>
-  return (
-    <div>
-      <Banner kind="info">{view.headline}</Banner>
-      {view.previewHint !== '' && <div className={css.hint}>{view.previewHint}</div>}
-      {view.remoteSnapshotCount === 0 && (
-        <Banner kind="warn">{t('syncflow.pushFirstBaseline')}</Banner>
-      )}
-      <Card className={css.card}>
-        <div className={css.groupLabel}>{t('syncflow.pushPreviewSections')}</div>
-        <div className={css.planScroll}>
-          <ul className={css.reportList}>
-            {view.rows.map((row) => (
-              <li key={row.section}>
-                <span className={css.kindTag}>{row.changed ? 'changed' : 'unchanged'}</span>
-                {' '}{row.section} · {row.count}
-              </li>
-            ))}
-          </ul>
-        </div>
-      </Card>
-    </div>
-  )
-}
-
-/** AutosyncInterval → 可读标签（复用 i18n interval 键）。 */
-function intervalLabel(iv: AutosyncInterval, t: TranslateNS<'config-manager-sync'>): string {
-  switch (iv) {
-    case '5m': return t('autosync.interval5m');
-    case '15m': return t('autosync.interval15m');
-    case '30m': return t('autosync.interval30m');
-    case '60m': return t('autosync.interval60m');
-    case '6h': return t('autosync.interval6h');
-    case '12h': return t('autosync.interval12h');
-    case '24h': return t('autosync.interval24h');
-    default: return iv;
-  }
 }

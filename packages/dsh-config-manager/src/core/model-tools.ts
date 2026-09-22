@@ -2,8 +2,8 @@
  * dsh-config-manager — Agent 可调用的模型工具。
  *
  * 在 host 半注册 2 个 Cordis 模型工具，让 Agent 能自主驱动配置同步：
- *   config_sync_push        手动推送同步（写远端）
- *   config_sync_pull        拉取差异预览（零写入）
+ *   config_sync_push        手动推送同步（写远端；直接覆盖远端）
+ *   config_sync_pull        拉取并直接覆盖本地（写本地；应用前落回滚快照）
  *
  * 设计遵循 AGENTS.md 铁律：
  *   - 所有业务逻辑为可独立测试的纯编排函数（createModelTools），
@@ -12,7 +12,7 @@
  *   - ctx.tools 服务用可选读取（ctx.get）守卫：未组合 tools 的部署不注册、不崩溃。
  *
  * 安全不变量（硬约束，勿破坏）：
- *   - config_sync_pull 零写入（只 analyze+plan 出差异）；落地需另走确认导入管道；
+ *   - config_sync_pull 直接覆盖本地（恒 replace），但应用前强制落回滚快照、失败整体回滚；
  *   - 分区/路径走既有白名单（SECTION_IDS 过滤）。
  */
 import type { Context } from '@deepseek-ai/cordis'
@@ -101,22 +101,22 @@ export function createModelTools(deps: ModelToolsDeps) {
       }
     },
 
-    /** 拉取差异预览（零写入：只下载 + analyze + plan 出差异报告）。 */
+    /** 拉取并直接覆盖本地（写本地：远端值覆盖本地；应用前落回滚快照，失败整体回滚）。 */
     async syncPull(input: {
       channel?: SyncTransportType
       snapshotId?: string
-      strategy?: 'merge' | 'replace' | 'skipExisting'
     }): Promise<JsonValue> {
       const { engine } = await resolveEngine(deps, input.channel)
-      const strategy = input.strategy === 'replace' || input.strategy === 'skipExisting' ? input.strategy : 'replace'
-      const report = await engine.pull({
-        strategy,
+      const report = await engine.pullAndApply({
         ...(input.snapshotId === undefined || input.snapshotId === '' ? {} : { snapshotId: input.snapshotId }),
       })
       return {
         ok: report.ok,
         snapshotId: report.snapshotId,
-        needsReview: report.needsReview,
+        applied: report.applied,
+        restoreId: report.restoreId,
+        rolledBack: report.rolledBack,
+        warnings: report.warnings,
         changes: report.changes.map((c) => ({
           id: c.id,
           adapter: c.adapter,
@@ -178,7 +178,7 @@ export function registerModelTools(ctx: Context, deps: ModelToolsDeps): void {
   register(defineTool({
     name: 'config_sync_pull',
     description:
-      '拉取远端同步差异预览（Git/WebDAV，零写入：只下载 + 分析出差异报告，绝不直接写配置）。若要落地差异需另走确认导入管道。',
+      '拉取远端快照并直接覆盖本地配置（Git/WebDAV，恒 replace：远端值覆盖本地）。应用前强制落回滚快照，任一失败整体回滚。',
     parameters: {
       channel: {
         type: 'string',
@@ -189,14 +189,9 @@ export function registerModelTools(ctx: Context, deps: ModelToolsDeps): void {
         type: 'string',
         description: '远端快照 id；缺省 = 最新',
       },
-      strategy: {
-        type: 'string',
-        enum: ['replace', 'skipExisting'],
-        description: '差异全局策略；缺省 replace（远端值覆盖本地）',
-      },
     },
     output: {
-      schema: { type: 'json', description: '差异报告（changes 列表 / needsReview）' },
+      schema: { type: 'json', description: '覆盖报告（applied 分区 / restoreId 回滚入口 / changes 摘要）' },
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     async execute(args) {

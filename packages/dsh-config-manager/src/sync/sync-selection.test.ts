@@ -88,7 +88,7 @@ test('effectiveSections：advanced + 非空 → 勾选分区；default / advance
   assert.equal(
     effectiveSections({ schemaVersion: SYNC_SELECTION_SCHEMA_VERSION, mode: 'advanced', sections: [] }),
     undefined,
-    'advanced 但未勾选 → 回退全量（避免自动同步卡死）',
+    'advanced 但未勾选 → 回退全量（避免同步卡死）',
   );
 });
 

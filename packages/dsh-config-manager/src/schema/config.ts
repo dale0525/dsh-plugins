@@ -44,6 +44,20 @@ export function isFileSection(sectionId: SectionId): boolean {
   return sectionId in SECTION_FILE_PREFIXES;
 }
 
+/**
+ * 该分区是否为「按设计携带明文凭据」的导出数据。
+ * 消费点 = Exporter 豁免 SecretScanner 剥离（同步通道的明文语义）
+ * 与 SyncEngine 如实标注 containsSecrets。放 schema 层是因为它是分区**形状**判定，
+ * core 不得依赖 adapters（见 tests/architecture-boundaries.test.ts）。
+ */
+export function credentialsCarryValues(sectionId: string, data: unknown): boolean {
+  if (sectionId !== 'credentialsStatus') return false;
+  if (data === null || typeof data !== 'object') return false;
+  const creds = (data as { credentials?: unknown }).credentials;
+  if (!Array.isArray(creds)) return false;
+  return creds.some((c) => c !== null && typeof c === 'object' && (c as { hasValue?: unknown }).hasValue === true);
+}
+
 /** 从 ZIP 内 JSON 解析分区数据（深度保护 + 结构校验） */
 export function parseSectionJson<T extends SectionData>(sectionId: SectionId, raw: string): T {
   const parsed = parseJsonSafe(raw) as T;

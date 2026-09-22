@@ -9,9 +9,6 @@ export const zh = {
   // 入口
   'section.label': '配置同步',
   'section.description': '远程同步 DSH 配置',
-  // 视图与导航
-  'view.sync': '远程同步',
-  'nav.sync': '远程同步',
   // 公共
   'common.close': '关闭',
   'common.cancel': '取消',
@@ -35,9 +32,6 @@ export const en: Record<ConfigManagerKey, string> = {
   // Entry
   'section.label': 'Config Sync',
   'section.description': 'Sync DSH configurations remotely',
-  // Views & Navigation
-  'view.sync': 'Remote Sync',
-  'nav.sync': 'Remote Sync',
   // Common
   'common.close': 'Close',
   'common.cancel': 'Cancel',

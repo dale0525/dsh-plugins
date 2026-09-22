@@ -1,7 +1,7 @@
 /**
  * 跨进程环境锁 primitive（Phase 2：Cross-process Lock）。
  *
- * 目标：防止多个 DSH 实例 / Web Host / CLI / AutoSync / Backup Scheduler / Model Tools
+ * 目标：防止多个 DSH 实例 / Web Host / CLI / Backup Scheduler / Model Tools
  * 同时执行 destructive mutation。提供 **GLOBAL EXCLUSIVE MUTATION LOCK**。
  *
  * 设计基线：CROSS_PROCESS_LOCK_DESIGN.md Rev 3（BLOCKER 1–4 全部 CLOSED）。
@@ -1058,7 +1058,7 @@ export type LockBlockReason =
   | 'unavailable'
 
 /** 按分类生成用户可读的友好文案（内部诊断不进入此文案；op/reason 作为字段供日志使用）。
- *  导出：后台调度器（自动同步/定时备份）被挡时用同一份文案写日志，避免两处文案漂移。 */
+ *  导出：定时备份调度器被挡时用同一份文案写日志，避免两处文案漂移。 */
 export const LOCK_BLOCK_MESSAGE: Record<LockBlockReason, string> = {
   locked: '另一个任务正在运行，请稍后重试。',
   blocked: '配置修改已被保护，请先处理恢复事项后再继续。',

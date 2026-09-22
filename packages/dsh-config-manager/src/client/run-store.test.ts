@@ -64,7 +64,7 @@ test('run-store: token 与 webdav 密码绝不写入 sessionStorage', () => {
   assert.equal(reloaded.getSnapshot().sync.webdavPassword, '')
 })
 
-test('run-store: byChannel 加密解密密码绝不写入 sessionStorage', () => {
+test('run-store: byChannel 每通道同步模式与勾选各自往返恢复', () => {
   const { storage, raw } = makeStorage()
   const store = new RunStore({ storage })
   store.patch({
@@ -73,20 +73,10 @@ test('run-store: byChannel 加密解密密码绝不写入 sessionStorage', () =>
         git: {
           syncSections: ['settings'],
           syncMode: 'advanced',
-          selectedSnapshotId: '',
-          autosync: null,
-          autosyncEnabled: false,
-          autosyncInterval: '60m',
-          snapshots: [],
         },
         webdav: {
           syncSections: ['settings', 'skills'],
           syncMode: 'default',
-          selectedSnapshotId: '',
-          autosync: null,
-          autosyncEnabled: true,
-          autosyncInterval: '30m',
-          snapshots: [],
         },
       },
     },
@@ -98,11 +88,10 @@ test('run-store: byChannel 加密解密密码绝不写入 sessionStorage', () =>
   // 刷新后分区选择正确保留（凭据本身走 DSH credentials，不进 UI 状态）
   const reloaded = new RunStore({ storage })
   const snap = reloaded.getSnapshot().sync
-  assert.equal('encryptPassword' in snap.byChannel.git, false, 'ChannelSyncState 不再有加密密码字段')
-  // 非敏感选项正确保留
   assert.equal(snap.byChannel.git.syncMode, 'advanced')
   assert.deepEqual(snap.byChannel.git.syncSections, ['settings'])
-  assert.equal(snap.byChannel.webdav.autosyncEnabled, true)
+  assert.equal(snap.byChannel.webdav.syncMode, 'default')
+  assert.deepEqual(snap.byChannel.webdav.syncSections, ['settings', 'skills'])
 })
 
 test('run-store: busy 与 savingConfig 为内存瞬态——不写入 sessionStorage、刷新后复位', () => {
@@ -133,7 +122,6 @@ test('run-store: 非敏感同步表单状态往返恢复', () => {
       webdavUsername: 'alice',
       repoUrl: 'git@github.com:alice/dsh-sync.git',
       lastRestoreId: 'restore-20260919',
-      pushPreview: { preview: null, open: true },
       error: '网络波动错误（已脱敏）',
       loadError: '远端连接失败',
     },
@@ -146,7 +134,6 @@ test('run-store: 非敏感同步表单状态往返恢复', () => {
   assert.equal(s.webdavUsername, 'alice')
   assert.equal(s.repoUrl, 'git@github.com:alice/dsh-sync.git')
   assert.equal(s.lastRestoreId, 'restore-20260919')
-  assert.equal(s.pushPreview.open, true)
   assert.equal(s.error, '网络波动错误（已脱敏）')
   assert.equal(s.loadError, '远端连接失败')
 })

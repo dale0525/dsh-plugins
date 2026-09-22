@@ -20,10 +20,10 @@ import { createAdapters } from '../adapters/index.ts';
 import { defaultSecretScanner } from '../core/exporter.ts';
 import { Importer } from '../core/importer.ts';
 import type {
-  ConfigAdapter, ExportSection, GlobalConflictStrategy, HostContext,
+  ConfigAdapter, ExportSection, HostContext,
   ImportAnalysis, ImportPlan, ImportResult, PlanItem, PlanItemKind,
 } from '../core/types.ts';
-import { isFileSection, SECTION_FILE_PREFIXES, SECTION_JSON_PATHS } from '../schema/config.ts';
+import { credentialsCarryValues, isFileSection, SECTION_FILE_PREFIXES, SECTION_JSON_PATHS } from '../schema/config.ts';
 import { buildManifest, CHECKSUMS_FILE, MANIFEST_FILE } from '../schema/manifest.ts';
 import type { FilesSection, Platform, SectionData, SectionId } from '../schema/types.ts';
 import { CURRENT_SCHEMA_VERSION } from '../schema/versions.ts';
@@ -72,7 +72,7 @@ export interface SyncEngineOptions {
   msg?: MsgFunc;
   /**
    * 同步范围（自定义同步模式持久化配置）：只处理这些分区。
-   * 缺省 = 全部推荐分区。应用于 push / pull 等全部链路，供自动同步等后台流程复用
+   * 缺省 = 全部推荐分区。应用于 push / pull 等全部链路，供宿主按持久化勾选复用
    * 用户选择；手动请求仍可用 push(opts.sections) 覆盖。
    */
   sections?: SectionId[];
@@ -89,8 +89,8 @@ export interface SyncPushOptions {
 export interface SyncPullOptions {
   /** 指定远端快照 id（缺省 = 最新） */
   snapshotId?: string;
-  /** 冲突全局策略（缺省 replace：勾选即同步，远端值直接覆盖本地，不做 diff/合并） */
-  strategy?: GlobalConflictStrategy;
+  /** Phase 4 生产 journal↔snapshot 绑定（宿主 gate 注入；透传给 applyItems） */
+  snapshotBinding?: TransactionSnapshotContext;
 }
 
 export interface SyncPushReport {
@@ -112,36 +112,7 @@ export interface PullChange {
   severity: PlanItem['severity'];
 }
 
-export interface SyncPullReport {
-  ok: boolean;
-  snapshotId: string;
-  changes: PullChange[];
-  /** 是否存在需要人工决策的项（Conflict / MissingSecret / MissingDependency / 路径问题）。 */
-  needsReview: boolean;
-  message?: string;
-}
-
-/** push 前只读预览 ——「将推送什么」的单分区摘要（不写远端、不落盘）。 */
-export interface SyncPushPreviewSection {
-  /** 分区 id（将进入快照的分区） */
-  section: SectionId;
-  /** 分区内条目计数（adapter.export 的 counts 聚合；无计数时为 0） */
-  count: number;
-  /** 相对上次基线（sync-state）是否变化：true = 本次会更新该分区；false = 与基线一致 */
-  changed: boolean;
-}
-
-/** push 前预览结果（零写入）。 */
-export interface SyncPushPreview {
-  ok: boolean;
-  /** 将推送的分区清单（含计数与变化标记） */
-  sections: SyncPushPreviewSection[];
-  /** 远端现有快照数（0 = 首次推送将创建首个基线） */
-  remoteSnapshotCount: number;
-  message?: string;
-}
-
-/** 一键 sync 预览结果（preview() 返回；临时 ZIP 由调用方持有并负责清理）。 */
+/** 拉取预览结果（preview() 返回；临时 ZIP 由调用方持有并负责清理）。 */
 export interface SyncPreviewResult {
   ok: boolean;
   /** 临时标准 ZIP 路径（apply-items 复用 executeImportPlan 需要；调用方清理） */
@@ -168,6 +139,27 @@ export interface ApplyItemsReport {
   /** 透传 executeImportPlan 结果 */
   result: ImportResult | null;
   needsRestart?: boolean;
+}
+
+/**
+ * 拉取并直接覆盖本地的报告（「拉取」按钮的唯一语义：远端值覆盖本地，不询问）。
+ * 复用 applyItems 的执行结果，并附上「应用前算出的变更摘要」供 UI 如实展示覆盖了什么。
+ */
+export interface SyncPullApplyReport {
+  ok: boolean;
+  snapshotId: string;
+  /** 本次实际写入本地的分区 */
+  applied: SectionId[];
+  /** 远端快照相对本地的变更摘要（应用前计算；仅展示用，不含敏感值） */
+  changes: PullChange[];
+  /** 应用前强制落盘的回滚快照 id（UI 一键回滚用） */
+  restoreId: string;
+  /** 失败时是否已整体回滚 */
+  rolledBack: boolean;
+  warnings: string[];
+  failed: { itemId: string; message?: string }[];
+  needsRestart: boolean;
+  message?: string;
 }
 
 /**
@@ -222,7 +214,7 @@ export class SyncEngine {
   }
 
   /** 参与同步的分区全集：构造注入 sections（同步范围）时按注入范围过滤 ——
-   *  自动同步等后台流程 push/pull 全链路复用用户选择；手动请求仍可用 push(opts.sections) 覆盖。 */
+   *  宿主侧 push/pull 全链路复用用户选择；手动请求仍可用 push(opts.sections) 覆盖。 */
   private syncAdapters(): ConfigAdapter[] {
     if (this.sections === undefined) return this.adapters;
     const wanted = new Set(this.sections);
@@ -338,54 +330,51 @@ export class SyncEngine {
   }
 
   /**
-   * push 前只读预览「将推送什么」—— 零写入、零远端变更：
-   *  - 导出目标分区（与 push 同口径：sections 过滤）；
-   *  - 逐分区相对上次基线（sync-state.sections hash）的 changed 标记；
-   *  - 远端现有快照数（list 只读；首次推送 = 0）。
-   * 任何失败都不写任何内容；预览只是 push 的「确认前说明书」。
+   * 拉取并**直接覆盖本地**（「拉取」按钮的唯一语义）：
+   * 下载远端最新快照 → 转临时 ZIP → Importer 分析出计划（strategy=replace：冲突项一律
+   * 采用远端值）→ applyItems 执行（应用前强制落回滚快照；任一失败整体回滚）。
+   *
+   * 不询问、不逐项确认：远端值覆盖本地是本插件的产品语义（私有通道自用）。
+   * 临时 ZIP 用完即删。
    */
-  async previewPush(opts: SyncPushOptions = {}): Promise<SyncPushPreview> {
-    const warnings: string[] = [];
-    const targets = this.pushTargets(opts.sections, warnings);
-    const plainSections: Partial<Record<SectionId, SectionData>> = {};
-    const counts: Partial<Record<SectionId, number>> = {};
-    for (const adapter of targets) {
-      let section: ExportSection;
-      try {
-        section = await adapter.export(this.ctx, { includeSecrets: true });
-      } catch (err) {
-        warnings.push(this.msg('sync.sectionFailed', { adapter: adapter.id, reason: err instanceof Error ? err.message : String(err) }));
-        continue;
+  async pullAndApply(opts: SyncPullOptions = {}): Promise<SyncPullApplyReport> {
+    const preview = await this.preview(opts);
+    const changes: PullChange[] = (preview.plan?.items ?? []).map((i) => ({
+      id: i.id,
+      adapter: i.adapter,
+      kind: i.kind,
+      description: i.description,
+      severity: i.severity,
+    }));
+    if (!preview.ok || preview.plan === null) {
+      if (preview.zipPath !== '') {
+        await fs.rm(path.dirname(preview.zipPath), { recursive: true, force: true });
       }
-      plainSections[adapter.id] = section.data as SectionData;
-      counts[adapter.id] = section.counts ? Object.values(section.counts).reduce((a, b) => a + b, 0) : 0;
+      return {
+        ok: false, snapshotId: preview.snapshotId, applied: [], changes, restoreId: '',
+        rolledBack: false, warnings: [], failed: [], needsRestart: false,
+        message: preview.message ?? this.msg('sync.remoteEmpty'),
+      };
     }
-    if (Object.keys(plainSections).length === 0) {
-      return { ok: false, sections: [], remoteSnapshotCount: 0, message: this.msg('sync.noSections') };
-    }
-
-    // 基线对比：sync-state.sections 存每分区 hash；缺基线分区 → 视为新增
-    let baselineHashes: Record<string, string> = {};
     try {
-      const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
-      baselineHashes = state.sections as Record<string, string>;
-    } catch {
-      baselineHashes = {};
+      const report = await this.applyItems(preview.zipPath, preview.plan, {
+        snapshotId: preview.snapshotId,
+        ...(opts.snapshotBinding === undefined ? {} : { snapshotBinding: opts.snapshotBinding }),
+      });
+      return {
+        ok: report.ok,
+        snapshotId: preview.snapshotId,
+        applied: report.applied as SectionId[],
+        changes,
+        restoreId: report.restoreId,
+        rolledBack: report.rolledBack,
+        warnings: report.warnings,
+        failed: report.failed,
+        needsRestart: report.needsRestart === true,
+      };
+    } finally {
+      await fs.rm(path.dirname(preview.zipPath), { recursive: true, force: true });
     }
-    const sections: SyncPushPreviewSection[] = Object.keys(plainSections).map((sid) => {
-      const id = sid as SectionId;
-      const changed = baselineHashes[id] === undefined || baselineHashes[id] !== hashSection(plainSections[id] as SectionData);
-      return { section: id, count: counts[id] ?? 0, changed };
-    });
-
-    let remoteSnapshotCount = 0;
-    try {
-      const metas = await this.transport.list();
-      remoteSnapshotCount = metas.length;
-    } catch {
-      // list 失败只影响展示（首次推送提示），不阻断预览
-    }
-    return { ok: true, sections, remoteSnapshotCount, message: warnings.length > 0 ? warnings.join('; ') : undefined };
   }
 
   /**
@@ -421,101 +410,7 @@ export class SyncEngine {
   }
 
   /**
-   * pull：拉取远端最新（或指定）快照 → 转临时标准 ZIP →
-   * 复用 Importer 预览流程（analyzeImport/createImportPlan）产出差异报告。
-   * 绝不直接写配置、绝不执行导入；执行由上层按用户确认后走 Importer.executeImportPlan。
-   */
-  async pull(opts: SyncPullOptions = {}): Promise<SyncPullReport> {
-    if (!this.importer) {
-      throw new Error(this.msg('sync.missingImporter'));
-    }
-    const metas = await this.transport.list();
-    if (metas.length === 0) {
-      return { ok: true, snapshotId: '', changes: [], needsReview: false, message: this.msg('sync.remoteEmpty') };
-    }
-    const targetId = opts.snapshotId ?? metas[metas.length - 1]!.id; // list 按 createdAt 升序 → 最新
-    const snapshot = await this.transport.download(targetId);
-    await this.prepareSnapshot(snapshot);
-
-    const knownIds = new Set(this.syncAdapters().map((a) => a.id));
-    const zipPath = await this.snapshotToZip(snapshot, knownIds);
-    try {
-      const analysis = await this.importer.analyzeImport(zipPath);
-      const plan = await this.importer.createImportPlan(zipPath, {
-        strategy: opts.strategy ?? 'replace',
-        resolutions: {},
-        pathMappings: [],
-      });
-      const changes: PullChange[] = plan.items.map((i) => ({
-        id: i.id,
-        adapter: i.adapter,
-        kind: i.kind,
-        description: i.description,
-        severity: i.severity,
-      }));
-      const needsReview =
-        plan.items.some((i) =>
-          i.kind === 'Conflict' || i.kind === 'MissingSecret' || i.kind === 'MissingDependency'
-          || i.kind === 'Error')
-        || analysis.pathIssues.length > 0;
-      const message = changes.length === 0
-        ? this.msg('sync.unchanged')
-        : this.msg('sync.changesSummary', { compatibility: analysis.compatibility, count: String(changes.length) });
-      return { ok: analysis.valid, snapshotId: targetId, changes, needsReview, message };
-    } finally {
-      await fs.rm(path.dirname(zipPath), { recursive: true, force: true });
-    }
-  }
-
-  /** 列出远端已有快照（按 createdAt 升序）—— 供「选择历史快照」下拉。 */
-  async listSnapshots(): Promise<SyncSnapshotMeta[]> {
-    return this.transport.list();
-  }
-
-  /**
-   * 远端是否出现比本地共同祖先（sync-state.lastSnapshotId）更新的快照（§3.2「检测到远端新快照」）。
-   * - 远端为空 → false（无物可拉）；
-   * - 本地从未同步（lastSnapshotId=''）且远端非空 → true（首次可拉）；
-   * - 否则比较远端最新快照 id 与 lastSnapshotId。
-   * 只读远端列表（transport.list），不做下载/合并。
-   */
-  async hasNewRemoteSnapshot(): Promise<boolean> {
-    const metas = await this.transport.list();
-    if (metas.length === 0) return false;
-    const latestId = metas[metas.length - 1]!.id; // list 按 createdAt 升序 → 最新在末
-    const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
-    if (state.lastSnapshotId === '') return true;
-    return latestId !== state.lastSnapshotId;
-  }
-
-  /**
-   * 本地配置当前内容与上次基线（sync-state.sections hash）相比是否有变化（§3.1 上传「看变化」）。
-   * - 从未同步（sync-state.sections 为空）→ true；
-   * - 任一分区当前导出 hash ≠ 基线 hash → true；
-   * - 全部一致 → false（无本地改动，不上传）。
-   * 只读本地导出 + sync-state，不写任何东西、不碰远端。
-   */
-  async hasLocalChanges(): Promise<boolean> {
-    const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
-    if (Object.keys(state.sections).length === 0) return true;
-    // 必须与 push 的默认范围同源：基线只记录 push 实际上传的分区，
-    // 若此处遍历更大的集合，未上传分区会因「基线缺该分区」恒判为有改动。
-    for (const adapter of this.defaultTargets()) {
-      let section: ExportSection;
-      try {
-        section = await adapter.export(this.ctx, { includeSecrets: true });
-      } catch {
-        continue; // 单项导出失败不影响判定（与 push 单项跳过语义一致）
-      }
-      const recorded = state.sections[adapter.id];
-      if (recorded === undefined) return true; // 基线缺该分区 → 视为有变化
-      if (recorded.hash !== hashSection(section.data as SectionData)) return true;
-    }
-    return false;
-  }
-
-  /**
-   * 一键同步预览：拉取远端（最新或指定历史快照）→ 转临时 ZIP → Importer 分析出计划。
+   * 拉取预览：下载远端快照 → 转临时 ZIP → Importer 分析出计划。
    * 与 pull 的区别：临时 ZIP **不清理**（由调用方 / 会话持有，供 apply-items 复用），
    * 并返回完整 plan/analysis/snapshotId 供会话登记。
    * 调用方负责在会话消费或取消后清理 zipPath 所在目录。
@@ -534,8 +429,9 @@ export class SyncEngine {
     const knownIds = new Set(this.syncAdapters().map((a) => a.id));
     const zipPath = await this.snapshotToZip(snapshot, knownIds);
     const analysis = await this.importer.analyzeImport(zipPath);
+    // 恒 replace：远端值直接覆盖本地，不做 diff/合并（本插件的产品语义）
     const plan = await this.importer.createImportPlan(zipPath, {
-      strategy: opts.strategy ?? 'replace',
+      strategy: 'replace',
       resolutions: {},
       pathMappings: [],
     });
@@ -602,9 +498,7 @@ export class SyncEngine {
       /**
        * 本次应用的**远端快照 id**（preview() 返回值）。
        *
-       * 必须传：基线（sync-state.lastSnapshotId）要与「刚刚应用的远端快照」对齐，
-       * 否则 `hasNewRemoteSnapshot()` 会把同一个远端快照一直判定为「新的」，
-       * 自动同步每轮都会重复拉取同一个快照（空转）。
+       * 必须传：基线（sync-state.lastSnapshotId）要与「刚刚应用的远端快照」对齐。
        * 缺省（不传）时才回退到本地新生成的 id —— 仅适用于「本地产生的快照」语义。
        */
       snapshotId?: string;
@@ -750,5 +644,8 @@ export class SyncEngine {
  */
 export function sectionsCarrySecrets(sections: Partial<Record<SectionId, SectionData>>): boolean {
   const scanner = defaultSecretScanner();
-  return Object.values(sections).some((data) => scanner.scanAndRedact(data).hits.length > 0);
+  return Object.entries(sections).some(([id, data]) =>
+    // 凭据分区按设计携带明文：值可能没有 sk-/ghp_ 这类强形状（如自定密码），
+    // 扫描器认不出 → 必须按 hasValue 显式判定，否则会「含明文却标注 false」。
+    credentialsCarryValues(id, data) || scanner.scanAndRedact(data).hits.length > 0);
 }

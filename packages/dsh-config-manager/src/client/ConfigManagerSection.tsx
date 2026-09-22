@@ -1,6 +1,6 @@
 /**
  * Config Manager 设置页（settings.section 入口）—— Workbench Shell。
- * 宽读法改造：仅保留「远程同步」单一标签页。
+ * 仅同步一个页面，故不设页签导航：主体直接是同步内容。
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
@@ -17,11 +17,6 @@ export type ConfigManagerSectionProps =
   & PropsRuntime<'settings.section'>
   & ConfigManagerSectionInjected
   & { t: TranslateNS<'config-manager'> }
-
-/** 一级导航（宽读法：仅保留同步页）。 */
-const NAV_ITEMS = [
-  { id: 'sync' as const, label: 'nav.sync' },
-]
 
 export function ConfigManagerSection({ api, syncApi, syncT, t }: ConfigManagerSectionProps) {
   const state = useSyncExternalStore(runStore.subscribe, runStore.getSnapshot)
@@ -46,24 +41,6 @@ export function ConfigManagerSection({ api, syncApi, syncT, t }: ConfigManagerSe
 
   return (
     <div className={css.section} id={MODAL_ROOT_ID}>
-      {/* 顶部导航条：页签 */}
-      <nav className={css.shellNav} aria-label={t('section.label')}>
-        <div className={css.navStrip} role="tablist">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              role="tab"
-              aria-selected={true}
-              data-active=""
-              className={css.navTab}
-            >
-              {t(item.label as Parameters<TranslateNS<'config-manager'>>[0])}
-            </button>
-          ))}
-        </div>
-      </nav>
-
       {/* 页面主体（独立滚动） */}
       <main className={css.shellMain}>
         <div className={css.pagePad}>

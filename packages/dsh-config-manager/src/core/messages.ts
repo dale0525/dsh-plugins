@@ -204,6 +204,7 @@ export const zh = {
   'adapter.workspacePathMapping': '路径需映射: {path}',
   'adapter.workspaceMissing': '导入数据缺少工作区 {ref}',
   'adapter.credentialDescription': '凭据补录',
+  'adapter.credentialWriteBack': '写回凭据 {ref}',
 
   // ---------- 适配器：applyItem 结果消息 ----------
   'adapter.missingTargetRef': '缺少 target.ref',
@@ -250,7 +251,7 @@ export const zh = {
   'adapter.validate.credentialRef': '凭据记录必须含非空 ref',
   'adapter.validate.fileRelativePath': '文件记录必须含非空 relativePath',
   'adapter.validate.promptIdentity': 'prompt 记录必须含字符串 name 与 text',
-  'adapter.validate.hasValueFalse': '值未导出，hasValue 必须为 false',
+  'adapter.validate.hasValueMismatch': 'hasValue 必须与 value 一致（true 必须带 value，false 不得带）',
   'adapter.validate.serverName': 'server 记录必须含非空 serverName',
   'adapter.validate.workspaceIdentity': 'workspace 记录必须含字符串 id 与 path',
   'adapter.validate.missingValue': '缺少 value',
@@ -509,6 +510,7 @@ export const en: Record<keyof typeof zh, string> = {
   'adapter.workspacePathMapping': 'Path needs mapping: {path}',
   'adapter.workspaceMissing': 'Import data is missing workspace {ref}',
   'adapter.credentialDescription': 'Re-enter credential',
+  'adapter.credentialWriteBack': 'Write back credential {ref}',
 
   // ---------- adapters: applyItem result messages ----------
   'adapter.missingTargetRef': 'Missing target.ref',
@@ -555,7 +557,7 @@ export const en: Record<keyof typeof zh, string> = {
   'adapter.validate.credentialRef': 'Credential records must have a non-empty ref',
   'adapter.validate.fileRelativePath': 'File records must have a non-empty relativePath',
   'adapter.validate.promptIdentity': 'Prompt records must contain string name and text',
-  'adapter.validate.hasValueFalse': 'Values are never exported; hasValue must be false',
+  'adapter.validate.hasValueMismatch': 'hasValue must match value (true requires a value; false must not carry one)',
   'adapter.validate.serverName': 'Server records must have a non-empty serverName',
   'adapter.validate.workspaceIdentity': 'Workspace records must contain string id and path',
   'adapter.validate.missingValue': 'Missing value',

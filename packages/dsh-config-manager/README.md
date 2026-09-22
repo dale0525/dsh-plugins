@@ -5,10 +5,9 @@
 在你的多台机器之间，通过**自有的私有通道**（Git 仓库或 WebDAV）同步完整的 DSH 配置 ——
 设置、模型 provider、插件清单、MCP server、技能、Agent 预设、工作区，以及 provider 密钥。
 
-- ☁️ **Git / WebDAV** 双通道，各自独立配置与排期
-- ⏰ **自动同步** —— 事件驱动：远端有新快照才拉，本地有改动才推
+- ☁️ **Git / WebDAV** 双通道，各自独立配置
 - 📄 **明文快照** —— 私有通道自用，勾选即同步，不加密、不脱敏、不做 diff/合并
-- 🧩 分区可勾选：设置 / provider / 插件 / MCP / 技能 / 预设 / 工作区 / 凭据状态 等
+- 🧩 分区可勾选：设置 / provider / 插件 / MCP / 技能 / 预设 / 工作区 / 凭据 等
 - ↩️ 应用前自动落回滚快照，失败整体回滚
 - 🔐 通道凭据走 DSH credentials 槽位，值永不回传浏览器
 
@@ -38,11 +37,10 @@ dsh plugin --profile web add @logictan/dsh-config-manager@latest
 设置 → 插件 → **DSH Config Manager**（只有一个「同步」标签页）：
 
 1. **通道**：选 Git（私有仓库地址 + token）或 WebDAV（地址 + 用户名 + 口令）；
-   两者配置与自动同步排期**互相独立**。
+   两者配置**互相独立**。
 2. **同步范围**：默认模式同步全部推荐分区；高级模式手动勾选。
-3. **推送 / 拉取**：手动推送前会先给出「将推送什么」的只读预览。
-4. **一键同步**：拉远端最新快照 → 差异确认 → 逐项采纳 → 写入本地（应用前自动落快照）。
-5. **自动同步**：开启后后台按间隔兜底轮询，真正驱动是「远端有新快照」/「本地有改动」。
+3. **推送**：把本地配置直接覆盖到远端（无预览、无确认）。
+4. **拉取**：把远端最新快照直接覆盖到本地（应用前自动落回滚快照，失败整体回滚）。
 
 ---
 
@@ -52,7 +50,8 @@ dsh plugin --profile web add @logictan/dsh-config-manager@latest
 |---|---|
 | 快照内容 | **明文**，含 provider 密钥等一切隐私信息（`manifest.security.containsSecrets` 按实际内容如实标注） |
 | 通道要求 | 必须是你自有的**私有**仓库；本插件不会、也无法阻止你把它指向公开仓库 |
-| 通道凭据 | 存于 DSH credentials（Git 用 `DSH_CONFIG_MANAGER_SYNC_TOKEN`，WebDAV 用 `DSH_CONFIG_MANAGER_SYNC_WEBDAV_PASSWORD`），值只在宿主内部读取，绝不落盘到快照/日志/浏览器 |
+| 通道凭据 | 存于 DSH credentials（Git 用 `DSH_CONFIG_MANAGER_SYNC_TOKEN`，WebDAV 用 `DSH_CONFIG_MANAGER_SYNC_WEBDAV_PASSWORD`）。**这些值会随「凭据」分区明文进入同步快照**（跨机恢复的前提），但绝不回传浏览器、绝不写入日志 |
+| 凭据分区 | 同步快照携带 `.credentials.yaml` 的 `refs` 明文值，拉取时直接写回目标机；普通备份 ZIP 仍然不含任何凭据值 |
 | 日志 | 全程脱敏（`security/redaction.ts`） |
 | 导入 | 应用前强制落回滚快照；任一失败整体回滚 |
 
@@ -63,7 +62,7 @@ dsh plugin --profile web add @logictan/dsh-config-manager@latest
 双面 Cordis 插件：
 
 - **宿主半边** `src/index.ts` —— `/api/dsh-config-manager/sync/*` 路由族 + 同步引擎
-  （`src/sync/sync-engine.ts`）+ 自动同步调度器 + Agent 工具（`config_sync_push` / `config_sync_pull`）
+  （`src/sync/sync-engine.ts`）+ Agent 工具（`config_sync_push` / `config_sync_pull`）
 - **浏览器半边** `src/client/` —— 设置页里唯一的「同步」标签
 
 `src/core/` 与 DSH 解耦（`ConfigAdapter` / `HostContext` + 内存 mock），

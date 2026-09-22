@@ -117,18 +117,19 @@ test('config_sync_push：复用 SyncEngine.push（内存 transport），返回 s
   }
 })
 
-test('config_sync_pull：空远端 → 零写入空差异', async () => {
+test('config_sync_pull：空远端 → ok:false 且零写入', async () => {
   const { deps, tmp, transport, ctx } = await makeDeps()
   try {
     await writeSyncConfig(deps.syncDir, { schemaVersion: 2, transport: 'git', git: { repoUrl: 'https://github.com/u/r.git' } })
     await ctx.fs.writeFile('settings.yaml', Buffer.from('foo: bar', 'utf8'))
     const before = await ctx.fs.listRecursive('')
     const tools = createModelTools(deps)
-    const out = (await tools.syncPull({ channel: 'git' })) as { ok: boolean; snapshotId: string; changes: unknown[]; needsReview: boolean }
-    assert.equal(out.ok, true)
+    const out = (await tools.syncPull({ channel: 'git' })) as { ok: boolean; snapshotId: string; applied: string[]; changes: unknown[] }
+    assert.equal(out.ok, false, '无远端快照 → 不是成功覆盖')
     assert.equal(out.snapshotId, '')
+    assert.deepEqual(out.applied, [], '未写入任何分区')
     assert.deepEqual(out.changes, [], '空远端 → 无差异')
-    // pull 零写入：本地文件集合不变
+    // 无快照时零写入：本地文件集合不变
     assert.deepEqual(await ctx.fs.listRecursive(''), before)
     assert.ok(!transport.calls.includes('upload'), 'pull 不写远端')
   } finally {

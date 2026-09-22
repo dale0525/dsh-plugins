@@ -11,7 +11,7 @@
 
 DSH 配置的**远程同步**插件。双面 Cordis 插件：
 
-- 宿主半边 `src/index.ts`：`/api/dsh-config-manager/sync/*` 路由族、同步引擎、自动同步调度器、
+- 宿主半边 `src/index.ts`：`/api/dsh-config-manager/sync/*` 路由族、同步引擎、
   Agent 工具（`config_sync_push` / `config_sync_pull`）。
 - 浏览器半边 `src/client/`：设置页里**唯一的「同步」标签**。
 
@@ -26,7 +26,7 @@ src/schema/    类型 / Manifest / 版本（CURRENT_SCHEMA_VERSION）
 src/security/  secret-scanner / redaction（日志脱敏）/ zip-security / vault
 src/adapters/  ConfigAdapter 实现（settings/ui/providers/plugins/mcp/prompts/skills/
                agentPresets/agentInstructions/workspaces/credentialsStatus/pluginFiles/self[/sessions]）
-src/sync/      SyncEngine + Git/WebDav 传输 + AutoSyncScheduler + config/state/history/selection
+src/sync/      SyncEngine + Git/WebDav 传输 + config/state/selection
 src/ui/        框架无关 UI 逻辑（纯函数，node 可测）  ← 业务逻辑必须在此
 src/utils/     paths / zip / hashing / json / logger / atomic-write / env-lock / recursive-walk
 src/client/    React 壳（浏览器半）  ← 只做装配
@@ -43,7 +43,7 @@ docs/spec/     对外契约（写给第三方实现者）
 ### 页面落位
 
 - 容器：`src/client/index.ts`（`settings.section` 注册）+ `ConfigManagerSection.tsx`
-- 同步页：`src/client/sync/SyncSettingsView.tsx`（+ `SyncConfirmView` / `SyncHistoryView` / `sync-view`）
+- 同步页：`src/client/sync/SyncSettingsView.tsx`（+ `SyncHistoryView` / `sync-view`）
 - 共享原语：`src/client/common/ui.tsx`（Button/Badge/Banner/Card/Spinner/Field/Checkbox 等）
   + `ErrorBanner.tsx` / `Modal.tsx` / `Icon.tsx` / `ToastViewport.tsx`
 - 状态中枢：`run-store.ts`（模块级单例 + sessionStorage 白名单）
@@ -58,7 +58,7 @@ bump 后跑 `npm run typecheck` 确认。
 
 ## 🔐 安全不变量（硬约束，不得破坏）
 
-- **凭据不可回读**：`ctx.credentials` 永不回读值；只经 `HostContext.fs` 文件级读 `.credentials.yaml`。
+- **凭据不可回读**：`ctx.credentials` 永不回读值；只经 `HostContext.fs` 文件级读 `.credentials.yaml`（同步导出是唯一例外，见下节）。
 - **通道凭据不回传**：token / WebDAV 口令只写 DSH credentials 槽位，响应里只出现 `configured` 布尔。
 - **日志全程脱敏**：`redactValue` 掩码敏感值；UI 渲染前所有错误/报告再过 `redact()`。
 - **ZIP 视为不可信**：条目数上限、checksum、Zip Slip 拒绝（`src/security/zip-security.ts`）。
@@ -69,8 +69,14 @@ bump 后跑 `npm run typecheck` 确认。
 
 同步通道是**用户自有的私有通道**：勾选即同步，**不加密、不脱敏、不做 diff/合并**。
 
-- `SyncEngine.push` 以 `includeSecrets: true` 导出真实值；
-- `manifest.security.containsSecrets` 必须按**实际内容如实标注**（`sectionsCarrySecrets`，复用 exporter 的敏感字段扫描器）——标注与内容不符会让下游按「无秘密」处理；
+- `SyncEngine.push` 以 `includeSecrets: true` 导出真实值：`CredentialsAdapter` 读 `.credentials.yaml` 的 `refs` 段，
+  导出 `hasValue: true` + `value`（ref 集合 = settings 引用到的 ∪ 凭据文件登记的），拉取时直接 `credentials.set()` 写回；
+- **`credentialsStatus` 是唯一被豁免 `SecretScanner` 剥离的结构化分区**（`credentialsCarryValues`）。
+  这不是优化而是必需：扫描器按值形状（`sk-`/`ghp_`/JWT…）剥离，正好会抹掉要传的值，把「声称带值」变成静默空值。
+  新增任何「按设计携带秘密」的分区时，必须同时接进这个豁免与下面的标注，否则会静默丢值；
+- `manifest.security.containsSecrets` 必须按**实际内容如实标注**（`sectionsCarrySecrets`）——
+  判据 = 文件类分区实扫命中 **或** 凭据分区 `hasValue=true`（自定密码等无强形状的值扫描器认不出）；
+  标注与内容不符会让下游按「无秘密」处理；
 - `pull` 恒 `replace`：远端值覆盖本地，不询问；
 - 旧版加密快照（`manifest.encrypted=true`）**明确拒绝**，不静默当明文读。
 

@@ -2,11 +2,10 @@
  * self 分区 adapter（插件自身配置，设计「self 分区」）：
  * 数据源 = $DSH_HOME/dsh-config-manager/ 下的插件自身配置文件（白名单收集，非递归）：
  *   - sync/sync-config.json     同步通道配置（git repoUrl / webdav url+username；凭据值走 credentials 槽位，不含 secret）
- *   - sync/sync-autosync.json   自动同步调度配置
  *   - sync/sync-selection.json  同步分区选择（默认/高级模式 + 勾选分区）
  *   - sync/ui-prefs.json        插件 UI 偏好（如上次选择的同步通道；从 localStorage 迁入）
  *
- * 排除项：sync/sync-history.json（执行记录，属数据非配置）、market/cache/（缓存）、
+ * 排除项：market/cache/（缓存）、
  * snapshots/（快照）、tmp/ exports/（临时/导出产物）——只备份「配置」，不备份数据。
  *
  * 实现：继承 FileCollectionAdapter 复用 analyzeImport/applyItem/validate（幂等 hash 比对、
@@ -30,7 +29,6 @@ import { FileCollectionAdapter } from './file-collection.ts';
 /** self 分区白名单文件（相对 baseDir，即 $DSH_HOME/dsh-config-manager/）。 */
 export const SELF_CONFIG_FILES: readonly string[] = [
   'sync/sync-config.json',
-  'sync/sync-autosync.json',
   'sync/sync-selection.json',
   'sync/ui-prefs.json',
   // P0-④：导出产物备注清单（exports/.backup-notes.json）——随 self 分区迁移，

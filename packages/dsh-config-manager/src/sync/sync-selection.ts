@@ -1,7 +1,7 @@
 /**
  * m-sync-selection：远程同步分区选择持久化（sync-selection.json）。
  *
- * 与 sync-config.json / sync-autosync.json 并列独立文件：语义清楚、schema 演进独立。
+ * 与 sync-config.json 并列独立文件：语义清楚、schema 演进独立。
  * schemaVersion:2 —— 按同步通道拆分（git / webdav 各自独立的分区勾选）：
  * ```
  * { "schemaVersion": 2,
@@ -9,9 +9,9 @@
  *     "git":    { mode: 'default'|'advanced', sections: SectionId[] },
  *     "webdav": { ... } } }
  * ```
- * - mode='default'（快速同步）：推送/自动同步使用全部推荐分区（sections 可空）；
- * - mode='advanced'（自定义同步）：推送/自动同步只处理勾选的 sections（空 sections 回退全量，
- *   避免自动同步卡死）。
+ * - mode='default'（快速同步）：推送使用全部推荐分区（sections 可空）；
+ * - mode='advanced'（自定义同步）：推送只处理勾选的 sections（空 sections 回退全量，
+ *   避免勾选状态与范围不一致时同步卡死）。
  *
  * 快照恒为明文：同步通道是用户自有的私有通道，勾选即同步，不加密、不脱敏。
  *
@@ -23,8 +23,8 @@
  * 上游按顶层解析又只得到缺省。
  *
  * 原子写（临时文件 + rename），损坏/不支持 schema 回退缺省（mode='default', sections=[]）。
- * 持久化原因：自动同步调度器运行于 Host 进程（浏览器关闭也在跑），必须从磁盘读
- * 用户选择，而不是依赖浏览器 localStorage。
+ * 持久化原因：Host 进程需要读用户选择（浏览器关闭后重开、换浏览器都不能丢），
+ * 因此以磁盘为真源，而不是依赖浏览器 localStorage。
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';

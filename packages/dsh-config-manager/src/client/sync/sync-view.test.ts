@@ -5,13 +5,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import type { PullChange, SyncPullReport, SyncPushReport } from '../../sync/sync-engine.ts'
+import type { PullChange, SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts'
 import type { SectionId } from '../../schema/types.ts'
 import type { GithubPollResponse, SyncSectionInfo, SyncStatusResponse } from './sync-api.ts'
 import {
-  autosyncIntervalMs, channelTabModels, computeAutosyncCountdown, computeGithubLoginView, computeRemoteReady, computeSyncButtons, computeSyncStatus,
-  defaultChannelSyncState, formatDateTime, formatIntervalDuration, formatLastSync, githubPollMessage, kindLabel, privateRepoHint,
-  pullReportView, pushReportView, presetById, presetIdForUrl, readStoredChannel, recommendedSyncSections,
+  channelTabModels, computeGithubLoginView, computeRemoteReady, computeSyncButtons, computeSyncStatus,
+  defaultChannelSyncState, formatDateTime, formatLastSync, githubPollMessage, kindLabel, privateRepoHint,
+  pullApplyReportView, pushReportView, presetById, presetIdForUrl, readStoredChannel, recommendedSyncSections,
   severityLabel, summarizePullChanges, syncSectionGroups, syncSectionOptions, WEBDAV_PRESETS, writeStoredChannel,
 } from './sync-view.ts'
 
@@ -91,8 +91,8 @@ test('sync-view: 空闲 + 活动通道地址未就绪 → 两个按钮都禁用'
   const b = computeSyncButtons(null, false)
   assert.equal(b.canPush, false)
   assert.equal(b.canPull, false)
-  assert.equal(b.pushLabel, '推送到远端')
-  assert.equal(b.pullLabel, '拉取差异预览')
+  assert.equal(b.pushLabel, '推送（覆盖远端）')
+  assert.equal(b.pullLabel, '拉取（覆盖本地）')
 })
 
 test('sync-view: 空闲 + 活动通道地址就绪 → 两个按钮可用', () => {
@@ -106,7 +106,7 @@ test('sync-view: push 进行中 → 按钮禁用且文案切换为正在推送�
   assert.equal(b.canPush, false)
   assert.equal(b.canPull, false)
   assert.equal(b.pushLabel, '正在推送…')
-  assert.equal(b.pullLabel, '拉取差异预览')
+  assert.equal(b.pullLabel, '拉取（覆盖本地）')
 })
 
 test('sync-view: pull 进行中 → 两个按钮都禁用，pull 文案切换', () => {
@@ -192,44 +192,59 @@ test('sync-view: push 失败报告 → error 显示引擎 message', () => {
 
 test('sync-view: null 报告 → null（不渲染卡片）', () => {
   assert.equal(pushReportView(null), null)
-  assert.equal(pullReportView(null), null)
+  assert.equal(pullApplyReportView(null), null)
 })
 
 /* ---------------------------------------------------------------- pull 报告渲染 */
 
-test('sync-view: pull 无变更 → empty 渲染（无差异列表）', () => {
-  const report: SyncPullReport = { ok: true, snapshotId: 'sync-1', changes: [], needsReview: false }
-  const view = pullReportView(report)
+/** 拉取结果报告构造（直接覆盖语义）。 */
+function pullReport(overrides: Partial<SyncPullApplyReport> = {}): SyncPullApplyReport {
+  return {
+    ok: true,
+    snapshotId: 'sync-1',
+    applied: [],
+    changes: [],
+    restoreId: '',
+    rolledBack: false,
+    warnings: [],
+    failed: [],
+    needsRestart: false,
+    ...overrides,
+  }
+}
+
+test('sync-view: pull 未写入任何分区 → empty 渲染', () => {
+  const view = pullApplyReportView(pullReport())
   assert.equal(view?.kind, 'empty')
   assert.equal(view?.summary, null)
+  assert.deepEqual(view?.applied, [])
 })
 
-test('sync-view: pull 差异报告 → ok + 摘要计数 + needsReview + 只读预览提示', () => {
-  const report: SyncPullReport = {
-    ok: true,
+test('sync-view: pull 覆盖成功 → ok + 写入分区 + 变更摘要 + 回滚入口提示', () => {
+  const report = pullReport({
     snapshotId: 'sync-9',
+    applied: ['settings', 'plugins'],
+    restoreId: 'restore-42',
     changes: [
       change({ id: 'settings:a', kind: 'Update', description: '更新设置 a', severity: 'info' }),
       change({ id: 'plugin:x', kind: 'Conflict', adapter: 'plugins', description: '插件 x 冲突', severity: 'warning' }),
     ],
-    needsReview: true,
-  }
-  const view = pullReportView(report)
+  })
+  const view = pullApplyReportView(report)
   assert.equal(view?.kind, 'ok')
   assert.match(view?.headline ?? '', /sync-9/)
+  assert.deepEqual(view?.applied, ['settings', 'plugins'])
   assert.equal(view?.summary?.total, 2)
-  assert.equal(view?.summary?.needsReview, true)
   assert.equal(view?.summary?.items[0]?.description, '更新设置 a')
   assert.equal(view?.summary?.items[1]?.kind, 'Conflict')
-  assert.notEqual(view?.previewHint, '')
-  assert.match(view?.previewHint, /不会执行导入/)
+  assert.notEqual(view?.restoreHint, '', 'restoreId 非空 → 给出回滚入口提示')
 })
 
-test('sync-view: pull 失败 → error 渲染', () => {
-  const report: SyncPullReport = { ok: false, snapshotId: '', changes: [], needsReview: false, message: '认证失败' }
-  const view = pullReportView(report)
+test('sync-view: pull 失败 → error 渲染（含是否已整体回滚）', () => {
+  const view = pullApplyReportView(pullReport({ ok: false, message: '认证失败', rolledBack: true }))
   assert.equal(view?.kind, 'error')
   assert.equal(view?.headline, '认证失败')
+  assert.equal(view?.rolledBack, true)
 })
 
 /* ---------------------------------------------------------------- 状态行 */
@@ -367,43 +382,6 @@ test('sync-view: githubPollMessage 映射轮询终止态（denied/expired/error/
   assert.equal(githubPollMessage(pending), '', 'pending 不是终止态，不应产生消息')
 })
 
-/* ---------------------------------------------------------------- 自动同步倒计时 */
-
-test('sync-view: autosyncIntervalMs 各档位换算正确', () => {
-  assert.equal(autosyncIntervalMs('5m'), 5 * 60 * 1000)
-  assert.equal(autosyncIntervalMs('15m'), 15 * 60 * 1000)
-  assert.equal(autosyncIntervalMs('30m'), 30 * 60 * 1000)
-  assert.equal(autosyncIntervalMs('60m'), 60 * 60 * 1000)
-  assert.equal(autosyncIntervalMs('6h'), 6 * 60 * 60 * 1000)
-  assert.equal(autosyncIntervalMs('12h'), 12 * 60 * 60 * 1000)
-  assert.equal(autosyncIntervalMs('24h'), 24 * 60 * 60 * 1000)
-})
-
-test('sync-view: computeAutosyncCountdown 已到期 → 0；未到 → interval - elapsed；从未运行 → -1', () => {
-  assert.equal(computeAutosyncCountdown(0, 5 * 60 * 1000), 5 * 60 * 1000)
-  assert.equal(computeAutosyncCountdown(60 * 1000, 5 * 60 * 1000), 4 * 60 * 1000)
-  assert.equal(computeAutosyncCountdown(5 * 60 * 1000, 5 * 60 * 1000), 0)
-  assert.equal(computeAutosyncCountdown(6 * 60 * 1000, 5 * 60 * 1000), 0)
-  assert.equal(computeAutosyncCountdown(-1, 5 * 60 * 1000), -1)
-})
-
-test('sync-view: formatIntervalDuration 输出真实剩余时长（不再把 <1 小时一律显示成 30 分钟）', () => {
-  // 回归：旧实现 `if (minutes < 60) return '30 分钟'` 导致 5m 间隔永远显示「约 30 分钟后」
-  assert.equal(formatIntervalDuration(4 * 60 * 1000), '4 分钟')
-  assert.equal(formatIntervalDuration(5 * 60 * 1000), '5 分钟')
-  assert.equal(formatIntervalDuration(30 * 60 * 1000), '30 分钟')
-  // 整 60 分钟进位为 1 小时
-  assert.equal(formatIntervalDuration(60 * 60 * 1000), '1 小时')
-  // 向上取整：90 分钟 → 2 小时；6 小时整 → 6 小时
-  assert.equal(formatIntervalDuration(90 * 60 * 1000), '2 小时')
-  assert.equal(formatIntervalDuration(6 * 60 * 60 * 1000), '6 小时')
-  // 跨天：24 小时 → 1 天；48 小时 → 2 天
-  assert.equal(formatIntervalDuration(24 * 60 * 60 * 1000), '1 天')
-  assert.equal(formatIntervalDuration(48 * 60 * 60 * 1000), '2 天')
-  // 已到期/异常值兜底为 1 分钟，不出现 0 分钟
-  assert.equal(formatIntervalDuration(0), '1 分钟')
-})
-
 /* ---------------------------------------------------------------- WebDAV 预设 */
 
 test('sync-view: WEBDAV_PRESETS 含自定义与 6 个常见服务器,首项为自定义', () => {
@@ -475,11 +453,6 @@ test('sync-view: defaultChannelSyncState 每通道独立缺省值', () => {
   const git = defaultChannelSyncState()
   assert.equal(git.syncMode, 'default')
   assert.deepEqual(git.syncSections, [])
-  assert.equal(git.selectedSnapshotId, '')
-  assert.deepEqual(git.snapshots, [])
-  assert.equal(git.autosync, null)
-  assert.equal(git.autosyncEnabled, false)
-  assert.equal(git.autosyncInterval, '30m')
   // 两通道缺省互不影响（同一默认工厂，调用即得独立实例）
   const webdav = defaultChannelSyncState()
   webdav.syncMode = 'advanced'

@@ -1,9 +1,7 @@
 /**
- * 同步历史视图（方案 A）：列出本地祖先快照目录（kind=apply）+ 自动同步执行记录
- * （kind=autosync）。自动同步行显示时间/方向/状态/跳过冲突/应用分区，点开可看被跳过
- * 冲突分区明细。
+ * 同步历史视图：列出本地祖先快照目录（kind=apply）。
  *
- * 数据获取：GET /sync/history → { entries: SyncHistoryEntry[] }（按 createdAt 倒序合并）。
+ * 数据获取：GET /sync/history → { entries: SyncHistoryEntry[] }（按 createdAt 倒序）。
  * 纯函数投影在 ./history-model.ts（node --test 可测），本组件只做装配。
  */
 import { useEffect, useMemo, useState } from 'react'
@@ -11,9 +9,9 @@ import type { ReactNode } from 'react'
 
 import { Badge, Card, SectionTitle, Spinner } from '../common/ui.tsx'
 import { ErrorBanner } from '../common/ErrorBanner.tsx'
-import type { SyncApi, SyncHistoryEntry, AutosyncHistoryEntry } from './sync-api.ts'
+import type { SyncApi, SyncHistoryEntry } from './sync-api.ts'
 import {
-  formatDateTime, formatDateTimeFull, midEllipsis, projectAutosyncEntry,
+  formatDateTime, formatDateTimeFull, midEllipsis,
   projectSyncHistoryEntries, summarizeSyncHistory,
 } from './history-model.ts'
 import type { SnapshotHistoryEntry } from './history-model.ts'
@@ -99,13 +97,10 @@ export function SyncHistoryView(props: SyncHistoryViewProps): ReactNode {
   return (
     <Card>
       <SectionTitle title={`${t('history.title')}（${rows.length}）`} />
-      {/* F：头部统计摘要（先扫结论）；失败/跳过仅在存在时出现，并给语义色 */}
+      {/* F：头部统计摘要（先扫结论） */}
       <div className={css.statRow} aria-label={t('history.stats.summary')}>
         <Badge kind="info">{t('history.stats.total', { count: String(stats.total) })}</Badge>
         <Badge kind="info">{t('history.stats.snapshots', { count: String(stats.snapshots) })}</Badge>
-        <Badge kind="info">{t('history.stats.autosync', { count: String(stats.autosync) })}</Badge>
-        {stats.failed > 0 && <Badge kind="error">{t('history.stats.failed', { count: String(stats.failed) })}</Badge>}
-        {stats.skipped > 0 && <Badge kind="warn">{t('history.stats.skipped', { count: String(stats.skipped) })}</Badge>}
       </div>
       {/* A：改用设计系统数据表（.tableWrap > .tableScroll 限高内滚 + .dataTable/.tableFixed/.tableCompact） */}
       <div className={css.tableWrap}>
@@ -123,9 +118,6 @@ export function SyncHistoryView(props: SyncHistoryViewProps): ReactNode {
             </thead>
             <tbody>
               {rows.map((r) => {
-                if (r.kind === 'autosync' && r.autosync !== undefined) {
-                  return <AutosyncRow key={r.id} entry={r.autosync} t={t} />;
-                }
                 const snap = snapshotRows.find((s) => s.id === r.id);
                 return (
                   <tr key={r.id}>
@@ -152,69 +144,5 @@ export function SyncHistoryView(props: SyncHistoryViewProps): ReactNode {
         </div>
       </div>
     </Card>
-  );
-}
-
-/* ---------------------------------------------------------------- 自动同步行 */
-
-interface AutosyncRowProps {
-  entry: AutosyncHistoryEntry
-  t: TranslateNS<'config-manager-sync'>
-}
-
-function AutosyncRow({ entry, t }: AutosyncRowProps): ReactNode {
-  const row = projectAutosyncEntry(entry);
-  return (
-    <tr>
-      {/* B：与快照行一致的时间呈现（等宽 11px 单行 + title 完整本地时间） */}
-      <td className={css.dim} title={formatDateTimeFull(row.createdAt)}>
-        <span className={`${css.mono}`} style={{ fontSize: '11px' }}>{formatDateTime(row.createdAt)}</span>
-      </td>
-      {/* D：类型徽章按实况给语义色（success=ok / failed=error / skipped、partial=warn） */}
-      <td><Badge kind={row.badgeKind}>{t('history.kindAutosync')}</Badge></td>
-      <td>
-        <div className={css.cellMain}>
-          {/* E：主行「方向 + 状态」徽章（原摘要串里的跳过原因下沉到第二行小字） */}
-          <span className={css.cellTitle}>
-            <ChannelBadge transport={entry.transport} t={t} />
-            {' '}
-            <Badge kind="info">{row.direction}</Badge>
-            {' '}
-            <Badge kind={row.badgeKind}>{row.status}</Badge>
-            {entry.pushedSnapshotId !== undefined && <>{' · '}{t('history.autosyncPush')} <span className={css.mono} title={entry.pushedSnapshotId}>{midEllipsis(entry.pushedSnapshotId)}</span></>}
-            {entry.pulledSnapshotId !== undefined && <>{' · '}{t('history.autosyncPull')} <span className={css.mono} title={entry.pulledSnapshotId}>{midEllipsis(entry.pulledSnapshotId)}</span></>}
-          </span>
-          {/* E：第二行小字——跳过原因 / 错误（信息保留，但不再挤在主行里） */}
-          {row.skipReasonText !== undefined && <span className={css.hint}>{row.skipReasonText}</span>}
-          {row.error !== undefined && <span className={css.hint} title={row.error}>{t('history.autosyncError', { error: '' })}{row.error}</span>}
-        </div>
-        {row.hasDetail && (
-          <details>
-            <summary>{t('history.detail')}</summary>
-            <div className={css.reportList}>
-              {row.conflictedSections !== undefined && row.conflictedSections.length > 0 && (
-                <div>
-                  <span className={css.fieldLabel}>{t('history.autosyncConflicted', { sections: '' })}</span>
-                  <div className={css.statRow}>
-                    {row.conflictedSections.map((sid) => <Badge key={sid} kind="warn">{sid}</Badge>)}
-                  </div>
-                </div>
-              )}
-              {row.appliedSections !== undefined && row.appliedSections.length > 0 && (
-                <div>
-                  <span className={css.fieldLabel}>{t('history.autosyncApplied', { sections: '' })}</span>
-                  <div className={css.statRow}>
-                    {row.appliedSections.map((sid) => <Badge key={sid} kind="ok">{sid}</Badge>)}
-                  </div>
-                </div>
-              )}
-              {row.error !== undefined && (
-                <div><span className={css.fieldLabel}>{t('history.autosyncError', { error: '' })}</span>{row.error}</div>
-              )}
-            </div>
-          </details>
-        )}
-      </td>
-    </tr>
   );
 }
