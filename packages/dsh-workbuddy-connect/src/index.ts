@@ -15,7 +15,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
+// Type-only: pulls dsh-settings' service and Events merges into this program.
+import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import { WorkBuddyCredentialStore, type WorkBuddyCredential } from './auth.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
@@ -133,6 +134,26 @@ export {
   type WorkBuddyHostHeartbeat,
 } from './host-heartbeat.ts'
 
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Volatile config values were committed into the RUNNING fiber without a
+     * remount.
+     *
+     * Declared here because the event belongs to `@deepseek-ai/cordis-plugin-loader`,
+     * which this package neither depends on nor can resolve — it ships with the
+     * host install. The signature is copied verbatim from the loader's own
+     * `declare module` merge so that, should the loader's types ever enter this
+     * program, the two declarations are identical rather than conflicting.
+     *
+     * @param paths - changed config paths as key arrays; every value is
+     *   committed before dispatch.
+     * @mode emit
+     */
+    'loader/volatile-update'(paths: readonly (readonly string[])[]): void
+  }
+}
+
 /** Stable Cordis plugin name. */
 export const name = 'llm-workbuddy'
 
@@ -140,29 +161,19 @@ export const name = 'llm-workbuddy'
 export const inject = ['llm']
 
 /**
- * Settings namespace owning the CN card's section.
+ * The settings namespace owning this plugin's configuration.
  *
- * DSH 0.1.2 dropped the `settingsNamespace()` branding function: a namespace is
- * now a nominal string, validated by the type system where it is used rather
- * than at runtime by a function call. The brand is compile-time only, so this
- * stays the plain string it always was — every comparison, descriptor lookup,
- * and `dsh` config file still sees `'workbuddy'`. It is cast once here so the
- * public constant carries the seam's type without pulling the brand helper
- * into this package (upstream DSH plugins, `dsh-llm-pi-ai` included, pass
- * their namespaces as plain string literals).
- */
-export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
-
-/**
- * Settings namespace owning the international provider's section.
+ * On 0.1.7-alpha.1 a settings namespace IS a loader entry id: `dsh-settings`
+ * derives one form per loader entry from that entry's own `Config`, and
+ * `describe()` reports the entry id as `ns`. This package's row id in
+ * `cordis.patch.yml` equals the host half's {@link name}, so the two strings
+ * coincide — one constant serves the write path (`update`) and the provider
+ * directory's `settingsNs` alike.
  *
- * One namespace per provider, not one shared: the Models page resolves a
- * provider's `settingsNs` against the sections the Host serves, so a shared
- * namespace would render both providers onto one card and let one card's form
- * edit the other's settings path. Each provider therefore needs its own
- * installed section.
+ * The per-variant namespaces this replaced (`workbuddy` / `workbuddy-ai`) went
+ * with `settings.installSection`, removed in 0.1.7-alpha.1.
  */
-export const WORKBUDDY_AI_SETTINGS_NS = 'workbuddy-ai' as SettingsNamespace
+export const WORKBUDDY_SETTINGS_NS = name
 
 /**
  * How often the credential files are re-checked, in milliseconds.
@@ -207,58 +218,77 @@ function credentialPollMs(): number {
  */
 const CATALOG_RETRY_SWEEPS = 10
 
-/** Plugin configuration. */
+/**
+ * A live reference to one volatile field, as the Loader hands it to `apply`.
+ *
+ * Declared structurally rather than imported: `Volatile` is a `cordis` 4.0.3
+ * export while this package declares the whole `^4.0.2` range, so naming the
+ * vendor type would narrow the peer range for a cosmetic gain.
+ */
+export interface ConfigRef<T> {
+  /** The field's value right now; re-read on every call. */
+  get(): T
+}
+
+/**
+ * Plugin configuration as `apply` receives it.
+ *
+ * Every field arrives as a {@link ConfigRef} rather than a plain value, because
+ * Cordis's Loader parses each `volatile()` field of {@link Config} into one.
+ * The interface therefore describes the RUNNING shape, not the YAML row — which
+ * matters because these are read at the point of use rather than snapshotted at
+ * mount, so a Plugins-page edit takes effect without a restart.
+ */
 export interface Config {
   /** Explicit WorkBuddy (CN) desktop auth-file path, overriding env and platform defaults. */
-  authFile?: string
+  authFile: ConfigRef<string | undefined>
   /** Explicit WorkBuddy AI (international) desktop auth-file path, overriding env and platform defaults. */
-  authFileAI?: string
+  authFileAI: ConfigRef<string | undefined>
   /**
    * Whether the user has authorized sending probe requests about reasoning
    * efforts. Off by default: a probe spends real credit, so nothing is sent
    * until the user explicitly agrees.
    */
-  probeConsent?: boolean
+  probeConsent: ConfigRef<boolean>
   /** Use the largest context window the international catalog explicitly offers. */
-  useMaximumContextWindow?: boolean
+  useMaximumContextWindow: ConfigRef<boolean>
 }
 
-/** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
-const AUTH_FILE_FIELD = z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)')
-/** Explicit international desktop auth-file path (shared by the plugin schema and its section). */
-const AUTH_FILE_AI_FIELD = z.string().description('WorkBuddy AI desktop auth file (defaults to the app\'s own location)')
-/** Probe authorization (shared by the plugin schema and the CN section). */
-const PROBE_CONSENT_FIELD = z.boolean().default(false)
+/** Explicit CN desktop auth-file path. */
+const AUTH_FILE_FIELD = z.string().volatile()
+  .description('WorkBuddy desktop auth file (defaults to the app\'s own location)')
+/** Explicit international desktop auth-file path. */
+const AUTH_FILE_AI_FIELD = z.string().volatile()
+  .description('WorkBuddy AI desktop auth file (defaults to the app\'s own location)')
+/** Probe authorization. */
+const PROBE_CONSENT_FIELD = z.boolean().default(false).volatile()
   .description('Authorize reasoning-effort probes (each probe sends real requests that may consume credit)')
-const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
+const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true).volatile()
   .description('Use the largest context window declared by WorkBuddy AI when alternatives are available (on by default)')
 
-export const Config: z<Config> = z.object({
-  authFile: AUTH_FILE_FIELD,
-  authFileAI: AUTH_FILE_AI_FIELD,
-  probeConsent: PROBE_CONSENT_FIELD,
-  useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
-})
-
 /**
- * The CN card's settings section: only the fields that card edits.
+ * The plugin's configuration — and, as of the 0.1.7-alpha.1 settings redesign,
+ * the ONE schema behind every configuration surface.
  *
- * A section is what makes its namespace "served", which is what the Plugins
- * tab dispatches a card by — so the schema and the card must stay split the
- * same way. `probeConsent` lives here because it predates the second variant;
- * it gates no current code path (only manual, per-click-confirmed probes run),
- * so it is left where existing users set it rather than moved and re-asked.
+ * `dsh-settings` no longer keeps a namespace registry. It derives the
+ * Plugins-page form for a loader entry from that entry's own `Config`, keyed by
+ * the entry id (this package's {@link name}), so the former per-variant
+ * sections — and the `settings.installSection` seam that installed them — are
+ * gone. Marking every field `volatile()` is what puts it in that form AND what
+ * lets `settings.update` accept it: a plain field would still configure the
+ * plugin through `cordis.patch.yml`, but the Plugins page could neither show
+ * nor edit it, and a write to it is refused with `Config field "x" is not
+ * volatile`.
  */
-const CN_SECTION: z<Config> = z.object({
+export const Config = z.object({
   authFile: AUTH_FILE_FIELD,
-  probeConsent: PROBE_CONSENT_FIELD,
-})
-
-/** The international card's settings section and its context-window preference. */
-const AI_SECTION: z<Config> = z.object({
   authFileAI: AUTH_FILE_AI_FIELD,
+  probeConsent: PROBE_CONSENT_FIELD,
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
 })
+
+/** Configuration as `apply` consumes it: the live references, resolved. */
+type ResolvedConfig = { [K in keyof Config]: Config[K] extends ConfigRef<infer T> ? T : never }
 
 /** One variant's live runtime, assembled by {@link createVariantRuntime}. */
 interface VariantRuntime {
@@ -325,13 +355,8 @@ function credentialIdentity(credential: Pick<WorkBuddyCredential, 'uid' | 'enter
 }
 
 /** Read the configured explicit auth-file path for one variant. */
-function configuredAuthFile(config: Config, variant: WorkBuddyVariant): string | undefined {
+function configuredAuthFile(config: ResolvedConfig, variant: WorkBuddyVariant): string | undefined {
   return variant.id === CN_VARIANT.id ? config.authFile : config.authFileAI
-}
-
-/** The settings namespace a variant's card and provider directory entry use. */
-function settingsNamespaceFor(variant: WorkBuddyVariant): SettingsNamespace {
-  return variant.id === CN_VARIANT.id ? WORKBUDDY_SETTINGS_NS : WORKBUDDY_AI_SETTINGS_NS
 }
 
 /**
@@ -347,13 +372,12 @@ function fallbackFor(variant: WorkBuddyVariant): readonly WorkBuddyModelInfo[] {
 
 /** Build one variant's stores and probe state. */
 function createVariantRuntime(
-  config: Config,
   variant: WorkBuddyVariant,
-  current: () => Config,
+  current: () => ResolvedConfig,
   identityOf: (variantId: string) => string | undefined,
 ): VariantRuntime {
   const client = new WorkBuddyUpstreamClient()
-  const configured = configuredAuthFile(config, variant)
+  const configured = configuredAuthFile(current(), variant)
   const store = new WorkBuddyCredentialStore({
     variant,
     ...configured === undefined ? {} : { desktopPath: configured },
@@ -361,7 +385,7 @@ function createVariantRuntime(
   })
   const fallback = fallbackFor(variant)
   const catalog = new WorkBuddyCatalog(fallback)
-  if (variant.id !== CN_VARIANT.id) catalog.setUseMaximumContextWindow(config.useMaximumContextWindow === true)
+  if (variant.id !== CN_VARIANT.id) catalog.setUseMaximumContextWindow(current().useMaximumContextWindow)
   // Start hidden: a variant must serve no models until an account has actually
   // been adopted, so a signed-out variant is empty rather than showing a roster
   // whose models could only fail. `adoptIdentity` is what reveals it, and it
@@ -383,7 +407,7 @@ function createVariantRuntime(
     catalog,
     credentials: store,
     client,
-    consent: () => current().probeConsent === true,
+    consent: () => current().probeConsent,
     // Observations are per account: the service reads and writes its records
     // against this identity, so one account's detected levels never answer for
     // another's, and an in-flight sweep cannot store under a new account.
@@ -517,10 +541,12 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
       releaseDirectory = ctx.llm.registerConfigurableProviders([{
         provider: variant.id,
         displayName: variant.displayName,
-        // Each variant's directory entry joins its own installed section; the
-        // Models settings page resolves `settingsNs` against the served
-        // namespaces, so a shared ns would render both providers onto one card.
-        settingsNs: settingsNamespaceFor(variant),
+        // Both variants name the SAME namespace: on 0.1.7-alpha.1 that string is
+        // this plugin's loader entry id, and the Models settings page resolves it
+        // against the entries the Host serves. The two variants are two products
+        // behind one row, so they share one entry — and the page's provider card
+        // is contributed per `entryKey`, so a second id would be undispatched.
+        settingsNs: WORKBUDDY_SETTINGS_NS,
         settingsPath: [],
         declared: false,
       }])
@@ -562,12 +588,27 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
  * *visible*. An empty catalog is how DSH hides a model group (the host filters
  * out groups with no models), which keeps a sign-in that happens after startup
  * working without re-registering the provider.
+ *
+ * @param ctx - host context.
+ * @param config - the live references the Loader hands over, one per
+ *   {@link Config} field (every field is `volatile()`, so none arrives as a
+ *   plain value). Read through {@link currentConfig} at the point of use.
  */
 export function apply(ctx: Context, config: Config): void {
-  // Live configuration source: starts as the applied config and is replaced by
-  // the settings section's source once one is installed, so edits reach the
-  // probe consent gate without a restart.
-  let current = (): Config => config
+  /**
+   * The effective configuration, resolved fresh at every use.
+   *
+   * Cordis commits a Plugins-page edit into the RUNNING plugin
+   * (`loader/volatile-update`) rather than remounting it, so a value captured
+   * once at mount would make the page's own save a silent no-op. Every gate
+   * below therefore reads the field when it decides, not when it was installed.
+   */
+  const currentConfig = (): ResolvedConfig => ({
+    authFile: config.authFile.get(),
+    authFileAI: config.authFileAI.get(),
+    probeConsent: config.probeConsent.get(),
+    useMaximumContextWindow: config.useMaximumContextWindow.get(),
+  })
 
   /** Timers and in-flight work belonging to this plugin instance. */
   let stopped = false
@@ -580,16 +621,14 @@ export function apply(ctx: Context, config: Config): void {
   const lastIdentities = new Map<string, string>()
 
   const runtimes = WORKBUDDY_VARIANTS.map(variant => createVariantRuntime(
-    config,
     variant,
-    () => current(),
+    currentConfig,
     id => lastIdentities.get(id),
   ))
 
   // Same-origin routes backing each Plugin-configuration card; the webServer
   // service is optional (a headless profile serves no browser).
   const probeKey = createProbeKey()
-  let setMaximumContextWindow: ((enabled: boolean) => Promise<{ state: string; reason?: string }>) | undefined
   /**
    * Point a variant at an account identity, invalidating whatever the previous
    * one left behind.
@@ -669,9 +708,9 @@ export function apply(ctx: Context, config: Config): void {
         client: runtime.client,
         models: () => runtime.catalog.current(),
         catalog: () => catalogSection(runtime),
-        probe: () => probeSection(runtime, current().probeConsent === true),
+        probe: () => probeSection(runtime, currentConfig().probeConsent),
         probeKey,
-        ...runtime.variant.id === CN_VARIANT.id ? {} : { useMaximumContextWindow: () => current().useMaximumContextWindow === true },
+        ...runtime.variant.id === CN_VARIANT.id ? {} : { useMaximumContextWindow: () => currentConfig().useMaximumContextWindow },
       })
       registerWorkBuddyProbeRoute(webCtx, {
         path: runtime.variant.probePath,
@@ -713,66 +752,57 @@ export function apply(ctx: Context, config: Config): void {
             ? { state: 'refreshed', reason: `${runtime.catalog.current().length} models` }
             : { state: 'failed', reason: runtime.catalogError }
         },
-        ...runtime.variant.id === CN_VARIANT.id ? {} : {
-          setMaximumContextWindow: async enabled => {
-            if (setMaximumContextWindow === undefined) return { state: 'failed', reason: 'settings are unavailable' }
-            return setMaximumContextWindow(enabled)
-          },
-        },
+        ...runtime.variant.id === CN_VARIANT.id ? {} : { setMaximumContextWindow },
       }, probeKey)
     }
   })
 
 
-  // Each settings section is what makes its namespace "served" — which is how
-  // both the Plugins tab (card dispatch) and the Models settings page (provider
-  // directory join) find this plugin's halves. One section per card, because the
-  // tab renders a card by `entryKey = ns` and never interprets one: a section
-  // that is not installed leaves its card registered but undispatched, and a
-  // provider whose `settingsNs` names no section joins nothing.
-  //
-  // DSH 0.1.2 moved the helper from a free function (`installSettingsSection`)
-  // onto the provider service (`settings.installSection`), so the wiring now has
-  // to wait for a settings service to exist — exactly what the inject below
-  // does. Without one the plugin still serves its models; it simply has no
-  // user-editable sections, as before.
-  ctx.inject(['settings'], settingsCtx => {
-    /** Section sources; each falls back to its own slice when its side unloads. */
-    const sources: { cn: () => Config, ai: () => Config } = {
-      cn: () => config,
-      ai: () => config,
+  /**
+   * Persist the international card's context-window preference.
+   *
+   * The write names the LOADER ENTRY ID, which on 0.1.7-alpha.1 is also the
+   * settings namespace (see {@link WORKBUDDY_SETTINGS_NS}): `SettingsForms.update`
+   * takes an entry id, not a registered namespace. The service is read lazily
+   * through `ctx.get` rather than declared in `inject` — the value it writes is
+   * read back from the live reference, so a profile without a settings service
+   * keeps every read path and loses only this write, which reports itself.
+   */
+  const setMaximumContextWindow = async (enabled: boolean): Promise<{ state: string, reason?: string }> => {
+    const settings = ctx.get('settings') as
+      | { update?: (ns: string, patch: object) => Promise<void> }
+      | undefined
+    if (settings === undefined || typeof settings.update !== 'function') {
+      return { state: 'failed', reason: 'settings are unavailable' }
     }
-    /** Merge both sections into the whole config the rest of the plugin reads. */
-    const merged = (): Config => ({
-      ...sources.cn().authFile === undefined ? {} : { authFile: sources.cn().authFile },
-      ...sources.cn().probeConsent === undefined ? {} : { probeConsent: sources.cn().probeConsent },
-      ...sources.ai().authFileAI === undefined ? {} : { authFileAI: sources.ai().authFileAI },
-      ...sources.ai().useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: sources.ai().useMaximumContextWindow },
-    })
-    const applyMaximumContextWindow = (next: Config): void => {
-      const runtime = runtimes.find(candidate => candidate.variant.id !== CN_VARIANT.id)
-      if (runtime?.catalog.setUseMaximumContextWindow(next.useMaximumContextWindow === true)) runtime.invalidate()
+    await settings.update(WORKBUDDY_SETTINGS_NS, { useMaximumContextWindow: enabled })
+    return { state: 'updated' }
+  }
+
+  /**
+   * Re-apply the settings that are read once and cached in a store or a catalog.
+   *
+   * Most of the config is read through {@link currentConfig} at the point of
+   * use, so a committed edit needs no help. Two values do not: the credential
+   * store's desktop path (pushed into the store) and the catalog's maximum-window
+   * flag (pushed into the catalog). Both are re-applied here, from a FRESH read,
+   * whenever the Loader commits a volatile edit into the running plugin.
+   */
+  const applyLiveSettings = (): void => {
+    const next = currentConfig()
+    const runtime = runtimes.find(candidate => candidate.variant.id !== CN_VARIANT.id)
+    if (runtime?.catalog.setUseMaximumContextWindow(next.useMaximumContextWindow)) runtime.invalidate()
+    for (const candidate of runtimes) {
+      candidate.store.setDesktopPath(configuredAuthFile(next, candidate.variant))
     }
-    const repointStores = (): void => {
-      const next = merged()
-      applyMaximumContextWindow(next)
-      for (const runtime of runtimes) {
-        runtime.store.setDesktopPath(configuredAuthFile(next, runtime.variant))
-      }
-    }
-    settingsCtx.settings.installSection(ctx, WORKBUDDY_SETTINGS_NS, CN_SECTION, config, {
-      setSource(source) { sources.cn = source as () => Config; current = merged },
-      onChange: repointStores,
-    })
-    settingsCtx.settings.installSection(ctx, WORKBUDDY_AI_SETTINGS_NS, AI_SECTION, config, {
-      setSource(source) { sources.ai = source as () => Config; current = merged },
-      onChange: repointStores,
-    })
-    setMaximumContextWindow = async enabled => {
-      await settingsCtx.settings.update(WORKBUDDY_AI_SETTINGS_NS, { useMaximumContextWindow: enabled })
-      return { state: 'updated' }
-    }
-  })
+  }
+
+  // Cordis commits a Plugins-page edit into the RUNNING plugin instead of
+  // remounting it, so this is the only notification that a value changed.
+  // Without it, flipping the context-window switch would persist and then have
+  // no effect until a restart — the exact failure the section wiring used to
+  // prevent through `onChange`.
+  ctx.on('loader/volatile-update', () => { applyLiveSettings() })
 
   ctx.effect(() => () => {
     stopped = true
