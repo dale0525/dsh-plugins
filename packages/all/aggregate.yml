@@ -12,6 +12,7 @@ patchFrom:
   - ../dsh-agy-link
   - ../dsh-browser-agent
   - ../dsh-openviking
+  - ../dsh-loop-guard
 deps:
   - ../dsh-config-manager
   - ../dsh-workbuddy-connect
@@ -30,3 +31,4 @@ deps:
   - ../dsh-agy-link
   - ../dsh-browser-agent
   - ../dsh-openviking
+  - ../dsh-loop-guard

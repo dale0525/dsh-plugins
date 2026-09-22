@@ -188,3 +188,24 @@
 - insert:
     - id: openviking-memory
       name: '@logictan/dsh-openviking'
+
+# from ../dsh-loop-guard
+# The dsh-loop-guard bundle patch: the guard needs no deployment-specific
+# config to mount (its defaults detect reasoning-only steps and steer on the
+# second strike). Every key below is also editable from the Plugins page — the
+# guard registers the `loop-guard` settings namespace, and that user layer is
+# layered over this composition layer. Use this file for values that must be
+# baked into the deployment; use the Plugins page for the rest.
+#
+#   - insert:
+#       - id: loop-guard
+#         config:
+#           maxThinkingSteps: 3
+#           minReasoningChars: 2048
+#           similarityThreshold: 0.8
+#           escalate: steer
+#           cancelCause: thinking-loop
+
+- insert:
+    - id: loop-guard
+      name: '@logictan/dsh-loop-guard'
