@@ -422,7 +422,7 @@ export type ConfigRefs = { [K in keyof ResolvedConfig]: ConfigRef<ResolvedConfig
  *    removed in 0.1.7-alpha.1, which is why this plugin failed to activate on
  *    that harness generation.
  */
-export const Config: z<Config> = z.object({
+export const Config: z<Config, ConfigRefs> = z.object({
   maxThinkingSteps: z.number().min(2).default(3).volatile(),
   minReasoningChars: z.number().min(256).default(2048).volatile(),
   similarityThreshold: z.number().min(0).max(1).default(0.8).volatile(),
