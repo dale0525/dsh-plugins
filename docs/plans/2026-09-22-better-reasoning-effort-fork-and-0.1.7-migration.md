@@ -217,12 +217,40 @@ npm 上已发布的最新版是 `0.3.10`（profile 里装的正是它）。→ �
    CI（GitHub Actions）无此保护。本机验证时应逐包跑，或直接调 `node --test` 跳过重建步骤。
 3. **`.workbuddy-ai/` 未纳入版本控制**（`??` 状态），内含本仓库的工作记忆。是否入库由用户决定。
 
-## 6. 未决问题
+## 6. 发布与上线（已完成）
 
-1. **首发与信任（需用户操作）**：`@logictan/dsh-better-reasoning-effort` 在 npm 上尚不存在
-   （实测 404），故首次发布**必须人工** `npm publish`，再配 trusted publisher
+1. **首发与信任（用户手工完成）**：`@logictan/dsh-better-reasoning-effort@0.5.0` 已上线
+   （发布前 registry 实测 404，故首次必须人工 `npm publish`），trusted publisher 已配
    （`--allow-publish` 必填，否则 CI 的 `npm publish` 被拒）。
-2. **本机 npm 版本不足**：本机 npm `10.9.7` **没有** `trust` 子命令（需 ≥ 11），
-   需 `npx npm@latest trust …` 或走 npmjs.com 网页配置。
-3. **聚合包推送与发布**：等用户完成上述两步并通知后，再 push + 发
-   `@logictan/dsh-plugins-all@0.5.13`。
+2. **聚合包发布**：push `main` → 打注释 tag `v0.5.13` → CI publish run `35727297174` 全绿
+   （含 `--frozen-lockfile` 与 test）。发布前逐条比对 registry，**只有聚合包未发布**，
+   其余 12 个都已在线上，故本次 tag 只发出一个包。
+3. **线上换包**：备份 profile manifest → 从 `dsh.profile.bundles` **与** `dependencies`
+   两处移除不带 scope 的包、聚合包 `^0.5.12 → ^0.5.13` → profile 内 `pnpm install`（+2 -13）
+   → `dsh-web links` 仍 OK → `dsh-web restart`（PID 57572 → 28039）。
+4. **上线验证**：重启后 stderr **新增 0 行**；线上 `__DSH_BOOT__` 74 条 entry、我们的 entry 在、
+   不带 scope 的 entry 已消失、无 entry 声明 `settingsScope`、**无重复 entry id**；
+   线上 `client.js`（HTTP 200）注册 id 等于包名、`settingsScope` 0 命中；`dsh-web status`
+   = `Verdict: OK`。
+
+**发布期的一个环境陷阱**：本机出站走代理 `http://127.0.0.1:62102`，该代理**缓存 registry
+响应**。发布成功后直接 curl 仍显示旧的 `dist-tags`（`Cache-Control: no-cache` 与时间戳
+查询串都无效），必须 `curl --noproxy '*'` 才看到新版本。
+
+## 7. 已知问题：定时上游同步 workflow 全线失败（只报告，未修）
+
+`sync-upstream` 自加入以来**每次 schedule 都失败**（9/20、9/21、9/22 三次），且
+**全部 7 个 target 一起失败**。根因：
+
+```
+fatal: ambiguous argument 'origin/sync-upstream/<target>-<ref>-<ts>':
+unknown revision or path not in the working tree.
+```
+
+发生在 `peter-evans/create-pull-request` 的 "Create or update the pull request branch" 步：
+`sync-upstream.mjs` 建的是**本地**分支（从未推送），而该 action 去解析 `origin/<同名分支>`
+失败。其余几条 `git ... exit code 128` 疑为同源；`dsh-market` 另有一条独立错误
+`TS2353: 'desktopHost' does not exist in type 'MarketConfig'`。
+
+**影响**：本次新增的 `better-reasoning-effort` matrix 行**同样不会同步**，直到该 workflow
+修好。用户已决定「只报告，暂不修」。
