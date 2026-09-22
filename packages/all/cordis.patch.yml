@@ -212,3 +212,37 @@
 - insert:
     - id: loop-guard
       name: '@logictan/dsh-loop-guard'
+
+# from ../dsh-better-reasoning-effort
+# dsh-better-reasoning-effort bundle patch layer —— 把本插件挂载进 profile 树。
+#
+# 行 id 保持 `dsh-better-reasoning-effort`：它等于宿主半边 src/index.ts 的
+# `export const name`（PLUGIN_ID），也是 0.1.7-alpha.1 起设置表单的 key ——
+# `dsh-settings` 现在按 loader entry id 从 entry.fiber.runtime.Config 推导表单，
+# 而本行就是那个 entry。
+#
+# name 为发布包名（@logictan 作用域），必须从 profile 根可解析；且本行必须是**裸包名**，
+# 不能带子路径 —— web 插件表只从「挂载该包的 loader 行的 specifier」里找 `dsh.client`，
+# 子路径行解析不到 manifest，浏览器半边会静默不加载。
+#
+# 注意：上游同名包 `dsh-better-reasoning-effort` 的行 id 与本行相同。两者并存会让
+# `cordis-plugin-loader` 以 `duplicate loader entry id: dsh-better-reasoning-effort`
+# 硬崩，所以换包必须「先删再加」——先 `dsh plugin --profile <p> remove
+# dsh-better-reasoning-effort`，再装聚合包。
+#
+# 本插件的可调项（autofill / modalityAutofill / probeTimeoutMs /
+# bootRetryDelaysMs / defaultGuard）默认值即可用，无需在此写 config：
+# 0.1.7 起插件的 `Config` 本身就是唯一配置面，Plugins 页直接编辑本行 entry，
+# 没有第二层、也没有优先级规则。要写进部署基线时：
+#
+#   - insert:
+#       - id: dsh-better-reasoning-effort
+#         name: '@logictan/dsh-better-reasoning-effort'
+#         config:
+#           autofill: true
+#           modalityAutofill: true
+#           defaultGuard: true
+
+- insert:
+    - id: dsh-better-reasoning-effort
+      name: '@logictan/dsh-better-reasoning-effort'

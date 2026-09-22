@@ -67,10 +67,10 @@ export function createIdleAutofill(deps: IdleAutofillDeps): IdleAutofill {
     try {
       const switches = await autofillSwitchesOf()
       if (!switches.autofill) return
-      // Fresh: the scope mirror folds a just-settled write in asynchronously,
-      // so reading it here would fence this fill on a superseded revision and
-      // manufacture a `settings/conflict` (the same reason a conflict retry
-      // re-reads the wire).
+      // Fresh: the shared form mirror folds a just-settled write in
+      // asynchronously, so reading it here would fence this fill on a
+      // superseded revision and manufacture a `settings/conflict` (the same
+      // reason a conflict retry re-reads the wire).
       const join = await describeNamespace(deps.api, { fresh: true })
       const namespace = join.namespace
       if (namespace === undefined || join.writable !== true) return

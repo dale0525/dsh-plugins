@@ -53,6 +53,14 @@ jobs:
           - id: agy-link
             pkg: '@logictan/dsh-agy-link'
             test: 'pnpm --filter @logictan/dsh-agy-link test'
+          # better-reasoning-effort 的上游是不带 scope 的同名包。我们的 fork 改了
+          # package.json 的包名（加 @logictan/ scope），而 patch 行 id 仍是
+          # `dsh-better-reasoning-effort` —— 上游若改了 src/index.ts 的
+          # `export const name`，本行 id 必须跟着改，否则宿主启动即
+          # `duplicate loader entry id` 硬崩。同步 PR 合并前须人工核对这一条。
+          - id: better-reasoning-effort
+            pkg: '@logictan/dsh-better-reasoning-effort'
+            test: 'pnpm --filter @logictan/dsh-better-reasoning-effort test'
           # OpenViking 是 monorepo：两个 fork 各有自己的 policy，故各占一行。
           # 插件行跑包测试（它会先经 prepare 钩子跑生成器，再跑自己的测试）。
           - id: openviking

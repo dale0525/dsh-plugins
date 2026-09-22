@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { baselineModelsOf, createEditorApi, defaultEffortOf, describeNamespace, effortsOf, inputOf, providersOf } from '../src/client/ops.js'
 import { modelsOf } from '../src/shared.js'
 import { AUTOFILL_MARKER } from '../src/constants.js'
-import type { RemoteApi, SettingsNamespaceView, SettingsRemoteApi, SettingsScopeReadLike } from '../src/client/types.js'
+import type { ConfigFormReadLike, RemoteApi, SettingsNamespaceView, SettingsRemoteApi } from '../src/client/types.js'
 
 /** A minimal settings Remote that records mutate calls. */
 function fakeApi(initial: unknown, userSection?: unknown, baseSection?: unknown): {
@@ -64,10 +64,10 @@ const initialValue = {
 }
 
 /**
- * The official settings scope's read face, as `ctx.settingsScope` presents it:
- * one shared mirror snapshot per bound namespace.
+ * The pi-ai entry's shared form read face, as `ctx.configForms.get(entryId)`
+ * returns it: one shared mirror snapshot per entry.
  */
-function scopeSnapshot(overrides: Partial<ReturnType<SettingsScopeReadLike['getSnapshot']>> = {}): SettingsScopeReadLike {
+function formSnapshot(overrides: Partial<ReturnType<ConfigFormReadLike['getSnapshot']>> = {}): ConfigFormReadLike {
   return {
     getSnapshot: () => ({
       status: 'ready',
@@ -106,10 +106,10 @@ function wireRemote(revision = 7): { settings: SettingsRemoteApi; describes: () 
   }
 }
 
-describe('describeNamespace (official scope snapshot vs the wire)', () => {
-  it('reads the join from the scope snapshot without a wire round trip', async () => {
+describe('describeNamespace (shared form snapshot vs the wire)', () => {
+  it('reads the join from the form snapshot without a wire round trip', async () => {
     const wire = wireRemote()
-    const join = await describeNamespace({ settings: wire.settings, scope: scopeSnapshot() })
+    const join = await describeNamespace({ settings: wire.settings, form: formSnapshot() })
 
     expect(wire.describes()).toBe(0)
     expect(join.namespace?.revision).toBe(42)
@@ -123,16 +123,27 @@ describe('describeNamespace (official scope snapshot vs the wire)', () => {
     const wire = wireRemote(9)
     const join = await describeNamespace({
       settings: wire.settings,
-      scope: scopeSnapshot({ status: 'loading', value: undefined, revision: undefined }),
+      form: formSnapshot({ status: 'loading', value: undefined, revision: undefined }),
     })
 
     expect(wire.describes()).toBe(1)
     expect(join.namespace?.revision).toBe(9)
   })
 
+  it('keeps the wire path when the shell provides no form at all', async () => {
+    // The nested inject may never fire (a kernel without `configForms`, or one
+    // still exposing only the retired `settingsScope`). The plugin must then
+    // read the wire rather than throw.
+    const wire = wireRemote(13)
+    const join = await describeNamespace({ settings: wire.settings })
+
+    expect(wire.describes()).toBe(1)
+    expect(join.namespace?.revision).toBe(13)
+  })
+
   it('skips the snapshot for a fresh read, which is what a conflict retry needs', async () => {
     const wire = wireRemote(11)
-    const join = await describeNamespace({ settings: wire.settings, scope: scopeSnapshot() }, { fresh: true })
+    const join = await describeNamespace({ settings: wire.settings, form: formSnapshot() }, { fresh: true })
 
     expect(wire.describes()).toBe(1)
     expect(join.namespace?.revision).toBe(11)

@@ -13,6 +13,7 @@ patchFrom:
   - ../dsh-browser-agent
   - ../dsh-openviking
   - ../dsh-loop-guard
+  - ../dsh-better-reasoning-effort
 deps:
   - ../dsh-config-manager
   - ../dsh-workbuddy-connect
@@ -32,3 +33,10 @@ deps:
   - ../dsh-browser-agent
   - ../dsh-openviking
   - ../dsh-loop-guard
+  # dsh-better-reasoning-effort is a fork of the unscoped npm package
+  # `dsh-better-reasoning-effort`. It declares the SAME patch row id
+  # (`dsh-better-reasoning-effort`, equal to its host half's `export const name`),
+  # so the two packages cannot be installed side by side: the loader hard-crashes
+  # with `duplicate loader entry id: dsh-better-reasoning-effort`. Swap, never
+  # co-install — remove the upstream package first, then install this bundle.
+  - ../dsh-better-reasoning-effort

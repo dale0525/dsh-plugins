@@ -10,6 +10,17 @@
  * per-model auto-adapt) lives in the browser half, which reuses the same
  * knowledge base as a pure module.
  *
+ * ## Reading the pi-ai section (0.1.7-alpha.1 and later)
+ *
+ * The host no longer has a per-namespace settings registry. `dsh-settings` now
+ * derives one configuration FORM per active loader entry from that entry's own
+ * `Config` schema, keyed by the entry id, and `describe()` is the only read —
+ * the former `settings.get(namespace)` is gone. This plugin's reads and writes
+ * therefore address the pi-ai ENTRY (`llm-pi-ai`), which is the same string the
+ * old settings namespace used, so the wire namespace and the entry id coincide.
+ * See {@link piEntry} for the read and {@link Config} for why this plugin's own
+ * schema now doubles as its configuration surface.
+ *
  * @module dsh-better-reasoning-effort
  */
 
@@ -17,13 +28,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the webServer service merge into this program's Context.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-// Type-only: the `declare module '@deepseek-ai/cordis'` merge that types
-// `ctx.settings` as `SettingsProvider` (describe() returns one descriptor per
-// registered namespace — an ARRAY, not the wire `{namespaces}` envelope).
-// The kernel ships no `settingsNamespace` value export (it is a private parse
-// + a compile-time SettingsNamespaceInput); the brand is a compile-time
-// concept, so a typed constant is enough.
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import Schema from '@deepseek-ai/schemastery'
 import { AUTOFILL_CONFIG_PATH, PI_AI_NS, PLUGIN_ID, PROBE_PATH } from './constants.js'
 import { suggestEfforts } from './knowledge.js'
@@ -38,14 +42,68 @@ import { buildAutofillPatch, stripNewCompatKeysDeep } from './autofill.js'
 /** Re-exported so the package entry keeps naming the patch builder. */
 export { buildAutofillPatch }
 
+/**
+ * The `settings` service as the 0.1.7-alpha.1 host provides it — the
+ * `SettingsForms` class — declared structurally instead of imported.
+ *
+ * Two reasons, both load-bearing:
+ *
+ *  1. This workspace type-checks against the 0.1.6-alpha.2 harness generation
+ *     while the deployed host is 0.1.7-alpha.1. `@deepseek-ai/dsh-settings`
+ *     types `ctx.settings` through a `declare module '@deepseek-ai/cordis'`
+ *     merge, and the 0.1.6 merge describes the REMOVED registry: it types
+ *     `settings.get(namespace)` as callable — the very call that stopped
+ *     existing and produced `settings.get is not a function` at boot. A
+ *     generation-pinned import would therefore re-hide the bug it caused.
+ *  2. The two members below are the whole seam this plugin touches, so a host
+ *     change to that seam lands as a compile error HERE rather than as a
+ *     mistyped call that only fails at runtime.
+ */
+interface SettingsFormsLike {
+  /** One descriptor per ACTIVE loader entry, keyed by entry id in `ns`. */
+  describe(): SettingsDescriptorLike[]
+  /** Merge editable fields into the entry's config; `ns` is the entry id. */
+  update(ns: string, patch: object, expectedRevision?: number): Promise<void>
+}
+
+/** One entry's descriptor, as `SettingsForms.describe()` reports it. */
+interface SettingsDescriptorLike {
+  /** Loader entry id — the string that used to name a settings namespace. */
+  ns: string
+  /** Schema-resolved config of the entry. */
+  value?: unknown
+  /** Raw user layer as stored (the profile patch's own `config` block). */
+  user?: unknown
+  /** Revision fencing the next write. */
+  revision: number
+}
+
 /** Stable plugin id, matching the cordis.patch.yml row and the bundle id. */
 export const name = PLUGIN_ID
 
-/** Hard dependencies: the loader waits for these before calling apply. */
+/**
+ * Hard dependencies: the loader waits for these before calling apply.
+ *
+ * `settings` still names a real service on 0.1.7-alpha.1 — it is the
+ * `SettingsForms` service now (see {@link piEntry}) rather than the removed
+ * per-namespace registry, but the name is unchanged, so this declaration
+ * survives the generation boundary untouched. That is also why this plugin
+ * never showed up as `pending (waiting for service: …)` in the boot audit.
+ */
 export const inject = ['settings']
 
-/** The branded settings namespace this plugin reads and fills. */
-const PI_NS = PI_AI_NS as SettingsNamespace
+/**
+ * The loader entry that owns the pi-ai settings section, which is also the key
+ * its configuration form is filed under.
+ *
+ * 0.1.7-alpha.1 removed the settings-namespace registry: `dsh-settings` now
+ * derives a form from `entry.fiber.runtime.Config`, keyed by the loader entry
+ * id (`SettingsForms.describe()` reports it as `ns`). The two identities
+ * coincide here because the base bundle mounts the owning package as
+ * `- id: llm-pi-ai` (`@deepseek-ai/dsh-base/cordis.patch.yml`), and that row's
+ * `Config` is the `providers` schema this plugin reads and fills.
+ */
+const PI_NS = PI_AI_NS
 
 /**
  * Exponential backoff for the boot fill: llm-pi-ai may register its namespace
@@ -59,9 +117,20 @@ const BOOT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as con
 const PROBE_TIMEOUT_MS = 15_000
 
 /**
- * Plugin configuration, supplied through the profile's cordis layer
- * (the row's `config:` block). Every tunable two deployments may want
- * to set differently lives here rather than as a code constant.
+ * Plugin configuration — and, as of the 0.1.7-alpha.1 settings redesign, the
+ * ONE schema behind every configuration surface.
+ *
+ * `dsh-settings` no longer keeps a namespace registry: it derives the
+ * Plugins-page form for a loader entry from that entry's own `Config`, keyed by
+ * the entry id (this package's {@link name}). Marking every field `volatile()`
+ * is what puts it in that form — a field left plain still configures the plugin
+ * through `cordis.patch.yml`, but the Plugins page could neither show nor edit
+ * it, and `SettingsForms.describe()` would silently skip the whole entry.
+ *
+ * The row's `config` in `cordis.patch.yml` is therefore no longer a
+ * "composition layer" the plugin merges a settings section over: it IS the
+ * entry's config, and the Plugins page edits that same entry. One layer, no
+ * precedence rule left to get wrong.
  */
 export interface Config {
   /** Auto-fill undeclared pi-ai models on boot and after settings updates (default true). */
@@ -87,14 +156,53 @@ export interface Config {
   defaultGuard?: boolean
 }
 
-/** Schemastery schema: Cordis validates the row config and fills defaults before apply(). */
+/**
+ * Schemastery schema: Cordis validates the row config and fills defaults before
+ * apply().
+ *
+ * The explicit `Schema<Config>` annotation is load-bearing, not decoration: a
+ * bare `export const Config = Schema.object({…})` fails to emit declarations
+ * (TS2742) whenever two schemastery copies are in the program, which is exactly
+ * the situation here — the profile ships one copy and this package's
+ * `dependencies` entry pulls its own `^3.18.3`.
+ *
+ * `.volatile()` needs schemastery ≥ 3.18.3, and the marker survives the copy
+ * boundary because the reference protocol is `Symbol.for('cosmokit.volatile.write')`
+ * and the host's `volatileForm` / `isVolatilePath` duck-type `meta.volatile`.
+ */
 export const Config: Schema<Config> = Schema.object({
-  autofill: Schema.boolean().default(true),
-  modalityAutofill: Schema.boolean().default(true),
-  probeTimeoutMs: Schema.natural().min(1).default(PROBE_TIMEOUT_MS),
-  bootRetryDelaysMs: Schema.array(Schema.natural().min(1)).default([...BOOT_RETRY_DELAYS_MS]),
-  defaultGuard: Schema.boolean().default(true),
+  autofill: Schema.boolean().default(true).volatile(),
+  modalityAutofill: Schema.boolean().default(true).volatile(),
+  probeTimeoutMs: Schema.natural().min(1).default(PROBE_TIMEOUT_MS).volatile(),
+  bootRetryDelaysMs: Schema.array(Schema.natural().min(1)).default([...BOOT_RETRY_DELAYS_MS]).volatile(),
+  defaultGuard: Schema.boolean().default(true).volatile(),
 })
+
+/**
+ * A live reference to one volatile field, as the Loader hands it to `apply`.
+ *
+ * Declared structurally rather than imported: `Volatile` is a `cordis` 4.0.3
+ * export while this package declares `^4.0.2`, so naming the vendor type here
+ * would narrow the peer range for a cosmetic gain.
+ */
+export interface ConfigRef<T> {
+  /** The field's value right now; re-read on every call. */
+  get(): T
+}
+
+/** Resolved config: every field carries its validated default. */
+type ResolvedConfig = Required<Config>
+
+/**
+ * The live references `apply` receives, one per {@link Config} field.
+ *
+ * Cordis's Loader replaces every `volatile()` field of a plugin's `Config` with
+ * a reference of this shape, so a value the user edits on the Plugins page is
+ * committed into the RUNNING plugin (`loader/volatile-update`) instead of
+ * remounting it. Reading through `.get()` at the point of use is therefore what
+ * makes an edit take effect without a restart — see {@link currentConfig}.
+ */
+export type ConfigRefs = { [K in keyof ResolvedConfig]: ConfigRef<ResolvedConfig[K]> }
 
 interface CredentialsService {
   resolve(ref: string): Promise<{ value?: string } | undefined>
@@ -384,48 +492,91 @@ function guardCallConfig(cfg: Record<string, unknown>, section: unknown): Record
 }
 
 /**
- * Apply the plugin: autofill undeclared models on boot and after every commit
- * that touches the pi-ai namespace.
+ * Apply the plugin: autofill undeclared models on boot, guard effort-less calls
+ * on forced-thinking ladders, and serve the browser half's probe route.
+ *
  * @param ctx - host context.
+ * @param config - the live references the Loader hands over, one per
+ *   {@link Config} field (every field is `volatile()`, so none arrives as a
+ *   plain value). Read through {@link currentConfig} at the point of use.
  */
-export function apply(ctx: Context, config: Config = {}): void {
-  // Cordis fills schema defaults; direct calls (tests) may omit fields.
-  const resolved = {
-    autofill: config.autofill !== false,
-    modalityAutofill: config.modalityAutofill !== false,
-    probeTimeoutMs: config.probeTimeoutMs ?? PROBE_TIMEOUT_MS,
-    bootRetryDelaysMs: config.bootRetryDelaysMs ?? [...BOOT_RETRY_DELAYS_MS],
-    defaultGuard: config.defaultGuard !== false,
-  }
+export function apply(ctx: Context, config: ConfigRefs): void {
+  /**
+   * The effective configuration, resolved fresh at every use.
+   *
+   * Cordis commits a Plugins-page edit into the RUNNING plugin
+   * (`loader/volatile-update`) rather than remounting it, so a value captured
+   * once at mount would make the page's own save a silent no-op. Every gate
+   * below therefore reads the flag when it decides, not when it was installed:
+   * `autofill` is re-checked per pass, `defaultGuard` per call, and
+   * `probeTimeoutMs` per request.
+   */
+  const currentConfig = (): ResolvedConfig => ({
+    autofill: config.autofill.get(),
+    modalityAutofill: config.modalityAutofill.get(),
+    probeTimeoutMs: config.probeTimeoutMs.get(),
+    bootRetryDelaysMs: config.bootRetryDelaysMs.get(),
+    defaultGuard: config.defaultGuard.get(),
+  })
 
   // Module-level `inject` already guarantees the settings service; using it
   // directly (instead of a redundant inner ctx.inject) keeps one dependency
   // declaration as the single source of truth.
-  const settings = ctx.settings
+  const settings = (ctx as unknown as { settings: SettingsFormsLike }).settings
+
+  /**
+   * The pi-ai entry's descriptor, or undefined while that entry is not
+   * readable.
+   *
+   * This is the 0.1.7-alpha.1 replacement for the removed
+   * `settings.get(namespace)`. A settings namespace is no longer a value store
+   * with a getter: it is a FORM, derived from `entry.fiber.runtime.Config` and
+   * keyed by the loader entry id, and `describe()` is the only read. The
+   * descriptor carries the resolved config as `value`, the raw layers as
+   * `user` / `base`, and the revision that fences the next write.
+   *
+   * An undefined answer is also how an entry that is not ready yet presents
+   * itself — `describe()` skips entries whose fiber has not reached `active`,
+   * whose `Config` is not reachable from the package entry, or that declares no
+   * volatile field at all. That is precisely the "not registered yet" state the
+   * boot retry below waits out.
+   */
+  const piEntry = (): SettingsDescriptorLike | undefined =>
+    settings.describe().find(entry => entry.ns === PI_NS)
 
   // The probe route (registered below) reads the pi-ai section through this
   // closure slot.
-  const piSection = (): unknown => settings.get(PI_NS)
+  const piSection = (): unknown => piEntry()?.value
 
-  if (resolved.autofill) {
-    /** One autofill pass; resolves false while the pi-ai namespace is unregistered. */
+  // The autofill machinery is installed unconditionally and the `autofill`
+  // switch is read per pass (see {@link autofillOnce}): gating the install on
+  // the value at mount would make a Plugins-page edit one-way, since the boot
+  // schedule it controls would already exist -- or not -- for the rest of the
+  // fiber's life. This block only scopes the helpers.
+  {
+    /** One autofill pass; resolves false while the pi-ai entry is not readable. */
     const autofillOnce = async (): Promise<boolean> => {
-      const value = settings.get(PI_NS)
-      if (!isRecord(value)) return false
+      // A disabled fill is "settled", not "not ready": returning false here
+      // would put the boot retry into a backoff loop for a plugin that has
+      // nothing to do. The check is live, so turning the switch off on the
+      // Plugins page stops the next pass without a restart.
+      const resolved = currentConfig()
+      if (!resolved.autofill) return true
+      const descriptor = piEntry()
+      if (!isRecord(descriptor?.value)) return false
       // Build the patch from the RAW USER layer, never the resolved value:
       // the fill merges into the user document, and building from the
       // resolved view would materialize schema defaults / composition-base
       // models into it wholesale the moment pi-ai grows such layers for its
-      // profile. A namespace whose user section holds no providers has
+      // profile. An entry whose user section holds no providers has
       // nothing this plugin may fill.
-      const descriptor = settings.describe().find(entry => entry.ns === PI_NS)
       const user = descriptor?.user
       const userProviders = isRecord(user) && isRecord(user['providers']) ? user['providers'] : undefined
       if (userProviders === undefined) return true
       const fullPatch = buildAutofillPatch(userProviders, () => true, { modalities: resolved.modalityAutofill }, descriptor?.revision ?? 0)
       if (fullPatch === undefined) return true
-      // Optimistic lock: only write while the namespace has not moved past
-      // this read. The fill is a background suggestion -- losing the race to a
+      // Optimistic lock: only write while the entry has not moved past this
+      // read. The fill is a background suggestion -- losing the race to a
       // user edit is fine; a later boot, or the browser half's idle pass,
       // simply fills whatever is still undeclared. Without the lock every fill
       // would bump the revision and invalidate the one the settings page read,
@@ -437,7 +588,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (!looksLikeCompatRefusal(msg)) throw error
         const stripped = stripNewCompatKeysDeep(fullPatch)
         if (stripped === undefined) throw error
-        await settings.update(PI_NS, stripped, settings.describe().find(entry => entry.ns === PI_NS)?.revision)
+        await settings.update(PI_NS, stripped, piEntry()?.revision)
       }
       return true
     }
@@ -456,14 +607,17 @@ export function apply(ctx: Context, config: Config = {}): void {
     }, 'dsh-better-reasoning-effort: boot-fill retries')
 
     // Fill once at boot for models declared before this plugin was installed,
-    // backing off exponentially while llm-pi-ai has not registered yet.
+    // backing off exponentially while llm-pi-ai has not registered yet. The
+    // schedule is read per attempt, so a Plugins-page edit to it applies to the
+    // retries that have not fired yet.
     const bootFill = (attempt: number): void => {
       void autofillOnce().then((ready) => {
-        if (ready || attempt >= resolved.bootRetryDelaysMs.length) return
+        const delays = currentConfig().bootRetryDelaysMs
+        if (ready || attempt >= delays.length) return
         const timer = setTimeout(() => {
           timers.delete(timer)
           bootFill(attempt + 1)
-        }, resolved.bootRetryDelaysMs[attempt])
+        }, delays[attempt])
         timers.add(timer)
       }, logFailure)
     }
@@ -485,22 +639,29 @@ export function apply(ctx: Context, config: Config = {}): void {
   // of the wire's off-equivalent. Deferred inject: the wrap lands whenever
   // the llm service registers, and ctx.effect restores the originals on
   // dispose (disable/HMR leaves no trace).
-  if (resolved.defaultGuard) {
-    ctx.inject(['llm'], (llmCtx) => {
-      const llm = (llmCtx as unknown as { llm?: unknown }).llm as LlmDispatchLike | undefined
-      if (llm === undefined || typeof llm.prepareCall !== 'function' || typeof llm.stream !== 'function') return
-      // Unbound originals: restore assigns back the exact references, and
-      // dispatch keeps the service as receiver through .call.
-      const origPrepare = llm.prepareCall
-      const origStream = llm.stream
-      llm.prepareCall = (callConfig, signal) => origPrepare.call(llm, guardCallConfig(callConfig, piSection()), signal)
-      llm.stream = (options) => origStream.call(llm, guardCallConfig(options, piSection()))
-      ctx.effect(() => () => {
-        llm.prepareCall = origPrepare
-        llm.stream = origStream
-      }, 'dsh-better-reasoning-effort: default-guard')
-    })
-  }
+  //
+  // The wrap is installed unconditionally and the switch is read per call: a
+  // `defaultGuard` edit on the Plugins page must take effect without a restart,
+  // and installing the wrap lazily from a live flag would leave a plugin
+  // switched off at mount permanently unwrapped. With the switch off the
+  // wrapper hands the original arguments straight through, so the deployment
+  // that disabled it sees the same call it always did.
+  ctx.inject(['llm'], (llmCtx) => {
+    const llm = (llmCtx as unknown as { llm?: unknown }).llm as LlmDispatchLike | undefined
+    if (llm === undefined || typeof llm.prepareCall !== 'function' || typeof llm.stream !== 'function') return
+    // Unbound originals: restore assigns back the exact references, and
+    // dispatch keeps the service as receiver through .call.
+    const origPrepare = llm.prepareCall
+    const origStream = llm.stream
+    const guarded = (callConfig: Record<string, unknown>): Record<string, unknown> =>
+      currentConfig().defaultGuard ? guardCallConfig(callConfig, piSection()) : callConfig
+    llm.prepareCall = (callConfig, signal) => origPrepare.call(llm, guarded(callConfig), signal)
+    llm.stream = (options) => origStream.call(llm, guarded(options))
+    ctx.effect(() => () => {
+      llm.prepareCall = origPrepare
+      llm.stream = origStream
+    }, 'dsh-better-reasoning-effort: default-guard')
+  })
 
   // Same-origin probe route: the browser half's Auto-adapt asks the endpoint's
   // RAW /models listing through here, because the sanctioned llm wire call
@@ -592,7 +753,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                 // protocol inference, the path every unanswerable endpoint
                 // takes.
                 redirect: 'error',
-                signal: AbortSignal.timeout(resolved.probeTimeoutMs),
+                signal: AbortSignal.timeout(currentConfig().probeTimeoutMs),
               })
               if (!upstream.ok) {
                 const hint = upstream.status === 401 || upstream.status === 403 ? '; check the API key' : ''
@@ -650,6 +811,10 @@ export function apply(ctx: Context, config: Config = {}): void {
               sendJson(res, 405, { ok: false, error: 'method not allowed' })
               return
             }
+            // Read live: the browser half polls this route to decide whether
+            // its running auto-fill complement may write, so a Plugins-page
+            // toggle must be visible to it on the next poll, not the next boot.
+            const resolved = currentConfig()
             sendJson(res, 200, {
               ok: true,
               data: { autofill: resolved.autofill, modalityAutofill: resolved.modalityAutofill },

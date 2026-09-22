@@ -54,38 +54,45 @@ export interface SettingsRemoteApi {
 }
 
 /**
- * `ctx.get('settingsScope')`, as the kernel's `ui-settings` plugin registers
- * it: a `SettingsScopeBinder`, NOT a scope. The binder only mints scopes via
- * {@link bind} (and offers a cross-namespace `describe()`); `getSnapshot()`
- * lives on the scope `bind` returns. Treating the binder as a scope makes
- * every read throw, so the plugin must bind its own namespace first.
+ * `ctx.get('configForms')`, as the kernel's `ui-settings` plugin registers it
+ * from 0.1.7-alpha.1: the settings domain's shared-form service.
+ *
+ * It replaces the `settingsScope` binder of 0.1.6-alpha.2 and earlier, whose
+ * name exists nowhere in the newer tree. The method moved with the rename and
+ * changed argument shape: `settingsScope.bind({ namespace })` minted a scope
+ * per NAMESPACE, while `configForms.get(entryId)` returns the form of one
+ * LOADER ENTRY — the same key the host files the entry's `Config` under, and
+ * for the pi-ai row the same string either way.
  */
-export interface SettingsScopeBinderLike {
+export interface ConfigFormsLike {
   /**
-   * Bind one namespace scope on the CALLING fiber's lifecycle.
-   * @param spec - namespace identity (`{ namespace }`).
-   * @returns the bound scope whose snapshot this half reads.
+   * The shared form values and write queue for one Host plugin entry.
+   * @param entryId - unique Host plugin entry id.
+   * @returns the entry's read face; one instance per entry, shared with the
+   *   official page's own surface.
    */
-  bind(spec: { namespace: string }): SettingsScopeReadLike
+  get(entryId: string): ConfigFormReadLike
 }
 
 /**
- * The READ face of one BOUND official settings scope (the object
- * `SettingsScopeBinder.bind({ namespace })` returns). One shared describe
- * mirror backs every namespace scope in the browser, so reading through the
- * snapshot costs no wire round trip and always reports the revision the
- * settings surface itself is working from.
+ * The READ face of one entry's configuration form — what
+ * {@link ConfigFormsLike.get} returns and what this half reads.
  *
- * Deliberately read-only: the scope's `mutate` settles `void`, which makes a
- * refused write indistinguishable from a committed one. The plugin's queues
- * must keep a failed intent for the next pass, so writes still go through
- * `settings.mutate`, where the refusal code is observable.
+ * One shared describe mirror backs every form in the browser, so reading
+ * through the snapshot costs no wire round trip and always reports the revision
+ * the settings surface itself is working from.
+ *
+ * Deliberately read-only. The form's own `mutate` settles a bare `boolean`,
+ * which makes a refused write indistinguishable from a committed one and hides
+ * the refusal code the compat-retry path branches on. The plugin's queues must
+ * keep a failed intent for the next pass, so writes still go through
+ * `settings.mutate`, where the envelope is observable.
  */
-export interface SettingsScopeReadLike {
+export interface ConfigFormReadLike {
   getSnapshot(): {
     /** `ready` once a section has been accepted; other states carry no value. */
     status: 'loading' | 'ready' | 'unavailable'
-    /** Schema-resolved section of the bound namespace. */
+    /** Schema-resolved section of the entry's config. */
     value?: unknown
     /** Composition base the section resolves over. */
     base?: unknown
@@ -102,13 +109,14 @@ export interface SettingsScopeReadLike {
 export interface RemoteApi {
   settings: SettingsRemoteApi
   /**
-   * The BOUND official settings scope (already `bind({ namespace })`-ed), when
-   * the shell provides one. Optional: an older kernel without `settingsScope`
-   * keeps the wire-describe path, and the plugin never declares the service in
-   * its `inject` (a hard dependency would refuse to activate the whole browser
-   * half on that kernel).
+   * The pi-ai entry's shared configuration form, when the shell provides one.
+   *
+   * Optional by construction, and deliberately NOT part of this half's `inject`:
+   * a kernel whose settings plugin is absent or older must cost the plugin its
+   * mirror shortcut, not its mount — a hard dependency would park the whole
+   * browser half and take the Web UI's boot audit down with it.
    */
-  scope?: SettingsScopeReadLike
+  form?: ConfigFormReadLike
 }
 
 export type { SettingsNamespaceView, SettingsPathOpView }
@@ -146,7 +154,29 @@ export interface ClientContext {
   on(event: 'connection/reset', listener: () => void): () => void
   effect(fn: () => unknown, name?: string): unknown
   get?(name: string): unknown
-  inject?(names: string[], callback: () => unknown): unknown
+  /**
+   * Nested inject: declares a service on a CHILD fiber instead of on this
+   * half's own entry.
+   *
+   * `configForms` is requested this way on purpose. Naming it in the entry's
+   * own `inject` would park the whole browser half until the settings shell
+   * provides it — and the page's boot audit turns one pending entry into a
+   * thrown error, taking the Web UI down with it. A kernel without the service
+   * must cost this plugin its mirror shortcut, not its mount.
+   */
+  inject?(names: ['configForms'], callback: (scoped: ConfigFormsScope) => unknown): unknown
+}
+
+/** The child context a nested `configForms` inject hands its callback. */
+export interface ConfigFormsScope {
+  /** The settings domain's shared-form service. */
+  configForms: ConfigFormsLike
+  /**
+   * The CHILD fiber's effect scope. Its disposers run when the service goes
+   * away or the parent fiber disposes, which is what retires the cached form
+   * face below.
+   */
+  effect(fn: () => unknown, name?: string): unknown
 }
 
 // ---- Models-page slot face (declared locally; the official types live in

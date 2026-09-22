@@ -136,13 +136,13 @@ describe('client apply()', () => {
     }
   })
 
-  it('reads through the BOUND settings scope, never treating the binder as a scope', async () => {
-    // Regression (issue #7 branch, C1): `ctx.get('settingsScope')` yields the
-    // kernel's SettingsScopeBinder -- it has `bind()`/`describe()`, NOT
-    // `getSnapshot()`. The plugin used the binder directly, so the optional
-    // chain only guarded a missing SERVICE and every describe threw a
-    // TypeError, leaving the Models page without editors. The binder must be
-    // bound to this plugin's namespace first; that bound scope is the reader.
+  it('reads through the pi-ai entry\'s shared config form, obtained by ENTRY id', async () => {
+    // Regression (0.1.7-alpha.1 generation boundary): the settings service was
+    // renamed `settingsScope` → `configForms`, and the method moved with it.
+    // `settingsScope.bind({ namespace })` minted a scope per NAMESPACE;
+    // `configForms.get(entryId)` returns the form of one LOADER ENTRY. Asking
+    // the old way yields undefined, so the plugin silently falls back to the
+    // wire and loses the revision the official card fences its own writes with.
     const providers = structuredClone(JOIN_FIXTURE)
     const api = fakeApi(() => Promise.resolve(makeJoin(providers)))
     const snapshot = {
@@ -153,17 +153,36 @@ describe('client apply()', () => {
       revision: 7,
       writable: true,
     }
-    const bind = vi.fn(() => ({ getSnapshot: () => snapshot }))
-    const h = makeCtx(api, { services: { settingsScope: { bind } } })
+    const get = vi.fn(() => ({ getSnapshot: () => snapshot }))
+    const h = makeCtx(api, { services: { configForms: { get } } })
     try {
       buildModelsDom()
       const { apply } = await import('../src/client/index.js')
       apply(h.ctx as unknown as Ctx)
       await waitFor(() => document.querySelectorAll('.bre-effort-editor').length === 2)
-      // Bound on the plugin's own namespace, and the snapshot (not the wire)
+      // Keyed on the pi-ai ENTRY id, and the shared snapshot (not the wire)
       // answered the scan.
-      expect(bind).toHaveBeenCalledWith({ namespace: PI_AI_NS })
+      expect(get).toHaveBeenCalledWith(PI_AI_NS)
       expect(api.describeSpy).not.toHaveBeenCalled()
+    } finally {
+      h.disposeAll()
+    }
+  })
+
+  it('mounts the DOM injection even when the shell provides no config form', async () => {
+    // The nested inject must cost the plugin its mirror shortcut, NOT its
+    // mount: the Models-page injection is the whole point of this half. On a
+    // kernel whose settings shell is absent (or older, exposing only the
+    // retired `settingsScope`) every read goes to the wire instead.
+    const providers = structuredClone(JOIN_FIXTURE)
+    const api = fakeApi(() => Promise.resolve(makeJoin(providers)))
+    const h = makeCtx(api, { services: { settingsScope: { bind: vi.fn() } } })
+    try {
+      buildModelsDom()
+      const { apply } = await import('../src/client/index.js')
+      apply(h.ctx as unknown as Ctx)
+      await waitFor(() => document.querySelectorAll('.bre-effort-editor').length === 2)
+      expect(api.describeSpy).toHaveBeenCalled()
     } finally {
       h.disposeAll()
     }
@@ -243,11 +262,11 @@ describe('client apply()', () => {
     }
   })
 
-  it('reads the autofill revision from the wire, not a possibly-stale scope snapshot', async () => {
-    // The scope mirror folds a fresh view in asynchronously; the plugin's own
-    // idle autofill runs right after its own writes, so a non-fresh read would
-    // hand back the revision those writes already superseded and manufacture a
-    // `settings/conflict`. The autofill read is explicitly fresh.
+  it('reads the autofill revision from the wire, not a possibly-stale form snapshot', async () => {
+    // The shared form mirror folds a fresh view in asynchronously; the plugin's
+    // own idle autofill runs right after its own writes, so a non-fresh read
+    // would hand back the revision those writes already superseded and
+    // manufacture a `settings/conflict`. The autofill read is explicitly fresh.
     const providers = structuredClone(JOIN_FIXTURE)
     const wire = makeJoin(structuredClone(JOIN_FIXTURE), structuredClone(JOIN_FIXTURE))
     const api = fakeApi(() => Promise.resolve(wire))
@@ -259,9 +278,9 @@ describe('client apply()', () => {
       revision: 99,
       writable: true,
     }
-    const bind = vi.fn(() => ({ getSnapshot: () => snapshot }))
+    const get = vi.fn(() => ({ getSnapshot: () => snapshot }))
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }) as Response))
-    const h = makeCtx(api, { services: { settingsScope: { bind } } })
+    const h = makeCtx(api, { services: { configForms: { get } } })
     try {
       buildModelsDom()
       const { apply } = await import('../src/client/index.js')

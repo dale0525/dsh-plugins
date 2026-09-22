@@ -37,7 +37,7 @@
  * @module dsh-better-reasoning-effort/client
  */
 
-import type { ClientContext, RemoteApi, SettingsScopeBinderLike, SettingsScopeReadLike } from './types.js'
+import type { ClientContext, ConfigFormReadLike, RemoteApi } from './types.js'
 // Type-only: pulls the shell's locale/remote context merges into this program.
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -88,25 +88,41 @@ export function apply(ctx: ClientContext): void {
   // 'remote.settings' service, declared in the plugin's own inject above — so
   // the face is available before apply runs. No runtime seat probing remains.
   //
-  // The official settings scope is picked up on top of it when this shell
-  // provides one: reads then ride its shared describe mirror (no wire round
-  // trip, and the revision the settings surface itself fences writes with).
-  // Deliberately NOT part of the plugin's `inject`: a kernel without the
-  // service must still activate the browser half, on the wire-describe path.
-  const settingsScope = ((): SettingsScopeReadLike | undefined => {
-    try {
-      // `ctx.get('settingsScope')` yields the kernel's BINDER, not a scope:
-      // only `bind({ namespace })` mints the read face (getSnapshot). Using
-      // the binder directly made every describe throw a TypeError.
-      const binder = ctx.get?.('settingsScope') as SettingsScopeBinderLike | undefined
-      return binder?.bind?.({ namespace: PI_AI_NS })
-    } catch {
-      return undefined
-    }
-  })()
-  const settingsApi: RemoteApi = settingsScope === undefined
-    ? { settings: ctx.remote.settings }
-    : { settings: ctx.remote.settings, scope: settingsScope }
+  // The pi-ai entry's shared configuration form is picked up on top of it when
+  // this shell provides one: reads then ride the same describe mirror the
+  // official Models card reads, costing no wire round trip and reporting the
+  // revision that card itself fences its writes with.
+  //
+  // Requested through a NESTED inject, not the plugin's own `inject`. Two
+  // reasons, both load-bearing:
+  //
+  //  1. The service was RENAMED at the 0.1.7-alpha.1 generation boundary.
+  //     `dsh-client-ui-settings` provided `settingsScope` up to 0.1.6-alpha.2
+  //     and provides `configForms` from 0.1.7-alpha.1; the old name exists
+  //     nowhere in the newer tree, and the method moved with it
+  //     (`bind({ namespace })` → `get(entryId)`, because a form is keyed by the
+  //     LOADER ENTRY id — for the pi-ai row the same string either way).
+  //  2. Naming it in the entry's own `inject` would park the WHOLE browser half
+  //     whenever the settings shell is absent or older, and the page's boot
+  //     audit turns one pending entry into a thrown error. A missing service
+  //     must cost this plugin the mirror shortcut, not its mount.
+  //
+  // The form face is exposed as a live getter rather than captured: `apply`
+  // returns before the service exists, and every consumer reads
+  // `api.form?.getSnapshot()` at the moment it needs a join.
+  let form: ConfigFormReadLike | undefined
+  ctx.inject?.(['configForms'], (scoped) => {
+    form = scoped.configForms.get(PI_AI_NS)
+    scoped.effect(() => () => {
+      form = undefined
+    }, 'dsh-better-reasoning-effort: config form face')
+  })
+  const settingsApi: RemoteApi = {
+    settings: ctx.remote.settings,
+    get form() {
+      return form
+    },
+  }
   // The shell's Translate is `(key: string, params?: Record<string, unknown>)`;
   // our components take a string-keyed face, so the bound translator narrows.
   const t = ctx.locale.bind(STORE_NS) as Translate

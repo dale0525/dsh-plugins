@@ -19,7 +19,16 @@ export const PROBE_PATH = '/dsh-better-reasoning-effort/raw-models'
  */
 export const AUTOFILL_CONFIG_PATH = '/dsh-better-reasoning-effort/autofill-config'
 
-/** The settings namespace this plugin edits: pi-ai custom provider routes. */
+/**
+ * The pi-ai custom-provider routes this plugin edits — named both by the
+ * settings document and, since 0.1.7-alpha.1, by the loader ENTRY that owns it.
+ *
+ * The two identities were always the same string and now have to be: the host's
+ * `dsh-settings` files every configuration form under its loader entry id
+ * (`SettingsForms.describe()` reports it as `ns`), so `llm-pi-ai` is at once the
+ * base bundle's row id (`@deepseek-ai/dsh-base/cordis.patch.yml`), the key this
+ * plugin reads and writes, and the namespace the browser half names on the wire.
+ */
 export const PI_AI_NS = 'llm-pi-ai'
 
 /**

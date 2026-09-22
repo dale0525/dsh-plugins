@@ -374,7 +374,7 @@ export async function writeModelRows(
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       // Attempt 0 reads through the injected seam (the injector seeds it with
-      // the scan's join). A conflict retry MUST go to the wire: the scope
+      // the scan's join). A conflict retry MUST go to the wire: the shared form
       // snapshot behind that seam folds a fresh view in asynchronously, so it
       // would hand back the very revision the write just failed against.
       const join = attempt === 0 ? await describe() : await describeNamespace(api, { fresh: true })
@@ -518,19 +518,19 @@ function mergeRowIntent(
 /**
  * Describe the pi-ai namespace plus writability.
  *
- * Prefers the official settings scope's snapshot when the shell provides one:
- * the shared describe mirror already carries this namespace's resolved section
- * together with its RAW layers (user / base) and the revision the settings
- * surface itself fences writes with, so a scan costs no wire round trip.
- * `fresh: true` skips the snapshot and reads the wire -- what a conflict retry
- * needs, because the mirror folds a fresh view in asynchronously and would
- * otherwise hand back the very revision the write just failed against.
- * @param api - the settings Remote (plus the optional scope).
+ * Prefers the pi-ai entry's shared configuration form when the shell provides
+ * one: the describe mirror behind it already carries this namespace's resolved
+ * section together with its RAW layers (user / base) and the revision the
+ * settings surface itself fences writes with, so a scan costs no wire round
+ * trip. `fresh: true` skips the snapshot and reads the wire -- what a conflict
+ * retry needs, because the mirror folds a fresh view in asynchronously and
+ * would otherwise hand back the very revision the write just failed against.
+ * @param api - the settings Remote (plus the optional shared form).
  * @param options - `fresh` forces the wire read.
  */
 export async function describeNamespace(api: RemoteApi, options: { fresh?: boolean } = {}): Promise<SettingsJoin> {
-  const viaScope = options.fresh === true ? undefined : joinFromScope(api)
-  if (viaScope !== undefined) return viaScope
+  const viaForm = options.fresh === true ? undefined : joinFromForm(api)
+  if (viaForm !== undefined) return viaForm
   const response = await api.settings.describe()
   if (!response.ok) return { namespace: undefined, writable: false }
   const namespace = response.value.namespaces.find(ns => ns.ns === PI_AI_NS)
@@ -538,16 +538,16 @@ export async function describeNamespace(api: RemoteApi, options: { fresh?: boole
 }
 
 /**
- * The namespace join as the official scope's snapshot holds it, or undefined
- * when there is no scope / it has no accepted section yet.
+ * The namespace join as the pi-ai entry's shared form holds it, or undefined
+ * when there is no form / it has no accepted section yet.
  *
  * The snapshot carries only what a browser surface consumes, so the wire-only
  * fields (`schema`, `applies`, `secrets`) are filled with the shapes the plugin
  * never reads; every field this half touches (`value`, `user`, `base`,
  * `revision`) comes from the mirror verbatim.
  */
-function joinFromScope(api: RemoteApi): SettingsJoin | undefined {
-  const snapshot = api.scope?.getSnapshot()
+function joinFromForm(api: RemoteApi): SettingsJoin | undefined {
+  const snapshot = api.form?.getSnapshot()
   if (snapshot === undefined || snapshot.status !== 'ready') return undefined
   if (typeof snapshot.revision !== 'number') return undefined
   return {

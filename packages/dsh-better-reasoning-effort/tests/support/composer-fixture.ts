@@ -182,6 +182,25 @@ export function makeCtx(api: RemoteApi, opts?: {
     get(name: string): unknown {
       return opts?.services?.[name]
     },
+    /**
+     * Nested inject, as cordis implements it: the callback runs on a CHILD
+     * fiber once every named service exists.
+     *
+     * The fixture resolves the names from `opts.services` and hands back a
+     * scoped context carrying them. A name that is absent simply never runs the
+     * callback — which is precisely the "settings shell without `configForms`"
+     * case the plugin has to survive, so the fixture must model absence by
+     * silence rather than by throwing.
+     */
+    inject(names: string[], callback: (scoped: Record<string, unknown>) => unknown): void {
+      const scoped: Record<string, unknown> = { effect: ctx.effect }
+      for (const name of names) {
+        const service = opts?.services?.[name]
+        if (service === undefined) return
+        scoped[name] = service
+      }
+      callback(scoped)
+    },
     remote: {
       settings: api.settings,
       $on: (event: string, cb: (payload: unknown) => void) => track(remoteHandlers, event, cb),

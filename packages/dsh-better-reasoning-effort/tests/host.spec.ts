@@ -1,28 +1,28 @@
 /**
  * Host apply() integration tests against a fake settings service shaped like
- * the REAL SettingsProvider (describe() returns an ARRAY of descriptors —
+ * the REAL `SettingsForms` (describe() returns an ARRAY of entry descriptors —
  * the regression guard for the wire-envelope mixup that used to make every
- * autofill throw), plus the boot-retry schedule for a not-yet-registered
- * pi-ai namespace.
+ * autofill throw, and the only read since 0.1.7-alpha.1 removed
+ * `settings.get(namespace)`), plus the boot-retry schedule for a not-yet-active
+ * pi-ai entry.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { configRefs, refs } from './support/refs.js'
 
 type HostCtx = Parameters<typeof import('../src/index.js').apply>[0]
 
-/** A settings service with the real provider's face (narrowed to what apply uses). */
+/** A settings service with the real `SettingsForms` face (narrowed to what apply uses). */
 function fakeSettings(providers: Record<string, unknown> | undefined) {
   let revision = 3
   let current = providers
   const updates: Array<{ patch: object; expectedRevision: number | undefined }> = []
   return {
-    get(ns: string): unknown {
-      return ns === 'llm-pi-ai' && current !== undefined ? { providers: current } : undefined
-    },
     describe(): Array<{ ns: string; revision: number; value?: unknown; user?: unknown }> {
-      // Registered namespaces only: before llm-pi-ai registers, the list is empty.
-      // The descriptor carries the raw USER layer too — the autofill builds its
-      // patch from it, never from the resolved view.
+      // Active entries only: before llm-pi-ai is up, the list is empty. There is
+      // no `get(namespace)` any more — the descriptor IS the read, and it carries
+      // the raw USER layer too (the autofill builds its patch from it, never from
+      // the resolved view).
       return current === undefined
         ? []
         : [{ ns: 'llm-pi-ai', revision, value: { providers: current }, user: { providers: current } }]
@@ -124,7 +124,7 @@ describe('apply() autofill', () => {
     const settings = fakeSettings(PROVIDERS)
     const { ctx } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     await vi.waitFor(() => { expect(settings.updates).toHaveLength(1) })
     const routes = (settings.updates[0]!.patch as { providers: Record<string, { models: Array<Record<string, unknown>> }> }).providers
     expect(routes.aliyun.models[0]!['reasoningEfforts']).toEqual({ off: null, high: 'high' })
@@ -139,7 +139,7 @@ describe('apply() autofill', () => {
     const settings = fakeSettings(declared)
     const { ctx } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(settings.updates).toHaveLength(0)
   })
@@ -153,7 +153,7 @@ describe('apply() autofill', () => {
     const settings = fakeSettings({ aliyun: { api: 'openai-completions', models: [] } })
     const { ctx, emitUpdated } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(settings.updates).toHaveLength(0)
     // A user edit lands, adding an undeclared model: no host write may follow.
@@ -171,7 +171,7 @@ describe('apply() autofill', () => {
     const settings = fakeSettings(PROVIDERS)
     const { ctx, emitUpdated } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     // The boot fill declares the model.
     await vi.waitFor(() => { expect(settings.updates).toHaveLength(1) })
     // The editor's unset flow lands: the field is gone, the durable marker
@@ -207,7 +207,7 @@ describe('apply() autofill', () => {
     })
     const { ctx, emitUpdated } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     await vi.waitFor(() => { expect(settings.updates).toHaveLength(1) })
     const models = (settings.updates[0]!.patch as { providers: Record<string, { models: Array<Record<string, unknown>> }> })
       .providers.aliyun.models
@@ -239,7 +239,7 @@ describe('apply() autofill', () => {
         return originalUpdate(ns, patch, expectedRevision)
       },
     })
-    apply(ctx)
+    apply(ctx, configRefs())
     await vi.waitFor(() => { expect(errorSpy).toHaveBeenCalled() })
     expect(errorSpy.mock.calls[0]![0]).toContain('changed since it was read')
   })
@@ -249,7 +249,7 @@ describe('apply() autofill', () => {
     const settings = fakeSettings(undefined)
     const { ctx } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     // The namespace is still missing after the first pass and several retries.
     await vi.advanceTimersByTimeAsync(2500)
     expect(settings.updates).toHaveLength(0)
@@ -266,7 +266,7 @@ describe('apply() autofill', () => {
     const settings = fakeSettings(PROVIDERS)
     const { ctx, emitUpdated } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx, { autofill: false })
+    apply(ctx, configRefs({ autofill: false }))
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(settings.updates).toHaveLength(0)
     emitUpdated('llm-pi-ai')
@@ -279,7 +279,7 @@ describe('apply() autofill', () => {
     const settings = fakeSettings(undefined)
     const { ctx } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx, { bootRetryDelaysMs: [5, 5] })
+    apply(ctx, configRefs({ bootRetryDelaysMs: [5, 5] }))
     // The namespace registers after the first (failed) pass; the retry
     // scheduled on the CONFIGURED 5ms delay fills it.
     settings.register('llm-pi-ai', PROVIDERS)
@@ -324,7 +324,7 @@ describe('apply() probe route', () => {
     const credentials = { resolve: async (ref: string) => ({ value: ref === 'ALIYUN_KEY' ? 'sk-secret' : undefined }) }
     const { ctx, routes } = fakeHost(settings, { credentials })
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)
     expect(handler).toBeDefined()
 
@@ -361,7 +361,7 @@ describe('apply() probe route', () => {
     const credentials = { resolve: async () => ({ value: 'sk-secret' }) }
     const { ctx, routes } = fakeHost(settings, { credentials })
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -393,7 +393,7 @@ describe('apply() probe route', () => {
     const credentials = { resolve: async (ref: string) => ({ value: ref === 'ANTHROPIC_KEY' ? 'sk-ant-secret' : undefined }) }
     const { ctx, routes } = fakeHost(settings, { credentials })
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -425,7 +425,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ azure: { api: 'azure', baseURL: 'https://azure.example.com', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -441,7 +441,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { api: 'openai-completions', baseURL: 'https://gw.example.com/v1', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -476,7 +476,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { api: 'openai-completions', baseURL: 'https://gw.example.com/v1', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -500,7 +500,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { api: 'openai-completions', baseURL: 'https://gw.example.com/v1', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -523,7 +523,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { baseURL: 'https://gw.example.com', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -538,7 +538,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { baseURL: 'https://gw.example.com', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -560,7 +560,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({})
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -582,7 +582,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { baseURL: 'https://gw.example.com', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -601,7 +601,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { baseURL: 'https://gw.example.com/v1', apiKeyEnv: 'ALIYUN_KEY', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -622,7 +622,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({})
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const { res, out } = fakeRes()
     // Positive control: a real browser tab served from this very server.
@@ -641,7 +641,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({})
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const { res, out } = fakeRes()
     await handler(fakeReq({
@@ -656,7 +656,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings(PROVIDERS)
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -673,7 +673,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings(PROVIDERS)
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -688,7 +688,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { api: 'openai-completions', baseURL: 'https://gw.example.com/v1', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 401 })))
     const { res, out } = fakeRes()
@@ -705,7 +705,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { api: 'openai-completions', baseURL: 'https://user:sekrit@gw.example.com/v1', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('boom') }))
     const { res, out } = fakeRes()
@@ -723,7 +723,7 @@ describe('apply() probe route', () => {
     const settings = fakeSettings({ aliyun: { api: 'openai-completions', baseURL: 'https://gw.example.com/v1', models: [] } })
     const { ctx, routes } = fakeHost(settings)
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     const handler = routes.get(PROBE_PATH)!
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -751,7 +751,7 @@ describe('apply() probe route', () => {
       })
       const { ctx } = fakeHost(settings)
       const { apply } = await import('../src/index.js')
-      apply(ctx)
+      apply(ctx, configRefs())
       await vi.waitFor(() => { expect(settings.updates).toHaveLength(1) })
       const patch = settings.updates[0].patch as {
         providers: Record<string, { models: Array<Record<string, unknown>> }>
@@ -767,7 +767,7 @@ describe('apply() probe route', () => {
       })
       const { ctx } = fakeHost(settings)
       const { apply } = await import('../src/index.js')
-      apply(ctx, { modalityAutofill: false })
+      apply(ctx, configRefs({ modalityAutofill: false }))
       await new Promise(resolve => setTimeout(resolve, 20))
       expect(settings.updates).toHaveLength(0)
     })
@@ -778,7 +778,7 @@ describe('apply() probe route', () => {
       })
       const { ctx } = fakeHost(settings)
       const { apply } = await import('../src/index.js')
-      apply(ctx)
+      apply(ctx, configRefs())
       await vi.waitFor(() => { expect(settings.updates).toHaveLength(1) })
       const patch = settings.updates[0].patch as {
         providers: Record<string, { models: Array<Record<string, unknown>> }>
@@ -835,7 +835,7 @@ describe('apply() default-guard', () => {
     const llm = fakeLlm()
     const { ctx } = fakeHost(settings, { llm: llm.svc })
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     // The model-pro test shape: no effort named (issue #2).
     await llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash', maxTokens: 16, temperature: 0 })
     expect(llm.prepared[0]).toMatchObject({
@@ -854,7 +854,7 @@ describe('apply() default-guard', () => {
     const llm = fakeLlm()
     const { ctx } = fakeHost(settings, { llm: llm.svc })
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     await llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash', reasoningEffort: 'low' })
     expect(llm.prepared[0]).toMatchObject({ reasoningEffort: 'low' })
     // Qwen carries off:null: Default must stay Default.
@@ -877,7 +877,7 @@ describe('apply() default-guard', () => {
     const llm = fakeLlm()
     const { ctx } = fakeHost(settings, { llm: llm.svc })
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     // DSH core materializes profile.reasoning itself; the guard must not
     // clobber the deployment's explicit choice with the vendor default.
     await llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash' })
@@ -888,14 +888,32 @@ describe('apply() default-guard', () => {
     const settings = fakeSettings(GUARD_PROVIDERS)
     const llm = fakeLlm()
     const origPrepare = llm.svc.prepareCall
-    const origStream = llm.svc.stream
     const { ctx } = fakeHost(settings, { llm: llm.svc })
     const { apply } = await import('../src/index.js')
-    apply(ctx, { defaultGuard: false })
-    expect(llm.svc.prepareCall).toBe(origPrepare)
-    expect(llm.svc.stream).toBe(origStream)
+    apply(ctx, configRefs({ defaultGuard: false }))
+    // The interception stays installed even while the flag is off. Under the
+    // 0.1.7 settings redesign `defaultGuard` is a live reference the Plugins
+    // page can flip at any moment, so the wrap cannot be installed and removed
+    // with the flag — what the flag switches off is the guard, not the seam.
+    expect(llm.svc.prepareCall).not.toBe(origPrepare)
     await llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash' })
     expect('reasoningEffort' in llm.prepared[0]).toBe(false)
+  })
+
+  it('honours a defaultGuard flip made after mount, without a remount', async () => {
+    const settings = fakeSettings(GUARD_PROVIDERS)
+    const llm = fakeLlm()
+    const { ctx } = fakeHost(settings, { llm: llm.svc })
+    const { apply } = await import('../src/index.js')
+    const live = refs({ defaultGuard: false })
+    apply(ctx, live.refs)
+    await llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash' })
+    expect('reasoningEffort' in llm.prepared[0]).toBe(false)
+    // The Loader commits a Plugins-page edit into the SAME reference; the very
+    // next call must already see it, with no re-apply and no restart.
+    live.set('defaultGuard', true)
+    await llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash' })
+    expect(llm.prepared[1]).toMatchObject({ reasoningEffort: 'max' })
   })
 
   it('restores the originals on dispose (uninstall-clean)', async () => {
@@ -905,7 +923,7 @@ describe('apply() default-guard', () => {
     const origStream = llm.svc.stream
     const { ctx, dispose } = fakeHost(settings, { llm: llm.svc })
     const { apply } = await import('../src/index.js')
-    apply(ctx)
+    apply(ctx, configRefs())
     expect(llm.svc.prepareCall).not.toBe(origPrepare)
     dispose()
     expect(llm.svc.prepareCall).toBe(origPrepare)
