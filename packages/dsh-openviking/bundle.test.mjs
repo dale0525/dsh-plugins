@@ -10,7 +10,7 @@ const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url));
 const FORBIDDEN_IDENTIFIER = ["tra", "ex"].join("");
 const FORBIDDEN_PATTERN = new RegExp(FORBIDDEN_IDENTIFIER, "i");
 
-test("bundle uses neutral DSH naming, bounded peers, and an isolated service", async () => {
+test("bundle uses neutral DSH naming, bounded peers, and one flat row", async () => {
   const manifest = JSON.parse(await readFile(
     new URL("./package.json", import.meta.url),
     "utf8",
@@ -38,9 +38,15 @@ test("bundle uses neutral DSH naming, bounded peers, and an isolated service", a
     );
   }
   assert.equal(manifest.dsh.bundle.patch, "./cordis.patch.yml");
-  assert.match(patch, /name: '@deepseek-ai\/cordis-plugin-group'/);
-  assert.match(patch, /openvikingMemory: true/);
+  // One flat row: the id the patch declares is the id the plugin exports, so the
+  // Host addresses the row directly. A group wrapper would render as a container
+  // row in the plugin manager whose switch can never be reached.
+  assert.match(patch, /^\s*- id: openviking-memory$/m);
   assert.match(patch, /name: '@logictan\/dsh-openviking'/);
+  assert.doesNotMatch(patch, /cordis-plugin-group/);
+  assert.doesNotMatch(patch, /group: true/);
+  assert.doesNotMatch(patch, /isolate:/);
+  assert.doesNotMatch(patch, /openviking-memory-runtime/);
   assert.doesNotMatch(JSON.stringify(manifest), FORBIDDEN_PATTERN);
   assert.doesNotMatch(patch, FORBIDDEN_PATTERN);
 });

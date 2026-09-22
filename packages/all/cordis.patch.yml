@@ -187,10 +187,4 @@
 # from ../dsh-openviking
 - insert:
     - id: openviking-memory
-      name: '@deepseek-ai/cordis-plugin-group'
-      group: true
-      isolate:
-        openvikingMemory: true
-      config:
-        - id: openviking-memory-runtime
-          name: '@logictan/dsh-openviking'
+      name: '@logictan/dsh-openviking'

@@ -15,7 +15,7 @@ the aggregate bundle, which is the supported way to install it:
 
 ```bash
 dsh plugin --profile web add @logictan/dsh-plugins-all
-dsh --profile web --dump-config    # should list the openviking-memory group
+dsh --profile web --dump-config    # should list the openviking-memory row
 ```
 
 Adding this package alone also works, but then the rest of the bundle's plugins
@@ -177,21 +177,15 @@ The patch can also carry plugin config:
 ```yaml
 - insert:
     - id: openviking-memory
-      name: '@deepseek-ai/cordis-plugin-group'
-      group: true
-      isolate:
-        openvikingMemory: true
+      name: '@logictan/dsh-openviking'
       config:
-        - id: openviking-memory-runtime
-          name: '@logictan/dsh-openviking'
-          config:
-            endpoint: http://127.0.0.1:1933
-            recallTokenBudget: 2000
-            scoreThreshold: 0.35
-            captureToolResults: false
-            skipSubagentSessions: true
-            commitTokenThreshold: 20000
-            mcpToolCallTimeoutMs: 60000
+        endpoint: http://127.0.0.1:1933
+        recallTokenBudget: 2000
+        scoreThreshold: 0.35
+        captureToolResults: false
+        skipSubagentSessions: true
+        commitTokenThreshold: 20000
+        mcpToolCallTimeoutMs: 60000
 ```
 
 ## Behavior
