@@ -419,7 +419,6 @@ function hasStartupProfile(agent) {
 }
 
 function isStartupProfile(message) {
-  return message?.source?.kind === "plugin"
-    && message.source.plugin === OPENVIKING_PLUGIN_SOURCE
+  return message?.source?.kind === OPENVIKING_PLUGIN_SOURCE
     && message.source.form === "instructions";
 }

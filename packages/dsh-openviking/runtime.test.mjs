@@ -304,7 +304,7 @@ test("profile delivery uses current DSH session-owned history on resume and fork
     data: {
       role: "user",
       content: [{ type: "text", text: "stored profile" }],
-      source: { kind: "plugin", plugin: "openviking-memory", form: "instructions" },
+      source: { kind: "plugin:openviking-memory", form: "instructions" },
     },
   };
   for (const [id, ownEvents, expected] of [

@@ -459,15 +459,42 @@ export const name = 'loop-guard'
  */
 export const inject = ['agents']
 
-const PLUGIN_SOURCE = { kind: 'plugin', plugin: 'dsh-loop-guard' } as const
+/**
+ * Producer-owned source kind stamped on every notice this guard injects.
+ *
+ * Session format v4 refuses the retired `{ kind: 'plugin', plugin }` wrapper at
+ * native admission (`format v4 message requires a producer-owned source kind`),
+ * so the identity that used to ride `plugin` now rides `kind` itself. The
+ * `plugin:` prefix is the host's documented V4 mapping for a producer that is
+ * not one of its same-name first-party plugins, and it is also what this
+ * guard's v3-era notices become when a session is migrated — so one transcript
+ * keeps a single attribution across the boundary.
+ */
+const PLUGIN_SOURCE = { kind: 'plugin:dsh-loop-guard' } as const
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /**
+     * One guard notice. `summary` is what the collapsed transcript row shows;
+     * `form` records that this is a notice rather than a prompt, which is what
+     * keeps a synthetic nudge from rendering as a human turn in derived
+     * history.
+     */
+    'plugin:dsh-loop-guard': {
+      kind: 'plugin:dsh-loop-guard'
+      form: 'notice'
+      summary: string
+    }
+  }
+}
 
 /**
  * Build one model-facing notice from the guard.
  *
- * `plugin` is the identity shown in the transcript's attribution row, so it
- * carries the package name. `summary` is a one-line account of *what happened*
- * — the collapsed transcript row renders it, and `boundContextSummary` caps it
- * at {@link CONTEXT_SUMMARY_MAX_CHARS} — so it states the event rather than
+ * The source `kind` is the identity shown in the transcript's attribution row.
+ * `summary` is a one-line account of *what happened* — the collapsed
+ * transcript row renders it, and `boundContextSummary` caps it at
+ * {@link CONTEXT_SUMMARY_MAX_CHARS} — so it states the event rather than
  * repeating the plugin name, the way `guard/repeat-tool-reminder` summarises as
  * `<tool> × <count>`.
  *

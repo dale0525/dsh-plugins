@@ -31,7 +31,7 @@ test("captures DSH message events without recapturing injected context", () => {
     data: {
       role: "user",
       content: [{ type: "text", text: "<openviking-context>blue</openviking-context>" }],
-      source: { kind: "plugin", plugin: "openviking-memory", form: "recall" },
+      source: { kind: "plugin:openviking-memory", form: "recall" },
     },
   }, CONFIG);
   assert.equal(injected, null);
@@ -43,10 +43,50 @@ test("captures DSH message events without recapturing injected context", () => {
     data: {
       role: "user",
       content: [{ type: "text", text: "Time sampled while preparing turn 3" }],
-      source: { kind: "plugin", plugin: "time-context", form: "snapshot" },
+      source: { kind: "plugin:time-context", form: "snapshot" },
     },
   }, CONFIG);
   assert.equal(otherPlugin, null);
+});
+
+test("keeps every non-conversation source kind out of memory, whatever its shape", () => {
+  // Under session format v4 a producer owns its own kind: a same-name
+  // first-party producer keeps its bare name (`time-context`) while any other
+  // producer is namespaced (`plugin:<name>`). Both are synthetic context, so
+  // the capture gate must key on "is this a conversation kind" rather than on
+  // the single retired `plugin` name — which v4 no longer produces at all.
+  const synthetic = [
+    { kind: "plugin:openviking-memory", form: "recall" },
+    { kind: "plugin:time-context", form: "snapshot" },
+    { kind: "time-context", form: "snapshot" },
+    { kind: "plugin:dsh-loop-guard", form: "notice", summary: "repeated tool call" },
+    { kind: "runtime-context" },
+    { kind: "compact-checkpoint" },
+    { kind: "system-prompt" },
+    { kind: "user-approval" },
+    undefined,
+  ];
+  for (const source of synthetic) {
+    assert.equal(captureEvent({
+      type: "user/message",
+      data: {
+        role: "user",
+        content: [{ type: "text", text: "synthetic context must never become memory" }],
+        ...(source === undefined ? {} : { source }),
+      },
+    }, CONFIG), null, `synthetic source ${JSON.stringify(source)} was captured`);
+  }
+
+  // The control: an ordinary human turn still captures, so the gate above is
+  // not simply rejecting every message.
+  assert.notEqual(captureEvent({
+    type: "user/message",
+    data: {
+      role: "user",
+      content: [{ type: "text", text: "Remember that deployment uses blue." }],
+      source: { kind: "user" },
+    },
+  }, CONFIG), null);
 });
 
 test("preserves DSH tool call identity in captured tool results", () => {
@@ -158,12 +198,12 @@ test("builds recall queries from current input while excluding its own context",
     {
       role: "user",
       content: [{ type: "text", text: "old recall" }],
-      source: { kind: "plugin", plugin: "openviking-memory" },
+      source: { kind: "plugin:openviking-memory" },
     },
     {
       role: "user",
       content: [{ type: "text", text: "background job completed" }],
-      source: { kind: "plugin", plugin: "job-controller", form: "notice", summary: "done" },
+      source: { kind: "plugin:job-controller", form: "notice", summary: "done" },
     },
   ]), "Current question\n\nbackground job completed");
 });

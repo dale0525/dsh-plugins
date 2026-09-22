@@ -22,11 +22,16 @@
   "owned": [
     "README.md",
     "bundle.test.mjs",
+    "capture.mjs",
+    "capture.test.mjs",
     "config.mjs",
     "cordis.patch.yml",
     "package-lock.json",
     "package.json",
-    "runtime-drain.test.mjs"
+    "runtime-drain.test.mjs",
+    "runtime.mjs",
+    "runtime.test.mjs",
+    "uri-guard.test.mjs"
   ],
   "deleted": [],
   "added": [

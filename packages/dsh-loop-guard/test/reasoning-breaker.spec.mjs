@@ -831,10 +831,10 @@ test('the notice is attributed to the package, with an account of what happened'
   for await (const _ of listener(options, () => reasoningStream(BLEED))) { /* drain */ }
 
   const source = steered[0].source
-  assert.equal(source.kind, 'plugin')
-  assert.equal(source.plugin, 'dsh-loop-guard')
+  assert.equal(source.kind, 'plugin:dsh-loop-guard')
+  assert.equal(source.plugin, undefined, 'the retired v3 plugin wrapper must not be emitted')
   assert.equal(source.form, 'notice')
-  assert.notEqual(source.summary, source.plugin, 'the summary must not merely repeat the plugin name')
+  assert.notEqual(source.summary, 'dsh-loop-guard', 'the summary must not merely repeat the plugin name')
   assert.ok(source.summary.length > 0)
   // The summary rides a collapsed row and is committed to the durable log, so it
   // is bounded; exceeding the cap would be truncated by the harness anyway.

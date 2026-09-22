@@ -30,6 +30,18 @@ import { syncAllTemplates } from './templates-store.ts'
 import { setStorageSyncHandler, putObject, type StorageSyncConfig } from './storage-sync.ts'
 
 /**
+ * Producer-owned source kind stamped on every canvas follow-up prompt.
+ *
+ * Session format v4 refuses the retired `{ kind: 'plugin', plugin }` wrapper at
+ * native admission (`format v4 message requires a producer-owned source kind`),
+ * so the identity that used to ride `plugin` now rides `kind` itself. The
+ * `plugin:` prefix is the host's documented V4 mapping for a producer that is
+ * not one of its same-name first-party plugins, and it is also what this
+ * plugin's v3-era follow-ups become when a session is migrated.
+ */
+const IMAGEGEN_SOURCE = { kind: 'plugin:dsh-imagegen' } as const
+
+/**
  * The concrete driver contract behind `ctx.agents`. The registry's published
  * `Agent` type only guarantees an id (the driver augmentation lives in
  * `dsh-agent-loop`), so the canvas skill runner reads the driver surface it
@@ -38,7 +50,7 @@ import { setStorageSyncHandler, putObject, type StorageSyncConfig } from './stor
  */
 interface CanvasSkillAgent {
   readonly session: { deriveMessages: () => readonly unknown[] }
-  followup: (message: { id: string; role: 'user'; content: Array<{ type: 'text'; text: string }>; source: { kind: 'plugin'; plugin: string } }) => void
+  followup: (message: { id: string; role: 'user'; content: Array<{ type: 'text'; text: string }>; source: typeof IMAGEGEN_SOURCE }) => void
   whenIdle: () => Promise<void>
   /** Durable cancellation cause; `user` is the canvas cancel button. */
   cancel: (cause: { kind: 'user' }) => void
@@ -199,7 +211,7 @@ export async function createCanvasSkillAgent(options: CanvasSkillAgentOptions): 
         id: `canvas-skill-${Date.now().toString(36)}`,
         role: 'user',
         content: [{ type: 'text', text: body }],
-        source: { kind: 'plugin', plugin: 'dsh-imagegen' },
+        source: IMAGEGEN_SOURCE,
       })
     },
     whenIdle: () => agent.whenIdle(),

@@ -42,10 +42,10 @@ importers:
         specifier: ^1.5.13
         version: link:../dsh-imagegen
       '@logictan/dsh-loop-guard':
-        specifier: ^1.1.0
+        specifier: ^1.1.1
         version: link:../dsh-loop-guard
       '@logictan/dsh-openviking':
-        specifier: ^0.4.4
+        specifier: ^0.4.5
         version: link:../dsh-openviking
       '@logictan/dsh-workbuddy-connect':
         specifier: ^0.5.4
