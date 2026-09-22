@@ -13,7 +13,6 @@ dsh-plugins/
 │   │   ├── aggregate.yml   # 手写清单（patchFrom / deps）
 │   │   ├── cordis.patch.yml# 生成物，勿手改
 │   │   └── package.json    # 生成物，勿手改
-│   ├── ctx-mem/                # 自制（无上游）→ 不 fork
 │   ├── dsh-fakeip-fetch/       # 自制（无上游）→ 不 fork
 │   ├── dsh-agy-link/           # 有上游 → git subtree fork
 │   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
@@ -110,7 +109,7 @@ deps:
 
 两节是两件事：`patchFrom` 决定 profile 里出现哪些行，`deps` 决定装哪些包。
 **两节都要登记**：只写 `patchFrom` 会发出一个「包在新 profile 里根本不存在」的行；只写 `deps`
-则行不会出现在 patch 里。`ctx-mem` 两节都在（见 `aggregate.yml` 里的就地注释）。
+则行不会出现在 patch 里。
 
 ### 4. 生成并校验
 

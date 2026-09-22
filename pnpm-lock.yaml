@@ -29,9 +29,6 @@ importers:
       '@logictan/dsh-config-manager':
         specifier: ^0.1.63
         version: link:../dsh-config-manager
-      '@logictan/dsh-ctx-mem':
-        specifier: ^0.5.1
-        version: link:../ctx-mem
       '@logictan/dsh-easyrewrite':
         specifier: ^2.5.4
         version: link:../dsh-easyrewrite
@@ -53,48 +50,6 @@ importers:
       '@logictan/dshmarket':
         specifier: ^1.48.0
         version: link:../dsh-market
-
-  packages/ctx-mem:
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: ^4.0.2
-        version: 4.0.2(@deepseek-ai/cordis-plugin-include@1.0.7)(@deepseek-ai/cordis-plugin-loader@1.0.3)
-      '@deepseek-ai/cordis-plugin-include':
-        specifier: ^1.0.7
-        version: 1.0.7(@deepseek-ai/cordis-plugin-loader@1.0.3)(@deepseek-ai/cordis@4.0.2)
-      '@deepseek-ai/dsh-agent':
-        specifier: ^0.1.6-alpha.2
-        version: 0.1.6-alpha.2(44110910133b3cc261ea9dfdcaed39ee)
-      '@deepseek-ai/dsh-agent-presets':
-        specifier: 0.1.6-alpha.2
-        version: 0.1.6-alpha.2(d5e9120aaddb68d008b0e979f120fe5c)
-      '@deepseek-ai/dsh-compaction':
-        specifier: ^0.1.6-alpha.2
-        version: 0.1.6-alpha.2(f65e42994ee9cf02083cafb7b20967b8)
-      '@deepseek-ai/dsh-compaction-basic':
-        specifier: ^0.1.6-alpha.2
-        version: 0.1.6-alpha.2(8fe440dd0c5a0db81ec5d4fb516e483c)
-      '@deepseek-ai/dsh-llm':
-        specifier: ^0.1.6-alpha.2
-        version: 0.1.6-alpha.2(@deepseek-ai/cordis@4.0.2)
-      '@deepseek-ai/dsh-session':
-        specifier: ^0.1.6-alpha.2
-        version: 0.1.6-alpha.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-scope@0.1.6-alpha.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.6-alpha.2(@deepseek-ai/cordis@4.0.2)))
-      '@deepseek-ai/dsh-skill':
-        specifier: ^0.1.6-alpha.2
-        version: 0.1.6-alpha.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-llm@0.1.6-alpha.2(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-scope@0.1.6-alpha.2(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.6-alpha.2(@deepseek-ai/cordis@4.0.2)))
-      '@deepseek-ai/dsh-token-meter':
-        specifier: ^0.1.6-alpha.2
-        version: 0.1.6-alpha.2(ee446bddb14d888c00042177e50f433e)
-      '@deepseek-ai/schemastery':
-        specifier: ^3.18.2
-        version: 3.18.2
-      '@types/node':
-        specifier: ^22.20.0
-        version: 22.20.3
-      js-yaml:
-        specifier: ^4.1.0
-        version: 4.3.2
 
   packages/dsh-agy-link:
     dependencies:
