@@ -26,6 +26,7 @@
     "tests/client.spec.tsx",
     "tests/host.spec.ts",
     "tests/ops.spec.ts",
+    "tests/setup.ts",
     "tests/support/composer-fixture.ts"
   ],
   "deleted": [
