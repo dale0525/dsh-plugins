@@ -28,7 +28,6 @@
     "@logictan/dsh-imagegen": "^1.5.13",
     "@logictan/dsh-loop-guard": "^1.1.1",
     "@logictan/dsh-openviking": "^0.4.5",
-    "@logictan/dsh-workbuddy-connect": "^0.5.4",
-    "@logictan/dshmarket": "^1.48.0"
+    "@logictan/dsh-workbuddy-connect": "^0.5.4"
   }
 }

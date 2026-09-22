@@ -5,7 +5,6 @@ patchFrom:
   - ../dsh-config-manager
   - ../dsh-workbuddy-connect
   - ../dsh-easyrewrite
-  - ../dsh-market
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch
   - ../dsh-agy-link
@@ -17,7 +16,6 @@ deps:
   - ../dsh-config-manager
   - ../dsh-workbuddy-connect
   - ../dsh-easyrewrite
-  - ../dsh-market
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch
   - ../dsh-agy-link

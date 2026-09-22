@@ -18,7 +18,6 @@ dsh-plugins/
 │   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-easyrewrite/        # 有上游 → git subtree fork
 │   ├── dsh-imagegen/           # 有上游 → git subtree fork
-│   ├── dsh-market/             # 有上游 → git subtree fork
 │   ├── dsh-workbuddy-connect/  # 有上游 → git subtree fork
 │   └── <pkg>/sync-policy.json  # 该 fork 的上游身份与同步清单（仅 fork 有）
 ├── scripts/

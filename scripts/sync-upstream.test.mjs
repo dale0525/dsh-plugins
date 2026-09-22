@@ -26,7 +26,7 @@ import {
   advanceBaseline,
 } from './sync-upstream.mjs'
 
-const EXPECTED_IDS = ['agy-link', 'easyrewrite', 'imagegen', 'market', 'workbuddy']
+const EXPECTED_IDS = ['agy-link', 'easyrewrite', 'imagegen', 'workbuddy']
 
 /**
  * 取出 YAML 里每个 `run:` 会真正执行的命令文本。

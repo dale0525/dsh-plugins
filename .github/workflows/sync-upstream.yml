@@ -44,9 +44,6 @@ jobs:
           - id: easyrewrite
             pkg: '@logictan/dsh-easyrewrite'
             test: 'pnpm --filter @logictan/dsh-easyrewrite test'
-          - id: market
-            pkg: '@logictan/dshmarket'
-            test: 'pnpm --filter @logictan/dshmarket test'
           - id: imagegen
             pkg: '@logictan/dsh-imagegen'
             test: 'pnpm --filter @logictan/dsh-imagegen typecheck'

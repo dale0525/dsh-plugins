@@ -48,16 +48,6 @@
     - id: dsh-easyrewrite
       name: '@logictan/dsh-easyrewrite'
 
-# from ../dsh-market
-# dsh bundle patch: inserts this plugin into a profile's layer stack.
-#
-# Row id stays `dsh-market`: it equals the host half's `export const name`
-# in src/index.ts, and the browser half keys its configuration entry on
-# `<bundle package name>#dsh-market` for this same id.
-- insert:
-    - id: dsh-market
-      name: '@logictan/dshmarket'
-
 # from ../dsh-imagegen
 # dsh-imagegen bundle patch: inserts the plugin row into the web profile
 # roster. The row is a bare plugin by package name: the node half (exports ".")
