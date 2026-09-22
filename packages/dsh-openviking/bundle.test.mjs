@@ -17,7 +17,7 @@ test("bundle uses neutral DSH naming, bounded peers, and an isolated service", a
   ));
   const patch = await readFile(new URL("./cordis.patch.yml", import.meta.url), "utf8");
 
-  assert.equal(manifest.name, "@openviking/dsh-memory-plugin");
+  assert.equal(manifest.name, "@logictan/dsh-openviking");
   assert.equal(manifest.dependencies, undefined);
   for (const [name, range] of Object.entries(manifest.peerDependencies)) {
     for (const version of ["0.1.0-rc.6", "0.1.5-rc.1", "0.1.5-rc.2", "0.1.5"]) {
@@ -40,7 +40,7 @@ test("bundle uses neutral DSH naming, bounded peers, and an isolated service", a
   assert.equal(manifest.dsh.bundle.patch, "./cordis.patch.yml");
   assert.match(patch, /name: '@deepseek-ai\/cordis-plugin-group'/);
   assert.match(patch, /openvikingMemory: true/);
-  assert.match(patch, /name: '@openviking\/dsh-memory-plugin'/);
+  assert.match(patch, /name: '@logictan\/dsh-openviking'/);
   assert.doesNotMatch(JSON.stringify(manifest), FORBIDDEN_PATTERN);
   assert.doesNotMatch(patch, FORBIDDEN_PATTERN);
 });

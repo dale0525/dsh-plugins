@@ -1,5 +1,5 @@
 {
-  "name": "@openviking/dsh-memory-plugin",
+  "name": "@logictan/dsh-openviking",
   "version": "0.4.3",
   "description": "OpenViking memory and context bundle for DeepSeek Harness",
   "type": "module",
@@ -30,7 +30,8 @@
     }
   },
   "scripts": {
-    "prepack": "node ../memory-plugin-shared/sync.mjs",
+    "prepare": "node ../dsh-openviking-shared/sync.mjs",
+    "prepack": "node ../dsh-openviking-shared/sync.mjs",
     "check": "for f in *.mjs shared/*.mjs; do node --check \"$f\" || exit 1; done && npm run check:version",
     "check:version": "node --input-type=module -e \"import {readFileSync} from 'node:fs'; const {PLUGIN_VERSION} = await import('./config.mjs'); const v = JSON.parse(readFileSync('package.json','utf8')).version; if (PLUGIN_VERSION !== v) throw new Error('PLUGIN_VERSION ' + PLUGIN_VERSION + ' does not match package.json version ' + v);\"",
     "test": "node --test *.test.mjs",
@@ -44,8 +45,10 @@
   "devDependencies": {
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
     "@deepseek-ai/dsh-mcp-client": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
     "@deepseek-ai/dsh-skill-filesystem": "0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
+    "chokidar": "^5.0.0",
     "semver": "7.8.5"
   },
   "overrides": {
@@ -74,8 +77,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/volcengine/OpenViking.git",
-    "directory": "examples/dsh-memory-plugin"
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-openviking"
   },
   "keywords": [
     "deepseek-harness",

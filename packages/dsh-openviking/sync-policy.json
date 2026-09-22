@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "本包的上游同步策略。scripts/sync-upstream.mjs 据此把上游新版本合进本仓库的 fork。",
+    "顺序铁律：先 checkout --theirs（全取上游）→ 再按 pull 之前的 commit 恢复 owned（非 --ours，--ours 对干净合并是空操作）→ 再 git rm（重删 deleted）。",
+    "顺序反了会让我们的改造被上游覆盖。",
+    "本文件由 scripts/sync-upstream.mjs --refresh-policy --target <target.id> 按当前 fork 状态生成；",
+    "手工改了本包的文件集后必须重跑，否则 deleted 清单会漏项（上游会静默复活我们删掉的代码）。",
+    "路径均为包相对（相对 target.prefix）。",
+    "",
+    "target.subdir 是上游 monorepo 里本包所在的子目录。上游 volcengine/OpenViking 是 monorepo，",
+    "直接拿仓库 URL 对 packages/<name> 做 subtree pull 会把上游整棵树（4000+ 文件）灌进来，",
+    "所以同步时先用临时 worktree 把它 subtree split 成独立分支，再 pull 该分支。"
+  ],
+  "target": {
+    "id": "openviking",
+    "url": "https://github.com/volcengine/OpenViking.git",
+    "prefix": "packages/dsh-openviking",
+    "subdir": "examples/dsh-memory-plugin",
+    "baseline": "v0.4.21",
+    "baselineCommit": "3fca2577520f00b7f580d85d4ac6ae42bb9ba6f1"
+  },
+  "owned": [
+    "README.md",
+    "bundle.test.mjs",
+    "config.mjs",
+    "cordis.patch.yml",
+    "package-lock.json",
+    "package.json",
+    "runtime-drain.test.mjs"
+  ],
+  "deleted": [],
+  "added": [
+    ".gitignore"
+  ]
+}
