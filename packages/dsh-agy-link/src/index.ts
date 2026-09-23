@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { dshHome, overridesPath, readOverrides, resolveConfig, stateDir } from './common/config.ts'
 import { PROVIDER_ID, type PluginConfig } from './common/types.ts'
-import type { ManagedAccount } from './common/pool-types.ts'
+import { resolveAccountHome, type ManagedAccount } from './common/pool-types.ts'
 import { AgyAdapter } from './host/adapter.ts'
 import { defineAgyAskTool } from './host/ask-tool.ts'
 import { AuthHelper } from './host/auth.ts'
@@ -21,11 +21,12 @@ import { RunRegistry } from './host/recording.ts'
 import { MIN_AGY_VERSION, compareVersions, isolatedHomeEnv, parseVersion, probeProcess, resolveAgyBin } from './host/runner.ts'
 import { SessionStore } from './host/sessions.ts'
 import { AccountPoolManager } from './host/pool.ts'
+import { syncAgyEnv } from './host/agy-env.ts'
 import { PoolAuthFlow } from './host/pool-auth.ts'
 import { QuotaService } from './host/quota.ts'
 import { StreamJsonParser } from './host/parser.ts'
 import { defaultMediaDir, sweepDir, type ImageRefLike } from './host/media.ts'
-import { startMcpBridge, writeMcpConfig, type McpBridge, type ToolsServiceLike } from './host/mcp-bridge.ts'
+import { startMcpBridge, type McpBridge, type ToolsServiceLike } from './host/mcp-bridge.ts'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'agy-link'
@@ -95,6 +96,7 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
 
   const getDiscoveryEnv = (account?: ManagedAccount): NodeJS.ProcessEnv => {
     const cfg = getConfig()
+    const home = account !== undefined ? resolveAccountHome(account) : undefined
     return {
       ...process.env,
       ...(cfg.disableTelemetry
@@ -105,7 +107,7 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
             ANTIGRAVITY_DISABLE_TELEMETRY: '1',
           }
         : {}),
-      ...(account && account.dir ? isolatedHomeEnv(account.dir) : {}),
+      ...(home !== undefined ? isolatedHomeEnv(home) : {}),
       ...(account?.proxyUrl
         ? {
             ALL_PROXY: account.proxyUrl,
@@ -133,10 +135,11 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
 
       let out = await probeProcess(b, ['models'], 30_000, signal, getDiscoveryEnv(candidateAccount))
 
-      // If probe failed or prompted to sign in, and candidate had no dir (system HOME),
-      // try secondary accounts with isolated dir if available before giving up.
-      if ((out.code !== 0 || out.stdout.includes('Please sign in') || /sign in|auth|not logged in/i.test(out.stderrTail)) && (!candidateAccount || !candidateAccount.dir)) {
-        const secondary = pool.getAccounts().find((a) => a.enabled && !a.authRequired && a.dir)
+      // If the probe failed or prompted to sign in on the system-HOME account,
+      // try an isolated account before giving up (its own token may still be
+      // valid while the system one was re-logged elsewhere).
+      if ((out.code !== 0 || out.stdout.includes('Please sign in') || /sign in|auth|not logged in/i.test(out.stderrTail)) && (candidateAccount === undefined || candidateAccount.systemHome === true)) {
+        const secondary = pool.getAccounts().find((a) => a.enabled && !a.authRequired && a.systemHome !== true)
         if (secondary) {
           const secondaryOut = await probeProcess(b, ['models'], 30_000, signal, getDiscoveryEnv(secondary))
           if (secondaryOut.code === 0 && secondaryOut.stdout.trim() !== '') {
@@ -156,12 +159,28 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
   const auth = new AuthHelper(bin)
   const poolAuth = new PoolAuthFlow(pool, quota, log)
   const runs = new RunRegistry()
+  /**
+   * Live reverse MCP bridge, if enabled. Read through a thunk by the adapter
+   * (the bridge starts after this point) and written by syncMcpBridge.
+   */
+  const bridgeState: { bridge: McpBridge | null } = { bridge: null }
 
   // Boot hygiene: remove staging dirs and purge old historical logs
   const swept = pool.sweepStaleStaging()
   if (swept > 0) log('swept ' + swept + ' stale staging dir(s)')
   const logsSwept = pool.sweepOldLogs(getConfig().logRetentionDays)
   if (logsSwept > 0) log('swept ' + logsSwept + ' old log file(s)')
+
+  // Materialize every account's agy HOME once at boot: rules, skills and the
+  // seeded credential must exist before the first agy process starts, because
+  // the model probe and the quota token read happen without a spawn. The
+  // per-spawn sync then only refreshes the live bridge entry.
+  if (getConfig().enabled) {
+    for (const acc of pool.getAccounts()) {
+      const home = syncAgyEnv(acc)
+      if (home !== acc.dir) pool.setAccountAgentHome(acc.id, home)
+    }
+  }
 
   const adapter = new AgyAdapter({
     getConfig,
@@ -182,6 +201,7 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
     onParser: (p) => {
       lastParser = p
     },
+    bridge: () => bridgeState.bridge,
     readImage: async (ref: ImageRefLike) => {
       const svc = (ctx.get('attachments') as { readImage?: (r: ImageRefLike) => Promise<{ data?: Uint8Array } | null> } | undefined)
         ?? (ctx as unknown as { attachments?: { readImage?: (r: ImageRefLike) => Promise<{ data?: Uint8Array } | null> } }).attachments
@@ -541,21 +561,24 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
         const body = await readBody(req)
         const id = typeof body.id === 'string' ? body.id : ''
         const acc = pool.getAccount(id)
-        if (!acc || !acc.dir) {
-          sendJson(res as RawRes, 400, { error: 'account has no isolated directory' })
+        // The terminal must open in the SAME home agy is spawned with,
+        // otherwise the user authenticates a directory the plugin never reads.
+        const home = acc !== undefined ? syncAgyEnv(acc, { bridge: bridgeState.bridge ?? undefined }) : undefined
+        if (acc === undefined || home === undefined) {
+          sendJson(res as RawRes, 400, { error: 'account has no home directory' })
           return
         }
         if (process.platform === 'darwin') {
-          const script = `tell application "Terminal" to activate\ntell application "Terminal" to do script "export HOME='${acc.dir}'; agy"`
+          const script = `tell application "Terminal" to activate\ntell application "Terminal" to do script "export HOME='${home}'; agy"`
           execFile('osascript', ['-e', script], () => {})
         } else if (process.platform === 'win32') {
           // HOME alone is ignored by Node/Go on Windows — set USERPROFILE too.
           // windowsHide keeps the outer wrapper from flashing a console in GUI hosts.
-          execFile('cmd.exe', ['/c', 'start', 'cmd.exe', '/k', `set "HOME=${acc.dir}" && set "USERPROFILE=${acc.dir}" && agy`], { windowsHide: true }, () => {})
+          execFile('cmd.exe', ['/c', 'start', 'cmd.exe', '/k', `set "HOME=${home}" && set "USERPROFILE=${home}" && agy`], { windowsHide: true }, () => {})
         } else {
-          execFile('x-terminal-emulator', ['-e', `sh -c "export HOME='${acc.dir}'; agy; exec sh"`], () => {})
+          execFile('x-terminal-emulator', ['-e', `sh -c "export HOME='${home}'; agy; exec sh"`], () => {})
         }
-        sendJson(res as RawRes, 200, { ok: true, dir: acc.dir })
+        sendJson(res as RawRes, 200, { ok: true, dir: home })
       })()
     }})
     reg({ kind: 'exact', path: '/plugins/agy-link/pool/remove', handler: (req, res) => {
@@ -731,7 +754,6 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
     }
   })
 
-  const bridgeState: { bridge: Awaited<ReturnType<typeof startMcpBridge>> | null; restore: (() => void) | null } = { bridge: null, restore: null }
   let bridgeDisposed = false
   const syncMcpBridge = (): void => {
     const cfg = getConfig()
@@ -756,22 +778,16 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
             return
           }
           bridgeState.bridge = bridge
-          const root = cfg.workspaceRoot !== '' ? cfg.workspaceRoot : process.cwd()
-          bridgeState.restore = writeMcpConfig(root, bridge)
           log('mcp bridge ready at ' + bridge.url + (toolsSvc ? '' : ' (tools service not yet available)'))
         } catch (e) {
-          bridgeState.restore?.()
           await bridgeState.bridge?.close()
           bridgeState.bridge = null
-          bridgeState.restore = null
           log('mcp bridge failed to start: ' + String(e))
         }
       })()
     } else if (!want && bridgeState.bridge !== null) {
-      bridgeState.restore?.()
       void bridgeState.bridge.close()
       bridgeState.bridge = null
-      bridgeState.restore = null
     }
   }
   syncMcpBridge()
@@ -783,7 +799,6 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
       void poolAuth.cancel()
       if (askToolDispose.current !== null) askToolDispose.current()
       if (mirrorToolDispose.current !== null) mirrorToolDispose.current()
-      bridgeState.restore?.()
       void bridgeState.bridge?.close()
     }
   })

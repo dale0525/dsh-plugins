@@ -3,6 +3,7 @@
 import { isAbsolute } from 'node:path'
 import type { CommandDefinition, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { PluginConfig } from '../common/types.ts'
+import { resolveAccountHome } from '../common/pool-types.ts'
 import type { AuthHelper } from './auth.ts'
 import type { ModelCatalog } from './models.ts'
 import type { SessionStore } from './sessions.ts'
@@ -210,10 +211,15 @@ async function renderStatus(deps: CommandDeps): Promise<string> {
   const cfg = deps.cfg()
   const bin = deps.bin()
   const authHelper = deps.auth()
+  // Probe the HOME the plugin actually spawns with: the system-HOME account
+  // runs in a plugin-managed directory, so the real HOME's login state is not
+  // what the next run will see.
+  const primary = deps.pool?.().getAccounts().find((a) => a.systemHome === true)
+  const primaryHome = primary !== undefined ? resolveAccountHome(primary) : undefined
   // Bound the auth probe so /agy status never hangs the command UI (issue #29).
   const auth = authHelper
     ? await Promise.race([
-        authHelper.resolvedStatus(),
+        authHelper.resolvedStatus(primaryHome),
         new Promise<undefined>((r) => setTimeout(() => r(undefined), 8_000)),
       ])
     : undefined

@@ -24,7 +24,8 @@ export default defineConfig([
   },
   {
     // Standalone zero-dep stdio MCP server shipped as a plain asset; agy
-    // launches it with the node binary per the workspace .mcp.json.
+    // launches it with the node binary per its own
+    // $HOME/.gemini/config/mcp_config.json.
     entry: { bridge: "src/host/bridge.mjs" },
     outDir: "dist",
     format: ["esm"],

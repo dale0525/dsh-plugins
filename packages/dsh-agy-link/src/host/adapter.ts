@@ -8,7 +8,7 @@
 import { join } from 'node:path'
 import { LlmAdapter, LlmError, type GenerateOptions, type LlmModelInfo, type LlmProviderInfo, type LlmResolvedModelInfo, type Message, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { Err, looksLikeAuthFailure, looksLikeHardRateLimit, looksLikeRateLimit, PROVIDER_ID, type PluginConfig } from '../common/types.ts'
-import { modelFamilyOf } from '../common/pool-types.ts'
+import { modelFamilyOf, resolveAccountHome } from '../common/pool-types.ts'
 import type { AccountPoolManager } from './pool.ts'
 import { diffConversations, snapshotConversations } from './discovery.ts'
 import { EventMapper } from './mapper.ts'
@@ -21,6 +21,8 @@ import { stateDir } from '../common/config.ts'
 import type { SessionStore } from './sessions.ts'
 import { readFullToolArgs, readStepThoughts, clearAgyDbCache } from './agy-db.ts'
 import { getGitHeadContent } from './mirror-tool.ts'
+import { syncAgyEnv } from './agy-env.ts'
+import type { McpBridge } from './mcp-bridge.ts'
 
 type ForeignSource = { source?: { kind?: string; provider?: string } }
 
@@ -82,6 +84,12 @@ export interface AgyAdapterDeps {
   readImage?: (ref: ImageRefLike) => Promise<Uint8Array | null>
   /** Called with each run's parser so the host can keep the last stdout ring for /agy doctor. */
   onParser?: (parser: StreamJsonParser) => void
+  /**
+   * Live reverse MCP bridge, read at spawn time: the bridge may start after
+   * the adapter is constructed, and its URL/token are only known once it is
+   * listening.
+   */
+  bridge?: () => McpBridge | null
 }
 
 // ---- stream() -------------------------------------------------------------
@@ -564,7 +572,15 @@ export class AgyAdapter extends LlmAdapter {
     // ---- spawn + record (v0.3: spans consume a shared recording) ----
     const before = snapshotConversations()
     const rec = this.deps.runs.create()
-    rec.accountHome = account && account.dir ? account.dir : undefined
+    // The account's HOME is fixed before the spawn (a system-HOME account gets
+    // a plugin-managed one), so the run recording and the spawned process read
+    // the same agy state instead of racing each other.
+    const accountHome = account != null ? resolveAccountHome(account) : undefined
+    if (account != null) {
+      const bridge = this.deps.bridge?.()
+      syncAgyEnv(account, bridge != null ? { bridge } : {})
+    }
+    rec.accountHome = accountHome
     const parser = new StreamJsonParser()
     this.deps.onParser?.(parser)
     let streamCid: string | null = null
@@ -610,10 +626,9 @@ export class AgyAdapter extends LlmAdapter {
       released = true
       release()
     }
-    // Only SECONDARY pool accounts get an isolated HOME. The primary
-    // account rides the real system HOME (agy 1.1.15 keeps credentials in
-    // the macOS Keychain); injecting HOME there signs agy out ("Please
-    // sign in") and every turn fails with an auth error.
+    // Every account is spawned with its resolved HOME: isolated pool accounts
+    // get their own dir, the system-HOME account gets the plugin-managed HOME
+    // its credential was seeded into. The real ~/.gemini is never written.
     const env = {
       ...process.env,
       ...(cfg.disableTelemetry
@@ -624,7 +639,7 @@ export class AgyAdapter extends LlmAdapter {
             ANTIGRAVITY_DISABLE_TELEMETRY: '1',
           }
         : {}),
-      ...(account && account.dir ? isolatedHomeEnv(account.dir) : {}),
+      ...(accountHome !== undefined ? isolatedHomeEnv(accountHome) : {}),
       ...(account?.proxyUrl
         ? {
             ALL_PROXY: account.proxyUrl,

@@ -2,12 +2,13 @@
 // tools. Design: the plugin runs a loopback-only HTTP endpoint
 // (127.0.0.1, ephemeral port, bearer token) exposing tool schemas and
 // execution; a tiny standalone stdio MCP server (dist/bridge.mjs, plain
-// node, zero deps) is registered in the workspace .mcp.json and forwards
-// MCP tool calls to that endpoint. Loopback + token keeps the surface
-// private to this machine and this plugin.
+// node, zero deps) is registered in the managed agy HOME's
+// .gemini/config/mcp_config.json and forwards MCP tool calls to that
+// endpoint. Loopback + token keeps the surface private to this machine
+// and this plugin. (The workspace .mcp.json is NOT read by agy — verified
+// against the real CLI; only $HOME/.gemini/config/mcp_config.json is.)
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
@@ -170,26 +171,30 @@ export function startMcpBridge(opts: {
   })
 }
 
+/** agy's own MCP config path inside one managed HOME. */
+export function mcpConfigPath(home: string): string {
+  return join(home, '.gemini', 'config', 'mcp_config.json')
+}
+
 /**
- * Merge our server entry into the workspace .mcp.json. Returns a restore
- * function that puts the previous content back (or deletes the file we
- * created). Never throws.
+ * Merge our server entry into a config document, preserving every foreign
+ * server. Callers pass whatever they read from disk, or null when the file
+ * does not exist.
+ *
+ * A document that does not parse is returned BYTE-IDENTICAL rather than
+ * replaced: this file is agy's own (users keep other servers in it, and agy
+ * may accept JSON the strict parser rejects), so a config the plugin cannot
+ * understand is left for its owner instead of being flattened.
  */
-export function writeMcpConfig(workspaceRoot: string, bridge: McpBridge): () => void {
-  const file = join(workspaceRoot, '.mcp.json')
-  let previous: string | null = null
-  try {
-    if (existsSync(file)) previous = readFileSync(file, 'utf8')
-  } catch {
-    previous = null
-  }
+export function mergeMcpConfig(previous: string | null, bridge: McpBridge): string {
   let root: Record<string, unknown> = {}
   if (previous !== null) {
     try {
-      const v = JSON.parse(previous)
-      if (v && typeof v === 'object') root = v as Record<string, unknown>
+      const v: unknown = JSON.parse(previous)
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) return previous
+      root = v as Record<string, unknown>
     } catch {
-      root = {}
+      return previous
     }
   }
   const servers = (root.mcpServers && typeof root.mcpServers === 'object' ? root.mcpServers : {}) as Record<string, unknown>
@@ -201,22 +206,36 @@ export function writeMcpConfig(workspaceRoot: string, bridge: McpBridge): () => 
       DSH_MCP_URL: bridge.url,
       DSH_MCP_TOKEN: bridge.token,
     },
+    disabled: false,
   }
   root.mcpServers = servers
+  return JSON.stringify(root, null, 2) + '\n'
+}
+
+/**
+ * Add mcp(<server>) to an existing settings.json's permissions.allow.
+ *
+ * Only plan mode consults permissions.allow; the default 'skip' mode already
+ * passes every tool, so this is a compatibility fallback for users who
+ * switched to plan mode — not a knob. Returns the new document, or null when
+ * nothing changed. A file that does not parse is left alone.
+ */
+export function allowMcpServer(previous: string): string | null {
+  let root: Record<string, unknown>
   try {
-    writeFileSync(file, JSON.stringify(root, null, 2) + '\n', 'utf8')
+    const v: unknown = JSON.parse(previous)
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) return null
+    root = v as Record<string, unknown>
   } catch {
-    return () => {}
+    return null
   }
-  return () => {
-    try {
-      if (previous === null) {
-        if (existsSync(file)) unlinkSync(file)
-      } else {
-        writeFileSync(file, previous, 'utf8')
-      }
-    } catch {
-      /* best effort */
-    }
-  }
+  const rule = 'mcp(' + MCP_SERVER_KEY + ')'
+  const permissions = (root.permissions && typeof root.permissions === 'object' && !Array.isArray(root.permissions)
+    ? root.permissions
+    : {}) as Record<string, unknown>
+  const allow = Array.isArray(permissions.allow) ? permissions.allow : []
+  if (allow.some((x) => x === rule)) return null
+  permissions.allow = [...allow, rule]
+  root.permissions = permissions
+  return JSON.stringify(root, null, 2) + '\n'
 }

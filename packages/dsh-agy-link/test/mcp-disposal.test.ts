@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { mcpConfigPath } from '../src/host/mcp-bridge.ts'
 import { Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +10,7 @@ import { apply } from '../src/index.ts'
 import { AuthHelper } from '../src/host/auth.ts'
 import { PoolAuthFlow } from '../src/host/pool-auth.ts'
 
-test('disposing during MCP startup closes the listener without publishing workspace config', async (t) => {
+test('disposing during MCP startup closes the listener without publishing the bridge config', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'agy-mcp-dispose-'))
   const previous = process.env.DSH_HOME
   process.env.DSH_HOME = dir
@@ -27,7 +28,7 @@ test('disposing during MCP startup closes the listener without publishing worksp
     apply(ctx, { enabled: true, mcpBridge: true, workspaceRoot: dir, agyBin: '/nonexistent/agy-test' })
     await ctx.fiber.dispose()
     await new Promise(resolve => setTimeout(resolve, 100))
-    assert.equal(existsSync(join(dir, '.mcp.json')), false, 'disposed scope must not publish a bearer capability')
+    assert.equal(existsSync(mcpConfigPath(join(dir, 'agy-accounts', 'env', 'acc_primary'))), false, 'disposed scope must not publish a bearer capability')
     assert.equal(activeHandles().some(handle => !before.has(handle) && handle instanceof Server && handle.listening), false)
   } finally {
     await ctx.fiber.dispose()

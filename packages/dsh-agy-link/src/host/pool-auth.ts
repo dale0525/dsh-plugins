@@ -22,6 +22,7 @@ import {
   writeAgyTokenFile,
   type CallbackHandle,
 } from './oauth.ts'
+import { syncAgyEnv } from './agy-env.ts'
 import type { AccountPoolManager } from './pool.ts'
 import type { QuotaService } from './quota.ts'
 
@@ -35,6 +36,7 @@ export type PoolAuthStatusCode =
   | 'exchange_failed'
   | 'primary_activated'
   | 'account_activated'
+  | 'no_primary_account'
   | 'missing_code'
   | 'request_failed'
 
@@ -60,7 +62,7 @@ interface ActiveFlow {
   url: string
   mode: 'auto' | 'manual'
   listener: CallbackHandle | null
-  /** Primary/system-HOME login: no staging slot, writes to the real HOME. */
+  /** Primary/system-HOME login: no staging slot, writes to the account's HOME. */
   primary?: boolean
 }
 
@@ -169,12 +171,17 @@ export class PoolAuthFlow {
   }
 
   /**
-   * Begin logging in the PRIMARY account (system HOME, no staging slot):
-   * same browser flow, tokens land in ~/.gemini so the real agy stays signed in.
+   * Begin logging in the PRIMARY account. No staging slot: the tokens are
+   * written into the account's plugin-managed HOME (the same directory agy is
+   * spawned with, so the login and the runs cannot drift apart) and the
+   * account itself is updated in place.
    */
   async beginPrimary(): Promise<PoolAuthStatus & { ok: boolean; dir?: string }> {
-    const { homedir } = await import('node:os')
-    return this.startFlow({ stagingId: 'acc_primary', dir: homedir(), primary: true })
+    const primary = this.pool.getAccount('acc_primary') ?? this.pool.getAccounts().find((a) => a.systemHome)
+    if (!primary) return { ok: false, phase: this.statusValue.phase, code: 'no_primary_account' }
+    const dir = syncAgyEnv(primary)
+    this.pool.setAccountAgentHome(primary.id, dir)
+    return this.startFlow({ stagingId: primary.id, dir, primary: true })
   }
 
   /** Manual paste fallback: accepts a bare code or the full redirect URL. */

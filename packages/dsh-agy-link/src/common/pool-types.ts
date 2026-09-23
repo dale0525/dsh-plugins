@@ -53,17 +53,23 @@ export interface ManagedAccount {
   email?: string
   /**
    * Absolute path to the isolated account home directory. Empty for the
-   * primary/system account: agy 1.1.15+ stores credentials in the macOS
-   * Keychain (Antigravity Safe Storage), NOT in a ~/.gemini token file, so
-   * the primary account must keep the real system HOME to stay signed in.
+   * primary/system account, whose credential is read from the real HOME.
    */
   dir: string
   /**
-   * True when this account rides the real system HOME (no HOME injection).
+   * True when this account's credential lives in the real system HOME.
    * Always true for the primary account; only secondary pool accounts get
    * isolated HOME directories.
    */
   systemHome?: boolean
+  /**
+   * HOME agy is spawned with, when it differs from `dir`. Set for the
+   * system-HOME account, whose real ~/.gemini must stay untouched: the plugin
+   * manages `<poolDir>/env/<id>` instead, seeds the credential into it, and
+   * keeps its rules/skills/MCP config there. Unset for isolated accounts,
+   * whose `dir` already is their HOME.
+   */
+  agentHome?: string
   /** Optional custom proxy URL override (e.g. "socks5://127.0.0.1:7890"). */
   proxyUrl?: string
   enabled: boolean
@@ -77,6 +83,17 @@ export interface ManagedAccount {
   cooldowns: Partial<Record<ModelFamily, FamilyCooldownState>>
   /** Cached real-time quota statistics per model family. */
   quotas: Partial<Record<ModelFamily, FamilyQuotaInfo>>
+}
+
+/**
+ * HOME agy runs with for this account, or undefined when the account has no
+ * HOME of its own (an unconfigured pool with no primary account yet). Only
+ * the system-HOME account needs a distinct spawn HOME; for everyone else
+ * `dir` already is it.
+ */
+export function resolveAccountHome(account: ManagedAccount): string | undefined {
+  if (account.agentHome !== undefined && account.agentHome !== '') return account.agentHome
+  return account.dir !== '' ? account.dir : undefined
 }
 
 export type AccountHealthStatus = 'healthy' | 'cooldown' | 'auth_required' | 'disabled'

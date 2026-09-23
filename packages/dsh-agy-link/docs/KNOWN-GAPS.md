@@ -12,8 +12,9 @@ Deliberate v1 boundaries and upstream-behavior notes.
 - **DSH tools to agy (reverse MCP bridge)** - available since v0.2 behind the
   `mcpBridge` config flag (experimental): the plugin runs a loopback-only,
   token-guarded HTTP endpoint and registers a zero-dependency stdio MCP
-  server (`dsh-tools`) in the workspace `.mcp.json` (merged in, restored on
-  disable). `run_code` and `agy_ask` are never bridged; `mcpToolAllowlist`
+  server (`dsh-tools`) into the account's agy HOME
+  (`.gemini/config/mcp_config.json`, merged in — agy never reads a workspace
+  `.mcp.json`). `run_code` and `agy_ask` are never bridged; `mcpToolAllowlist`
   restricts the set further.
 - **Full tool args / diff cards (v0.4.28+)** - the bridge reads agy's
   conversation SQLite DB via the `sqlite3` CLI to recover arguments that

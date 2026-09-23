@@ -61,7 +61,7 @@ export class AuthHelper {
     const runner = async () => {
       let value: boolean | null = null
       try {
-        const env = homeDir ? { ...process.env, HOME: homeDir } : process.env
+        const env = homeDir ? { ...process.env, ...isolatedHomeEnv(homeDir) } : process.env
         const out = await probeProcess(bin, ['models'], 15_000, undefined, env)
         const tail = out.stderrTail + '\n' + out.stdout.slice(0, 2000)
         if (out.code === 0 && !looksLikeAuthFailure(out.stdout)) value = true
@@ -81,10 +81,10 @@ export class AuthHelper {
   }
 
   /** status() enriched with a lazily probed login state for idle phases. */
-  async resolvedStatus(): Promise<AuthStatus> {
+  async resolvedStatus(homeDir?: string): Promise<AuthStatus> {
     const st = this.status()
     if (st.phase !== 'idle') return st
-    const signedIn = await this.probeSignedIn()
+    const signedIn = await this.probeSignedIn(false, homeDir)
     if (signedIn === true) return { phase: 'ok', message: 'signed in (probed via agy models)' }
     if (signedIn === false) return { phase: 'signed-out', message: 'agy is not signed in — run /agy auth' }
     return st

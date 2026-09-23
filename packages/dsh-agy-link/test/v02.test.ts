@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { startMcpBridge, writeMcpConfig, toMcpName, type ToolsServiceLike } from '../src/host/mcp-bridge.ts'
+import { allowMcpServer, mergeMcpConfig, mcpConfigPath, startMcpBridge, toMcpName, type ToolsServiceLike } from '../src/host/mcp-bridge.ts'
 import { stageImages, sweepDir, stagedPath, defaultMediaDir } from '../src/host/media.ts'
 import { inlineFiles, schemaArgs } from '../src/host/oneshot.ts'
 
@@ -116,38 +116,42 @@ test('mcp bridge script speaks JSON-RPC over stdio end to end', async () => {
   }
 })
 
-test('writeMcpConfig merges and restores .mcp.json', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'mcp-cfg-'))
-  // pre-existing foreign server must survive
-  await writeFile(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { other: { command: 'x' } } }), 'utf8')
+test('mergeMcpConfig targets agy own config and preserves foreign servers', async () => {
   const bridge = await startMcpBridge({
     bridgeScript: '/opt/bridge.mjs',
     tools: () => undefined,
     allowlist: () => '',
   })
   try {
-    const restore = writeMcpConfig(dir, bridge)
-    const merged = JSON.parse(await readFile(join(dir, '.mcp.json'), 'utf8')) as {
-      mcpServers: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }>
+    // agy reads MCP servers from $HOME/.gemini/config/mcp_config.json — the
+    // workspace .mcp.json it used to be written to is never read.
+    assert.equal(mcpConfigPath('/home/u'), join('/home/u', '.gemini', 'config', 'mcp_config.json'))
+    const merged = JSON.parse(mergeMcpConfig(JSON.stringify({ mcpServers: { other: { command: 'x' } } }), bridge)) as {
+      mcpServers: Record<string, { command?: string; args?: string[]; disabled?: boolean; env?: Record<string, string> }>
     }
     assert.ok(merged.mcpServers.other, 'foreign server preserved')
     const ours = merged.mcpServers['dsh-tools']
     assert.ok(ours && ours.command === process.execPath)
+    assert.equal(ours.disabled, false)
     assert.equal(ours.env?.DSH_MCP_URL, bridge.url)
-    restore()
-    const after = JSON.parse(await readFile(join(dir, '.mcp.json'), 'utf8')) as { mcpServers: string[] }
-    assert.deepEqual(Object.keys(after.mcpServers), ['other'])
-    // restore deletes a file we created (start from no file)
-    await rm(join(dir, '.mcp.json'))
-    const restore2 = writeMcpConfig(dir, bridge)
-    restore2()
-    let existed = true
-    try { await readFile(join(dir, '.mcp.json')) } catch { existed = false }
-    assert.equal(existed, false)
+    // A config the plugin cannot parse is returned untouched, not flattened.
+    const opaque = '{ "mcpServers": { /* hand-written */ } }'
+    assert.equal(mergeMcpConfig(opaque, bridge), opaque)
+    // No file yet is the normal first-run case.
+    assert.ok(JSON.parse(mergeMcpConfig(null, bridge)).mcpServers['dsh-tools'])
   } finally {
     await bridge.close()
-    await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('allowMcpServer adds the bridge rule once and leaves broken files alone', () => {
+  assert.equal(allowMcpServer('{}'), JSON.stringify({ permissions: { allow: ['mcp(dsh-tools)'] } }, null, 2) + '\n')
+  const existing = JSON.stringify({ permissions: { allow: ['read_file'] }, other: 1 })
+  const next = allowMcpServer(existing)
+  assert.deepEqual((JSON.parse(next as string) as { permissions: { allow: string[] } }).permissions.allow, ['read_file', 'mcp(dsh-tools)'])
+  assert.equal((JSON.parse(next as string) as { other: number }).other, 1)
+  assert.equal(allowMcpServer(next as string), null, 'already allowed is a no-op')
+  assert.equal(allowMcpServer('not json'), null)
 })
 
 test('toMcpName maps illegal characters', () => {

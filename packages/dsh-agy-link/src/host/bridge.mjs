@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // dsh-agy-link MCP bridge script: a minimal stdio MCP server with zero
-// dependencies. agy launches it per the workspace .mcp.json; it forwards
+// dependencies. agy launches it per the managed HOME's
+// .gemini/config/mcp_config.json; it forwards
 // tools/list and tools/call to the plugin loopback endpoint whose URL and
 // token arrive via env. Protocol: newline-delimited JSON-RPC 2.0.
 import { request as httpRequest } from 'node:http'

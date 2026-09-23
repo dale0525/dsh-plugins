@@ -13,6 +13,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
   modelFamilyOf,
+  resolveAccountHome,
   shouldPollAccount,
   type FamilyQuotaInfo,
   type ManagedAccount,
@@ -335,9 +336,9 @@ export class QuotaService {
   constructor(private readonly pool: AccountPoolManager) {}
 
   private getTokenFilePath(account: ManagedAccount): string {
-    // The primary account rides the real system HOME (Keychain-backed);
-    // only secondary accounts have an isolated dir.
-    const home = account.systemHome || !account.dir ? homedir() : account.dir
+    // The primary account has no isolated dir: its credential lives in the
+    // real system HOME, unless a plugin-managed HOME was seeded for it.
+    const home = resolveAccountHome(account) ?? homedir()
     return join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token')
   }
 
@@ -563,7 +564,7 @@ export class QuotaService {
         return account.quotas
       }
     }
-    const home = account.systemHome || !account.dir ? homedir() : account.dir
+    const home = resolveAccountHome(account) ?? homedir()
     let email = account.email
     // For primary/systemHome account or when email is missing, always detect
     // the latest email from logs to immediately catch account switching outside DSH.
@@ -739,7 +740,7 @@ export class QuotaService {
       for (const acc of accounts) {
         const flagged = acc.authRequired || Object.values(acc.cooldowns).some((cd) => cd && cd.cooldownUntil > now)
         if (!acc.systemHome || !flagged) continue
-        const home = acc.systemHome || !acc.dir ? homedir() : acc.dir
+        const home = resolveAccountHome(acc) ?? homedir()
         const detected = detectEmailFromAgyLogs(home)
         if (detected && detected !== acc.email) {
           this.pool.resetAccountIdentity(acc.id, detected)

@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import {
   defaultPoolData,
   modelFamilyOf,
+  resolveAccountHome,
   type AccountPoolData,
   type FamilyCooldownState,
   type FamilyQuotaInfo,
@@ -13,9 +14,14 @@ import {
   type ModelFamily,
 } from '../common/pool-types.ts'
 import { parseResetDurationMs } from '../common/types.ts'
+import { dshHome } from '../common/config.ts'
 
 export function defaultPoolDir(): string {
-  const dshState = process.env.DSH_STATE_DIR || join(homedir(), '.dsh')
+  // DSH_HOME must move the pool with it: the plugin-managed agy HOMEs live
+  // under this directory (env/<id>), and they have to sit next to the pool
+  // rather than in a fixed location, so a relocated install keeps every
+  // account artifact inside one subtree.
+  const dshState = process.env.DSH_STATE_DIR || dshHome()
   return join(dshState, 'agy-accounts')
 }
 
@@ -131,6 +137,18 @@ export class AccountPoolManager {
   }
 
   /**
+   * Record the plugin-managed HOME this account is spawned with. Owner API:
+   * the login write target and the spawn HOME must be the SAME directory, so
+   * the value is persisted once here instead of being recomputed per call.
+   */
+  setAccountAgentHome(id: string, dir: string): void {
+    const acc = this.getAccount(id)
+    if (!acc || acc.agentHome === dir) return
+    acc.agentHome = dir
+    this.persist()
+  }
+
+  /**
    * Create an isolated staging directory for an unverified account login attempt.
    */
   createStagingSlot(): { id: string; dir: string } {
@@ -215,8 +233,9 @@ export class AccountPoolManager {
     ]
 
     for (const acc of this.data.accounts) {
-      if (acc.dir) {
-        targetLogDirs.push(join(acc.dir, '.gemini', 'antigravity-cli', 'log'))
+      const home = resolveAccountHome(acc)
+      if (home !== undefined) {
+        targetLogDirs.push(join(home, '.gemini', 'antigravity-cli', 'log'))
       }
     }
 
