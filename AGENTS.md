@@ -280,6 +280,12 @@ pnpm test                                     # 全仓测试：根 scripts/*.tes
 pnpm typecheck                                # 全仓 typecheck（pnpm -r --if-present）
 ```
 
+> **`--workspace-concurrency=2` 不是性能旋钮，别调大**：`node --test` 与 vitest 各自按
+> CPU 数开 worker，pnpm 再并发跑多个包，两个乘数叠起来会在 10 核机器上拉起 ~30 个测试进程，
+> 把 `dsh-better-reasoning-effort` 的 jsdom 用例饿到撞 5000ms 默认超时（实测：默认并发
+> 峰值净增 30 进程，本机三次运行均失败；限到 2 后净增 15 进程、通过且更快）。它是为了给 jsdom 留 CPU，
+> 不是省时间。
+
 > **测试的 TMPDIR 陷阱（macOS，仅 `dsh-config-manager`）**：该包的符号链接类测试
 > （`packages/dsh-config-manager/src/**/*.test.ts`，如 `utils/recursive-walk.test.ts`、
 > `utils/atomic-write.test.ts`）建真实符号链接，而 macOS 的 `/var/folders/...` 是

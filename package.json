@@ -21,7 +21,7 @@
     "aggregate:check": "node scripts/aggregate.mjs --check",
     "publish:plan": "node scripts/publish.mjs",
     "build": "pnpm -r --if-present run build",
-    "test": "node --test scripts/*.test.mjs && node --test packages/dsh-openviking-shared/*.test.mjs && pnpm -r --if-present run test",
+    "test": "node --test scripts/*.test.mjs && node --test packages/dsh-openviking-shared/*.test.mjs && pnpm -r --if-present --workspace-concurrency=2 run test",
     "typecheck": "pnpm -r --if-present run typecheck"
   },
   "engines": {
