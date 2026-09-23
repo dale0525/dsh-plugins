@@ -38,6 +38,25 @@ function configRefs(overrides = {}) {
   return refs;
 }
 
+/**
+ * The SDK loader `apply` is given here.
+ *
+ * The Cua Driver ships per-platform native binaries, so a real activation in a
+ * test would need one installed. These tests are about the tool and route
+ * wiring, and an empty catalog keeps the driver's own tool registrations out of
+ * the way; `tests/driver.test.js` covers that half against a catalog of its own.
+ */
+const loadDriver = async () => ({
+  CuaDriver: {
+    create: () => ({
+      listToolsJson: async () => '{"tools":[]}',
+      callTool: async () => ({ rawJson: '{}' }),
+      shutdown: async () => {},
+      uniffiDestroy: () => {},
+    }),
+  },
+});
+
 /** A window capture result with an image, as the driver returns it. */
 function capture() {
   return {
@@ -183,9 +202,9 @@ test('the entry exports the identity and an empty inject list', () => {
   assert.deepEqual(inject, []);
 });
 
-test('activation registers the desktop_agent tool', () => {
+test('activation registers the desktop_agent tool', async () => {
   const { ctx, registered } = host();
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   assert.equal(registered.length, 1);
   assert.equal(registered[0].name, 'desktop_agent');
   // defineTool compiles the author-facing spec, so the required marker is read
@@ -195,22 +214,22 @@ test('activation registers the desktop_agent tool', () => {
   assert.ok(registered[0].parameters.properties.windowId);
 });
 
-test('activation registers the vision-catalog route', () => {
+test('activation registers the vision-catalog route', async () => {
   const { ctx, routes } = host();
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   assert.equal(routes.length, 1);
   assert.equal(routes[0].path, '/api/dsh-desktop-agent/vision-models');
   assert.equal(routes[0].kind, 'exact');
 });
 
-test('the route still registers when webServer arrives after activation', () => {
+test('the route still registers when webServer arrives after activation', async () => {
   // Measured against a real host: `webServer` is provided by its own loader
   // entry and is NOT up when this plugin activates. A `ctx.get('webServer')`
   // guard read `undefined` there and never retried, so the route answered 401
   // from the generic `/api` prefix handler for the whole session while the
   // settings card silently lost its model list.
   const { ctx, routes, deferred, provide } = host({ services: ['tools', 'llm', 'attachments'] });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   assert.equal(routes.length, 0, 'no web server yet, so nothing can be registered');
   assert.equal(deferred.length, 1, 'the route must be held, not dropped');
 
@@ -220,26 +239,26 @@ test('the route still registers when webServer arrives after activation', () => 
   assert.equal(routes[0].path, '/api/dsh-desktop-agent/vision-models');
 });
 
-test('the tool registers even when webServer never arrives', () => {
+test('the tool registers even when webServer never arrives', async () => {
   // A TUI profile has no web server; the tool is the whole point there, so it
   // must not be collateral damage of the optional surface.
   const { ctx, registered } = host({ services: ['tools', 'llm', 'attachments'] });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   assert.equal(registered.length, 1);
   assert.equal(registered[0].name, 'desktop_agent');
 });
 
-test('a host without the tools service is skipped, not thrown through', () => {
+test('a host without the tools service is skipped, not thrown through', async () => {
   // A throw here fails the Web UI's boot audit for the whole page, so a missing
   // optional service must only cost this plugin its tool.
   const { ctx, registered } = host({ services: ['llm', 'attachments', 'webServer'] });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   assert.equal(registered.length, 0);
 });
 
-test('a host without the llm service is skipped, not thrown through', () => {
+test('a host without the llm service is skipped, not thrown through', async () => {
   const { ctx, registered } = host({ services: ['tools', 'attachments', 'webServer'] });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   assert.equal(registered.length, 0);
 });
 
@@ -247,7 +266,7 @@ test('every driver dispatch carries the parent token that makes it nested', asyn
   const { ctx, registered, dispatches } = host({
     replies: { cua_driver_native__list_windows: WINDOWS, cua_driver_native__get_window_state: capture() },
   });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   const exec = execFor();
 
   const trace = await registered[0].execute({ app: 'Calculator', goal: 'compute' }, exec);
@@ -268,7 +287,7 @@ test('each sub-dispatch gets a distinct id, even for a repeated tool', async () 
   const { ctx, registered, dispatches } = host({
     replies: { cua_driver_native__list_windows: WINDOWS, cua_driver_native__get_window_state: capture() },
   });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await registered[0].execute({ app: 'Calculator', goal: 'compute' }, execFor());
 
   const ids = dispatches.map((dispatch) => String(dispatch.callId));
@@ -290,7 +309,7 @@ test('a text-only route falls back to the accessibility channel', async () => {
   const { ctx, registered, dispatches } = host({
     replies: { cua_driver_native__list_windows: WINDOWS, cua_driver_native__get_window_state: ax },
   });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   // The channel follows the ROUTE's declared modalities, not the payload shape:
   // a text-only session is what makes the AX channel reachable.
   ctx.get('llm').resolveModelInfo = async () => ({ inputModalities: ['text'] });
@@ -306,7 +325,7 @@ test('a driver failure surfaces as the driver message', async () => {
   const { ctx, registered } = host({
     replies: { cua_driver_native__list_windows: new Error('the computer-use provider is not mounted') },
   });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await assert.rejects(
     () => registered[0].execute({ app: 'Calculator', goal: 'compute' }, execFor()),
     /the computer-use provider is not mounted/,
@@ -315,7 +334,7 @@ test('a driver failure surfaces as the driver message', async () => {
 
 test('an unmatched app names the windows that are open', async () => {
   const { ctx, registered } = host({ replies: { cua_driver_native__list_windows: WINDOWS } });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await assert.rejects(
     () => registered[0].execute({ app: 'Nonexistent', goal: 'x' }, execFor()),
     /no on-screen window matches "Nonexistent".*Calculator/s,
@@ -340,7 +359,7 @@ test('a title-less helper window does not shadow the window it floats over', asy
   const { ctx, registered, dispatches } = host({
     replies: { cua_driver_native__list_windows: withOverlay, cua_driver_native__get_window_state: capture() },
   });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await registered[0].execute({ app: 'Calculator', goal: 'compute' }, execFor());
 
   const captureCall = dispatches.find((dispatch) => dispatch.name === 'cua_driver_native__get_window_state');
@@ -364,7 +383,7 @@ test('an app whose every window is title-less falls back to the frontmost one', 
   const { ctx, registered, dispatches } = host({
     replies: { cua_driver_native__list_windows: noTitles, cua_driver_native__get_window_state: capture() },
   });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await registered[0].execute({ app: 'Game', goal: 'play' }, execFor());
 
   const captureCall = dispatches.find((dispatch) => dispatch.name === 'cua_driver_native__get_window_state');
@@ -387,7 +406,7 @@ test('omitting the app argument takes the frontmost window even when it has no t
   const { ctx, registered, dispatches } = host({
     replies: { cua_driver_native__list_windows: withOverlay, cua_driver_native__get_window_state: capture() },
   });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await registered[0].execute({ goal: 'compute' }, execFor());
 
   const captureCall = dispatches.find((dispatch) => dispatch.name === 'cua_driver_native__get_window_state');
@@ -400,7 +419,7 @@ test('a covered window is not a resolution candidate', async () => {
   // is not open -- those are different facts, and "not open" invites the caller
   // to launch an application that is already running.
   const { ctx, registered } = host({ replies: { cua_driver_native__list_windows: WINDOWS } });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await assert.rejects(
     () => registered[0].execute({ app: 'Terminal', goal: 'x' }, execFor()),
     /"Terminal" is open, but no window of it is on screen/,
@@ -411,7 +430,7 @@ test('an explicit window id wins over the app argument', async () => {
   const { ctx, registered, dispatches } = host({
     replies: { cua_driver_native__list_windows: WINDOWS, cua_driver_native__get_window_state: capture() },
   });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await registered[0].execute({ app: 'Calculator', goal: 'x', windowId: 7 }, execFor());
   const captureCall = dispatches.find((dispatch) => dispatch.name === 'cua_driver_native__get_window_state');
   assert.equal(captureCall.arguments.window_id, 7);
@@ -420,7 +439,7 @@ test('an explicit window id wins over the app argument', async () => {
 
 test('an unknown window id is refused by number', async () => {
   const { ctx, registered } = host({ replies: { cua_driver_native__list_windows: WINDOWS } });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await assert.rejects(() => registered[0].execute({ goal: 'x', windowId: 999 }, execFor()), /no window has id 999/);
 });
 
@@ -429,7 +448,7 @@ test('an explicit off-screen window id is refused, not driven', async () => {
   // not, so naming Terminal by id accepted a window the documented rule excludes
   // and the refusal only arrived from the driver, mid-run.
   const { ctx, registered } = host({ replies: { cua_driver_native__list_windows: WINDOWS } });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await assert.rejects(
     () => registered[0].execute({ goal: 'x', windowId: 8 }, execFor()),
     /window 8 \(Terminal\) is not on screen/,
@@ -441,7 +460,7 @@ test('a window list with no structured payload is a protocol failure, not an emp
   // as "the driver listed no windows", which is the same sentence a genuinely
   // empty desktop produces -- so a broken driver looked like an idle machine.
   const { ctx, registered } = host({ replies: { cua_driver_native__list_windows: { content: [{ type: 'text', text: '{}' }] } } });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await assert.rejects(
     () => registered[0].execute({ goal: 'x' }, execFor()),
     /list_windows returned no structured payload/,
@@ -456,7 +475,7 @@ test('a structured payload with no window array is a protocol failure too', asyn
   const { ctx, registered } = host({
     replies: { cua_driver_native__list_windows: { structuredContent: { note: 'no window array' }, content: [] } },
   });
-  apply(ctx, configRefs());
+  await apply(ctx, configRefs(), loadDriver);
   await assert.rejects(
     () => registered[0].execute({ app: 'Calculator', goal: 'x' }, execFor()),
     /list_windows returned no window array/,
@@ -475,7 +494,7 @@ test('the settings values are read at use, not captured at activation', async ()
   ctx.get('llm').stream = () => (async function* () {
     yield { type: 'text-delta', text: '{"kind":"click","x":10,"y":10}' };
   })();
-  apply(ctx, refs);
+  await apply(ctx, refs, loadDriver);
   const first = await registered[0].execute({ app: 'Calculator', goal: 'x' }, execFor());
   assert.equal(first.status, 'max-steps');
   assert.equal(first.steps.length, 1);

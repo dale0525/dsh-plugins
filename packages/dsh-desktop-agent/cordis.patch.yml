@@ -1,8 +1,9 @@
 # dsh-desktop-agent bundle patch layer.
 #
 # One bare plugin row. The package ships two halves — the host half
-# (exports ".") registers the `desktop_agent` model tool and exports the
-# `Config` schema the Plugins page derives its form from, the browser half
+# (exports ".") registers the `desktop_agent` model tool, publishes the
+# `cua_driver_native__*` driver tools from `src/driver.js`, and exports the
+# `Config` schema the Plugins page derives its form from; the browser half
 # (exports "./client") registers the Plugins-page configuration card.
 #
 # The row must stay a BARE package name: the web plugin table locates each
@@ -13,6 +14,11 @@
 # Row id `desktop-agent` equals the host half's `export const name` in
 # src/index.js. It is checked by hand against every other row id in this
 # repository; `aggregate.mjs --check` does not validate id uniqueness.
+#
+# This row replaces the two hand-written rows a profile used to need
+# (`computer-use` + `computer-use-cua-driver-native`): the driver runtime now
+# lives in this package, so mounting it twice would collide at tool
+# registration.
 - insert:
     - id: desktop-agent
       name: '@logictan/dsh-desktop-agent'

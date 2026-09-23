@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-desktop-agent",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "DSH desktop agent: a native-vision decision loop that drives the host desktop through the Cua Driver tools. DSH 桌面 Agent 子插件。",
   "type": "module",
   "main": "lib/index.js",
@@ -55,6 +55,7 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-llm": "^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.6-alpha.2",
     "@deepseek-ai/dsh-tools": "^0.1.6-alpha.2",
     "@deepseek-ai/schemastery": "^3.18.3"
   },
@@ -65,6 +66,9 @@
     "@deepseek-ai/dsh-llm": {
       "optional": true
     },
+    "@deepseek-ai/dsh-system-prompt": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-tools": {
       "optional": true
     },
@@ -72,9 +76,15 @@
       "optional": true
     }
   },
+  "dependencies": {
+    "@deepseek-ai/dsh-mcp-client": "^0.1.6-alpha.2",
+    "@trycua/cua-driver": "0.28.0"
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-llm": "^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-mcp-client": "^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.6-alpha.2",
     "@deepseek-ai/dsh-tools": "^0.1.6-alpha.2",
     "@deepseek-ai/schemastery": "^3.18.3"
   }

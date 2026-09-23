@@ -29,8 +29,14 @@ describing a picture it never received — and answering confidently about it.
 
 ## Requirements
 
-The profile must mount the Cua Driver computer-use provider; the plugin dispatches
-to the `cua_driver_native__*` tools it publishes and has no driver of its own.
+None beyond installing this plugin. It publishes the `cua_driver_native__*` tools
+itself, from the Cua Driver native SDK it depends on, and dispatches to them.
+
+A profile that still mounts the old
+`@deepseek-ai/dsh-experimental-computer-use-cua-driver-native` provider must drop
+that row and its `@deepseek-ai/dsh-computer-use` dependency first: both would
+publish the same tool names, and the second registration is refused with
+`tool "cua_driver_native__click" is already registered`.
 
 ## Settings
 

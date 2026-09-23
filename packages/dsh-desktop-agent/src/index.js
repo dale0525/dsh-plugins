@@ -6,10 +6,11 @@
  * card reads its model list from.
  *
  * The plugin owns no execution engine of its own. Every action is dispatched to
- * the `cua_driver_native__*` tools the profile already mounts, through the tool
- * registry's own `execute` pipeline — so a call this plugin makes is subject to
- * the same guards, timeouts, and cancellation as one the model made directly, and
- * the driver's own coordinate and delivery contracts are the only ones in play.
+ * the `cua_driver_native__*` tools this package publishes — see `./driver.js` —
+ * through the tool registry's own `execute` pipeline, so a call this plugin makes
+ * is subject to the same guards, timeouts, and cancellation as one the model made
+ * directly, and the driver's own coordinate and delivery contracts are the only
+ * ones in play.
  *
  * Configuration arrives as `apply`'s second argument. As of the 0.1.7-alpha.1
  * settings redesign the plugin's own `Config` schema is the only config surface —
@@ -42,6 +43,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { ToolCallId } from '@deepseek-ai/dsh-llm';
 
 import { ENTRY_ID, resolveVisionRoute } from './config.js';
+import { mountDriver } from './driver.js';
 import { run } from './loop.js';
 import { structured } from './observe.js';
 import { makeRoutes } from './routes.js';
@@ -61,12 +63,16 @@ export const name = ENTRY_ID;
 export const inject = [];
 
 /**
- * Register the `desktop_agent` tool and the vision-catalog route.
+ * Register the `desktop_agent` tool, the vision-catalog route, and the Cua
+ * Driver runtime the tool dispatches to.
  *
  * @param ctx - the plugin context.
  * @param config - one live reference per {@link Config} field.
+ * @param loadSdk - the native SDK loader, forwarded to {@link mountDriver}; tests
+ *   pass one because the driver ships native binaries that are not installed in
+ *   this workspace, and activation must not depend on a binary the test cannot load.
  */
-export function apply(ctx, config) {
+export async function apply(ctx, config, loadSdk) {
   const tools = ctx.get('tools');
   if (tools === null || tools === undefined || typeof tools !== 'object') {
     ctx.logger?.warn?.('desktop_agent: the tools service is unavailable; the tool was not registered.');
@@ -146,7 +152,7 @@ export function apply(ctx, config) {
       'Resolves the target application, then runs an observation/decision loop: each step captures the window, ' +
       'asks the configured model what to do, and performs the click, key, or text entry it chose. ' +
       'Works on ordinary applications and on games that expose no usable accessibility tree, because it reads the ' +
-      'picture rather than the element table. Requires the computer-use Cua Driver tools to be mounted. ' +
+      'picture rather than the element table. ' +
       'Note that a covered window cannot be driven, and a game that filters injected input needs foreground ' +
       'delivery — the plugin settings control that. This tool waits for the run to finish and returns a structured ' +
       'trace of every step.',
@@ -215,6 +221,10 @@ export function apply(ctx, config) {
       'desktop-agent: vision-model catalog route',
     );
   });
+
+  // Last, so that a driver that cannot start costs this plugin nothing else: a
+  // rejected mount rolls back the tool and route registrations above with it.
+  await mountDriver(ctx, loadSdk);
 }
 
 /**
