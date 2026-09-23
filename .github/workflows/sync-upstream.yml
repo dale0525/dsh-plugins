@@ -47,9 +47,6 @@ jobs:
           - id: imagegen
             pkg: '@logictan/dsh-imagegen'
             test: 'pnpm --filter @logictan/dsh-imagegen typecheck'
-          - id: agy-link
-            pkg: '@logictan/dsh-agy-link'
-            test: 'pnpm --filter @logictan/dsh-agy-link test'
           # better-reasoning-effort 的上游是不带 scope 的同名包。我们的 fork 改了
           # package.json 的包名（加 @logictan/ scope），而 patch 行 id 仍是
           # `dsh-better-reasoning-effort` —— 上游若改了 src/index.ts 的

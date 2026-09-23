@@ -26,7 +26,7 @@ import {
   advanceBaseline,
 } from './sync-upstream.mjs'
 
-const EXPECTED_IDS = ['agy-link', 'easyrewrite', 'imagegen', 'workbuddy']
+const EXPECTED_IDS = ['easyrewrite', 'imagegen', 'workbuddy']
 
 /**
  * 取出 YAML 里每个 `run:` 会真正执行的命令文本。
@@ -173,7 +173,7 @@ function makeFixtureCommit(entries) {
   }
 }
 
-/** 本仓库负责的 5 个 fork。别的会话可能再加包，所以只断言「必须包含」而非集合相等。 */
+/** 本仓库负责的 6 个 fork。别的会话可能再加包，所以只断言「必须包含」而非集合相等。 */
 test('真实仓库：已知 target 全部被发现，且 policy 跟随自己的包', () => {
   const targets = discoverTargets(REPO_ROOT)
   const ids = targets.map((t) => t.id)
@@ -398,7 +398,7 @@ function runCli(args) {
  * 带取值的 flag 缺值必须退出码 1，**不得**静默退化成默认行为。
  *
  * 实测的两种静默退化（都是退出码 0）：
- *   - `--dry-run --target`（无值）→ 列出**全部 5 个**目标，用户以为只看了 1 个；
+ *   - `--dry-run --target`（无值）→ 列出**全部 6 个**目标，用户以为只看了 1 个；
  *   - `--refresh-policy --target workbuddy --baseline`（无值）→ 回退到 policy 里的旧
  *     baselineCommit 并**照常写盘**，用户以为用了自己给的基线。
  * 第二种会真的改文件，属于「看错参数就改错配置」。

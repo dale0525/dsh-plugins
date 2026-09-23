@@ -1,5 +1,9 @@
 # Agent Guidelines for dsh-agy-link
 
+> 本包是 `dsh-plugins` monorepo 的成员，**自制插件**：自
+> [`amlyczz/dsh-agy-link`](https://github.com/amlyczz/dsh-agy-link) v0.4.36 衍生（MIT），
+> 此后已重写为主体，**不再 fork、不再参与上游同步**。
+
 ## 🚨 Release & Publishing Rules (Strictly Enforced)
 
 1. **No Automatic Publishing (禁止自动发布)**
