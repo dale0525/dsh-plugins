@@ -38,6 +38,10 @@ the agy-link rows are removed from the sync matrix. Provenance and LICENSE are k
   - Reasoning blocks no longer carry the `[agy thinking turn · N tokens]` and `[agy subagent] ` banners.
   - `detectContinuation` no longer skips on a hardcoded `source.kind`; `form === 'snapshot'` is the only
     snapshot test, so host-side changes to the context form cannot silently disable continuation again.
+  - The skill copy no longer follows symlinks. Skill packs ship self-links such as `subskills/<name> -> ..`;
+    following one recursed, hit `ENOTSUP` in `copyFileSync`, and threw out of the env sync — which runs
+    before the MCP config is written, so the bridge was never configured and agy could not reach DSH tools
+    at all. Links are now recreated verbatim.
 
 ### 中文 (Chinese)
 
@@ -65,6 +69,9 @@ the agy-link rows are removed from the sync matrix. Provenance and LICENSE are k
   - reasoning 块不再带 `[agy thinking turn · N tokens]` 与 `[agy subagent] ` 前缀。
   - `detectContinuation` 不再依据硬编码的 `source.kind` 跳过；`form === 'snapshot'` 是唯一的快照判据，
     宿主侧对 context form 的改动不会再悄悄让续跑失效。
+  - 技能拷贝不再跟随符号链接。技能包里有 `subskills/<name> -> ..` 这类自引用软链；跟随它会递归、
+    在 `copyFileSync` 抛 `ENOTSUP` 并冲出环境同步——而这一步排在写 MCP 配置之前，于是桥从未被配置、
+    agy 根本调不到 DSH 工具。现在改为原样重建链接。
 
 ## 0.4.38 (2026-09-24)
 
