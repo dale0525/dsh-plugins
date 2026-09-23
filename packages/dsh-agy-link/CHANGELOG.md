@@ -50,6 +50,11 @@ the agy-link rows are removed from the sync matrix. Provenance and LICENSE are k
     every sync; the idempotency check now uses a non-throwing `lstatSync`.
   - `InstallResult` no longer reports an install directory on Windows, where the PowerShell installer picks
     its own location; `defaultInstallDir` is documented and typed as the POSIX default only.
+  - **The bridge passed no `signal` to the tool registry, so every agy-initiated tool call threw before the
+    tool ran.** `ToolExecutionInput.signal` is required and the generic dispatch path dereferences it
+    (`!signal.aborted`, `if (signal.aborted)`), so `execute({callId, name, arguments})` raised a
+    `TypeError` that the bridge reported to agy as `ok: false`. The bridge now owns one
+    `AbortController` for its lifetime, passes its signal on every dispatch, and aborts it in `close()`.
 
 ### 中文 (Chinese)
 
@@ -87,6 +92,11 @@ the agy-link rows are removed from the sync matrix. Provenance and LICENSE are k
     幂等判定改用不抛异常的 `lstatSync`。
   - `InstallResult` 不再在 Windows 上报告安装目录（PowerShell 安装脚本自选位置）；`defaultInstallDir`
     的文档与签名都明确为仅 POSIX 默认值。
+  - **桥没给工具注册表传 `signal`，于是 agy 发起的每一次工具调用都在工具执行前就抛错。**
+    `ToolExecutionInput.signal` 是必填字段，通用派发路径会解引用它（`!signal.aborted`、
+    `if (signal.aborted)`），因此 `execute({callId, name, arguments})` 抛 `TypeError`，
+    桥把 `ok: false` 回给 agy。现在桥持有单个 `AbortController`，每次派发都带上它的 signal，
+    并在 `close()` 里 abort。
 
 ## 0.4.38 (2026-09-24)
 

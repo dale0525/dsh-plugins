@@ -17,7 +17,7 @@ const MCP_SERVER_KEY = 'dsh-tools'
 /** Minimal structural view of the DSH tool registry we need. */
 export interface ToolsServiceLike {
   schemas(): Array<{ name: string; description: string; parameters: Record<string, unknown> }>
-  execute(input: { callId: string; name: string; arguments: unknown }): Promise<unknown>
+  execute(input: { callId: string; name: string; arguments: unknown; signal: AbortSignal }): Promise<unknown>
 }
 
 /** MCP tool names are [a-zA-Z0-9_-]; DSH names may contain dots. */
@@ -83,6 +83,11 @@ export function startMcpBridge(opts: {
   log?: (msg: string) => void
 }): Promise<McpBridge> {
   const token = randomBytes(24).toString('hex')
+  // The tool registry dereferences exec.signal on every dispatch — it reads
+  // `signal.aborted` and forwards the signal to the tool body — so a call
+  // without one throws before the tool runs. This is the caller-owned
+  // cancellation for every call the bridge makes.
+  const calls = new AbortController()
   let callSeq = 0
   const server: Server = createServer((req, res) => {
     void (async () => {
@@ -141,7 +146,12 @@ export function startMcpBridge(opts: {
         }
         callSeq++
         try {
-          const result = await svc.execute({ callId: 'agy-mcp-' + callSeq, name: dshName, arguments: parsed.arguments ?? {} })
+          const result = await svc.execute({
+            callId: 'agy-mcp-' + callSeq,
+            name: dshName,
+            arguments: parsed.arguments ?? {},
+            signal: calls.signal,
+          })
           sendJson(res, 200, { ok: true, text: resultText(result) })
         } catch (e) {
           sendJson(res, 200, { ok: false, error: String(e) })
@@ -165,7 +175,10 @@ export function startMcpBridge(opts: {
         token,
         url: 'http://127.0.0.1:' + port,
         port,
-        close: () => new Promise<void>((done) => server.close(() => done())),
+        close: () => new Promise<void>((done) => {
+          calls.abort()
+          server.close(() => done())
+        }),
       })
     })
   })

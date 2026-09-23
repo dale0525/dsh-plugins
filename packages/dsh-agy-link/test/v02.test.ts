@@ -70,6 +70,39 @@ test('mcp bridge: allowlist restricts the served set', async () => {
   }
 })
 
+test('mcp bridge: every dispatch carries a live AbortSignal', async () => {
+  // The DSH registry dereferences exec.signal on every dispatch (`signal.aborted`,
+  // plus forwarding it into the tool body). A call without one throws before the
+  // tool runs, so the bridge must supply a real signal — and it must still be
+  // live at dispatch time, not an already-aborted placeholder.
+  const seen: Array<AbortSignal | undefined> = []
+  const tools = {
+    schemas: () => [{ name: 'bash', description: 'x', parameters: { type: 'object', properties: {} } }],
+    execute: async (input: { signal: AbortSignal }) => {
+      seen.push(input.signal)
+      return { content: [{ type: 'text', text: 'ok' }] }
+    },
+  }
+  const bridge = await startMcpBridge({
+    bridgeScript: resolve(here, '../dist/bridge.mjs'),
+    tools: () => tools as never,
+    allowlist: () => '',
+  })
+  try {
+    const call = await fetch(bridge.url + '/call', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + bridge.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ dshName: 'bash', arguments: { command: 'echo hi' } }),
+    })
+    assert.equal(((await call.json()) as { ok: boolean }).ok, true)
+  } finally {
+    await bridge.close()
+  }
+  assert.equal(seen.length, 1)
+  assert.ok(seen[0] instanceof AbortSignal, 'execute must receive a real AbortSignal')
+  assert.equal(seen[0]!.aborted, true, 'closing the bridge must abort the caller signal')
+})
+
 test('mcp bridge script speaks JSON-RPC over stdio end to end', async () => {
   const bridge = await startMcpBridge({
     bridgeScript: resolve(here, '../dist/bridge.mjs'),
