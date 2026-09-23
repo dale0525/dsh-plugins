@@ -396,10 +396,15 @@ test('omitting the app argument takes the frontmost window even when it has no t
 
 test('a covered window is not a resolution candidate', async () => {
   // Terminal is listed but off-screen; driving it would screenshot whatever is
-  // actually in front.
+  // actually in front. The refusal must say it is off screen rather than that it
+  // is not open -- those are different facts, and "not open" invites the caller
+  // to launch an application that is already running.
   const { ctx, registered } = host({ replies: { cua_driver_native__list_windows: WINDOWS } });
   apply(ctx, configRefs());
-  await assert.rejects(() => registered[0].execute({ app: 'Terminal', goal: 'x' }, execFor()), /no on-screen window matches/);
+  await assert.rejects(
+    () => registered[0].execute({ app: 'Terminal', goal: 'x' }, execFor()),
+    /"Terminal" is open, but no window of it is on screen/,
+  );
 });
 
 test('an explicit window id wins over the app argument', async () => {
@@ -440,6 +445,21 @@ test('a window list with no structured payload is a protocol failure, not an emp
   await assert.rejects(
     () => registered[0].execute({ goal: 'x' }, execFor()),
     /list_windows returned no structured payload/,
+  );
+});
+
+test('a structured payload with no window array is a protocol failure too', async () => {
+  // Same class as the case above, one level deeper: a payload that parses but
+  // carries no `windows` key was flattened to "[]" and reported as "the driver
+  // listed no windows", so a driver whose response shape changed read as an idle
+  // desktop. Only a present-but-empty array means the desktop is empty.
+  const { ctx, registered } = host({
+    replies: { cua_driver_native__list_windows: { structuredContent: { note: 'no window array' }, content: [] } },
+  });
+  apply(ctx, configRefs());
+  await assert.rejects(
+    () => registered[0].execute({ app: 'Calculator', goal: 'x' }, execFor()),
+    /list_windows returned no window array/,
   );
 });
 

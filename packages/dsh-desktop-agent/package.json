@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-desktop-agent",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH desktop agent: a native-vision decision loop that drives the host desktop through the Cua Driver tools. DSH 桌面 Agent 子插件。",
   "type": "module",
   "main": "lib/index.js",

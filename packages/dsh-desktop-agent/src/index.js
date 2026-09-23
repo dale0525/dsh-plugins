@@ -235,7 +235,12 @@ async function resolveTarget(input) {
 
   const value = await dispatch('cua_driver_native__list_windows', {}, signal);
   const payload = structured(value, 'list_windows');
-  const windows = Array.isArray(payload.windows) ? payload.windows : [];
+  // A payload that parses but carries no window array is a driver contract
+  // failure, not an empty desktop. Flattening it to [] would report the two as
+  // the same sentence, and the driver is a third-party boundary whose response
+  // shape this plugin does not control.
+  if (!Array.isArray(payload.windows)) throw new Error('desktop_agent: list_windows returned no window array.');
+  const windows = payload.windows;
   if (windows.length === 0) throw new Error('desktop_agent: the driver listed no windows.');
 
   if (args.windowId !== undefined) {
@@ -262,18 +267,39 @@ async function resolveTarget(input) {
   }
 
   const needle = args.app.toLowerCase();
-  const matches = onScreen.filter(
-    (window) =>
-      String(window.app_name ?? '').toLowerCase().includes(needle) ||
-      String(window.title ?? '').toLowerCase().includes(needle),
-  );
+  const matches = onScreen.filter((window) => matchesApp(window, needle));
   if (matches.length === 0) {
+    // An app that is running but has no window on screen is a different fact
+    // from an app that is not running, and only the second one suggests
+    // launching it. The windowId path already tells them apart.
+    if (windows.some((window) => matchesApp(window, needle))) {
+      throw new Error(
+        'desktop_agent: "' + args.app + '" is open, but no window of it is on screen, so it cannot be captured or acted on.',
+      );
+    }
     const names = [...new Set(onScreen.map((window) => window.app_name).filter(Boolean))];
     throw new Error(
-      'desktop_agent: no on-screen window matches "' + args.app + '". Open windows: ' + (names.join(', ') || '(none)') + '.',
+      'desktop_agent: no on-screen window matches "' + args.app + '". On-screen apps: ' + (names.join(', ') || '(none)') + '.',
     );
   }
   return targetOf(bestMatch(matches));
+}
+
+/**
+ * Whether a window answers to an app argument.
+ *
+ * The needle is matched against the application name and the window title,
+ * because both are things a caller can reasonably name.
+ *
+ * @param window - a window from the driver's list.
+ * @param needle - the app argument, lower-cased.
+ * @returns whether the window matches.
+ */
+function matchesApp(window, needle) {
+  return (
+    String(window.app_name ?? '').toLowerCase().includes(needle) ||
+    String(window.title ?? '').toLowerCase().includes(needle)
+  );
 }
 
 /**
