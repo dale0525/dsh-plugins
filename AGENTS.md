@@ -14,7 +14,7 @@ dsh-plugins/
 │   │   ├── cordis.patch.yml# 生成物，勿手改
 │   │   └── package.json    # 生成物，勿手改
 │   ├── dsh-fakeip-fetch/       # 自制（无上游）→ 不 fork
-│   ├── dsh-agy-link/           # 有上游 → git subtree fork
+│   ├── dsh-agy-link/           # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-easyrewrite/        # 有上游 → git subtree fork
 │   ├── dsh-imagegen/           # 有上游 → git subtree fork
