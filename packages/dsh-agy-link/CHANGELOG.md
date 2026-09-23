@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.38 (2026-09-24)
+
+### English
+
+- **Fix: every mirrored tool step started a brand-new agy conversation, so agy-backed subagents looped forever.** `detectContinuation` required the trailing tool-result message to be `role: 'user'` — the shape `dsh-llm <= 0.1.2-rc.1` produced via `createUserMessage`. `dsh-llm 0.1.7-alpha.1` switched tool results to a dedicated `role: 'tool'` message (`createToolResultMessage` plus a top-level `toolCallId`), so the check returned `null` for **every** continuation: each span spawned a fresh `agy` process, skipped `--conversation`, and re-fed the whole digest. The model re-derived the same first tool step indefinitely — one new runId per step, byte-identical output, no progress. Observed on six subagent sessions (121, 47, 45, 41, 20 and 6 tool calls) where **every** call carried a distinct runId and the step index was almost always 4.
+  - Both shapes are now accepted; the `source.kind`/`callId` cursor is identical in each. Replaying the recorded messages of the worst session through the fixed function yields 121/121 continuations (was 0/121).
+  - Added a regression test that builds the host's actual `role: 'tool'` shape and asserts it resumes the run, plus negative cases (a foreign tool callId, another provider's result, a human follow-up) that must still stop the scan.
+  - The pre-existing `detectContinuation` test only covered the retired `role: 'user'` shape, so the suite stayed green while continuation was 100% broken in production.
+
+### 中文 (Chinese)
+
+- **修复：每一个镜像工具步都新开一个 agy 会话，导致 agy 子代理永久空转。** `detectContinuation` 要求尾部的工具结果消息是 `role: 'user'`——那是 `dsh-llm <= 0.1.2-rc.1` 经 `createUserMessage` 产出的形状。`dsh-llm 0.1.7-alpha.1` 把工具结果改成了独立的 `role: 'tool'` 消息（`createToolResultMessage` 加顶层 `toolCallId`），于是该判定对**每一次**续跑都返回 `null`：每个 span 都新起一个 `agy` 进程、不带 `--conversation`、把整段 digest 重新灌一遍。模型反复推导出同一个首个工具步——每步一个新 runId、输出逐字节相同、毫无进展。实测六个子代理会话（121、47、45、41、20、6 次工具调用）中**每一次**调用都携带不同的 runId，步号几乎恒为 4。
+  - 现在两种形状都接受；二者的 `source.kind`/`callId` 游标完全一致。把最严重那个会话的录制消息重放进修复后的函数，续跑命中 121/121（修复前 0/121）。
+  - 新增回归测试：构造宿主真实的 `role: 'tool'` 形状并断言其恢复该 run，同时覆盖反例（外部工具 callId、其它 provider 的结果、人类追问）仍必须终止扫描。
+  - 既有的 `detectContinuation` 测试只覆盖已退役的 `role: 'user'` 形状，因此测试全绿而生产的续跑 100% 失效。
+
 ## 0.4.37 (2026-09-18)
 
 ### English

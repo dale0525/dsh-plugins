@@ -199,6 +199,28 @@ test('detectContinuation permits only trailing plugin snapshots after our mirror
   assert.equal(detectContinuation([msg('user', 'q'), toolResult('bash-9')]), null)
 })
 
+// dsh-llm 0.1.7-alpha.1 replaced the user-role tool-result message with a
+// dedicated tool role (createToolResultMessage -> role:'tool' + a top-level
+// toolCallId). Reading only 'user' returned null for every continuation on
+// that host, so each span spawned a fresh agy process and re-fed the whole
+// digest: the model re-derived the same first tool step forever, one new runId
+// per step, with no progress. This is the shape DSH actually sends now.
+test('detectContinuation accepts the host tool role used by dsh-llm >= 0.1.7', () => {
+  const hostToolResult = (callId: string): Message =>
+    ({ role: 'tool', toolCallId: callId, content: [{ type: 'text', text: 'replayed' }], isError: false, source: { kind: 'tool', callId } }) as never
+  assert.deepEqual(
+    detectContinuation([msg('user', 'q'), msg('assistant', 'a'), hostToolResult('agytc-run-1-7')]),
+    { runId: 'run-1', eventIndex: 7 },
+  )
+  // The cursor is the only thing that matters: an unrelated tool role message
+  // must not be mistaken for one of our mirror results.
+  assert.equal(detectContinuation([msg('user', 'q'), hostToolResult('bash-9')]), null)
+  assert.equal(detectContinuation([msg('user', 'q'), hostToolResult('other-provider-4')]), null)
+  assert.equal(detectContinuation([hostToolResult('agytc-run-1-7'), msg('user', 'a human follow-up')]), null)
+  // Roles outside both known shapes still stop the scan.
+  assert.equal(detectContinuation([msg('user', 'q'), { role: 'system', source: { kind: 'tool', callId: 'agytc-run-1-7' } } as never]), null)
+})
+
 test('plugin snapshots continue the existing run without a duplicate spawn and retain tool errors', async () => {
   const reports: Array<{ processOk: boolean; processCode: string; toolErrors: readonly string[] }> = []
   const { adapter } = makeAdapter({}, { onRun: (info) => reports.push(info) })

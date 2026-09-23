@@ -923,7 +923,18 @@ export function detectContinuation(messages: readonly Message[]): { runId: strin
     i--
   }
   const last = messages[i]
-  if (last === undefined || last.role !== 'user') return null
+  // The tool result's ROLE is host-version-dependent; the callId is not.
+  // dsh-llm <= 0.1.2-rc.1 built it as a user-role message (createUserMessage),
+  // so this check read 'user'. dsh-llm 0.1.7-alpha.1 switched to a dedicated
+  // tool role (createToolResultMessage -> role:'tool' plus a top-level
+  // toolCallId), and the user-only check then returned null for EVERY
+  // continuation: each span spawned a fresh agy process and re-fed the whole
+  // digest, so the model re-derived the same first tool step forever (one new
+  // runId per step, identical output, no progress). Accept both shapes — the
+  // source.kind/callId cursor is identical in each.
+  if (last === undefined) return null
+  const role = String(last.role)
+  if (role !== 'user' && role !== 'tool') return null
   const src = (last as unknown as { source?: { kind?: string; callId?: string } }).source
   if (src === undefined || src.kind !== 'tool' || typeof src.callId !== 'string') return null
   return parseMirrorCallId(src.callId)
