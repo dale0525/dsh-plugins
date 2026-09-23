@@ -78,8 +78,19 @@ export function buildMirrorRunCode(
   eventIndex: number,
   toolName: string,
   brief?: string,
+  input?: unknown,
 ): { code: string; description: string } {
-  const invocation = JSON.stringify({ run: runId, step: eventIndex })
+  // Carry tool + input on the invocation, exactly as Native Mode does. The
+  // client cannot reach the recording, so without them a Code Mode card can
+  // only show the tool's bare name ("Read") instead of the path/command the
+  // Native Mode card shows. The mirror tool declares both as optional
+  // parameters, so this is the same call with more of its own arguments filled.
+  const invocation = JSON.stringify({
+    run: runId,
+    step: eventIndex,
+    tool: toolName,
+    ...(input !== undefined ? { input } : {}),
+  })
   const label = brief !== undefined && brief !== ''
     ? brief
     : toolName
@@ -131,17 +142,54 @@ export function toolStepBrief(toolName: string, args: unknown): string {
   return toolName
 }
 
-/** Extract the (run, step) cursor embedded by buildMirrorRunCode. */
-export function parseMirrorInvocation(code: string): { run: string; step: number } | null {
-  const m = /tools\['agy_tool'\]\((\{"run":.*?,"step":\d+\})\)/.exec(code)
-  if (m === null) return null
+/**
+ * Read the JSON object literal starting at `open`, honoring string literals
+ * and escapes so a brace inside a value cannot end the scan early.
+ */
+function jsonObjectAt(text: string, open: number): string | null {
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return text.slice(open, i + 1)
+    }
+  }
+  return null
+}
+
+/** The mirror invocation's JSON arguments, or null when `code` is not a wrapper. */
+export function parseMirrorArgs(code: string): Record<string, unknown> | null {
+  const call = "tools['agy_tool']("
+  const at = code.indexOf(call)
+  if (at < 0) return null
+  const open = code.indexOf('{', at + call.length)
+  if (open < 0) return null
+  const raw = jsonObjectAt(code, open)
+  if (raw === null) return null
   try {
-    const v = JSON.parse(m[1] as string) as { run?: unknown; step?: unknown }
-    if (typeof v.run === 'string' && typeof v.step === 'number') return { run: v.run, step: v.step }
-    return null
+    const v = JSON.parse(raw) as unknown
+    return typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : null
   } catch {
     return null
   }
+}
+
+/** Extract the (run, step) cursor embedded by buildMirrorRunCode. */
+export function parseMirrorInvocation(code: string): { run: string; step: number } | null {
+  const v = parseMirrorArgs(code)
+  if (v === null) return null
+  return typeof v.run === 'string' && typeof v.step === 'number' ? { run: v.run, step: v.step } : null
 }
 
 /** agy serializes some tool args as a JSON string; presenters get an object. */

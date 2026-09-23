@@ -162,6 +162,16 @@ test('non-mirror run_code hides its body while collapsed and shows the full prog
   assert.ok(expanded.text.includes('const line59 = 59;'), 'full program, not truncated at 400 chars')
 })
 
+test('mirror run_code keeps the recorded path so its card matches Native Mode', () => {
+  const { view } = loadClient()
+  const code =
+    "// dsh-agy-link mirror: replay recorded agy tool step 4 (view_file)\n" +
+    'return await tools[\'agy_tool\']({"run":"abc","step":4,"tool":"view_file","input":{"AbsolutePath":"/tmp/secret.ts"}})'
+  const out = render(view, settledRunCode({ code, description: 'read /tmp/secret.ts · view_file' }))
+  assert.equal(out.kind, 'read', 'still classified as a read card')
+  assert.ok(out.text.includes('/tmp/secret.ts'), 'path from the recorded input is shown: ' + out.text)
+})
+
 test('mirror run_code still renders the native Antigravity card', () => {
   const { view } = loadClient()
   const out = render(view, settledRunCode({ code: MIRROR_CODE, description: 'replay agy tool step 4 · view_file' }))

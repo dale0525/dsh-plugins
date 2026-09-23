@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { RunRecording, RunRegistry } from '../src/host/recording.ts'
-import { defineAgyMirrorTool, presentMirrorCall, buildMirrorRunCode, parseMirrorInvocation, toolStepBrief } from '../src/host/mirror-tool.ts'
+import { defineAgyMirrorTool, presentMirrorCall, buildMirrorRunCode, parseMirrorInvocation, parseMirrorArgs, toolStepBrief } from '../src/host/mirror-tool.ts'
 
 function fakeSignal(): AbortSignal {
   return new AbortController().signal
@@ -74,11 +74,33 @@ test('cursor-only invocations: execute + presenters resolve detail from the reco
 test('run_code wrapper round-trip: build -> parse recovers the cursor', () => {
   const built = buildMirrorRunCode('7d246c00-c0d1-4e3c-a25b-848881b81042', 15, 'run_command')
   assert.equal(built.description, 'run_command')
-  assert.ok(built.code.includes("tools['agy_tool']({\"run\":\"7d246c00-c0d1-4e3c-a25b-848881b81042\",\"step\":15})"), built.code)
+  assert.ok(built.code.includes('"step":15'), built.code)
+  assert.ok(built.code.includes('"tool":"run_command"'), built.code)
   assert.deepEqual(parseMirrorInvocation(built.code), { run: '7d246c00-c0d1-4e3c-a25b-848881b81042', step: 15 })
   assert.equal(parseMirrorInvocation('unrelated code'), null)
   const pretty = buildMirrorRunCode('r', 1, 'run_command', toolStepBrief('run_command', { command: 'ls -la' }))
   assert.equal(pretty.description, '$ ls -la · run_command')
+})
+
+test('run_code wrapper carries the recorded tool input so Code Mode cards match Native Mode', () => {
+  const built = buildMirrorRunCode('r', 7, 'view_file', 'read /tmp/a.txt · view_file', { AbsolutePath: '/tmp/a.txt' })
+  // Native Mode passes { run, step, tool, input }; the client cannot reach the
+  // recording, so the wrapper must carry the same payload or its card can only
+  // render the bare tool name ("Read") instead of the path.
+  assert.ok(built.code.includes('"input":{"AbsolutePath":"/tmp/a.txt"}'), built.code)
+  assert.deepEqual(parseMirrorInvocation(built.code), { run: 'r', step: 7 })
+  assert.deepEqual(parseMirrorArgs(built.code), {
+    run: 'r',
+    step: 7,
+    tool: 'view_file',
+    input: { AbsolutePath: '/tmp/a.txt' },
+  })
+})
+
+test('mirror args parse survives braces and escapes inside the recorded input', () => {
+  const input = { CodeContent: 'function f() { return "{ }"; }', Path: 'a\b.ts' }
+  const built = buildMirrorRunCode('r2', 3, 'write_to_file', 'write a\b.ts', input)
+  assert.deepEqual(parseMirrorArgs(built.code)?.input, input)
 })
 
 test('cards read PascalCase agy arg keys (CommandLine, AbsolutePath, …)', () => {

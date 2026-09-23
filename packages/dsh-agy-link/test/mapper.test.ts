@@ -335,7 +335,7 @@ test('thinking turn with resolvedThoughts emits real thought text into reasoning
     { kind: 'step', stepKey: '3', stepKind: 'tool', state: 'DONE', text: '', tool: { name: 'run_command', args: { command: 'ls' }, output: 'ok' } },
   ])
   const reasoning = chunks.filter((c) => c.type === 'reasoning-delta').map((c) => (c as { text: string }).text).join('')
-  assert.equal(reasoning, '[agy thinking turn · 42 thinking tokens] Plan: check file status first, then decide whether to edit.\n')
+  assert.equal(reasoning, 'Plan: check file status first, then decide whether to edit.\n')
   // Block types order: reasoning start/delta/end, then tool-call
   const blockStarts = chunks.filter((c) => c.type === 'block-start').map((c) => (c as { blockType: string }).blockType)
   assert.deepEqual(blockStarts, ['reasoning', 'tool-call'])
@@ -357,7 +357,7 @@ test('streamed answer with deferred resolvedThoughts emits real thought text in 
     { kind: 'result', conversationId: 'c9', ok: true, response: 'Result is 2.', usage: {} },
   ])
   const reasoning = chunks.filter((c) => c.type === 'reasoning-delta').map((c) => (c as { text: string }).text).join('')
-  assert.equal(reasoning, '[agy thinking turn · 15 thinking tokens] Double-checked 1+1=2, calculation is sound.\n')
+  assert.equal(reasoning, 'Double-checked 1+1=2, calculation is sound.\n')
   const text = chunks.filter((c) => c.type === 'text-delta').map((c) => (c as { text: string }).text).join('')
   assert.equal(text, 'Result is 2.')
 })
@@ -385,7 +385,7 @@ test('streamed answer with eager resolvedThoughts emits leading reasoning block 
   assert.deepEqual(blockStarts, ['reasoning', 'text'])
 
   const reasoning = chunks.filter((c) => c.type === 'reasoning-delta').map((c) => (c as { text: string }).text).join('')
-  assert.equal(reasoning, '[agy thinking turn] Analyzing problem constraints and deciding algorithm.\n')
+  assert.equal(reasoning, 'Analyzing problem constraints and deciding algorithm.\n')
 
   const text = chunks.filter((c) => c.type === 'text-delta').map((c) => (c as { text: string }).text).join('')
   assert.equal(text, 'Hello world!')

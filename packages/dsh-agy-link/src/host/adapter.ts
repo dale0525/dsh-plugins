@@ -910,16 +910,20 @@ export class AgyAdapter extends LlmAdapter {
  * run and the event index to resume after.
  */
 export function detectContinuation(messages: readonly Message[]): { runId: string; eventIndex: number } | null {
-  // DSH may append plugin-owned snapshots after it stores a tool result.
-  // Extend PR #15's backward scan using DSH's explicit snapshot form.
-  // Other plugin forms can carry new instructions and must not be skipped.
-  // A human message, another provider's tool result, or any unknown
-  // boundary must stop the scan: continuing past one could replay a run for
-  // the wrong request instead of spawning the requested turn.
+  // DSH may append producer-owned snapshots after it stores a tool result.
+  // Extend PR #15's backward scan using the host's explicit snapshot FORM.
+  // The form — not the source kind — is the discriminator: MessageSourceMap is
+  // a merge-extensible sum with no catch-all 'plugin' kind, and 'snapshot' is
+  // the one form documented as "current state, superseded by a later snapshot
+  // from the same producer", so it cannot carry a new instruction. Every other
+  // form (notice / instructions / catalog / relay / recall) can, and must stop
+  // the scan. A human message, another provider's tool result, or any unknown
+  // boundary must stop it too: continuing past one could replay a run for the
+  // wrong request instead of spawning the requested turn.
   let i = messages.length - 1
   while (i >= 0) {
-    const snapshot = messages[i] as unknown as { source?: { kind?: string; form?: string } }
-    if (snapshot.source?.kind !== 'plugin' || snapshot.source.form !== 'snapshot') break
+    const snapshot = messages[i] as unknown as { source?: { form?: string } }
+    if (snapshot.source?.form !== 'snapshot') break
     i--
   }
   const last = messages[i]

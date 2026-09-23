@@ -141,25 +141,21 @@ export class EventMapper {
   }
 
   /**
-   * Emit thinking: always retain the [agy thinking turn · ... thinking tokens]
-   * banner. When real thought prose is present, place the banner and thought
-   * text on the same initial line so DSH's collapsed summary renders:
-   *   [agy thinking turn · *** thinking tokens] [Chain-of-Thought body]
+   * Emit thinking as the thought prose alone.
+   *
+   * The old '[agy thinking turn · N thinking tokens]' banner was plugin
+   * chrome, not model output: it polluted the reasoning text DSH renders and
+   * made every row start with the same synthetic prefix. The token count is
+   * already carried by usage accounting, so it is not repeated here.
    */
-  private *emitThinking(absIndex: number, thoughtTokens: number): Generator<StreamChunk> {
+  private *emitThinking(absIndex: number): Generator<StreamChunk> {
     const text = this.opts.resolvedThoughts?.get(absIndex)
     const hasText = text !== undefined && text.trim() !== ''
     // Only surface a reasoning row when we actually have thought/intent prose.
-    // Banner-only token chips clutter tool-heavy turns and teach nothing.
     if (!hasText) return
 
     yield* this.ensureBlock('reasoning')
-    const banner =
-      thoughtTokens > 0
-        ? '[agy thinking turn · ' + thoughtTokens + ' thinking tokens]'
-        : '[agy thinking turn]'
-    const combined = `${banner} ${text!.trim()}\n`
-    const d = this.appendDelta(combined)
+    const d = this.appendDelta(text!.trim() + '\n')
     if (d) yield d
   }
 
@@ -185,7 +181,7 @@ export class EventMapper {
         // been emitted yet, stream the reasoning block FIRST before answer text.
         if (shouldAnnounce && !stepTextEmitted && !this.thinkingAnnounced.has(ev.stepKey)) {
           this.thinkingAnnounced.add(ev.stepKey)
-          yield* this.emitThinking(absIndex, thoughtTokens)
+          yield* this.emitThinking(absIndex)
         }
         const deferred = shouldAnnounce && stepTextEmitted && !this.thinkingAnnounced.has(ev.stepKey)
         if (ev.text === '' && !ev.fragment) {
@@ -193,7 +189,7 @@ export class EventMapper {
           // complete — flush the deferred annotation now.
           if (deferred) {
             this.thinkingAnnounced.add(ev.stepKey)
-            yield* this.emitThinking(absIndex, thoughtTokens)
+            yield* this.emitThinking(absIndex)
           }
           return
         }
@@ -217,7 +213,7 @@ export class EventMapper {
           // This DONE closed the step's text: the chip lands after the
           // complete sentence, never between two of its fragments.
           this.thinkingAnnounced.add(ev.stepKey)
-          yield* this.emitThinking(absIndex, thoughtTokens)
+          yield* this.emitThinking(absIndex)
         }
         return
       }
@@ -279,7 +275,7 @@ export class EventMapper {
           ? { ...fullArgs, ...(typeof ev.tool.args === 'object' ? ev.tool.args as Record<string, unknown> : {}) }
           : ev.tool.args
         const argumentsJson = useCode
-          ? JSON.stringify(buildMirrorRunCode(this.opts.runId, absIndex, ev.tool.name, toolStepBrief(ev.tool.name, effectiveArgs)))
+          ? JSON.stringify(buildMirrorRunCode(this.opts.runId, absIndex, ev.tool.name, toolStepBrief(ev.tool.name, effectiveArgs), effectiveArgs))
           : JSON.stringify({
               run: this.opts.runId,
               step: absIndex,

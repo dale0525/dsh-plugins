@@ -770,16 +770,50 @@ export function AgyMirrorToolView(props: AgyToolViewProps): unknown {
 // ---- Register into DSH slots ----------------------------------------------
 
 /** Extract the agy mirror cursor (and tool name) from a run_code program. */
-function parseAgyMirrorFromCode(argsRaw: string): { run: string; step: number; tool?: string } | null {
+/** Read the JSON object literal starting at `open`, honoring strings and escapes. */
+function jsonObjectAt(text: string, open: number): string | null {
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (let i = open; i < text.length; i++) {
+		const ch = text[i];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (ch === '\\') escaped = true;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') inString = true;
+		else if (ch === '{') depth++;
+		else if (ch === '}') {
+			depth--;
+			if (depth === 0) return text.slice(open, i + 1);
+		}
+	}
+	return null;
+}
+
+function parseAgyMirrorFromCode(argsRaw: string): { run: string; step: number; tool?: string; input?: unknown } | null {
 	try {
 		const parsed = JSON.parse(argsRaw) as { code?: unknown };
 		const code = typeof parsed?.code === 'string' ? parsed.code : '';
-		const m = /tools\['agy_tool'\]\((\{.*?"step":\d+\})\)/.exec(code);
-		if (!m) return null;
-		const v = JSON.parse(m[1] as string) as { run?: unknown; step?: unknown };
+		const call = "tools['agy_tool'](";
+		const at = code.indexOf(call);
+		if (at < 0) return null;
+		const open = code.indexOf('{', at + call.length);
+		if (open < 0) return null;
+		const raw = jsonObjectAt(code, open);
+		if (raw === null) return null;
+		const v = JSON.parse(raw) as { run?: unknown; step?: unknown; tool?: unknown; input?: unknown };
 		if (typeof v.run !== 'string' || typeof v.step !== 'number') return null;
 		const tm = /replay recorded agy tool step \d+ \(([^)]+)\)/.exec(code);
-		return { run: v.run, step: v.step, tool: tm?.[1] };
+		const tool = typeof v.tool === 'string' ? v.tool : tm?.[1];
+		return {
+			run: v.run,
+			step: v.step,
+			...(tool !== undefined ? { tool } : {}),
+			...(v.input !== undefined ? { input: v.input } : {}),
+		};
 	} catch { /* not a mirror program */ }
 	return null;
 }
@@ -900,6 +934,7 @@ function AgyRunCodeToolView(props?: unknown): unknown {
 				run: mirror.run,
 				step: mirror.step,
 				...(mirror.tool !== undefined ? { tool: mirror.tool } : {}),
+				...(mirror.input !== undefined ? { input: mirror.input } : {}),
 			}),
 		},
 	} as unknown as ToolBlock;
