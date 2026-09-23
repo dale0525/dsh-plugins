@@ -19,6 +19,7 @@ import { defineAgyMirrorTool } from './host/mirror-tool.ts'
 import { ModelCatalog } from './host/models.ts'
 import { RunRegistry } from './host/recording.ts'
 import { MIN_AGY_VERSION, compareVersions, isolatedHomeEnv, parseVersion, probeProcess, resolveAgyBin } from './host/runner.ts'
+import { ensureAgyBin } from './host/install-agy.ts'
 import { SessionStore } from './host/sessions.ts'
 import { AccountPoolManager } from './host/pool.ts'
 import { syncAgyEnv } from './host/agy-env.ts'
@@ -252,10 +253,19 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
         log('dormant: disabled by config')
         return
       }
-      const currentBin = bin()
+      let currentBin = bin()
       if (!currentBin) {
-        dormantReason = 'agy binary not found — install via https://antigravity.google/docs/cli/install'
-        log('dormant: agy binary not found')
+        // No agy on disk: run the official installer once, then re-resolve.
+        log('agy not found — installing via the official installer')
+        const installed = await ensureAgyBin(getConfig())
+        if (installed !== null) {
+          binCache = installed
+          currentBin = installed
+        }
+      }
+      if (!currentBin) {
+        dormantReason = 'agy binary not found and auto-install failed — install manually via https://antigravity.google/docs/cli/install'
+        log('dormant: agy binary not found (auto-install failed)')
         return
       }
       try {
