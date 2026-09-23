@@ -29,6 +29,9 @@ importers:
       '@logictan/dsh-config-manager':
         specifier: ^0.1.64
         version: link:../dsh-config-manager
+      '@logictan/dsh-desktop-agent':
+        specifier: ^0.1.0
+        version: link:../dsh-desktop-agent
       '@logictan/dsh-easyrewrite':
         specifier: ^2.5.4
         version: link:../dsh-easyrewrite
@@ -273,6 +276,21 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+
+  packages/dsh-desktop-agent:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.2
+        version: 4.0.2(@deepseek-ai/cordis-plugin-include@1.0.7)(@deepseek-ai/cordis-plugin-loader@1.0.3)
+      '@deepseek-ai/dsh-llm':
+        specifier: ^0.1.6-alpha.2
+        version: 0.1.6-alpha.2(@deepseek-ai/cordis@4.0.2)
+      '@deepseek-ai/dsh-tools':
+        specifier: ^0.1.6-alpha.2
+        version: 0.1.6-alpha.2(e8d664b8446198a3dac4043bd11091d7)
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.3
+        version: 3.18.3
 
   packages/dsh-easyrewrite: {}
 

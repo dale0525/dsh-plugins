@@ -9,6 +9,7 @@ patchFrom:
   - ../dsh-fakeip-fetch
   - ../dsh-agy-link
   - ../dsh-browser-agent
+  - ../dsh-desktop-agent
   - ../dsh-openviking
   - ../dsh-loop-guard
   - ../dsh-better-reasoning-effort
@@ -20,6 +21,7 @@ deps:
   - ../dsh-fakeip-fetch
   - ../dsh-agy-link
   - ../dsh-browser-agent
+  - ../dsh-desktop-agent
   - ../dsh-openviking
   - ../dsh-loop-guard
   # dsh-better-reasoning-effort is a fork of the unscoped npm package

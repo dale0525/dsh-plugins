@@ -1,0 +1,81 @@
+{
+  "name": "@logictan/dsh-desktop-agent",
+  "version": "0.1.0",
+  "description": "DSH desktop agent: a native-vision decision loop that drives the host desktop through the Cua Driver tools. DSH 桌面 Agent 子插件。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "slots",
+        "remote",
+        "remote.session"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "build": "node build.mjs",
+    "prepare": "node build.mjs",
+    "prepack": "node build.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "desktop-agent",
+    "computer-use",
+    "cua",
+    "vision"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-desktop-agent"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": "^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-tools": "^0.1.6-alpha.2",
+    "@deepseek-ai/schemastery": "^3.18.3"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": "^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-tools": "^0.1.6-alpha.2",
+    "@deepseek-ai/schemastery": "^3.18.3"
+  }
+}
