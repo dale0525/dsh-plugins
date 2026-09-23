@@ -25,6 +25,11 @@
 - insert:
     - id: config-manager
       name: '@logictan/dsh-config-manager'
+      config:
+        # 约定配置目录：把 ~/.dsh/plugin-config/ 整棵子树纳入 pluginFiles 分区的
+        # 收集范围（适配器侧走 collectDir，相对 DSH_HOME）。白名单只能收单文件，
+        # 收不了目录树，所以跨设备同步的插件状态必须落在这一棵目录里。
+        pluginFilesDir: plugin-config
 
 # from ../dsh-workbuddy-connect
 # Register the WorkBuddy provider without changing the profile's current
