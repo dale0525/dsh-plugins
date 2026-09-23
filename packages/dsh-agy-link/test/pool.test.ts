@@ -1,10 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, utimesSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { modelFamilyOf, shouldPollAccount } from '../src/common/pool-types.ts'
-import { AccountPoolManager } from '../src/host/pool.ts'
+import { AccountPoolManager, defaultPoolDir, legacyPoolDir, migratePoolDir } from '../src/host/pool.ts'
 
 test('modelFamilyOf correctly categorizes models', () => {
   assert.equal(modelFamilyOf('gemini-3.7-flash'), 'google')
@@ -323,5 +323,177 @@ test('sweepOldLogs sweeps log files older than retention days', () => {
   assert.ok(swept >= 1)
   assert.equal(existsSync(oldLog), false)
   assert.equal(existsSync(freshLog), true)
+})
+
+test('defaultPoolDir respects DSH_STATE_DIR and falls back to dshHome, pointing to plugin-config/agy-link', () => {
+  const prevHome = process.env.DSH_HOME
+  const prevState = process.env.DSH_STATE_DIR
+  try {
+    process.env.DSH_STATE_DIR = '/custom/state'
+    process.env.DSH_HOME = '/custom/home'
+    assert.equal(defaultPoolDir(), join('/custom/state', 'plugin-config', 'agy-link'))
+    assert.equal(legacyPoolDir(), join('/custom/state', 'agy-accounts'))
+
+    delete process.env.DSH_STATE_DIR
+    assert.equal(defaultPoolDir(), join('/custom/home', 'plugin-config', 'agy-link'))
+    assert.equal(legacyPoolDir(), join('/custom/home', 'agy-accounts'))
+  } finally {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+    if (prevState === undefined) delete process.env.DSH_STATE_DIR
+    else process.env.DSH_STATE_DIR = prevState
+  }
+})
+
+test('migratePoolDir moves legacy directory to target directory when target does not exist', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-migrate-test-'))
+  try {
+    const legacyDir = join(root, 'agy-accounts')
+    const targetDir = join(root, 'plugin-config', 'agy-link')
+    mkdirSync(join(legacyDir, 'acc_1'), { recursive: true })
+    writeFileSync(join(legacyDir, 'pool.json'), JSON.stringify({ version: 1, accounts: [] }))
+    writeFileSync(join(legacyDir, 'acc_1', 'token.json'), 'secret-token')
+
+    const migrated = migratePoolDir(targetDir, legacyDir)
+    assert.equal(migrated, true)
+    assert.equal(existsSync(legacyDir), false, 'legacy dir must be completely removed')
+    assert.equal(existsSync(targetDir), true, 'target dir must exist')
+    assert.equal(existsSync(join(targetDir, 'pool.json')), true)
+    assert.equal(readFileSync(join(targetDir, 'acc_1', 'token.json'), 'utf8'), 'secret-token')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('migratePoolDir is idempotent: no-op if target directory already exists', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-migrate-idempotent-'))
+  try {
+    const legacyDir = join(root, 'agy-accounts')
+    const targetDir = join(root, 'plugin-config', 'agy-link')
+    mkdirSync(legacyDir, { recursive: true })
+    mkdirSync(targetDir, { recursive: true })
+    writeFileSync(join(legacyDir, 'legacy.txt'), 'old')
+    writeFileSync(join(targetDir, 'target.txt'), 'new')
+
+    const migrated = migratePoolDir(targetDir, legacyDir)
+    assert.equal(migrated, false)
+    assert.equal(readFileSync(join(targetDir, 'target.txt'), 'utf8'), 'new')
+    assert.equal(readFileSync(join(legacyDir, 'legacy.txt'), 'utf8'), 'old')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('migratePoolDir is a no-op when legacy directory does not exist', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-migrate-noop-'))
+  try {
+    const legacyDir = join(root, 'nonexistent-legacy')
+    const targetDir = join(root, 'plugin-config', 'agy-link')
+
+    const migrated = migratePoolDir(targetDir, legacyDir)
+    assert.equal(migrated, false)
+    assert.equal(existsSync(targetDir), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('migratePoolDir falls back to recursive copy and remove when rename fails', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-migrate-fallback-'))
+  try {
+    const legacyDir = join(root, 'agy-accounts')
+    const targetDir = join(root, 'plugin-config', 'agy-link')
+    mkdirSync(join(legacyDir, 'sub'), { recursive: true })
+    writeFileSync(join(legacyDir, 'sub', 'file.txt'), 'hello from legacy')
+
+    const migrated = migratePoolDir(targetDir, legacyDir, {
+      rename: () => {
+        const err = new Error('EXDEV: cross-device link not permitted') as NodeJS.ErrnoException
+        err.code = 'EXDEV'
+        throw err
+      },
+    })
+    assert.equal(migrated, true)
+    assert.equal(existsSync(legacyDir), false, 'source must be removed on cross-device fallback')
+    assert.equal(existsSync(targetDir), true)
+    assert.equal(readFileSync(join(targetDir, 'sub', 'file.txt'), 'utf8'), 'hello from legacy')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('AccountPoolManager automatically executes migration on bootstrap', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agy-pool-mgr-migrate-'))
+  try {
+    const legacyDir = join(root, 'agy-accounts')
+    const targetDir = join(root, 'plugin-config', 'agy-link')
+    mkdirSync(legacyDir, { recursive: true })
+    const initialData = {
+      version: 1,
+      mode: 'sequential',
+      defaultCooldownMs: 900000,
+      maxCooldownMs: 3600000,
+      accounts: [
+        {
+          id: 'acc_primary',
+          alias: 'Primary account (system sign-in)',
+          defaultAlias: true,
+          dir: '',
+          systemHome: true,
+          enabled: true,
+          createdAt: 100,
+          cooldowns: {},
+          quotas: {},
+        },
+        {
+          id: 'acc_secondary',
+          alias: 'Secondary Account',
+          dir: join(targetDir, 'acc_secondary'),
+          enabled: true,
+          createdAt: 200,
+          cooldowns: {},
+          quotas: {},
+        },
+      ],
+    }
+    writeFileSync(join(legacyDir, 'pool.json'), JSON.stringify(initialData, null, 2))
+
+    const pool = new AccountPoolManager(targetDir, legacyDir)
+    assert.equal(existsSync(legacyDir), false, 'legacy dir must have been migrated away')
+    assert.equal(existsSync(targetDir), true)
+    assert.equal(existsSync(join(targetDir, 'pool.json')), true)
+    assert.equal(pool.getAccounts().length, 2)
+    assert.equal(pool.getAccount('acc_secondary')?.alias, 'Secondary Account')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('absolute account dirs are re-based onto the active pool dir on load', () => {
+  // Accounts persist an absolute directory. A pool relocation or a sync from
+  // another machine leaves that path pointing at a directory that does not
+  // exist here, which would spawn agy with a dead HOME. The directory is
+  // always <poolDir>/<id>, so load() re-bases it.
+  const root = mkdtempSync(join(tmpdir(), 'agy-pool-rebase-'))
+  const poolDir = join(root, 'plugin-config', 'agy-link')
+  try {
+    mkdirSync(poolDir, { recursive: true })
+    writeFileSync(
+      join(poolDir, 'pool.json'),
+      JSON.stringify({
+        version: 1,
+        accounts: [
+          { id: 'acc_primary', alias: 'Primary', defaultAlias: true, dir: '', systemHome: true, enabled: true, createdAt: 1, cooldowns: {}, quotas: {} },
+          { id: 'acc_b', alias: 'B', dir: '/Users/someone-else/.dsh/agy-accounts/acc_b', enabled: true, createdAt: 2, cooldowns: {}, quotas: {} },
+        ],
+      }),
+    )
+
+    const pool = new AccountPoolManager(poolDir)
+    assert.equal(pool.getAccount('acc_b')?.dir, join(poolDir, 'acc_b'))
+    assert.equal(pool.getAccount('acc_primary')?.dir, '')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 

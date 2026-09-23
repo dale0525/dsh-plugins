@@ -28,7 +28,7 @@ test('disposing during MCP startup closes the listener without publishing the br
     apply(ctx, { enabled: true, mcpBridge: true, workspaceRoot: dir, agyBin: '/nonexistent/agy-test' })
     await ctx.fiber.dispose()
     await new Promise(resolve => setTimeout(resolve, 100))
-    assert.equal(existsSync(mcpConfigPath(join(dir, 'agy-accounts', 'env', 'acc_primary'))), false, 'disposed scope must not publish a bearer capability')
+    assert.equal(existsSync(mcpConfigPath(join(dir, 'plugin-config', 'agy-link', 'env', 'acc_primary'))), false, 'disposed scope must not publish a bearer capability')
     assert.equal(activeHandles().some(handle => !before.has(handle) && handle instanceof Server && handle.listening), false)
   } finally {
     await ctx.fiber.dispose()

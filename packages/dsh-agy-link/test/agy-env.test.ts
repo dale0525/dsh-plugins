@@ -102,6 +102,7 @@ test('agyHomeFor keeps the managed HOME inside the pool directory', () => {
     withDshDirs(root, () => {
       const home = agyHomeFor(account({ id: 'acc_primary', systemHome: true, dir: '' }))
       assert.equal(home, join(defaultPoolDir(), 'env', 'acc_primary'))
+      assert.equal(home, join(root, 'state', 'plugin-config', 'agy-link', 'env', 'acc_primary'))
       // pool.json, the isolated accounts and the managed HOMEs must share one
       // subtree: the config-manager sync covers it with a single directory
       // rule, and two sibling roots cannot be covered by one.

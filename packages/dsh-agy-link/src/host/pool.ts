@@ -1,7 +1,7 @@
 // AccountPoolManager: multi-profile credential isolation, family-scoped cooldown,
 // and sticky sequential drain scheduling for Google Antigravity accounts.
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import {
   defaultPoolData,
@@ -16,13 +16,50 @@ import {
 import { parseResetDurationMs } from '../common/types.ts'
 import { dshHome } from '../common/config.ts'
 
+export function legacyPoolDir(): string {
+  const dshState = process.env.DSH_STATE_DIR || dshHome()
+  return join(dshState, 'agy-accounts')
+}
+
 export function defaultPoolDir(): string {
   // DSH_HOME must move the pool with it: the plugin-managed agy HOMEs live
   // under this directory (env/<id>), and they have to sit next to the pool
   // rather than in a fixed location, so a relocated install keeps every
   // account artifact inside one subtree.
+  // Pool directory lives under plugin-config/agy-link so config-manager can
+  // sync accounts and managed HOMEs cross-device under a single collectDir.
   const dshState = process.env.DSH_STATE_DIR || dshHome()
-  return join(dshState, 'agy-accounts')
+  return join(dshState, 'plugin-config', 'agy-link')
+}
+
+export interface MigratePoolOptions {
+  rename?: (src: string, dest: string) => void
+}
+
+/**
+ * One-time migration: when the target directory does not exist and the legacy
+ * directory exists, move the legacy directory to the target.
+ * Uses atomic renameSync, falling back to recursive copy + removal when crossing devices.
+ * Idempotent: no-op if target exists or legacy does not exist.
+ */
+export function migratePoolDir(
+  targetDir = defaultPoolDir(),
+  legacyDir = legacyPoolDir(),
+  options?: MigratePoolOptions,
+): boolean {
+  if (targetDir === legacyDir || existsSync(targetDir) || !existsSync(legacyDir)) {
+    return false
+  }
+
+  mkdirSync(dirname(targetDir), { recursive: true })
+  try {
+    const doRename = options?.rename ?? renameSync
+    doRename(legacyDir, targetDir)
+  } catch {
+    cpSync(legacyDir, targetDir, { recursive: true })
+    rmSync(legacyDir, { recursive: true, force: true })
+  }
+  return true
 }
 
 export class AccountPoolManager {
@@ -30,9 +67,14 @@ export class AccountPoolManager {
   private readonly baseDir: string
   private readonly file: string
 
-  constructor(baseDir = defaultPoolDir()) {
-    this.baseDir = baseDir
-    this.file = join(baseDir, 'pool.json')
+  constructor(baseDir?: string, legacyDir?: string) {
+    const resolvedBase = baseDir ?? defaultPoolDir()
+    const resolvedLegacy = legacyDir ?? (baseDir === undefined || baseDir === defaultPoolDir() ? legacyPoolDir() : undefined)
+    if (resolvedLegacy !== undefined) {
+      migratePoolDir(resolvedBase, resolvedLegacy)
+    }
+    this.baseDir = resolvedBase
+    this.file = join(resolvedBase, 'pool.json')
     this.data = this.load()
     this.bootstrapDefaultAccount()
     this.normalizeLegacyPrimary()
@@ -44,10 +86,19 @@ export class AccountPoolManager {
         const raw = readFileSync(this.file, 'utf8')
         const parsed = JSON.parse(raw) as AccountPoolData
         if (parsed && Array.isArray(parsed.accounts)) {
-          return {
+          const merged: AccountPoolData = {
             ...defaultPoolData(),
             ...parsed,
           }
+          // Accounts persist an ABSOLUTE directory, which survives neither a
+          // pool relocation nor a sync to another machine. The directory is
+          // always <baseDir>/<id> by construction (commitStagingAccount), so
+          // re-base it here: one rule covers the legacy agy-accounts path and
+          // any path written by a different device.
+          merged.accounts = merged.accounts.map((a) =>
+            a.dir === '' || !isAbsolute(a.dir) ? a : { ...a, dir: join(this.baseDir, basename(a.dir)) },
+          )
+          return merged
         }
       }
     } catch {

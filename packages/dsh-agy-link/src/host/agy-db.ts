@@ -21,6 +21,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { readFile, unlink, copyFile, stat, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { defaultPoolDir } from './pool.ts'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 
@@ -43,7 +44,7 @@ export function conversationsDirCandidates(accountHome?: string): string[] {
   if (gch !== undefined && gch !== '') push(join(gch, 'antigravity-cli', 'conversations'))
   push(AGY_DB_DIR)
   push(join(homedir(), '.gemini', 'antigravity-cli', 'conversations'))
-  const poolBase = join(homedir(), '.dsh', 'agy-accounts')
+  const poolBase = defaultPoolDir()
   try {
     for (const ent of readdirSync(poolBase)) {
       if (ent.startsWith('.')) continue
