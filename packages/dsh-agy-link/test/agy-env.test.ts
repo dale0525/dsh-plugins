@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { GENERATED_HEADER, adaptAgentsMd, agyHomeFor, seedAgyHome, syncAgyEnv } from '../src/host/agy-env.ts'
@@ -217,6 +217,39 @@ test('syncAgyEnv merges the bridge into existing agy config instead of replacing
       writeFileSync(mcpFile, opaque)
       syncAgyEnv(acc, opts)
       assert.equal(readFileSync(mcpFile, 'utf8'), opaque)
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('syncAgyEnv survives a self-referential skill symlink and still writes the MCP config', () => {
+  // Real skill packs ship `subskills/<name> -> ..`. copyTree used to follow it,
+  // hit ENOTSUP in copyFileSync (the target is a directory), and throw out of
+  // syncAgyEnv — so the MCP bridge config was never written and agy could not
+  // reach DSH tools at all. The link must be recreated, not followed.
+  const root = tempDir('agy-symlink-')
+  const home = join(root, 'agy-home')
+  const skills = join(root, 'dsh', 'skills')
+  try {
+    withDshDirs(root, () => {
+      const skill = join(skills, 'alpha')
+      mkdirSync(join(skill, 'subskills'), { recursive: true })
+      writeFileSync(join(skill, 'SKILL.md'), '# alpha' + NL)
+      symlinkSync('..', join(skill, 'subskills', 'alpha'))
+
+      const acc = account({ dir: home })
+      assert.equal(syncAgyEnv(acc, { bridge, sourceHome: join(root, 'no-such-home') }), home)
+
+      const copiedLink = join(home, '.gemini', 'config', 'skills', 'alpha', 'subskills', 'alpha')
+      assert.equal(readlinkSync(copiedLink), '..')
+      const mcpFile = join(home, '.gemini', 'config', 'mcp_config.json')
+      assert.equal(
+        (JSON.parse(readFileSync(mcpFile, 'utf8')) as {
+          mcpServers: Record<string, { env?: Record<string, string> }>
+        }).mcpServers['dsh-tools']?.env?.DSH_MCP_URL,
+        bridge.url,
+      )
     })
   } finally {
     rmSync(root, { recursive: true, force: true })

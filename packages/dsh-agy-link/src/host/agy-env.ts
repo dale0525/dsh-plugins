@@ -8,7 +8,7 @@
 // Rules live at $HOME/.gemini/GEMINI.md, global skills at
 // $HOME/.gemini/config/skills/<name>/SKILL.md, and MCP servers at
 // $HOME/.gemini/config/mcp_config.json.
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { dshHome } from '../common/config.ts'
@@ -182,9 +182,23 @@ function copyTree(source: string, dest: string): void {
   for (const entry of readdirSync(source, { withFileTypes: true })) {
     const from = join(source, entry.name)
     const to = join(dest, entry.name)
-    if (entry.isDirectory()) copyTree(from, to)
+    if (entry.isSymbolicLink()) copyLink(from, to)
+    else if (entry.isDirectory()) copyTree(from, to)
     else copyFileIfChanged(from, to)
   }
+}
+
+/**
+ * Recreate a symlink instead of following it. Skill packs ship self-links such
+ * as `subskills/<name> -> ..`; following one recurses forever, and the
+ * copyFileSync fallback dies with ENOTSUP because the target is a directory —
+ * which aborted the whole env sync before the MCP config was ever written.
+ */
+function copyLink(from: string, to: string): void {
+  const target = readlinkSync(from)
+  if (existsSync(to) && lstatSync(to).isSymbolicLink() && readlinkSync(to) === target) return
+  rmSync(to, { recursive: true, force: true })
+  symlinkSync(target, to)
 }
 
 function copyFileIfChanged(from: string, to: string): void {
