@@ -258,9 +258,11 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
         // No agy on disk: run the official installer once, then re-resolve.
         log('agy not found — installing via the official installer')
         const installed = await ensureAgyBin(getConfig())
-        if (installed !== null) {
-          binCache = installed
-          currentBin = installed
+        if (installed.bin !== null) {
+          binCache = installed.bin
+          currentBin = installed.bin
+        } else if (installed.stderrTail !== '') {
+          log('auto-install failed: ' + installed.stderrTail)
         }
       }
       if (!currentBin) {

@@ -50,26 +50,21 @@ export function planInstall(platform: string, dir: string): InstallPlan {
   }
 }
 
-export interface InstallOptions {
-  dir?: string
-  platform?: string
-  timeoutMs?: number
-}
-
 export interface InstallResult {
   ok: boolean
   dir: string
+  /** Tail of the installer's stderr, surfaced when the install fails. */
   stderrTail: string
 }
 
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000
 
 /** Run the platform installer. A real network + file-system boundary. */
-export async function installAgy(opts: InstallOptions = {}): Promise<InstallResult> {
-  const platform = opts.platform ?? process.platform
-  const dir = opts.dir ?? defaultInstallDir(platform)
+export async function installAgy(): Promise<InstallResult> {
+  const platform = process.platform
+  const dir = defaultInstallDir(platform)
   const plan = planInstall(platform, dir)
-  const timeoutMs = opts.timeoutMs ?? INSTALL_TIMEOUT_MS
+  const timeoutMs = INSTALL_TIMEOUT_MS
   return await new Promise<InstallResult>((resolve) => {
     const child = spawn(plan.command, plan.args, { stdio: ['ignore', 'ignore', 'pipe'] })
     let stderr = ''
@@ -93,10 +88,10 @@ export async function installAgy(opts: InstallOptions = {}): Promise<InstallResu
  * null only when the install itself failed — the caller reports that instead
  * of silently degrading to "not installed".
  */
-export async function ensureAgyBin(cfg: PluginConfig, opts: InstallOptions = {}): Promise<string | null> {
+export async function ensureAgyBin(cfg: PluginConfig): Promise<{ bin: string | null; stderrTail: string }> {
   const found = resolveAgyBin(cfg)
-  if (found !== null) return found
-  const result = await installAgy(opts)
-  if (!result.ok) return null
-  return resolveAgyBin(cfg)
+  if (found !== null) return { bin: found, stderrTail: '' }
+  const result = await installAgy()
+  if (!result.ok) return { bin: null, stderrTail: result.stderrTail }
+  return { bin: resolveAgyBin(cfg), stderrTail: '' }
 }
