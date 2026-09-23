@@ -42,6 +42,14 @@ the agy-link rows are removed from the sync matrix. Provenance and LICENSE are k
     following one recursed, hit `ENOTSUP` in `copyFileSync`, and threw out of the env sync — which runs
     before the MCP config is written, so the bridge was never configured and agy could not reach DSH tools
     at all. Links are now recreated verbatim.
+  - A system-HOME account could be spawned with the real `~/.gemini`. The recording's `accountHome` — and
+    with it the child's `HOME` — was resolved *before* `syncAgyEnv` ran, so whenever the pool had not yet
+    persisted `agentHome` the value was `undefined`: no `HOME` was injected and agy read the system config
+    instead of the managed `mcp_config.json`. Both now take `syncAgyEnv`'s return value.
+  - `copyLink` treated a dangling symlink as absent (`existsSync` is false for one) and recreated it on
+    every sync; the idempotency check now uses a non-throwing `lstatSync`.
+  - `InstallResult` no longer reports an install directory on Windows, where the PowerShell installer picks
+    its own location; `defaultInstallDir` is documented and typed as the POSIX default only.
 
 ### 中文 (Chinese)
 
@@ -72,6 +80,13 @@ the agy-link rows are removed from the sync matrix. Provenance and LICENSE are k
   - 技能拷贝不再跟随符号链接。技能包里有 `subskills/<name> -> ..` 这类自引用软链；跟随它会递归、
     在 `copyFileSync` 抛 `ENOTSUP` 并冲出环境同步——而这一步排在写 MCP 配置之前，于是桥从未被配置、
     agy 根本调不到 DSH 工具。现在改为原样重建链接。
+  - 系统 HOME 账号可能带着真实的 `~/.gemini` 启动。录制里的 `accountHome`（以及子进程的 `HOME`）在
+    `syncAgyEnv` 之前就被解析；因此只要账号池尚未持久化 `agentHome`，取到的就是 `undefined`：
+    `HOME` 不被注入，agy 读的是系统配置而不是托管的 `mcp_config.json`。现在两者都取 `syncAgyEnv` 的返回值。
+  - `copyLink` 把悬空软链当成「不存在」（`existsSync` 对它返回 false），于是每次同步都重建一次；
+    幂等判定改用不抛异常的 `lstatSync`。
+  - `InstallResult` 不再在 Windows 上报告安装目录（PowerShell 安装脚本自选位置）；`defaultInstallDir`
+    的文档与签名都明确为仅 POSIX 默认值。
 
 ## 0.4.38 (2026-09-24)
 

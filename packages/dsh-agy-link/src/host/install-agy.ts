@@ -16,8 +16,8 @@ export const INSTALL_SH_URL = 'https://antigravity.google/cli/install.sh'
 /** Official Windows installer. */
 export const INSTALL_PS1_URL = 'https://antigravity.google/cli/install.ps1'
 
-/** Where both installers put the binary by default when no directory is given. */
-export function defaultInstallDir(platform: string = process.platform, home: string = homedir()): string {
+/** Where the POSIX installer puts the binary when no `-d` directory is given. */
+export function defaultInstallDir(home: string = homedir()): string {
   return join(home, '.local', 'bin')
 }
 
@@ -52,7 +52,6 @@ export function planInstall(platform: string, dir: string): InstallPlan {
 
 export interface InstallResult {
   ok: boolean
-  dir: string
   /** Tail of the installer's stderr, surfaced when the install fails. */
   stderrTail: string
 }
@@ -62,8 +61,7 @@ const INSTALL_TIMEOUT_MS = 5 * 60 * 1000
 /** Run the platform installer. A real network + file-system boundary. */
 export async function installAgy(): Promise<InstallResult> {
   const platform = process.platform
-  const dir = defaultInstallDir(platform)
-  const plan = planInstall(platform, dir)
+  const plan = planInstall(platform, defaultInstallDir())
   const timeoutMs = INSTALL_TIMEOUT_MS
   return await new Promise<InstallResult>((resolve) => {
     const child = spawn(plan.command, plan.args, { stdio: ['ignore', 'ignore', 'pipe'] })
@@ -74,11 +72,11 @@ export async function installAgy(): Promise<InstallResult> {
     })
     child.on('error', (err: Error) => {
       clearTimeout(timer)
-      resolve({ ok: false, dir, stderrTail: err.message })
+      resolve({ ok: false, stderrTail: err.message })
     })
     child.on('close', (code: number | null) => {
       clearTimeout(timer)
-      resolve({ ok: code === 0, dir, stderrTail: stderr.slice(-2000) })
+      resolve({ ok: code === 0, stderrTail: stderr.slice(-2000) })
     })
   })
 }

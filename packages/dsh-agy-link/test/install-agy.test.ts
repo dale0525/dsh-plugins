@@ -37,8 +37,7 @@ test('shellQuote wraps in single quotes and escapes embedded ones', () => {
   assert.equal(shellQuote("a'b"), "'a'\\''b'")
 })
 
-test('defaultInstallDir is the location both installers use by default', () => {
-  assert.equal(defaultInstallDir('darwin', '/Users/x'), '/Users/x/.local/bin')
-  assert.equal(defaultInstallDir('linux', '/home/x'), '/home/x/.local/bin')
-  assert.equal(defaultInstallDir('win32', 'C:\\Users\\x'), 'C:\\Users\\x/.local/bin')
+test('defaultInstallDir is the POSIX installer default location', () => {
+  assert.equal(defaultInstallDir('/Users/x'), '/Users/x/.local/bin')
+  assert.equal(defaultInstallDir('/home/x'), '/home/x/.local/bin')
 })

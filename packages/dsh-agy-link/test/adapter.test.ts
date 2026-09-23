@@ -900,6 +900,61 @@ test('sliding-window rate limit enforces request throttling per minute', async (
   assert.ok(elapsed < 15_000, `elapsed ${elapsed}ms exceeded 15000ms`)
 })
 
+// A system-HOME account has no `agentHome` until the pool persists it. The
+// spawn HOME must come from syncAgyEnv's return value: resolving it before the
+// sync leaves it undefined, and agy then runs with the real HOME and never
+// reads the managed mcp_config.json.
+test('a system-HOME account is spawned with the managed HOME before the pool persists agentHome', async () => {
+  const sandbox = mkdtempSync(join(tmpdir(), 'agy-home-'))
+  const homeFile = join(sandbox, 'child-home.txt')
+  const saved = {
+    HOME: process.env.HOME,
+    DSH_HOME: process.env.DSH_HOME,
+    DSH_STATE_DIR: process.env.DSH_STATE_DIR,
+    FAKE_AGY_HOME_FILE: process.env.FAKE_AGY_HOME_FILE,
+  }
+  const restoreEnv = (key: string, value: string | undefined): void => {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  process.env.HOME = join(sandbox, 'home')
+  process.env.DSH_HOME = join(sandbox, 'dsh')
+  process.env.DSH_STATE_DIR = join(sandbox, 'state')
+  process.env.FAKE_AGY_HOME_FILE = homeFile
+  try {
+    const account = {
+      id: 'acc_sys',
+      alias: 'primary',
+      dir: '',
+      systemHome: true,
+      enabled: true,
+      createdAt: 0,
+      cooldowns: {},
+      quotas: {},
+    }
+    const pool = {
+      selectAccount: () => account,
+      getAccounts: () => [account],
+      getEarliestResetCountdown: () => 0,
+      recordSuccess: () => {},
+      recordFailure: () => {},
+      markAuthRequired: () => {},
+    }
+    const { adapter } = makeAdapter({}, { pool: pool as never })
+    await collect(adapter.stream(opts([msg('user', 'hello')])))
+    assert.equal(
+      readFileSync(homeFile, 'utf8'),
+      join(sandbox, 'state', 'plugin-config', 'agy-link', 'env', 'acc_sys'),
+    )
+  } finally {
+    restoreEnv('HOME', saved.HOME)
+    restoreEnv('DSH_HOME', saved.DSH_HOME)
+    restoreEnv('DSH_STATE_DIR', saved.DSH_STATE_DIR)
+    restoreEnv('FAKE_AGY_HOME_FILE', saved.FAKE_AGY_HOME_FILE)
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+})
+
 test.after(() => {
   rmSync(workDir, { recursive: true, force: true })
 })

@@ -196,7 +196,10 @@ function copyTree(source: string, dest: string): void {
  */
 function copyLink(from: string, to: string): void {
   const target = readlinkSync(from)
-  if (existsSync(to) && lstatSync(to).isSymbolicLink() && readlinkSync(to) === target) return
+  // lstatSync must not throw for a dangling link: existsSync() reports false
+  // for one, so the link would be recreated on every sync.
+  const current = lstatSync(to, { throwIfNoEntry: false })
+  if (current?.isSymbolicLink() === true && readlinkSync(to) === target) return
   rmSync(to, { recursive: true, force: true })
   symlinkSync(target, to)
 }

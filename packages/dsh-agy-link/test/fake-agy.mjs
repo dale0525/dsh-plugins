@@ -20,6 +20,9 @@ if (process.env.FAKE_AGY_ARGS_FILE) {
 if (process.env.FAKE_AGY_CWD_FILE) {
   try { writeFileSync(process.env.FAKE_AGY_CWD_FILE, process.cwd()) } catch {}
 }
+if (process.env.FAKE_AGY_HOME_FILE) {
+  try { writeFileSync(process.env.FAKE_AGY_HOME_FILE, process.env.HOME ?? '') } catch {}
+}
 // Capture stdin for long-prompt transport tests (issue #14/#11).
 if (process.env.FAKE_AGY_STDIN_FILE) {
   let buf = ''

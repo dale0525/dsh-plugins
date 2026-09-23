@@ -30,8 +30,8 @@ let AGY_DB_DIR = join(homedir(), '.gemini', 'antigravity-cli', 'conversations')
 
 /**
  * Candidate conversations directories for a conversation id.
- * Pool/isolated accounts write agy state under their own HOME
- * (~/.dsh/agy-accounts/<id>/.gemini/...), NOT the system ~/.gemini
+ * Pool/isolated accounts write agy state under their own managed HOME
+ * (<defaultPoolDir()>/env/<id>/.gemini/...), NOT the system ~/.gemini
  * (issue: thinking/tool-args invisible when using isolated accounts).
  */
 export function conversationsDirCandidates(accountHome?: string): string[] {

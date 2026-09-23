@@ -8,7 +8,7 @@
 import { join } from 'node:path'
 import { LlmAdapter, LlmError, type GenerateOptions, type LlmModelInfo, type LlmProviderInfo, type LlmResolvedModelInfo, type Message, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { Err, looksLikeAuthFailure, looksLikeHardRateLimit, looksLikeRateLimit, PROVIDER_ID, type PluginConfig } from '../common/types.ts'
-import { modelFamilyOf, resolveAccountHome } from '../common/pool-types.ts'
+import { modelFamilyOf } from '../common/pool-types.ts'
 import type { AccountPoolManager } from './pool.ts'
 import { diffConversations, snapshotConversations } from './discovery.ts'
 import { EventMapper } from './mapper.ts'
@@ -575,12 +575,14 @@ export class AgyAdapter extends LlmAdapter {
     // The account's HOME is fixed before the spawn (a system-HOME account gets
     // a plugin-managed one), so the run recording and the spawned process read
     // the same agy state instead of racing each other.
-    const accountHome = account != null ? resolveAccountHome(account) : undefined
     if (account != null) {
       const bridge = this.deps.bridge?.()
-      syncAgyEnv(account, bridge != null ? { bridge } : {})
+      // syncAgyEnv materializes the managed HOME and returns it. Resolving the
+      // HOME before the sync would miss one the pool has not persisted yet, and
+      // the spawned agy would then read the system ~/.gemini instead of the
+      // bridge config just written.
+      rec.accountHome = syncAgyEnv(account, bridge != null ? { bridge } : {})
     }
-    rec.accountHome = accountHome
     const parser = new StreamJsonParser()
     this.deps.onParser?.(parser)
     let streamCid: string | null = null
@@ -639,7 +641,7 @@ export class AgyAdapter extends LlmAdapter {
             ANTIGRAVITY_DISABLE_TELEMETRY: '1',
           }
         : {}),
-      ...(accountHome !== undefined ? isolatedHomeEnv(accountHome) : {}),
+      ...(rec.accountHome !== undefined ? isolatedHomeEnv(rec.accountHome) : {}),
       ...(account?.proxyUrl
         ? {
             ALL_PROXY: account.proxyUrl,
