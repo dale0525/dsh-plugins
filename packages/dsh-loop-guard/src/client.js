@@ -217,7 +217,7 @@ window.__ModuleLoader__.load({
         key: "resumeAfterBreak",
         label: "切断后自动续跑",
         kind: "boolean",
-        hint: "不等你发话就自己往下走。无人值守的长任务才建议开。默认关。",
+        hint: "不等你发话就自己往下走。仅在关掉「注入纠正提示」时有用（开着时提示本身就会把任务推下去）。默认关。",
       },
       {
         group: "响应体损坏时重试",

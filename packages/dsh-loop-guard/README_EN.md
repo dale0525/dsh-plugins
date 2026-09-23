@@ -67,7 +67,7 @@ The screenshot above is real output: the reasoning block cycles through `OK. / W
 | The turn | ends with `turn/end`, reason `{ kind: 'completed' }` — **the same as a normal completion** |
 | The session | **survives**; the agent returns to `idle` and remains usable |
 | Tool calls already made | kept (`tool/result` is not rolled back) |
-| Injected notice | a `notice` explaining that N characters repeated and were cut, and to carry on with the task |
+| Injected notice | a `notice` injected as a steering message (`next-step`), explaining that N characters repeated and were cut, and to carry on with the task |
 | Terminal chunk | protocol-legal: every open block is closed first, then a `stop` finish — verified against DSH's own `@deepseek-ai/dsh-llm/invariant` |
 
 So the experience is: **loop → cut within a few hundred characters → the model is pointed back at its task → work continues**.
@@ -81,21 +81,18 @@ The plugin **ends the call, never the agent** — it never calls `agent.cancel()
 
 ### Automatic continuation (`resumeAfterBreak`)
 
-**Usually unnecessary.** A cut does not end the session, so the task already continues; this option only makes it proceed *without waiting for you*:
+**Only meaningful with `breakCorrection` off.** The correction is itself a steering message (`next-step`), and a turn only ends once `next-step` is empty — so "cut + correction" already keeps the task moving on its own. This option covers the remaining case: with `breakCorrection: false` nothing is left behind, the session stops and waits for you, and `resumeAfterBreak` is what pushes it forward again.
 
 ```yaml
 - id: loop-guard
   config:
-    resumeAfterBreak: true
-```
-
-```yaml
-- id: loop-guard
-  config:
+    breakCorrection: false
     resumeAfterBreak: true
 ```
 
 **The waiting is the whole trick, not an implementation detail**: the cut happens inside the stream wrapper, while the agent is still `running`, and DSH deliberately suppresses wakes in that phase — `wakeDriver()` only latches for maintenance or an aborted activity, so a `steer()` / `followup()` issued there sets no `wakeRequested`, `kick()`'s `finally` finds nothing to wake on, and the session settles. A wake only takes effect once the agent is back to `idle`, which is what the plugin waits for via `whenIdle()`.
+
+**The continuation is steering (`next-step`), never queued (`next-turn`).** This is not a style choice: `claim()` takes exactly **one** message from `next-turn` per turn, so N queued messages are N turns, drained one at a time. A single turn can break dozens of times, and the queued channel turns that into a backlog of hundreds consumed one per turn. `next-step` is drained **whole** at the next step boundary, so it cannot accumulate. Every notice this plugin emits is a steering message.
 
 The continuation **carries the correction text and is never empty**. An empty message would re-enter the model with the same degenerate history and no new instruction — exactly the input that produced the loop.
 
@@ -201,7 +198,7 @@ interface Config {
   breakCode?: string
   /** Steer once after a cut so the resumed turn is corrected. Default true. */
   breakCorrection?: boolean
-  /** Wait for the turn to unwind, then continue automatically. Default false. */
+  /** Wait for the turn to unwind, then steer a correction in to push the task forward. Only useful with breakCorrection off. Default false. */
   resumeAfterBreak?: boolean
 
   // ── retry of a corrupted response body ────────────────────
@@ -220,9 +217,10 @@ interface Config {
   config:
     maxThinkingSteps: 2
 
-# 2. Unattended: pick the work back up after a loop
+# 2. Unattended: leave no notice behind, let the continuation steer the task forward
 - id: loop-guard
   config:
+    breakCorrection: false
     resumeAfterBreak: true
 
 # 3. Keep only the reasoning-cycle rule, disable everything else
@@ -331,7 +329,7 @@ Lines shorter than two characters are excluded from **both** sides of the ratio 
 
 **Usually nothing.** A cut ends the current call only; the turn settles normally and the session stays usable, so the task simply continues. The injected notice points the model back at its work.
 
-You only need `resumeAfterBreak: true` if you want it to continue *without waiting for you*.
+You only need `breakCorrection: false` + `resumeAfterBreak: true` if you want it to continue *without waiting for you* **and without leaving a correction behind**. With `breakCorrection` on (the default) the correction is already steered in, so `resumeAfterBreak` adds nothing.
 
 **Q: How do I tell that a cut happened?**
 
@@ -343,7 +341,7 @@ No. The judgement is **verbatim periodicity** and **cross-call restatement**, no
 
 **Q: Why not just retry the request automatically?**
 
-Because retrying a **loop** re-sends the same request — the history is unchanged, so the already-degenerate model gets the same input and most likely loops again. It also bypasses the turn boundary, hiding the fact that a loop ever happened. `resumeAfterBreak` opens a **new turn** carrying the correction, which is the better shape.
+Because retrying a **loop** re-sends the same request — the history is unchanged, so the already-degenerate model gets the same input and most likely loops again. It also bypasses the turn boundary, hiding the fact that a loop ever happened. `resumeAfterBreak` waits for the current turn to unwind and then **steers** in a message carrying the correction, so the history carries it — the better shape.
 
 **Q: Then why is "本轮运行失败 … JSON at position N" retried?**
 

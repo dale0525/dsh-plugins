@@ -473,13 +473,18 @@ test('an unbroken reasoning bleed would have run to completion', async () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * An agent stand-in that models `agent-loop`'s wake suppression.
+ * An agent stand-in that separates the two inbox channels.
  *
- * The real `wakeDriver()` only starts a driver when the phase is `idle`; while
- * `running` it refuses to latch a non-abort wake, so a `followup()` issued from
- * inside the stream wrapper is dropped and the session comes to rest. This
- * stand-in reproduces that boundary so the test can prove the delay is
- * load-bearing rather than incidental.
+ * `steered` is `next-step` — the interrupting channel a break must use.
+ * `followups` is `next-turn` — the queued channel, one message per turn. It is
+ * recorded precisely so a test can prove the guard never uses it: the shipped
+ * failure was 78 corrections queued into `next-turn`, drained one per turn.
+ *
+ * The stand-in also models `agent-loop`'s wake suppression. The real
+ * `wakeDriver()` only starts a driver when the phase is `idle`; while `running`
+ * it refuses to latch a non-abort wake, so a nudge issued from inside the stream
+ * wrapper is dropped and the session comes to rest. This reproduces that
+ * boundary so the test can prove the delay is load-bearing, not incidental.
  */
 function resumeAgent() {
   let idlePromise = null
@@ -491,7 +496,6 @@ function resumeAgent() {
     followups,
     /** Simulate the driver being busy until `finishTurn()` is called. */
     _busy: true,
-    _wokeWhileBusy: 0,
     steer: (m) => steered.push(m),
     inject: () => {},
     cancel: () => {},
@@ -501,9 +505,6 @@ function resumeAgent() {
       return idlePromise
     },
     followup(m) {
-      // A wake while running is dropped by the harness; only an idle wake starts
-      // a driver. Recording it separately is what makes the ordering assertable.
-      if (agent._busy) { agent._wokeWhileBusy++; return }
       followups.push(m)
     },
   }
@@ -527,13 +528,12 @@ test('resumeAfterBreak re-enters the model only after the turn is idle', async (
   // Still running: the wake must not have been delivered yet, and must not have
   // been attempted into the busy phase either — the guard waits, it does not
   // fire a doomed wake and hope.
-  assert.equal(agent.followups.length, 0, 'no wake while the turn is still unwinding')
-  assert.equal(agent._wokeWhileBusy, 0, 'the guard must wait for idle, not race it')
+  assert.equal(agent.steered.length, 0, 'no wake while the turn is still unwinding')
 
   await agent.finishTurn()
 
-  assert.equal(agent.followups.length, 1, 'exactly one continuation after idle')
-  const text = agent.followups[0].content.map((b) => b.text ?? '').join('')
+  assert.equal(agent.steered.length, 1, 'exactly one continuation after idle')
+  const text = agent.steered[0].content.map((b) => b.text ?? '').join('')
   assert.match(text, /截断/, 'the continuation carries the correction, it is not empty')
 })
 
@@ -548,19 +548,55 @@ test('the continuation is never an empty message', async () => {
   await runChain(listeners, options, () => reasoningStream(BLEED))
   await agent.finishTurn()
 
-  const blocks = agent.followups[0].content
+  const blocks = agent.steered[0].content
   assert.ok(blocks.length > 0, 'must carry at least one block')
   assert.ok(blocks.every((b) => (b.text ?? '').length > 0), 'no empty text block')
 })
 
 test('resumeAfterBreak is off by default', async () => {
+  // `breakCorrection` is switched off so the only thing that could reach the
+  // model here is the resume path itself.
   const agent = resumeAgent()
   const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx, configRefs({ ...CONFIG, breakCorrection: false }))
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   await runChain(listeners, options, () => reasoningStream(BLEED))
   await agent.finishTurn()
-  assert.equal(agent.followups.length, 0, 'the default must not re-enter the model unasked')
+  assert.equal(agent.steered.length, 0, 'the default must not re-enter the model unasked')
+})
+
+test('the post-break notice is always steering, never a queued turn', async () => {
+  // The shipped failure: 78 mid-stream breaks in one turn each pushed the same
+  // correction into `next-turn`. `claim()` consumes exactly ONE queued message
+  // per turn, so the backlog drained as 78 separate one-step turns — the
+  // "hundreds of queued messages, delivered one by one" report.
+  //
+  // A break warning must therefore always land in `next-step`, the channel that
+  // is drained whole at the next step boundary.
+  const agent = resumeAgent()
+  const { ctx, listeners } = chainContext(agent)
+  plugin.apply(ctx, configRefs({ ...CONFIG, resumeAfterBreak: true }))
+  const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
+  await runChain(listeners, options, () => reasoningStream(BLEED))
+  await agent.finishTurn()
+
+  assert.deepEqual(agent.followups, [], 'no notice may be queued into next-turn')
+  assert.ok(agent.steered.length > 0, 'the notice must reach next-step')
+})
+
+test('a break does not deliver the same correction twice', async () => {
+  // `breakCorrection` already steers the correction, and a steered message keeps
+  // the turn alive by itself (`turn()` only breaks while `nextStep` is empty).
+  // The resume path must not append a second identical copy on top of it.
+  const agent = resumeAgent()
+  const { ctx, listeners } = chainContext(agent)
+  plugin.apply(ctx, configRefs({ ...CONFIG, resumeAfterBreak: true, breakCorrection: true }))
+  const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
+  await runChain(listeners, options, () => reasoningStream(BLEED))
+  await agent.finishTurn()
+
+  assert.equal(agent.steered.length, 1, 'one break, one correction — not a duplicate')
+  assert.deepEqual(agent.followups, [])
 })
 
 test('the shipped schema defaults resumeAfterBreak to false', () => {
@@ -574,12 +610,12 @@ test('the shipped schema defaults resumeAfterBreak to false', () => {
   assert.equal(cleared.get(), false)
 })
 
-test('a guard without whenIdle/followup still breaks cleanly', async () => {
-  // The resume methods are optional on the Agent type, so a stand-in that omits
-  // them must not turn a working break into a crash.
+test('a guard without whenIdle still breaks cleanly', async () => {
+  // `whenIdle` is optional on the Agent type, so a stand-in that omits it must
+  // not turn a working break into a crash.
   const agent = { steer: () => {}, inject: () => {}, cancel: () => {} }
   const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs({ ...CONFIG, resumeAfterBreak: true }))
+  plugin.apply(ctx, configRefs({ ...CONFIG, resumeAfterBreak: true, breakCorrection: false }))
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const seen = await runChain(listeners, options, () => reasoningStream(BLEED))
   assert.equal(seen.at(-1).reason.kind, 'stop')

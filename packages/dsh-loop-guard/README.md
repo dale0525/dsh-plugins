@@ -67,7 +67,7 @@
 | 回合 | 以 `turn/end` 结束，原因是 `{ kind: 'completed' }`——**和正常完成一样** |
 | 会话 | **存活**，agent 回到 `idle`，可直接继续 |
 | 已执行的工具调用 | **保留**（`tool/result` 不回滚） |
-| 注入的提示 | 一条 `notice`，说明「已连续重复 N 字符，响应被中途截断，不要重复，继续完成任务」 |
+| 注入的提示 | 一条 `notice`，以插队消息（`next-step`）注入，说明「已连续重复 N 字符，响应被中途截断，不要重复，继续完成任务」 |
 | 终止 chunk | 协议合法：切断前先闭合所有 block，再用 `stop` 结束，已用 DSH 自己的 `@deepseek-ai/dsh-llm/invariant` 验证 |
 
 所以体验是：**循环 → 在几百字符处被切断 → 提示它回到任务 → 继续干活**。
@@ -81,15 +81,18 @@
 
 ### 自动续跑（`resumeAfterBreak`）
 
-**通常不需要开。** 熔断本身不会结束会话，任务已经能继续；这个选项只是让它在切断后**不等你发话**就自己往下走：
+**只在关掉 `breakCorrection` 时才有意义。** 纠正提示本身就是插队消息（`next-step`），而回合只有在 `next-step` 空了才收尾，所以「切断 + 纠正」已经能让任务自己往下走。这个选项补的是剩下那种情形：`breakCorrection: false` 时没有任何消息留下，会话会停在原地等你，`resumeAfterBreak` 才把它推起来。
 
 ```yaml
 - id: loop-guard
   config:
+    breakCorrection: false
     resumeAfterBreak: true
 ```
 
 **关键在于「等」**，这不是实现细节而是整个方案成立的前提：切断发生在流包装器里，此时 agent 还处于 `running`，而 DSH 在这个阶段**刻意压制唤醒**——`wakeDriver()` 只肯为 maintenance 或 aborted 挂起唤醒，所以此刻发 `steer()` / `followup()` 都不会置 `wakeRequested`，`kick()` 的 `finally` 找不到唤醒依据，会话就此停下。唤醒只有在 agent 回到 `idle` 后才有效，插件用 `whenIdle()` 等这个时刻。
+
+**续跑走插队通道（`next-step`），不走排队通道（`next-turn`）。** 这不是风格问题：`claim()` 每回合只从 `next-turn` 取**一条**，所以 N 条排队消息就是 N 个回合，一条条慢慢放。一个回合里可能熔断几十次，排队通道会把它们堆成上百条待办，之后每回合只消化一条。`next-step` 在下个步骤边界**整批**取走，因此不会堆积。插件发出的所有提示都是插队消息。
 
 续跑消息**带纠正文本，从不是空的**。空消息等于把同一段退化历史原样再喂一遍、不带任何新信息——那正是产生循环的输入。
 
@@ -191,7 +194,7 @@ interface Config {
   breakCode?: string
   /** 切断时注入一条纠正提示，让模型回到原任务。默认 true。 */
   breakCorrection?: boolean
-  /** 切断后等回合收尾，不等你发话就自动续跑。默认 false。 */
+  /** 切断后等回合收尾，再插队一条纠正消息把任务推起来。仅在 breakCorrection 关闭时有用。默认 false。 */
   resumeAfterBreak?: boolean
 
   // ── 响应体损坏时重试 ──────────────────────────────────────
@@ -212,9 +215,10 @@ interface Config {
   config:
     maxThinkingSteps: 2
 
-# 2. 无人值守：循环后自动接上
+# 2. 无人值守：切断后不留提示，由续跑插队推起来
 - id: loop-guard
   config:
+    breakCorrection: false
     resumeAfterBreak: true
 
 # 3. 只想要推理循环这一条，其余全部关掉
@@ -323,7 +327,7 @@ Let me write. / Go. / Executing. / OK. / Let me read the README section. / Go. /
 
 **通常什么都不用做。** 熔断只结束当前这次调用，回合正常收尾，会话继续可用——你的任务可以直接往下走。注入的提示会让模型回到原本的任务。
 
-只有想让它在切断后**不等你发话**就自动继续时，才需要开 `resumeAfterBreak: true`。
+只有想让它在切断后**不等你发话**就自动继续、且**不留纠正提示**时，才需要 `breakCorrection: false` + `resumeAfterBreak: true`。开着 `breakCorrection`（默认）时纠正提示本身就插队了，`resumeAfterBreak` 没有额外作用。
 
 **Q：怎么知道熔断发生过？**
 
@@ -335,7 +339,7 @@ Let me write. / Go. / Executing. / OK. / Let me read the README section. / Go. /
 
 **Q：为什么不直接自动重试那个请求？**
 
-因为**循环**的重试会重发同一个请求——历史完全没变，等于把已经退化的模型再喂一遍，大概率再循环一次。而且它绕过了回合边界，你连「发生过循环」都看不到。`resumeAfterBreak` 走的是**新回合**，历史里带着纠正信息，是更好的形态。
+因为**循环**的重试会重发同一个请求——历史完全没变，等于把已经退化的模型再喂一遍，大概率再循环一次。而且它绕过了回合边界，你连「发生过循环」都看不到。`resumeAfterBreak` 是等当前回合收尾后**插队**一条带纠正信息的消息，历史里带着纠正，是更好的形态。
 
 **Q：那「本轮运行失败 … JSON at position N」为什么就重试？**
 

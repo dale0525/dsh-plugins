@@ -177,12 +177,12 @@ type UserMessage = ReturnType<typeof createUserMessage>
 /**
  * The agent's public methods the guard reacts with.
  *
- * `whenIdle`/`followup` are optional because they are only needed for
- * {@link Config.resumeAfterBreak}, and a guard that required them would fail to
- * mount on any Agent-shaped stand-in that omits them.
+ * `whenIdle` is optional because it is only needed for
+ * {@link Config.resumeAfterBreak}, and a guard that required it would fail to
+ * mount on any Agent-shaped stand-in that omits it.
  */
 type GuardableAgent = Pick<Agent, 'inject' | 'steer' | 'cancel'>
-  & Partial<Pick<Agent, 'whenIdle' | 'followup' | 'status'>>
+  & Partial<Pick<Agent, 'whenIdle' | 'status'>>
 
 /** Plugin configuration. */
 export interface Config {
@@ -371,8 +371,13 @@ export interface Config {
    * neither and lets the session come to rest. The wake has to happen *after*
    * the driver returns to `idle`, which is what `whenIdle()` waits for.
    *
+   * Only meaningful with `breakCorrection: false`. A steered correction already
+   * keeps the turn alive on its own — `turn()` only ends while `nextStep` is
+   * empty — so with the correction on there is nothing left for this option to
+   * do, and scheduling it as well would deliver the same text twice.
+   *
    * The continuation message is the same correction text `breakCorrection`
-   * queues, delivered as a follow-up turn. It is never empty: a user message
+   * steers, delivered as a steering notice. It is never empty: a user message
    * with no text blocks carries no instruction, and `createUserMessage` is
    * happy to build one, so an "empty retry" would re-enter the model with the
    * degenerate history unchanged — the shape that produced the loop.
@@ -1467,12 +1472,17 @@ function installListeners(ctx: Context, currentConfig: () => ResolvedConfig): vo
     ctx.logger.warn(`dsh-loop-guard: breaking a repetitive stream (${chars} chars, one call, rule: ${rule}, code: ${config.breakCode})`)
     if (config.breakCorrection) {
       agent.steer(message(s.correction(what, chars), 'notice', s.breakSummary(what, chars)))
+    } else if (config.resumeAfterBreak) {
+      // Only reachable when nothing was steered above: a steered correction
+      // keeps the turn alive on its own (`turn()` only breaks while `nextStep`
+      // is empty), so scheduling a resume as well would deliver the same text
+      // twice — and it is the resume copy that accumulates.
+      //
+      // Called synchronously here, before the terminal chunk is yielded, so the
+      // `whenIdle()` promise observes this turn's completion. Awaiting it later,
+      // from the break path, would race the very wind-down it needs to follow.
+      scheduleResume(agent, s.correction(what, chars), s.breakSummary(what, chars))
     }
-    // Start waiting for the driver to return to `idle` BEFORE the terminal chunk
-    // is yielded. The `whenIdle()` promise is captured here, synchronously, so
-    // it observes this turn's completion; awaiting it later (from the break
-    // path) would race the very wind-down it needs to follow.
-    if (config.resumeAfterBreak) scheduleResume(agent, s.correction(what, chars), s.breakSummary(what, chars))
     const out: StreamChunk[] = []
     for (const block of open) {
       // `block-end` wins over the accumulated deltas (`BlockAssembler.assemble`
@@ -1497,19 +1507,25 @@ function installListeners(ctx: Context, currentConfig: () => ResolvedConfig): vo
    * to latch it, and `kick()`'s `finally` sees no `wakeRequested`. Waiting on
    * `whenIdle()` is what puts the wake on the far side of that boundary.
    *
-   * The continuation is a follow-up turn carrying the correction text rather
-   * than an empty message: an empty one would hand the model the same
-   * degenerate history with no new instruction, which is the loop's own input.
+   * The continuation goes through `steer()`, never `followup()`. Both wake the
+   * driver identically, but they land in different inboxes: `followup()` writes
+   * `next-turn`, and `claim()` consumes exactly ONE queued message per turn, so
+   * a burst of breaks accumulates a backlog that drains as one single-step turn
+   * per message. `steer()` writes `next-step`, which is drained whole at the
+   * next step boundary. Every notice this plugin emits is a steering notice.
+   *
+   * The continuation carries the correction text rather than an empty message:
+   * an empty one would hand the model the same degenerate history with no new
+   * instruction, which is the loop's own input.
    *
    * Failures here are logged, never thrown: this runs detached from the stream,
    * and a guard must not be the reason a session dies.
    */
   function scheduleResume(agent: GuardableAgent, text: string, summary: string): void {
     const whenIdle = agent.whenIdle
-    const followup = agent.followup
-    if (typeof whenIdle !== 'function' || typeof followup !== 'function') return
+    if (typeof whenIdle !== 'function') return
     void whenIdle.call(agent).then(() => {
-      followup.call(agent, message(text, 'notice', summary))
+      agent.steer(message(text, 'notice', summary))
       ctx.logger.debug('dsh-loop-guard: resumed the turn after a break')
     }).catch((error: unknown) => {
       ctx.logger.warn(`dsh-loop-guard: could not resume after a break: ${String(error)}`)
