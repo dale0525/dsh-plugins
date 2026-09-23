@@ -32,10 +32,10 @@ export interface InstallPlan {
 }
 
 /**
- * The command that installs agy on `platform`, into `dir`. Pure: the caller
- * decides whether to run it. Windows has no `--dir` equivalent in the official
- * script, so it installs to the location defaultInstallDir() reports and
- * resolveAgyBin() already probes.
+ * The command that installs agy on `platform`. Pure: the caller decides
+ * whether to run it. `dir` only applies on POSIX, where the official shell
+ * installer accepts `-d`; the Windows script has no equivalent and picks its
+ * own location, so the command is built without it there.
  */
 export function planInstall(platform: string, dir: string): InstallPlan {
   if (platform === 'win32') {
