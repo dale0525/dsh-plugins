@@ -347,6 +347,30 @@ test('a title-less helper window does not shadow the window it floats over', asy
   assert.equal(captureCall.arguments.window_id, 7, 'the overlay is not the window to drive');
 });
 
+test('an app whose every window is title-less falls back to the frontmost one', async () => {
+  // The title rule narrows the choice, it does not replace it: when nothing is
+  // titled there is no overlay to avoid, so the z_index order must stand. Without
+  // this fallback the candidate pool would be empty and the run would crash
+  // instead of driving the only window the app has.
+  const noTitles = {
+    structuredContent: {
+      windows: [
+        { pid: 42, window_id: 7, app_name: 'Game', title: '', is_on_screen: true, z_index: 10 },
+        { pid: 42, window_id: 9, app_name: 'Game', title: '', is_on_screen: true, z_index: 11 },
+      ],
+    },
+    content: [{ type: 'text', text: '{}' }],
+  };
+  const { ctx, registered, dispatches } = host({
+    replies: { cua_driver_native__list_windows: noTitles, cua_driver_native__get_window_state: capture() },
+  });
+  apply(ctx, configRefs());
+  await registered[0].execute({ app: 'Game', goal: 'play' }, execFor());
+
+  const captureCall = dispatches.find((dispatch) => dispatch.name === 'cua_driver_native__get_window_state');
+  assert.equal(captureCall.arguments.window_id, 9, 'with no title to prefer, the frontmost window wins');
+});
+
 test('omitting the app argument takes the frontmost window even when it has no title', async () => {
   // "Omit to use the frontmost window" is literal. The title rule that fixes the
   // overlay case must not leak here: these candidates span every app, so passing

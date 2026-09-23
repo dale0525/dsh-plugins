@@ -256,7 +256,7 @@ async function resolveTarget(input) {
     // by z_index alone. The title rule below is deliberately NOT applied here:
     // its candidates span every app, so passing over a title-less frontmost
     // window could hand back a different application's window.
-    const frontmost = [...onScreen].sort((a, b) => (b.z_index ?? 0) - (a.z_index ?? 0))[0];
+    const frontmost = topmost(onScreen);
     if (frontmost === undefined) throw new Error('desktop_agent: no window is currently on screen to drive.');
     return targetOf(frontmost);
   }
@@ -287,18 +287,30 @@ async function resolveTarget(input) {
  * not act on. The driver's own AX root for a real window is `AXWindow "<title>"`;
  * the overlay has no title at all.
  *
- * Safe to apply here because every candidate already belongs to the matched app,
- * so a title-less window is only ever passed over for a titled sibling of the
- * same app. When all candidates are title-less — a fullscreen game, say — the
- * z_index order is unchanged, so this narrows the choice rather than replacing it.
+ * The needle matches app_name OR title, so these candidates are not guaranteed
+ * to share one app. Preferring a titled window is still right — a title-less
+ * window is an overlay whoever owns it — and a title-less window is only ever
+ * passed over for a titled sibling. When all candidates are title-less — a
+ * fullscreen game, say — the z_index order is unchanged, so this narrows the
+ * choice rather than replacing it.
  *
- * @param candidates - the on-screen windows an app argument matched.
- * @returns the chosen window, or undefined when there is none.
+ * @param candidates - the on-screen windows an app argument matched; never empty,
+ *   so the choice is always defined.
+ * @returns the chosen window.
  */
 function bestMatch(candidates) {
   const titled = candidates.filter((window) => String(window.title ?? '') !== '');
-  const pool = titled.length > 0 ? titled : candidates;
-  return [...pool].sort((a, b) => (b.z_index ?? 0) - (a.z_index ?? 0))[0];
+  return topmost(titled.length > 0 ? titled : candidates);
+}
+
+/**
+ * The frontmost of a set of windows.
+ *
+ * @param windows - the windows to rank.
+ * @returns the highest z_index window, or undefined when there is none.
+ */
+function topmost(windows) {
+  return [...windows].sort((a, b) => (b.z_index ?? 0) - (a.z_index ?? 0))[0];
 }
 
 /** Narrow one listed window to the target shape the loop uses. */
