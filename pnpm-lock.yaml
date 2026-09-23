@@ -30,7 +30,7 @@ importers:
         specifier: ^0.1.64
         version: link:../dsh-config-manager
       '@logictan/dsh-desktop-agent':
-        specifier: ^0.1.0
+        specifier: ^0.1.1
         version: link:../dsh-desktop-agent
       '@logictan/dsh-easyrewrite':
         specifier: ^2.5.4
