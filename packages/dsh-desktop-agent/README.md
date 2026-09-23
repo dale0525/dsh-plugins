@@ -48,8 +48,8 @@ to the `cua_driver_native__*` tools it publishes and has no driver of its own.
 
 `desktop_agent({ app, goal, windowId })` resolves one window, runs the
 observe/decide/act loop until `DONE`/`BLOCKED` or a cap is reached, and returns a
-structured trace. `app` accepts a bundle id, an application name, or a window
-title; omitting it uses the frontmost window.
+structured trace. `app` accepts an application name or a window title; omitting
+it uses the frontmost window.
 
 Only on-screen windows are eligible. A covered window cannot be captured or acted
 on, so the tool fails with the window named rather than screenshotting whatever

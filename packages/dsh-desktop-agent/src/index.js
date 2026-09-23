@@ -151,7 +151,7 @@ export function apply(ctx, config) {
       'delivery — the plugin settings control that. This tool waits for the run to finish and returns a structured ' +
       'trace of every step.',
     parameters: {
-      app: { type: 'string', description: 'Application to drive: a bundle id, an app name, or a window title. Omit to use the frontmost window.' },
+      app: { type: 'string', description: 'Application to drive: an app name or a window title. Omit to use the frontmost window.' },
       goal: { type: 'string', description: 'What must be true when the task is finished.', required: true },
       windowId: { type: 'integer', description: 'Exact window id from a prior listing. Omit to resolve the window from the app argument.' },
     },
