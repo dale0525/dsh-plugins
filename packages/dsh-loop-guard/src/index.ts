@@ -76,8 +76,15 @@
  * offered, because the breaker fires with the call's text block still open and
  * the invariant admits only `error`/`aborted` finishes in that state — measured,
  * not assumed. `breakCorrection` steers the agent so the resumed turn is told
- * what happened. Deliberately **no model fallback and no automatic retry**: a
- * degenerate model must not be silently re-billed.
+ * what happened. Deliberately **no model fallback and no automatic retry of the
+ * break**: a degenerate model must not be silently re-billed.
+ *
+ * That stance is scoped to the break, and it is not in tension with
+ * {@link Config.retryRequestFailures}. A break re-sends the request to a model
+ * that has just demonstrated it cannot act on it — the input is the problem. A
+ * corrupted response body is the opposite case: the request was well-formed and
+ * the provider returned something the JSON parser rejected, so the same request
+ * normally succeeds on a second attempt. Different cause, different remedy.
  *
  * ## Cycled repetition (discussion #7043, v0.1.8)
  *
@@ -161,7 +168,7 @@
  */
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { Agent, AgentCancelCause } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentCancelCause, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { LlmFailure, StreamChunk } from '@deepseek-ai/dsh-llm'
 
@@ -371,6 +378,39 @@ export interface Config {
    * degenerate history unchanged — the shape that produced the loop.
    */
   resumeAfterBreak?: boolean
+  /**
+   * Retry a model request whose response body could not be parsed. Default
+   * `true`.
+   *
+   * This is the one failure where re-sending the SAME request is the fix rather
+   * than a silent re-bill, and it is a different class from the thinking-loop
+   * breaks above — those re-enter a model that has already shown it cannot act,
+   * which is why they are never retried automatically. Here the request was
+   * well-formed and the provider returned a corrupted body; the turn dies
+   * through `agent/request-error` with the user seeing `本轮运行失败`, and a
+   * second attempt normally succeeds.
+   *
+   * The predicate is deliberately narrow — the code AND a V8 `JSON.parse`
+   * signature, both required. Measured across this machine's `~/.dsh/sessions`:
+   * every JSON-parse failure (16 error turns) arrives as `PI_AI_ERROR`, but
+   * `PI_AI_ERROR` alone is the adapter's catch-all — it also carries
+   * `Too many pending requests, please retry later`, `Provider finish_reason:
+   * error`, and pi-ai's `ended pending` / `deferred` bodies, none of which is a
+   * parse failure. Conversely an upstream 400 whose error body merely QUOTES a
+   * JSON error must not be re-sent. See {@link isMalformedResponseFailure}.
+   */
+  retryRequestFailures?: boolean
+  /**
+   * How many times ONE attempt may be re-sent before the failure is handed to
+   * downstream recovery. Default `2`.
+   *
+   * Small on purpose, and deliberately below `dsh-llm`'s own
+   * `DEFAULT_MAX_RETRIES` of 5: this budget sits in FRONT of that policy, so a
+   * provider that corrupts every body must stop costing money quickly. The
+   * budget is per agent and per `(turn, step)`, so a bad step cannot starve the
+   * rest of the turn.
+   */
+  maxRequestRetries?: number
 }
 
 /** Resolved config: every field carries its validated default. */
@@ -439,6 +479,8 @@ export const Config: z<Config, ConfigRefs> = z.object({
   breakCode: z.string().default('REPETITIVE_OUTPUT').volatile(),
   breakCorrection: z.boolean().default(true).volatile(),
   resumeAfterBreak: z.boolean().default(false).volatile(),
+  retryRequestFailures: z.boolean().default(true).volatile(),
+  maxRequestRetries: z.number().step(1).min(0).default(2).volatile(),
 })
 
 export const name = 'loop-guard'
@@ -1210,6 +1252,32 @@ function whatFor(lang: 'zh' | 'en', rule: BreakRule): string {
 }
 
 /**
+ * Whether a failed model request was a response body the JSON parser rejected.
+ *
+ * Both halves are required, and neither is sufficient alone:
+ *
+ *  - The **code** alone is too broad. `PI_AI_ERROR` is the pi-ai adapter's
+ *    catch-all, so it also carries bodies that are not parse failures at all —
+ *    `Too many pending requests, please retry later`, `Provider finish_reason:
+ *    error`, and pi-ai's own `ended pending` / `deferred` terminals. Measured
+ *    across this machine's session store, the same code covered 16 genuine
+ *    JSON-parse failures AND those unrelated ones.
+ *  - The **message** alone is too broad too. An upstream 4xx/5xx whose error
+ *    BODY quotes a JSON error is not a parse failure, and re-sending it just
+ *    repeats the upstream's answer; those arrive under the upstream's own code.
+ *
+ * `JSON at position <n>` is the anchor V8 gives every positional parse failure —
+ * it is the shared substring of all three observed shapes
+ * (`Unexpected non-whitespace character after JSON at position …`,
+ * `Unterminated string in JSON at position …`,
+ * `Expected ',' or '}' after property value in JSON at position …`). Matching
+ * the whole phrasing of any single one would miss the others.
+ */
+function isMalformedResponseFailure(failure: LlmFailure): boolean {
+  return failure.code === 'PI_AI_ERROR' && /JSON at position \d+/.test(failure.message)
+}
+
+/**
  * Install the listener. Per-`Agent` state is keyed in a `WeakMap` so a disposed
  * agent is collected; detectors are scoped to one agent lifecycle.
  *
@@ -1242,12 +1310,52 @@ export function apply(ctx: Context, config: ConfigRefs): void {
     breakCode: config.breakCode.get(),
     breakCorrection: config.breakCorrection.get(),
     resumeAfterBreak: config.resumeAfterBreak.get(),
+    retryRequestFailures: config.retryRequestFailures.get(),
+    maxRequestRetries: config.maxRequestRetries.get(),
   }))
 }
 
 /** The listener body, resolving the effective configuration at each use. */
 function installListeners(ctx: Context, currentConfig: () => ResolvedConfig): void {
   const detectors = new WeakMap<object, LoopDetector>()
+
+  /**
+   * The attempt each agent's retry budget currently belongs to, with how much of
+   * that budget is spent.
+   *
+   * `(turn, step)` is the identity of ONE attempt: `agent-loop` re-runs the
+   * failed step inside its own `while (true)` and advances `phase.step` only
+   * between steps, so an unchanged key means the same attempt is being retried.
+   * Scoping the budget to the attempt — rather than to the agent alone — is what
+   * stops one corrupted step from exhausting the whole turn.
+   *
+   * A single slot per agent is enough because the loop only ever moves forward:
+   * `step` resets to 1 only when `turn` increments, so a key that differs from
+   * the stored one is always a LATER attempt. A map keyed by every attempt would
+   * therefore grow for the life of the session to say the same thing; the outer
+   * `WeakMap` also drops a disposed agent's entry with the agent.
+   */
+  const retryBudgets = new WeakMap<object, { attempt: string; spent: number }>()
+
+  /**
+   * Claim one retry from the current attempt's budget.
+   *
+   * Reads the configuration at the point of use, like every other reaction, so
+   * turning `retryRequestFailures` off on the Plugins page takes effect on the
+   * very next failure without a remount.
+   *
+   * @returns whether this failure may be re-sent.
+   */
+  function claimRequestRetry(agent: object, turn: number, step: number): boolean {
+    const config = currentConfig()
+    if (!config.retryRequestFailures) return false
+    const attempt = `${turn}:${step}`
+    const previous = retryBudgets.get(agent)
+    const spent = previous !== undefined && previous.attempt === attempt ? previous.spent : 0
+    if (spent >= config.maxRequestRetries) return false
+    retryBudgets.set(agent, { attempt, spent: spent + 1 })
+    return true
+  }
 
   function detectorFor(agent: Agent): LoopDetector {
     let detector = detectors.get(agent)
@@ -1407,6 +1515,24 @@ function installListeners(ctx: Context, currentConfig: () => ResolvedConfig): vo
       ctx.logger.warn(`dsh-loop-guard: could not resume after a break: ${String(error)}`)
     })
   }
+
+  // Re-send a request whose response body was corrupted in transit. Unlike every
+  // other reaction in this plugin, this one is an automatic retry — and it is
+  // the only failure class where that is right, because the request itself was
+  // well-formed: the provider returned something the JSON parser rejected, the
+  // turn died through this very waterfall, and the same request normally
+  // succeeds on a second attempt. The thinking-loop breaks above re-enter a model
+  // that has already shown it cannot act, which is why those are never retried.
+  //
+  // Declining is `next()`, never `undefined`: this waterfall is shared, so the
+  // shipped `llm-retry` policy (and any later listener) must still get its turn
+  // and its answer must survive.
+  ctx.on('agent/request-error', ({ agent, turn, step, failure }, next) => {
+    if (!isMalformedResponseFailure(failure)) return next()
+    if (!claimRequestRetry(agent, turn, step)) return next()
+    ctx.logger.debug('dsh-loop-guard: retrying a malformed model response')
+    return Promise.resolve<RequestErrorAction>({ kind: 'retry' })
+  })
 
   // Observe every streaming model call through the `llm/stream` waterfall. This
   // is present on both dsh 0.1.2-rc.1 and 0.1.5-alpha.1 and carries the SAME

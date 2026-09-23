@@ -26,7 +26,7 @@
     "@logictan/dsh-easyrewrite": "^2.5.4",
     "@logictan/dsh-fakeip-fetch": "^0.1.0",
     "@logictan/dsh-imagegen": "^1.5.13",
-    "@logictan/dsh-loop-guard": "^1.1.2",
+    "@logictan/dsh-loop-guard": "^1.1.3",
     "@logictan/dsh-openviking": "^0.4.5",
     "@logictan/dsh-workbuddy-connect": "^0.5.5"
   }

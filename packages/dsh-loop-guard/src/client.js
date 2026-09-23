@@ -219,6 +219,23 @@ window.__ModuleLoader__.load({
         kind: "boolean",
         hint: "不等你发话就自己往下走。无人值守的长任务才建议开。默认关。",
       },
+      {
+        group: "响应体损坏时重试",
+      },
+      {
+        key: "retryRequestFailures",
+        label: "自动重试损坏响应",
+        kind: "boolean",
+        hint: "模型返回的响应体 JSON 解析失败（本轮运行失败）时自动重发同一请求。默认开。",
+      },
+      {
+        key: "maxRequestRetries",
+        label: "重试上限",
+        kind: "number",
+        min: 0,
+        step: 1,
+        hint: "同一次尝试最多重发几次，超出交给下游恢复。默认 2。",
+      },
     ];
 
     var wrapStyle = {
