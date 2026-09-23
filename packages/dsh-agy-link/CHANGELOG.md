@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.5.0 (2026-09-24)
+
+### English
+
+**Breaking: the plugin is no longer a fork of `amlyczz/dsh-agy-link`.** The body has been rewritten far past
+what a three-way merge can carry, so the upstream sync machinery is gone: `sync-policy.json` is deleted and
+the agy-link rows are removed from the sync matrix. Provenance and LICENSE are kept.
+
+- **agy can now call DSH tools, including cross-provider subagents.** The reverse MCP bridge used to be
+  registered in a workspace `.mcp.json`, which agy never reads — the bridge was never loaded, so every
+  agy-initiated subagent failed with `ToolNotFound`. It now writes `$HOME/.gemini/config/mcp_config.json`
+  (the path agy actually reads) and appends the `mcp(dsh-tools)` allow-rule to the headless settings so
+  the MCP gate passes in plan mode too. Foreign MCP servers in that file are preserved, and a document that
+  cannot be parsed is left byte-for-byte untouched.
+- **The plugin now manages its own agy HOME per account.** `syncAgyEnv` writes `GEMINI.md` (an adapted copy
+  of `$DSH_HOME/AGENTS.md`), copies the DSH skills under `$DSH_HOME/skills/` into agy's skills directory,
+  and merges the MCP config — all idempotently, all inside a plugin-managed directory, so the user's real
+  `~/.gemini` is never touched. DSH-only rules (run_code, todo_write, genui, goal tools, …) are stripped
+  before injection, whole sections included.
+- **agy is installed automatically when it is missing.** The startup probe runs the official installer
+  (`install.sh` on macOS/Linux with `-d`, `install.ps1` on Windows) once and re-resolves the binary; an
+  existing install is never re-installed.
+- **Accounts and credentials sync across devices.** The account pool moved to
+  `<DSH_HOME>/plugin-config/agy-link` so a single config-manager `collectDir` covers `pool.json` plus every
+  managed HOME. A one-time idempotent migration moves an existing `agy-accounts` directory (rename, falling
+  back to recursive copy + remove across filesystems). `config-manager` now defaults to collecting that
+  `plugin-config` convention directory.
+- **Accounts no longer persist an absolute directory.** A stored absolute path broke both after the
+  relocation and when synced from another machine (agy would start with a dead HOME). `dir` is re-based onto
+  the active pool directory on load, which also fixes the conversation-DB fallback scan that still pointed at
+  the old `agy-accounts` path.
+- **Fixes.**
+  - Code Mode mirror cards lost their arguments, so every card fell back to a generic summary. The mirror
+    wrapper now carries `tool` and `input` through, and both the wrapper parser and the client use a
+    balanced-brace scanner instead of a greedy match.
+  - Reasoning blocks no longer carry the `[agy thinking turn · N tokens]` and `[agy subagent] ` banners.
+  - `detectContinuation` no longer skips on a hardcoded `source.kind`; `form === 'snapshot'` is the only
+    snapshot test, so host-side changes to the context form cannot silently disable continuation again.
+
+### 中文 (Chinese)
+
+**破坏性变更：本插件不再是 `amlyczz/dsh-agy-link` 的 fork。** 主体已被重写，远超三方合并所能承载的范围，
+因此上游同步机制整体移除：删除 `sync-policy.json`，同步矩阵中的 agy-link 行一并去掉。来源记录与 LICENSE 保留。
+
+- **agy 现在能调用 DSH 工具，含跨 provider 子代理。** 反向 MCP 桥此前注册在工作区 `.mcp.json`，而 agy 从不读该文件——
+  桥从未被加载，因此 agy 发起的子代理一律 `ToolNotFound`。现改为写 `$HOME/.gemini/config/mcp_config.json`（agy 真正
+  读取的路径），并向 headless 设置追加 `mcp(dsh-tools)` 允许规则，使 plan 模式下也能过 MCP 门禁。该文件里的外部
+  MCP server 会被保留，无法解析的文档则逐字节原样不动。
+- **插件按账号托管自己的 agy HOME。** `syncAgyEnv` 写入 `GEMINI.md`（`$DSH_HOME/AGENTS.md` 的适配副本）、把
+  `$DSH_HOME/skills/` 下的 DSH 技能拷进 agy 的技能目录、并合并 MCP 配置——全部幂等，全部发生在插件托管目录内，
+  绝不触碰用户真实的 `~/.gemini`。注入前会剔除 DSH 专有规则（run_code、todo_write、genui、goal 系列工具等），
+  按整节剔除。
+- **缺失 agy 时自动安装。** 启动探测会跑一次官方安装脚本（macOS/Linux 用 `install.sh` 带 `-d`，Windows 用
+  `install.ps1`）再重新解析；已安装的情况下绝不重复安装。
+- **账号与凭据可跨设备同步。** 账号池迁到 `<DSH_HOME>/plugin-config/agy-link`，使 config-manager 的单个
+  `collectDir` 即可覆盖 `pool.json` 与全部托管 HOME。一次性幂等迁移会把已有的 `agy-accounts` 目录搬过去
+  （优先 rename，跨分区退回递归拷贝 + 删除）。config-manager 现默认收集 `plugin-config` 这个约定目录。
+- **账号不再持久化绝对目录。** 存绝对路径在搬迁后、以及从另一台机器同步过来时都会失效（agy 会带着一个死 HOME 启动）。
+  现在 load 时把 `dir` 重新落回当前池目录；同时修掉仍指向旧 `agy-accounts` 的会话数据库后备扫描。
+- **修复。**
+  - Code Mode 镜像卡片丢失入参，所有卡片退化为通用摘要。镜像 wrapper 现携带 `tool` 与 `input`，
+    wrapper 解析与客户端两侧都改用括号配对扫描，不再用贪婪匹配。
+  - reasoning 块不再带 `[agy thinking turn · N tokens]` 与 `[agy subagent] ` 前缀。
+  - `detectContinuation` 不再依据硬编码的 `source.kind` 跳过；`form === 'snapshot'` 是唯一的快照判据，
+    宿主侧对 context form 的改动不会再悄悄让续跑失效。
+
 ## 0.4.38 (2026-09-24)
 
 ### English
