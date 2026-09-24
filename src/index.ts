@@ -15,6 +15,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
 import { WorkBuddyCredentialStore, type WorkBuddyCredential, type WorkBuddyStoreOptions } from './auth.ts'
@@ -542,6 +543,11 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
       store,
       catalog,
       resolveAttachments: () => ctx.get('attachments'),
+      resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess(
+        attachments,
+        hostPath => ctx.get('fs')?.processPathFromHostPath(hostPath),
+        ref,
+      ),
       observe: modelId => probeService.recordFor(modelId),
       // Hidden ids resolve per read from the store by the *current* account:
       // an account switch or a toggle changes the answer after the next

@@ -405,4 +405,120 @@ describe('WorkBuddy Host settings integration', () => {
     expect(served).not.toContain('workbuddy')
     expect(served).not.toContain('workbuddy-ai')
   })
+
+  it('uses the optional current fs service for image paths in both WorkBuddy variants', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-image-access-'))
+    vi.stubEnv('DSH_HOME', root)
+    const cnFile = join(root, 'cn.info')
+    const aiFile = join(root, 'ai.info')
+    await writeFile(cnFile, credentialDocument('copilot.tencent.com'))
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', cnFile)
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
+
+    const hostPath = 'C:\\Users\\Corrine Hu\\图片\\原图.png'
+    const image = {
+      attachmentId: 'sha256:test',
+      mediaType: 'image/png',
+      bytes: 3,
+      width: 1,
+      height: 1,
+    }
+    const attachmentStore = {
+      imageHostPath: () => hostPath,
+      readImageRequest: async () => ({
+        variantId: 'variant' as never,
+        attachment: image,
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: 'image/png',
+        bytes: 3,
+        width: 1,
+        height: 1,
+        depth: 'uchar',
+        space: 'srgb',
+        hasAlpha: false,
+      }),
+    }
+    const sentBodies: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        sentBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return new Response('data: [DONE]\n\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      }
+      throw new Error('offline in tests')
+    }))
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    ctx.provide('attachments', attachmentStore as never)
+    await ctx.plugin(WorkBuddy, {})
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id))
+        .toEqual(expect.arrayContaining(['workbuddy', 'workbuddy-ai']))
+    })
+
+    const imageMessage = (offloaded = false) => ({
+      id: 'image-test' as never,
+      role: 'user' as const,
+      source: { kind: 'user' as const },
+      content: [
+        { type: 'text' as const, text: 'describe' },
+        { type: 'image' as const, attachment: image, ...(offloaded ? { offloaded: true as const } : {}) },
+      ],
+    } as never)
+    const sendImage = async (provider: string, offloaded = false) => {
+      for await (const _chunk of ctx.llm.stream({
+        provider,
+        model: 'glm-5.3',
+        messages: [imageMessage(offloaded)],
+      })) {
+        // The captured HTTP request is the assertion boundary.
+      }
+    }
+    const textFromRequest = (body: Record<string, unknown> | undefined): string => {
+      const messages = body?.['messages'] as { content?: string | { text?: string }[] }[] | undefined
+      return messages?.map(item => typeof item.content === 'string'
+        ? item.content
+        : item.content?.map(block => block.text ?? '').join('\n') ?? '').join('\n') ?? ''
+    }
+
+    await sendImage('workbuddy')
+    const cnBody = sentBodies[0]
+    const cnText = textFromRequest(cnBody)
+    expect(cnText).not.toContain('Normalized copy (read-only;')
+    expect(JSON.stringify(cnBody)).toContain('data:image/png;base64,AQID')
+
+    let mappedPath = 'Z:\\WorkBuddy Data\\模型工具\\图像.png'
+    ctx.provide('fs', {
+      processPathFromHostPath: (path: string) => path === hostPath ? mappedPath : undefined,
+    } as never)
+    await sendImage('workbuddy')
+    const mappedCnBody = sentBodies[1]
+    const mappedCnText = textFromRequest(mappedCnBody)
+    expect(mappedCnText).toContain(JSON.stringify(mappedPath))
+    expect(JSON.stringify(mappedCnBody)).toContain('data:image/png;base64,AQID')
+
+    await sendImage('workbuddy-ai')
+    const aiBody = sentBodies[2]
+    const aiText = textFromRequest(aiBody)
+    expect(aiText).toContain(JSON.stringify(mappedPath))
+    expect(aiText).not.toContain(hostPath)
+    expect(JSON.stringify(aiBody)).toContain('data:image/png;base64,AQID')
+
+    await sendImage('workbuddy-ai', true)
+    const offloadedBody = sentBodies[3]
+    const offloadedText = textFromRequest(offloadedBody)
+    expect(offloadedText).toContain('image omitted to fit request image limits')
+    expect(offloadedText).toContain(JSON.stringify(mappedPath))
+
+    mappedPath = 'Z:\\new mapping.png'
+    await sendImage('workbuddy-ai')
+    const remappedBody = sentBodies[4]
+    const remappedText = textFromRequest(remappedBody)
+    expect(remappedText).toContain(JSON.stringify(mappedPath))
+  })
 })
