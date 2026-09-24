@@ -58,11 +58,12 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -736,9 +737,29 @@ function snapshotResurrectedIgnored(target, upstreamPaths) {
     copyFileSync(abs, join(dir, encodeURIComponent(p)))
     present.add(p)
   }
-  return { dir, ignored, present }
+  return { dir, ignored, present, stopAt: join(REPO_ROOT, target.prefix) }
 }
 
+/**
+ * 删掉目录里最后一个文件后，把随之空掉的目录也逐级清掉（止于包根）。
+ *
+ * 为什么必须清：空的 `lib/` 目录会让「产物尚未构建」的判据失效。workbuddy 的
+ * `tests/version.spec.ts` 用 `if (!existsSync(libDir)) return` 表示「新克隆、还没构建，跳过」；
+ * 只删文件不删目录时 `lib/` 仍在，于是走到 `expect(bundles.length).toBeGreaterThan(0)` 并报
+ * 「no built bundles in lib/」——把一个已修好的同步问题伪装成构建问题。
+ */
+function pruneEmptyParents(absPaths, stopAt) {
+  const seen = new Set()
+  for (const abs of absPaths) {
+    let dir = dirname(abs)
+    while (dir !== stopAt && dir.startsWith(stopAt + sep) && !seen.has(dir)) {
+      seen.add(dir)
+      if (!existsSync(dir) || readdirSync(dir).length > 0) break
+      rmdirSync(dir)
+      dir = dirname(dir)
+    }
+  }
+}
 /** 应用 snapshotResurrectedIgnored：把上游新造、我方忽略的路径退出索引并清盘。 */
 function removeResurrectedIgnored(snapshot) {
   if (snapshot.ignored.size === 0) return 0
@@ -753,6 +774,10 @@ function removeResurrectedIgnored(snapshot) {
       rmSync(abs, { force: true })
     }
   }
+  pruneEmptyParents(
+    paths.filter((q) => !snapshot.present.has(q)).map((q) => join(REPO_ROOT, q)),
+    snapshot.stopAt,
+  )
   return paths.length
 }
 

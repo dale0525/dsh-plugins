@@ -1468,6 +1468,18 @@ test('上游新增的 .gitignore 忽略路径不得被带进索引，非忽略�
       !existsSync(join(fork, 'packages/foo/assets/6.png')),
       '上游新造且被我方忽略的资源不得落在磁盘上',
     )
+    // 判据 2b：空的 lib/ 目录也必须清掉。只删文件不删目录会让「产物尚未构建」的判据失效：
+    // workbuddy 的 tests/version.spec.ts 用 `if (!existsSync(libDir)) return` 表示「新克隆跳过」，
+    // lib/ 空目录还在时会走到 expect(bundles.length).toBeGreaterThan(0) 并报「no built bundles in lib/」
+    // （CI run 36048975728 实测）。
+    assert.ok(
+      !existsSync(join(fork, 'packages/foo/lib')),
+      '清空后的 lib/ 目录必须一并删除，否则 version.spec 的新克隆跳过判据失效',
+    )
+    assert.ok(
+      !existsSync(join(fork, 'packages/foo/assets')),
+      '清空后的 assets/ 目录必须一并删除',
+    )
     // 判据 3（反面）：非忽略的上游新增源码必须照常同步进来 —— 计划 L139/L172 的验收项
     assert.ok(
       tracked.includes('packages/foo/src/new.ts'),
