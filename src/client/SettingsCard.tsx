@@ -12,7 +12,7 @@
  * with detection.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -20,7 +20,7 @@ import { CardForm, booleanField, secretField, textField, type CardActions, type 
 import { ChannelsForm, type ChannelDraft, type ChannelsFormActions, type ChannelsFormState } from './channels-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel } from '../model-catalog.ts'
-import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, type ModelMapping, type PresetProviderView } from '../protocol.ts'
+import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, SUBSCRIPTION_PROVIDER_DISPLAY_NAMES, DEFAULT_SUBSCRIPTION_MODELS, EXPERIMENTAL_SUBSCRIPTION_PROVIDERS, isSubscriptionProvider, type ModelMapping, type PresetProviderView, type SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
 import { tt, type TranslateValues } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -79,6 +79,10 @@ export interface ImageGenSettingsCardState extends CardShell {
   skillHeavyTimeoutMinutes: CardFieldState
   skillAgentPreset: CardFieldState
 }
+
+/** Result of probing the configured object storage from the card. */
+export type SubscriptionStatus = { state: 'logged-in'; email?: string; error?: string } | { state: 'logged-out'; error?: string } | { state: 'unknown'; error?: string }
+export type SubscriptionStatusMap = Record<SubscriptionProvider, SubscriptionStatus>
 
 /** Result of probing the configured object storage from the card. */
 export interface StorageTestOutcome {
@@ -206,6 +210,41 @@ interface UsageCounters {
   totals: Record<string, number>
 }
 
+type SettingsSectionId = 'channels' | 'prompt' | 'storage' | 'skills' | 'general' | null
+
+/** One mutually-exclusive settings group. */
+function SettingsSection(props: {
+  id: Exclude<SettingsSectionId, null>
+  title: string
+  hint: string
+  summary: string
+  tone?: 'neutral' | 'ready' | 'attention'
+  expanded: boolean
+  onToggle: () => void
+  children: ReactNode
+}) {
+  const contentId = `dsh-imagegen-settings-${props.id}`
+  return (
+    <section className={css.settingsSection} data-open={props.expanded ? '' : undefined}>
+      <button
+        type="button"
+        className={css.sectionToggle}
+        aria-expanded={props.expanded}
+        aria-controls={contentId}
+        onClick={props.onToggle}
+      >
+        <span className={css.sectionToggleText}>
+          <span className={css.sectionToggleTitle}>{props.title}</span>
+          <span className={css.sectionToggleHint}>{props.hint}</span>
+        </span>
+        <span className={css.sectionSummary} data-tone={props.tone ?? 'neutral'}>{props.summary}</span>
+        <span className={css.sectionChevron} aria-hidden="true">{props.expanded ? '⌃' : '⌄'}</span>
+      </button>
+      {props.expanded ? <div id={contentId} className={css.sectionContent}>{props.children}</div> : null}
+    </section>
+  )
+}
+
 /**
  * Render the card.
  * @param props - locale copy, the card snapshot, and the form actions.
@@ -219,20 +258,27 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   useImageGenLanguageTick()
   const state = props.useImageGenSettingsCard(snapshot => snapshot)
   const [open, setOpen] = useState(true)
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>('channels')
   // Global-section local states (prompt enhancement etc.).
   const [promptModels, setPromptModels] = useState<string[]>([])
   const [loadingPromptModels, setLoadingPromptModels] = useState(false)
   const [promptModelsError, setPromptModelsError] = useState<string | null>(null)
   const [manualPromptModelOpen, setManualPromptModelOpen] = useState(false)
   const [manualPromptModel, setManualPromptModel] = useState('')
-  const [enhancementOpen, setEnhancementOpen] = useState(false)
   const [promptApiOpen, setPromptApiOpen] = useState(false)
-  const [storageOpen, setStorageOpen] = useState(false)
   const [storageTesting, setStorageTesting] = useState(false)
   const [storageTestResult, setStorageTestResult] = useState<string | null>(null)
   const [skillProbing, setSkillProbing] = useState(false)
   const [skillProbeResult, setSkillProbeResult] = useState<string | null>(null)
-  const [moreOpen, setMoreOpen] = useState(false)
+  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatusMap>(() => ({
+    'chatgpt-sub': { state: 'unknown' },
+    'grok-sub': { state: 'unknown' },
+    'google-sub': { state: 'unknown' },
+    'openrouter-sub': { state: 'unknown' },
+  }))
+  const [subscriptionBusy, setSubscriptionBusy] = useState<Partial<Record<SubscriptionProvider, 'login' | 'logout'>>>({})
+  const [subscriptionPending, setSubscriptionPending] = useState<SubscriptionProvider[]>([])
+  const [subscriptionMessage, setSubscriptionMessage] = useState<Partial<Record<SubscriptionProvider, string>>>({})
   // Channel list local states.
   const [editingId, setEditingId] = useState<string | null>(null)
   const [presetPickerOpen, setPresetPickerOpen] = useState(false)
@@ -240,6 +286,123 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   const [presetError, setPresetError] = useState<string | null>(null)
   const [usage, setUsage] = useState<UsageCounters | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+
+  const refreshSubscriptions = async (): Promise<SubscriptionStatusMap> => {
+    const response = await fetch(SUBSCRIPTION_API.status, { method: 'POST', cache: 'no-store' })
+    const body = await response.json() as { ok?: boolean; statuses?: Record<string, { state?: string; email?: string; error?: string }>; message?: string }
+    if (!response.ok || body.ok !== true || body.statuses === undefined) throw new Error(body.message ?? `HTTP ${response.status}`)
+    const next: SubscriptionStatusMap = {
+      'chatgpt-sub': { state: 'unknown' },
+      'grok-sub': { state: 'unknown' },
+      'google-sub': { state: 'unknown' },
+      'openrouter-sub': { state: 'unknown' },
+    }
+    for (const provider of SUBSCRIPTION_PROVIDERS) {
+      const row = body.statuses[provider]
+      if (row?.state === 'logged-in') next[provider] = { state: 'logged-in', ...(typeof row.email === 'string' ? { email: row.email } : {}) }
+      else if (row?.state === 'logged-out') next[provider] = { state: 'logged-out', ...(typeof row.error === 'string' ? { error: row.error } : {}) }
+    }
+    const errors = Object.fromEntries(Object.entries(next).flatMap(([provider, status]) => status.error === undefined ? [] : [[provider, status.error]]))
+    if (Object.keys(errors).length > 0) setSubscriptionMessage(current => ({ ...current, ...errors }))
+    setSubscriptionStatus(next)
+    return next
+  }
+
+  useEffect(() => {
+    if (!state.exposed || !open) return
+    let active = true
+    const load = (): void => {
+      void refreshSubscriptions().catch(() => { /* badge is best-effort */ })
+    }
+    load()
+    const onFocus = (): void => { if (active) load() }
+    window.addEventListener('focus', onFocus)
+    return () => { active = false; window.removeEventListener('focus', onFocus) }
+  }, [state.exposed, open])
+
+  useEffect(() => {
+    const pending = subscriptionPending.filter(provider => subscriptionStatus[provider].state !== 'logged-in')
+    if (!open || pending.length === 0) return
+    const timer = window.setInterval(() => {
+      void refreshSubscriptions().then(next => {
+        const landed = pending.filter(provider => next[provider].state === 'logged-in')
+        if (landed.length > 0) {
+          setSubscriptionPending(current => current.filter(provider => next[provider].state !== 'logged-in'))
+          setSubscriptionMessage(current => ({ ...current, ...Object.fromEntries(landed.map(provider => [provider, t('settings.subscriptionLoginOk')])) }))
+        }
+      }).catch(() => { /* keep polling through transient failures */ })
+    }, 2000)
+    const timeout = window.setTimeout(() => { setSubscriptionPending([]) }, 10 * 60_000)
+    return () => { window.clearInterval(timer); window.clearTimeout(timeout) }
+  }, [open, subscriptionPending.join(','), subscriptionStatus])
+
+  const subscriptionLogin = async (provider: SubscriptionProvider): Promise<void> => {
+    const popup = window.open('about:blank', '_blank')
+    if (popup !== null) { try { popup.opener = null } catch { /* ignore */ } }
+    setSubscriptionBusy(current => ({ ...current, [provider]: 'login' }))
+    setSubscriptionMessage(current => ({ ...current, [provider]: '' }))
+    try {
+      const response = await fetch(SUBSCRIPTION_API.login, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      })
+      const body = await response.json() as { ok?: boolean; url?: string; code?: string; expiresInSeconds?: number; message?: string }
+      if (!response.ok || body.ok !== true || typeof body.url !== 'string') throw new Error(body.message ?? `HTTP ${response.status}`)
+      if (popup !== null) popup.location.replace(body.url)
+      else window.open(body.url, '_blank')
+      if (typeof body.code === 'string' && body.code !== '') {
+        setSubscriptionMessage(current => ({ ...current, [provider]: t('settings.subscriptionDeviceCode', { code: body.code ?? '' }) }))
+      }
+      setSubscriptionPending(current => current.includes(provider) ? current : [...current, provider])
+    } catch (error) {
+      popup?.close()
+      setSubscriptionMessage(current => ({ ...current, [provider]: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setSubscriptionBusy(current => { const next = { ...current }; delete next[provider]; return next })
+    }
+  }
+
+  const subscriptionComplete = async (provider: SubscriptionProvider, input: string): Promise<void> => {
+    setSubscriptionBusy(current => ({ ...current, [provider]: 'login' }))
+    setSubscriptionMessage(current => ({ ...current, [provider]: '' }))
+    try {
+      const response = await fetch(SUBSCRIPTION_API.login, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider, action: 'complete', input }),
+      })
+      const body = await response.json() as { ok?: boolean; message?: string }
+      if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
+      await refreshSubscriptions()
+      setSubscriptionPending(current => current.filter(item => item !== provider))
+      setSubscriptionMessage(current => ({ ...current, [provider]: t('settings.subscriptionLoginOk') }))
+    } catch (error) {
+      setSubscriptionMessage(current => ({ ...current, [provider]: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setSubscriptionBusy(current => { const next = { ...current }; delete next[provider]; return next })
+    }
+  }
+
+  const subscriptionLogout = async (provider: SubscriptionProvider): Promise<void> => {
+    setSubscriptionBusy(current => ({ ...current, [provider]: 'logout' }))
+    setSubscriptionMessage(current => ({ ...current, [provider]: '' }))
+    try {
+      const response = await fetch(SUBSCRIPTION_API.login, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ provider, action: 'logout' }),
+      })
+      const body = await response.json() as { ok?: boolean; message?: string }
+      if (!response.ok || body.ok !== true) throw new Error(body.message ?? `HTTP ${response.status}`)
+      setSubscriptionStatus(current => ({ ...current, [provider]: { state: 'logged-out' } }))
+      setSubscriptionPending(current => current.filter(item => item !== provider))
+    } catch (error) {
+      setSubscriptionMessage(current => ({ ...current, [provider]: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setSubscriptionBusy(current => { const next = { ...current }; delete next[provider]; return next })
+    }
+  }
 
   // Usage counters: refreshed once per card open (and after a successful save).
   useEffect(() => {
@@ -292,6 +455,26 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
   const channels = state.channels.channels
   const modelAliases = [...new Set(channels.flatMap(channel => channel.models.map(model => model.alias)).filter(alias => alias !== ''))]
   const editing = editingId === null ? undefined : channels.find(channel => channel.id === editingId)
+  const readyChannels = channels.filter(channel => state.channels.keySet[channel.id] === true && channel.models.length > 0).length
+  const totalModels = channels.reduce((total, channel) => total + channel.models.length, 0)
+  const channelSummary = channels.length === 0
+    ? t('settings.summaryNotConfigured')
+    : t('settings.summaryChannels', { ready: readyChannels, total: channels.length })
+  const promptSummary = state.promptModel.text.trim() || t('settings.summaryOptional')
+  const storageSummary = state.storageEnabled.text === 'true' ? t('settings.summaryEnabled') : t('settings.summaryDisabled')
+  const skillsSummary = state.skillsEnabled.text === 'false' ? t('settings.summaryDisabled') : t('settings.summaryEnabled')
+  const generalSummary = state.enabled.text === 'false' ? t('settings.summaryDisabled') : t('settings.summaryEnabled')
+  const overallReady = readyChannels > 0
+  const headerDescription = channels.length === 0
+    ? t('settings.headerNeedsChannel')
+    : t('settings.headerSummary', { channels: channels.length, models: totalModels })
+  const summaryItems: Array<{ id: Exclude<SettingsSectionId, null>; label: string; value: string; tone?: 'neutral' | 'ready' | 'attention' }> = [
+    { id: 'channels', label: t('settings.summaryChannelsLabel'), value: channelSummary, tone: readyChannels > 0 ? 'ready' : 'attention' },
+    { id: 'prompt', label: t('settings.summaryPromptLabel'), value: promptSummary },
+    { id: 'storage', label: t('settings.summaryStorageLabel'), value: storageSummary, tone: state.storageEnabled.text === 'true' ? 'ready' : 'neutral' },
+    { id: 'skills', label: t('settings.summarySkillsLabel'), value: skillsSummary, tone: state.skillsEnabled.text === 'false' ? 'neutral' : 'ready' },
+    { id: 'general', label: t('settings.summaryGeneralLabel'), value: generalSummary, tone: state.enabled.text === 'false' ? 'attention' : 'ready' },
+  ]
 
   return (
     <section className={css.card} data-dsh-imagegen-settings-panel>
@@ -304,7 +487,7 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
       >
         <span className={css.headText}>
           <span className={css.name}>{title}</span>
-          <span className={css.description}>{t('settings.description')}</span>
+          <span className={css.description}>{headerDescription}</span>
         </span>
         {state.dirty ? <span className={css.pending}>{t('settings.unsaved')}</span> : null}
         <span className={open ? css.chevronOpen : css.chevron}>▾</span>
@@ -314,20 +497,51 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
           <div className={css.body}>
             {!state.writable ? <p className={css.readOnly} role="status">{t('settings.readOnly')}</p> : null}
 
-            <section className={css.channelSection} aria-label={t('channels.title')}>
-              <div className={css.sectionHeader}>
+            <section className={css.overview}>
+              <div className={css.overviewHead}>
                 <div>
-                  <h3 className={css.sectionTitle}>{t('channels.title')}</h3>
-                  <p className={css.sectionHint}>{t('channels.hint')}</p>
+                  <h3 className={css.overviewTitle}>{t('settings.summaryTitle')}</h3>
+                  <p className={css.overviewHint}>{t('settings.summaryHint')}</p>
                 </div>
+                <span className={css.healthBadge} data-state={overallReady ? 'ready' : 'attention'}>
+                  {overallReady ? t('settings.summaryReady') : t('settings.summaryNeedsSetup')}
+                </span>
               </div>
+              <div className={css.summaryGrid}>
+                {summaryItems.map(item => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={css.summaryCard}
+                    data-active={activeSection === item.id ? '' : undefined}
+                    data-tone={item.tone ?? 'neutral'}
+                    onClick={() => { setActiveSection(activeSection === item.id ? null : item.id) }}
+                  >
+                    <span className={css.summaryLabel}>{item.label}</span>
+                    <strong className={css.summaryValue}>{item.value}</strong>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <SettingsSection
+              id="channels"
+              title={t('channels.title')}
+              hint={t('channels.hint')}
+              summary={channelSummary}
+              tone={readyChannels > 0 ? 'ready' : 'attention'}
+              expanded={activeSection === 'channels'}
+              onToggle={() => { setActiveSection(activeSection === 'channels' ? null : 'channels') }}
+            >
               {channels.length === 0
                 ? <p className={css.channelEmpty}>{t('channels.empty')}</p>
                 : (
                   <ul className={css.channelList}>
                     {channels.map(channel => {
                       const keyHeld = state.channels.keySet[channel.id] === true
-                      const ready = keyHeld && channel.models.length > 0
+                      const subscriptionProvider = isSubscriptionProvider(channel.subscription) ? channel.subscription : undefined
+                      const subscriptionState = subscriptionProvider === undefined ? undefined : subscriptionStatus[subscriptionProvider]
+                      const ready = subscriptionProvider === undefined ? keyHeld && channel.models.length > 0 : subscriptionState?.state === 'logged-in'
                       const isDefault = channel.id === state.channels.defaultChannelId
                       if (confirmDeleteId === channel.id) {
                         return (
@@ -344,10 +558,10 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
                           <button type="button" className={css.channelMain} disabled={disabled} onClick={() => { setEditingId(channel.id) }}>
                             <span className={css.channelName}>{isDefault ? `★ ${channel.name || t('channels.untitled')}` : (channel.name || t('channels.untitled'))}</span>
                             <span className={css.channelMeta}>
-                              <span className={css.channelBadge} data-warn={!keyHeld || channel.models.length === 0 ? '' : undefined}>
-                                {keyHeld ? t('channels.keySet') : t('channels.keyMissing')}
-                                {' · '}
-                                {channel.models.length > 0 ? t('channels.modelCount', { n: channel.models.length }) : t('channels.noModels')}
+                              <span className={css.channelBadge} data-warn={!ready ? '' : undefined}>
+                                {subscriptionProvider === undefined
+                                  ? <>{keyHeld ? t('channels.keySet') : t('channels.keyMissing')}{' · '}{channel.models.length > 0 ? t('channels.modelCount', { n: channel.models.length }) : t('channels.noModels')}</>
+                                  : <>{SUBSCRIPTION_PROVIDER_DISPLAY_NAMES[subscriptionProvider]}{' · '}{subscriptionState?.state === 'logged-in' ? t('settings.subscriptionLoggedIn') : t('settings.subscriptionLoggedOut')}</>}
                               </span>
                             </span>
                           </button>
@@ -376,10 +590,16 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
                       .catch(error => { setPresetError(error instanceof Error ? error.message : String(error)) })
                   }}
                   onPick={(preset) => {
-                    const draft = newChannelDraft(preset)
-                    props.channels.setChannels([...channels, draft])
+                    const existing = preset.subscription === undefined
+                      ? undefined
+                      : channels.find(channel => channel.subscription === preset.subscription)
+                    const draft = existing ?? newChannelDraft(preset)
+                    if (existing === undefined) props.channels.setChannels([...channels, draft])
                     setPresetPickerOpen(false)
                     setEditingId(draft.id)
+                    if (preset.subscription !== undefined && subscriptionStatus[preset.subscription].state !== 'logged-in') {
+                      void subscriptionLogin(preset.subscription)
+                    }
                   }}
                   onCustom={() => {
                     const draft = newChannelDraft(undefined)
@@ -413,20 +633,17 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
                 <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { addCustomChannel(channels, props.channels, setEditingId) }}>+ {t('channels.addCustom')}</button>
               </div>
               </div>
-            </section>
+            </SettingsSection>
 
-            <button
-              type="button"
-              className={css.disclosure}
-              aria-expanded={enhancementOpen}
-              onClick={() => { setEnhancementOpen(open => !open) }}
+            <SettingsSection
+              id="prompt"
+              title={t('settings.promptEnhanceTitle')}
+              hint={t('settings.promptEnhanceHint')}
+              summary={promptSummary}
+              tone={state.promptModel.text.trim() === '' ? 'neutral' : 'ready'}
+              expanded={activeSection === 'prompt'}
+              onToggle={() => { setActiveSection(activeSection === 'prompt' ? null : 'prompt') }}
             >
-              <span>{t('settings.promptEnhanceTitle')}</span>
-              <span>{t('settings.optional')}</span>
-              <span aria-hidden="true">{enhancementOpen ? '⌃' : '⌄'}</span>
-            </button>
-            {enhancementOpen ? <section className={css.optionalContent} aria-label={t('settings.promptEnhanceTitle')}>
-            <p className={css.sectionHint}>{t('settings.promptEnhanceHint')}</p>
             <div className={css.sectionHeader}>
               <div>
                 <h3 className={css.sectionTitle}>{t('settings.promptModel')}</h3>
@@ -459,7 +676,7 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
                   <button type="button" disabled={disabled} aria-label={`${t('settings.removeModel')}: ${state.promptModel.text}`} onClick={() => { props.edit('promptModel', '') }}>×</button>
                 </span>
               ) : null}
-              <button type="button" className={css.addModel} disabled={disabled} onClick={() => { setManualPromptModelOpen(open => !open); setEnhancementOpen(true) }}>
+              <button type="button" className={css.addModel} disabled={disabled} onClick={() => { setManualPromptModelOpen(open => !open); setActiveSection('prompt') }}>
                 {manualPromptModelOpen ? t('settings.cancelAddModel') : t('settings.addModel')}
               </button>
             </div>
@@ -517,13 +734,17 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
               onReset={() => { props.resetField('promptApiKey') }}
             />
             </div> : null}
-            </section> : null}
+            </SettingsSection>
 
-            <button type="button" className={css.disclosure} aria-expanded={storageOpen} onClick={() => { setStorageOpen(open => !open) }}>
-              <span>{t('settings.storageTitle')}</span>
-              <span aria-hidden="true">{storageOpen ? '⌃' : '⌄'}</span>
-            </button>
-            {storageOpen ? <div className={css.optionalContent}>
+            <SettingsSection
+              id="storage"
+              title={t('settings.storageTitle')}
+              hint={t('settings.storageHint')}
+              summary={storageSummary}
+              tone={state.storageEnabled.text === 'true' ? 'ready' : 'neutral'}
+              expanded={activeSection === 'storage'}
+              onToggle={() => { setActiveSection(activeSection === 'storage' ? null : 'storage') }}
+            >
             <ValueField
               id="dsh-imagegen-settings-local-storage-path"
               label={t('settings.localStoragePath')}
@@ -642,9 +863,17 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
               {storageTestResult !== null ? <p className={css.failed} role="status">{storageTestResult}</p> : null}
             </div>
             <p className={css.hint}>{t('settings.storageKeyHint')}</p>
-            </div> : null}
+            </SettingsSection>
 
-            {/* ---------- infinite-canvas skills ---------- */}
+            <SettingsSection
+              id="skills"
+              title={t('settings.skillsTitle')}
+              hint={t('settings.skillsHint')}
+              summary={skillsSummary}
+              tone={state.skillsEnabled.text === 'false' ? 'neutral' : 'ready'}
+              expanded={activeSection === 'skills'}
+              onToggle={() => { setActiveSection(activeSection === 'skills' ? null : 'skills') }}
+            >
             <BooleanField
               id="dsh-imagegen-settings-skills-enabled"
               label={t('settings.skillsEnabled')}
@@ -734,13 +963,17 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
               </button>
               {skillProbeResult !== null ? <p className={css.hint} role="status">{skillProbeResult}</p> : null}
             </div>
-            <p className={css.hint}>{t('settings.skillsHint')}</p>
+            </SettingsSection>
 
-            <button type="button" className={css.disclosure} aria-expanded={moreOpen} onClick={() => { setMoreOpen(open => !open) }}>
-              <span>{t('settings.moreOptions')}</span>
-              <span aria-hidden="true">{moreOpen ? '⌃' : '⌄'}</span>
-            </button>
-            {moreOpen ? <div className={css.optionalContent}>
+            <SettingsSection
+              id="general"
+              title={t('settings.generalTitle')}
+              hint={t('settings.generalHint')}
+              summary={generalSummary}
+              tone={state.enabled.text === 'false' ? 'attention' : 'ready'}
+              expanded={activeSection === 'general'}
+              onToggle={() => { setActiveSection(activeSection === 'general' ? null : 'general') }}
+            >
             <BooleanField
               id="dsh-imagegen-settings-enabled"
               label={t('settings.enabled')}
@@ -774,10 +1007,10 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
               offLabel={t('settings.off')}
               {...fieldProps}
               {...state.allowAgentImageGeneration}
-              onEdit={(text) => { props.edit('enabled', text) }}
-              onReset={() => { props.resetField('enabled') }}
+              onEdit={(text) => { props.edit('allowAgentImageGeneration', text) }}
+              onReset={() => { props.resetField('allowAgentImageGeneration') }}
             />
-            </div> : null}
+            </SettingsSection>
             <div className={css.footer}>
               {(state.failed || state.channels.failed) ? <p className={css.failed} role="status">{t('settings.saveFailed')}</p> : null}
               <button
@@ -814,6 +1047,12 @@ export function ImageGenSettingsSection(props: ImageGenSettingsSectionProps) {
           onPatch={(patch) => { replaceChannel(channels, editing.id, patch, props.channels) }}
           onSetModels={(models) => { props.channels.setChannels(channels.map(channel => channel.id === editing.id ? { ...channel, models } : channel)) }}
           onSetKey={(value) => { props.channels.setChannelKey(editing.id, value) }}
+          subscriptionStatus={editing.subscription === undefined ? undefined : subscriptionStatus[editing.subscription]}
+          subscriptionBusy={editing.subscription === undefined ? undefined : subscriptionBusy[editing.subscription]}
+          subscriptionMessage={editing.subscription === undefined ? undefined : subscriptionMessage[editing.subscription]}
+          onSubscriptionLogin={(provider) => { void subscriptionLogin(provider) }}
+          onSubscriptionComplete={(provider, input) => { void subscriptionComplete(provider, input) }}
+          onSubscriptionLogout={(provider) => { void subscriptionLogout(provider) }}
           onSetDefault={() => { props.channels.setDefaultChannel(editing.id) }}
           onRemove={() => { props.channels.setChannels(channels.filter(channel => channel.id !== editing.id)); if (editing.id === state.channels.defaultChannelId && channels.length > 1) { const next = channels.find(channel => channel.id !== editing.id); if (next !== undefined) props.channels.setDefaultChannel(next.id) } setEditingId(null) }}
           onClose={() => { setEditingId(null) }}
@@ -833,6 +1072,7 @@ function newChannelDraft(preset: PresetProviderView | undefined): ChannelDraft {
     name: preset?.name ?? '',
     apiUrl: preset?.apiUrl ?? '',
     apiUrlFull: false,
+    ...preset?.subscription === undefined ? {} : { auth: 'subscription' as const, subscription: preset.subscription },
     models: (preset?.models ?? []).map(model => ({ ...model })),
   }
 }
@@ -866,34 +1106,66 @@ function PresetPicker(props: {
 }) {
   const { t } = props
   const loadedRef = useRef(false)
+  const [query, setQuery] = useState('')
+  const [tab, setTab] = useState<'api-key' | 'subscription'>('api-key')
   useEffect(() => {
     if (loadedRef.current) return
     loadedRef.current = true
     props.onLoad()
   }, [])
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') props.onClose() }
+    window.addEventListener('keydown', onKeyDown)
+    return () => { window.removeEventListener('keydown', onKeyDown) }
+  }, [props.onClose])
+  const tabPresets = props.presets.filter(preset => tab === 'subscription' ? preset.subscription !== undefined : preset.subscription === undefined)
+  const needle = query.trim().toLowerCase()
+  const visiblePresets = needle === '' ? tabPresets : tabPresets.filter(preset =>
+    preset.name.toLowerCase().includes(needle) || preset.models.some(model => model.alias.toLowerCase().includes(needle) || model.id.toLowerCase().includes(needle)),
+  )
   return (
-    <section className={css.presetInline} aria-label={t('channels.presetPickerTitle')}>
-      <header className={css.presetInlineHeader}>
-        <div>
-          <h3 className={css.sectionTitle}>{t('channels.presetPickerTitle')}</h3>
-          <p className={css.sectionHint}>{t('channels.presetPickerHint')}</p>
+    <div
+      className={css.pickerOverlay}
+      role="presentation"
+      onMouseDown={event => { if (event.target === event.currentTarget) props.onClose() }}
+    >
+      <section className={css.pickerDialog} role="dialog" aria-modal="true" aria-label={t('channels.presetPickerTitle')}>
+        <header className={css.pickerHeader}>
+          <div>
+            <h3 className={css.pickerTitle}>{t('channels.presetPickerTitle')}</h3>
+            <p className={css.pickerHint}>{t(tab === 'subscription' ? 'channels.presetPickerSubscriptionHint' : 'channels.presetPickerApiKeyHint')}</p>
+          </div>
+          <button type="button" className={css.editorClose} aria-label={t('preview.close')} onClick={props.onClose}>×</button>
+        </header>
+        <div className={css.pickerTabs} role="tablist" aria-label={t('channels.presetPickerTitle')}>
+          <button type="button" role="tab" aria-selected={tab === 'api-key'} data-active={tab === 'api-key' ? '' : undefined} onClick={() => { setTab('api-key'); setQuery('') }}>{t('channels.presetTabApiKey')}</button>
+          <button type="button" role="tab" aria-selected={tab === 'subscription'} data-active={tab === 'subscription' ? '' : undefined} onClick={() => { setTab('subscription'); setQuery('') }}>{t('channels.presetTabSubscription')}</button>
         </div>
-        <button type="button" className={css.editorClose} aria-label={t('preview.close')} onClick={props.onClose}>×</button>
-      </header>
-      <div className={css.presetList}>
-        {props.presets.map(preset => (
-          <button key={preset.id} type="button" className={css.presetRow} disabled={props.disabled} onClick={() => { props.onPick(preset) }}>
-            <span className={css.presetName}>{preset.name}</span>
-            <span className={css.presetMeta}>{preset.models.map(model => model.alias).join(' · ')}</span>
-          </button>
-        ))}
-        <button type="button" className={css.presetRow} data-custom disabled={props.disabled} onClick={props.onCustom}>
-          <span className={css.presetName}>+ {t('channels.addCustom')}</span>
-          <span className={css.presetHint}>{t('channels.presetCustomHint')}</span>
-        </button>
-        {props.error !== null ? <p className={css.failed} role="status">{t('channels.presetLoadFailed', { error: props.error })}</p> : null}
-      </div>
-    </section>
+        <input
+          className={css.pickerSearch}
+          type="search"
+          value={query}
+          placeholder={t('channels.presetSearch')}
+          aria-label={t('channels.presetSearch')}
+          onChange={event => { setQuery(event.target.value) }}
+        />
+        <div className={css.pickerList}>
+          {visiblePresets.map(preset => (
+            <button key={preset.id} type="button" className={css.presetRow} disabled={props.disabled} onClick={() => { props.onPick(preset) }}>
+              <span className={css.presetName}>{preset.name}</span>
+              <span className={css.presetMeta}>{preset.models.map(model => model.alias).join(' · ')}</span>
+              {preset.subscription === undefined ? null : <span className={css.presetAction}>{t('channels.presetClickToLogin')}</span>}
+            </button>
+          ))}
+          {visiblePresets.length === 0 && tabPresets.length > 0 ? <p className={css.pickerEmpty}>{t('channels.presetEmpty')}</p> : null}
+          {tab === 'api-key' ? <button type="button" className={css.presetRow} data-custom disabled={props.disabled} onClick={props.onCustom}>
+            <span className={css.presetName}>+ {t('channels.addCustom')}</span>
+            <span className={css.presetHint}>{t('channels.presetCustomHint')}</span>
+          </button> : null}
+          {props.error !== null ? <p className={css.failed} role="status">{t('channels.presetLoadFailed', { error: props.error })}</p> : null}
+        </div>
+      </section>
+    </div>
   )
 }
 
@@ -909,11 +1181,19 @@ function ChannelEditor(props: {
   onPatch: (patch: Partial<ChannelDraft>) => void
   onSetModels: (models: ModelMapping[]) => void
   onSetKey: (value: string | undefined) => void
+  subscriptionStatus?: SubscriptionStatus
+  subscriptionBusy?: 'login' | 'logout'
+  subscriptionMessage?: string
+  onSubscriptionLogin: (provider: SubscriptionProvider) => void
+  onSubscriptionComplete: (provider: SubscriptionProvider, input: string) => void
+  onSubscriptionLogout: (provider: SubscriptionProvider) => void
   onSetDefault: () => void
   onRemove: () => void
   onClose: () => void
 }) {
   const { t, channel } = props
+  const subscription = isSubscriptionProvider(channel.subscription) ? channel.subscription : undefined
+  const subscriptionMode = channel.auth === 'subscription' && subscription !== undefined
   const [keyDraft, setKeyDraft] = useState('')
   const [candidates, setCandidates] = useState<string[] | null>(null)
   const [detecting, setDetecting] = useState(false)
@@ -921,6 +1201,7 @@ function ChannelEditor(props: {
   const [manualId, setManualId] = useState('')
   const [removeOpen, setRemoveOpen] = useState(false)
   const [copyFrom, setCopyFrom] = useState('')
+  const [manualAuthInput, setManualAuthInput] = useState('')
 
   const generatedCount = (alias: string): number => {
     if (props.usage === null) return 0
@@ -950,7 +1231,7 @@ function ChannelEditor(props: {
   useEffect(() => {
     if (autoDetected.current) return
     autoDetected.current = true
-    if (!channel.apiUrlFull && channel.apiUrl.trim() !== '' && (props.keyHeld || keyDraft.trim() !== '')) detect()
+    if (!subscriptionMode && !channel.apiUrlFull && channel.apiUrl.trim() !== '' && (props.keyHeld || keyDraft.trim() !== '')) detect()
   }, [])
 
   const addManual = (): void => {
@@ -994,6 +1275,75 @@ function ChannelEditor(props: {
           <label className={css.label} htmlFor="dsh-imagegen-channel-name">{t('channels.displayName')}</label>
           <input id="dsh-imagegen-channel-name" className={css.input} value={channel.name} placeholder={t('channels.untitled')} disabled={!props.writable} onChange={event => { props.onPatch({ name: event.target.value }) }} />
         </div>
+        <div className={css.editorField}>
+          <label className={css.label} htmlFor="dsh-imagegen-channel-auth">{t('channels.authMode')}</label>
+          <select
+            id="dsh-imagegen-channel-auth"
+            className={css.select}
+            value={channel.auth ?? 'api-key'}
+            disabled={!props.writable}
+            onChange={event => {
+              if (event.target.value === 'subscription') {
+                const provider = subscription ?? 'grok-sub'
+                const model = DEFAULT_SUBSCRIPTION_MODELS[provider]
+                props.onPatch({ auth: 'subscription', subscription: provider, apiUrl: '', apiUrlFull: false, models: [{ alias: model, id: model }] })
+              } else {
+                props.onPatch({ auth: 'api-key', subscription: undefined })
+              }
+            }}
+          >
+            <option value="api-key">{t('channels.authModeApiKey')}</option>
+            <option value="subscription">{t('channels.authModeSubscription')}</option>
+          </select>
+        </div>
+
+        {subscriptionMode ? (
+          <div className={css.subscriptionBox}>
+            <div className={css.subscriptionAccount}>
+              <span className={css.subscriptionDot} data-state={props.subscriptionStatus?.state ?? 'unknown'} aria-hidden="true" />
+              <div>
+                <strong>{SUBSCRIPTION_PROVIDER_DISPLAY_NAMES[subscription]}</strong>
+                <small>{props.subscriptionStatus?.state === 'logged-in'
+                  ? props.subscriptionStatus.email ?? t('settings.subscriptionLoggedIn')
+                  : t('settings.subscriptionLoggedOut')}</small>
+              </div>
+            </div>
+            {EXPERIMENTAL_SUBSCRIPTION_PROVIDERS.has(subscription) ? <p className={css.subscriptionWarning}>{t('settings.subscriptionExperimental')}</p> : null}
+            <label className={css.editorField}>
+              <span className={css.label}>{t('channels.subscriptionProvider')}</span>
+              <select
+                className={css.select}
+                value={subscription}
+                disabled={!props.writable || props.subscriptionStatus?.state === 'logged-in'}
+                onChange={event => {
+                  const provider = event.target.value as SubscriptionProvider
+                  const model = DEFAULT_SUBSCRIPTION_MODELS[provider]
+                  props.onPatch({ subscription: provider, models: [{ alias: model, id: model }] })
+                }}
+              >
+                {SUBSCRIPTION_PROVIDERS.map(provider => <option key={provider} value={provider}>{SUBSCRIPTION_PROVIDER_DISPLAY_NAMES[provider]}{EXPERIMENTAL_SUBSCRIPTION_PROVIDERS.has(provider) ? ' · ' + t('settings.subscriptionExperimentalTag') : ''}</option>)}
+              </select>
+            </label>
+            <label className={css.editorField}>
+              <span className={css.label}>{t('channels.modelCatalogTitle')}</span>
+              <input className={css.input} value={DEFAULT_SUBSCRIPTION_MODELS[subscription]} readOnly disabled />
+            </label>
+            <div className={css.modelSummary}>
+              {props.subscriptionStatus?.state === 'logged-in'
+                ? <button type="button" className={css.addModel} disabled={!props.writable || props.subscriptionBusy !== undefined} onClick={() => { props.onSubscriptionLogout(subscription) }}>{props.subscriptionBusy === 'logout' ? t('settings.subscriptionLoggingOut') : t('settings.subscriptionLogout')}</button>
+                : <button type="button" className={css.addModel} disabled={!props.writable || props.subscriptionBusy !== undefined} onClick={() => { props.onSubscriptionLogin(subscription) }}>{props.subscriptionBusy === 'login' ? t('settings.subscriptionLoggingIn') : t('settings.subscriptionLogin')}</button>}
+            </div>
+            {props.subscriptionMessage ? <p className={css.hint} role="status">{props.subscriptionMessage}</p> : null}
+            {props.subscriptionStatus?.state !== 'logged-in' ? <div className={css.subscriptionManual}>
+              <p className={css.fieldHint}>{t('settings.subscriptionManualHint')}</p>
+              <div className={css.manualModelRow}>
+                <input className={css.input} value={manualAuthInput} placeholder={t('settings.subscriptionManualPlaceholder')} disabled={!props.writable || props.subscriptionBusy !== undefined} onChange={event => { setManualAuthInput(event.target.value) }} />
+                <button type="button" className={css.addModel} disabled={!props.writable || manualAuthInput.trim() === '' || props.subscriptionBusy !== undefined} onClick={() => { props.onSubscriptionComplete(subscription, manualAuthInput.trim()) }}>{t('settings.subscriptionManualComplete')}</button>
+              </div>
+            </div> : null}
+            <p className={css.fieldHint}>{t('settings.subscriptionIsolationHint')}</p>
+          </div>
+        ) : <>
         <div className={css.editorField}>
           <label className={css.label} htmlFor="dsh-imagegen-channel-url">{t('channels.apiUrl')}</label>
           <input id="dsh-imagegen-channel-url" className={css.input} value={channel.apiUrl} placeholder={channel.apiUrlFull ? 'https://api.example.com/v1/wand/si-image/generation' : 'https://api.example.com/v1'} disabled={!props.writable} onChange={event => { props.onPatch({ apiUrl: event.target.value }) }} />
@@ -1111,6 +1461,7 @@ function ChannelEditor(props: {
             })}
           </div>
         ) : null}
+        </>}
 
         <div className={css.editorDivider} />
 

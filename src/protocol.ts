@@ -8,13 +8,47 @@
 export const IMAGEGEN_SETTINGS_NAMESPACE = 'dsh-imagegen'
 
 /** Published package version shared by the host updater and the client UI. */
-export const PLUGIN_VERSION = '1.6.2'
+export const PLUGIN_VERSION = '1.6.3'
 
 /** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
 export const SETTINGS_API = {
   describe: '/api/dsh-imagegen/settings/describe',
   mutate: '/api/dsh-imagegen/settings/mutate',
 } as const
+
+/** Subscription account login and status routes. */
+export const SUBSCRIPTION_API = {
+  status: '/api/dsh-imagegen/subscription/status',
+  login: '/api/dsh-imagegen/subscription/login',
+} as const
+
+/** Official/subscription-backed image providers. */
+export const SUBSCRIPTION_PROVIDERS = ['chatgpt-sub', 'grok-sub', 'google-sub', 'openrouter-sub'] as const
+export type SubscriptionProvider = typeof SUBSCRIPTION_PROVIDERS[number]
+
+/** Subscription channels with a fixed image model. */
+export const DEFAULT_SUBSCRIPTION_MODELS: Record<SubscriptionProvider, string> = {
+  'chatgpt-sub': 'gpt-image-2.5-flare',
+  'grok-sub': 'grok-imagine-image-2.0',
+  'google-sub': 'gemini-3-pro-image',
+  'openrouter-sub': 'google/gemini-3-pro-image',
+}
+
+/** Human-facing provider names used in status and errors. */
+export const SUBSCRIPTION_PROVIDER_DISPLAY_NAMES: Record<SubscriptionProvider, string> = {
+  'chatgpt-sub': 'ChatGPT 订阅',
+  'grok-sub': 'Grok 订阅',
+  'google-sub': 'Google 订阅',
+  'openrouter-sub': 'OpenRouter 账号',
+}
+
+/** Interfaces that are supported experimentally and should be labelled in the UI. */
+export const EXPERIMENTAL_SUBSCRIPTION_PROVIDERS: ReadonlySet<SubscriptionProvider> = new Set(['chatgpt-sub', 'google-sub'])
+
+/** Whether a raw string names one of the subscription providers. */
+export function isSubscriptionProvider(value: unknown): value is SubscriptionProvider {
+  return typeof value === 'string' && (SUBSCRIPTION_PROVIDERS as readonly string[]).includes(value)
+}
 
 /** The image-generation proxy route. */
 export const GENERATE_API = '/api/dsh-imagegen/generate'
@@ -945,6 +979,10 @@ export interface ChannelConfig {
   apiUrl: string
   /** Use apiUrl verbatim instead of appending /images/generations or /images/edits. */
   apiUrlFull: boolean
+  /** Authentication source; absent means the legacy API-key path. */
+  auth?: 'api-key' | 'subscription'
+  /** Subscription provider when auth is subscription. */
+  subscription?: SubscriptionProvider
   /** The channel's model catalog (alias → upstream id). */
   models: ModelMapping[]
 }
@@ -956,6 +994,10 @@ export interface PresetProviderView {
   apiUrl: string
   hint: string
   models: ModelMapping[]
+  /** Set for subscription-backed presets. */
+  subscription?: SubscriptionProvider
+  /** True when the subscription relies on an undocumented interface. */
+  experimental?: boolean
 }
 
 export type GenerationTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'

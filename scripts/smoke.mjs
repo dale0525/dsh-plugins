@@ -73,10 +73,17 @@ await check('A1 host exports the plugin contract', () => {
   assert.equal(typeof host.Config, 'function')
   assert.equal(typeof host.ImageGenSettingsNamespace, 'string') // branded at runtime as string
   assert.equal(typeof host.makeRoutes, 'function')
+  assert.equal(typeof host.SubscriptionManager, 'function')
+  assert.equal(host.subscriptionOauthRef('codex'), 'DSH_IMAGEGEN_CODEX_OAUTH_1')
+  assert.equal(host.subscriptionOauthRef('openrouter'), 'DSH_IMAGEGEN_OPENROUTER_OAUTH_1')
   assert.equal(typeof host.generateImage, 'function')
 })
 await check('A2 Config schema validates + marks apiKey secret', () => {
-  const resolved = host.Config({ apiUrl: 'https://x/v1', apiKey: 'sk-1' })
+  const resolvedRefs = host.Config({ apiUrl: 'https://x/v1', apiKey: 'sk-1' })
+  const resolved = Object.fromEntries(Object.entries(resolvedRefs).map(([key, value]) => [
+    key,
+    value !== null && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value,
+  ]))
   assert.equal(resolved.apiKey, 'sk-1')
   assert.equal(resolved.enabled, true)
   assert.equal(resolved.allowAgentImageGeneration, true)
@@ -85,6 +92,7 @@ await check('A2 Config schema validates + marks apiKey secret', () => {
   // Config is the schemastery schema itself: the secret role lives on the
   // schema node, which the settings seam's redactor walks.
   assert.equal(host.Config.dict?.apiKey?.meta?.role, 'secret')
+  assert.equal(host.Config.dict?.apiKey?.meta?.volatile, true, 'live fields are exposed to dsh-settings 0.1.7')
 })
 await check('A2b configured default image model is used when Agent omits model', () => {
   const channels = [{
@@ -787,10 +795,10 @@ const seam = {
   writable: true,
   describe({ redactSecrets } = {}) {
     const value = { enabled: true, announceToAgent: true, apiUrl: 'http://upstream/v1', apiKey: 'sk-secret' }
-    const user = stored.get('dsh-imagegen')
+    const user = stored.get('imagegen')
     const merged = { ...value, ...user }
     const view = {
-      ns: 'dsh-imagegen',
+      ns: 'imagegen',
       value: redactSecrets ? { ...merged, apiKey: undefined } : merged,
       revision: stored.get('rev') ?? 0,
       ...user !== undefined ? { user: redactSecrets ? { ...user, apiKey: undefined } : user } : {},
@@ -800,14 +808,44 @@ const seam = {
     return [view]
   },
   async mutate(ns, ops, expectedRevision) {
-    assert.equal(String(ns), 'dsh-imagegen')
-    const current = { ...(stored.get('dsh-imagegen') ?? {}) }
+    assert.equal(String(ns), 'imagegen')
+    const current = { ...(stored.get('imagegen') ?? {}) }
     for (const op of ops) {
       if (op.op === 'set') current[op.path[0]] = op.value
       else if (op.op === 'unset') delete current[op.path[0]]
     }
-    stored.set('dsh-imagegen', current)
+    stored.set('imagegen', current)
     stored.set('rev', (stored.get('rev') ?? 0) + 1)
+  },
+}
+const subscriptionStatuses = {
+  'chatgpt-sub': { state: 'logged-out' },
+  'grok-sub': { state: 'logged-in', email: 'grok@example.test' },
+  'google-sub': { state: 'logged-out' },
+  'openrouter-sub': { state: 'logged-out' },
+}
+let subscriptionGenerateCalls = 0
+const subscriptionFake = {
+  async loginStatus(vendor) {
+    const provider = vendor === 'codex' ? 'chatgpt-sub' : vendor === 'antigravity' ? 'google-sub' : vendor === 'openrouter' ? 'openrouter-sub' : 'grok-sub'
+    return subscriptionStatuses[provider]
+  },
+  async beginLogin(vendor) { return { url: `https://auth.example.test/${vendor}`, ...vendor === 'grok' ? { code: 'ABCD-EFGH' } : {} } },
+  lastLoginError() { return undefined },
+  async completeLogin(vendor, input) {
+    assert.equal(vendor, 'openrouter')
+    assert.equal(input, 'http://127.0.0.1:56231/oauth/callback?code=manual&state=manual-state')
+    subscriptionStatuses['openrouter-sub'] = { state: 'logged-in', email: 'openrouter@example.test' }
+  },
+  async logout(vendor) {
+    const provider = vendor === 'codex' ? 'chatgpt-sub' : vendor === 'antigravity' ? 'google-sub' : vendor === 'openrouter' ? 'openrouter-sub' : 'grok-sub'
+    subscriptionStatuses[provider] = { state: 'logged-out' }
+  },
+  async generate(options) {
+    subscriptionGenerateCalls += 1
+    assert.equal(options.vendor, 'grok')
+    assert.equal(options.prompt, 'subscription cat')
+    return [{ b64_json: pngBytes.toString('base64') }]
   },
 }
 const persistedHistory = []
@@ -1067,6 +1105,8 @@ const skillLibraryFake = {
 }
 const routes = host.makeRoutes({
   settings: seam,
+  settingsNamespace: 'imagegen',
+  subscriptions: subscriptionFake,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
   resolvePrompt: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test', model: 'chat-test' }),
   history,
@@ -1186,7 +1226,78 @@ await check('C2 settings mutate writes + redacts the key', async () => {
   assert.equal(body.ok, true)
   assert.equal(body.value.secrets.find(s => s.path[0] === 'apiKey').set, true)
   assert.equal(body.value.value.apiKey, undefined)
-  assert.equal(stored.get('dsh-imagegen').apiKey, 'sk-new')
+  assert.equal(stored.get('imagegen').apiKey, 'sk-new')
+})
+
+await check('C2b subscription status/login routes keep tokens host-side', async () => {
+  const status = await post('/api/dsh-imagegen/subscription/status', {})
+  assert.equal(status.body.ok, true)
+  assert.equal(status.body.statuses['grok-sub'].state, 'logged-in')
+  assert.equal(status.body.statuses['grok-sub'].email, 'grok@example.test')
+  assert.equal(status.body.statuses['chatgpt-sub'].state, 'logged-out')
+  assert.equal(status.body.statuses['openrouter-sub'].state, 'logged-out')
+  const login = await post('/api/dsh-imagegen/subscription/login', { provider: 'chatgpt-sub' })
+  assert.equal(login.body.ok, true)
+  assert.equal(login.body.url, 'https://auth.example.test/codex')
+  const logout = await post('/api/dsh-imagegen/subscription/login', { provider: 'grok-sub', action: 'logout' })
+  assert.equal(logout.body.ok, true)
+  assert.equal(subscriptionStatuses['grok-sub'].state, 'logged-out')
+  const complete = await post('/api/dsh-imagegen/subscription/login', { provider: 'openrouter-sub', action: 'complete', input: 'http://127.0.0.1:56231/oauth/callback?code=manual&state=manual-state' })
+  assert.equal(complete.body.ok, true)
+  assert.equal(subscriptionStatuses['openrouter-sub'].state, 'logged-in')
+})
+
+await check('C2c subscription runtime generates without an API key', async () => {
+  const runtime = new host.ImageGenerationRuntime(
+    () => ({
+      channels: [{
+        id: 'grok-sub',
+        preset: 'grok-subscription',
+        name: 'Grok 订阅',
+        apiUrl: '',
+        apiKey: '',
+        apiUrlFull: false,
+        auth: 'subscription',
+        subscription: 'grok-sub',
+        models: [{ alias: 'grok-imagine-image-2.0', id: 'grok-imagine-image-2.0' }],
+      }],
+      defaultChannelId: 'grok-sub',
+    }),
+    { append: async () => [] },
+    subscriptionFake,
+  )
+  const result = await runtime.run({ mode: 'text', model: 'grok-imagine-image-2.0', prompt: 'subscription cat', size: '1024x1024', quality: 'auto', n: 1, detail: '', channelId: 'grok-sub' })
+  assert.equal(result.images.length, 1)
+  assert.equal(result.images[0].mime, 'image/png')
+  assert.equal(subscriptionGenerateCalls, 1)
+})
+
+await check('C2d OpenRouter OAuth image request uses the hosted credential', async () => {
+  const originalFetch = globalThis.fetch
+  const calls = []
+  try {
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init })
+      return new Response(JSON.stringify({ choices: [{ message: { images: [{ image_url: { url: `data:image/png;base64,${pngBytes.toString('base64')}` } }] } }] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const manager = new host.SubscriptionManager({
+      credentials: {
+        async resolve(ref) {
+          assert.equal(ref, 'DSH_IMAGEGEN_OPENROUTER_OAUTH_1')
+          return { value: JSON.stringify({ accessToken: 'openrouter-key', refreshToken: '', expiresAt: Number.MAX_SAFE_INTEGER, label: 'OpenRouter', email: '', accountId: '' }) }
+        },
+      },
+    })
+    const images = await manager.generate({ vendor: 'openrouter', prompt: 'openrouter cat' })
+    assert.equal(images.length, 1)
+    assert.equal(calls[0].url, 'https://openrouter.ai/api/v1/chat/completions')
+    assert.equal(calls[0].init.headers.authorization, 'Bearer openrouter-key')
+    const body = JSON.parse(String(calls[0].init.body))
+    assert.equal(body.model, 'google/gemini-3-pro-image')
+    assert.deepEqual(body.modalities, ['image'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 await check('C3 generate route persists history server-side and enforces loopback fence', async () => {

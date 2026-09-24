@@ -62,9 +62,10 @@ const nodeConfig: UserConfig = {
       '@deepseek-ai/dsh-settings',
       '@deepseek-ai/dsh-tools',
       '@deepseek-ai/dsh-attachment',
+      '@deepseek-ai/dsh-credentials',
       '@deepseek-ai/dsh-llm',
       '@deepseek-ai/dsh-llm/message',
-      'schemastery',
+      '@deepseek-ai/schemastery',
     ],
   },
 }

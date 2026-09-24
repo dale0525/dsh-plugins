@@ -11,8 +11,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import { readFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
-import { installSettingsSectionCompat, settingsNamespaceCompat } from './settings-compat.ts'
-import z from 'schemastery'// Type-only: pulls the webServer Context merge (route registration).
+import { installSettingsSectionCompat, resolveSettingsNamespaceCompat, settingsNamespaceCompat } from './settings-compat.ts'
+import z from '@deepseek-ai/schemastery'
+// Type-only: pulls the webServer Context merge (route registration).
 import type {} from '@deepseek-ai/dsh-host-webserver'
 // Type-only: pulls the systemPrompt Context merge (announcement section).
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -24,8 +25,9 @@ import type {} from '@deepseek-ai/dsh-tools'
 // packages at runtime, and this deployment does not resolve them at
 // type-check time either.
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-import { IMAGEGEN_SETTINGS_NAMESPACE, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
+import { IMAGEGEN_SETTINGS_NAMESPACE, isSubscriptionProvider, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillConfigView, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type ChannelConfig, type ModelMapping } from './protocol.ts'
 import { makeRoutes, type SettingsSeam } from './routes.ts'
+import { SubscriptionManager } from './subscription/manager.ts'
 import { syncAllTemplates } from './templates-store.ts'
 import { setStorageSyncHandler, putObject, type StorageSyncConfig } from './storage-sync.ts'
 
@@ -317,6 +319,7 @@ export const inject = ['webServer', 'systemPrompt', 'commands']
 // Internals re-exported for smoke tests and host-side debugging; the plugin
 // contract only requires name / inject / Config / apply.
 export { makeRoutes } from './routes.ts'
+export { SubscriptionManager, vendorOf, subscriptionOauthRef } from './subscription/manager.ts'
 export { generateImage, ImageGenError } from './engine.ts'
 export { promptCharLimit } from './model-catalog.ts'
 export { analyzeLayers, normalizeLayerPlan, MAX_LAYER_IMAGE_BYTES } from './layer-analyzer.ts'
@@ -420,48 +423,75 @@ export interface Config {
   imageModels?: string[]
 }
 
-export const Config: z<Config> = z.object({
-  enabled: z.boolean().default(true),
-  announceToAgent: z.boolean().default(true),
-  allowAgentImageGeneration: z.boolean().default(true),
+const configSchema = z.object({
+  enabled: z.boolean().default(true).volatile(),
+  announceToAgent: z.boolean().default(true).volatile(),
+  allowAgentImageGeneration: z.boolean().default(true).volatile(),
   channels: z.array(z.object({
     id: z.string(),
     preset: z.string().default(''),
     name: z.string().default(''),
     apiUrl: z.string().default(''),
     apiUrlFull: z.boolean().default(false),
+    auth: z.union([z.const('api-key'), z.const('subscription')]).default('api-key'),
+    subscription: z.string().default(''),
     models: z.array(z.object({
       alias: z.string(),
       id: z.string(),
     })).default([]),
-  })).default([]),
-  channelSecrets: z.dict(z.string().role('secret')).default({}),
-  defaultChannelId: z.string().default(''),
-  defaultModel: z.string().default(''),
-  promptApiUrl: z.string().default(''),
-  promptApiKey: z.string().role('secret').default(''),
-  promptModel: z.string().default(''),
-  localStoragePath: z.string().default(''),
-  storageEnabled: z.boolean().default(false),
-  storageEndpoint: z.string().default(''),
-  storageRegion: z.string().default(''),
-  storagePrefix: z.string().default('dsh-imagegen'),
-  storageAccessKey: z.string().default(''),
-  storageSecretKey: z.string().role('secret').default(''),
-  storageSyncGallery: z.boolean().default(true),
-  storageSyncHistory: z.boolean().default(false),
-  skillsEnabled: z.boolean().default(true),
-  allowHeavySkills: z.boolean().default(true),
-  skillAllowlist: z.string().default(''),
-  skillOutputDir: z.string().default(''),
-  skillHeavyTimeoutMinutes: z.number().default(20),
-  skillAgentPreset: z.string().default(''),
-  skillConfig: z.dict(z.string()).default({}),
-  skillConfigSecrets: z.dict(z.string().role('secret')).default({}),
-  apiUrl: z.string().default(''),
-  apiKey: z.string().role('secret').default(''),
-  imageModels: z.array(z.string()).default([]),
+  })).default([]).volatile(),
+  channelSecrets: z.dict(z.string().role('secret')).default({}).volatile(),
+  defaultChannelId: z.string().default('').volatile(),
+  defaultModel: z.string().default('').volatile(),
+  promptApiUrl: z.string().default('').volatile(),
+  promptApiKey: z.string().role('secret').default('').volatile(),
+  promptModel: z.string().default('').volatile(),
+  localStoragePath: z.string().default('').volatile(),
+  storageEnabled: z.boolean().default(false).volatile(),
+  storageEndpoint: z.string().default('').volatile(),
+  storageRegion: z.string().default('').volatile(),
+  storagePrefix: z.string().default('dsh-imagegen').volatile(),
+  storageAccessKey: z.string().default('').volatile(),
+  storageSecretKey: z.string().role('secret').default('').volatile(),
+  storageSyncGallery: z.boolean().default(true).volatile(),
+  storageSyncHistory: z.boolean().default(false).volatile(),
+  skillsEnabled: z.boolean().default(true).volatile(),
+  allowHeavySkills: z.boolean().default(true).volatile(),
+  skillAllowlist: z.string().default('').volatile(),
+  skillOutputDir: z.string().default('').volatile(),
+  skillHeavyTimeoutMinutes: z.number().default(20).volatile(),
+  skillAgentPreset: z.string().default('').volatile(),
+  skillConfig: z.dict(z.string()).default({}).volatile(),
+  skillConfigSecrets: z.dict(z.string().role('secret')).default({}).volatile(),
+  apiUrl: z.string().default('').volatile(),
+  apiKey: z.string().role('secret').default('').volatile(),
+  imageModels: z.array(z.string()).default([]).volatile(),
 })
+
+// The public schema type stays the plain Config shape for plugin consumers;
+// the loader resolves these top-level fields to Volatile references.
+export const Config: z<Config> = configSchema as unknown as z<Config>
+
+/** One live config field exposed by schemastery's volatile resolver. */
+interface VolatileValue<T> {
+  get: () => T
+}
+
+/** Read a value that may be a volatile config reference. */
+function unwrapVolatileValue<T>(value: unknown): T {
+  if (typeof value === 'object' && value !== null && typeof (value as { get?: unknown }).get === 'function') {
+    return (value as VolatileValue<T>).get()
+  }
+  return value as T
+}
+
+/** Detach the plain Config view from the loader's top-level volatile fields. */
+function unwrapConfig(value: unknown): Config {
+  if (typeof value !== 'object' || value === null) return {}
+  const out: Record<string, unknown> = {}
+  for (const [key, field] of Object.entries(value)) out[key] = unwrapVolatileValue(field)
+  return out as Config
+}
 
 /** Schema defaults, re-read for hand-built contexts (the loader applies them normally). */
 const DEFAULT_ENABLED = true
@@ -518,6 +548,8 @@ function normalizeChannels(value: unknown): ChannelConfig[] {
       name: typeof raw.name === 'string' ? raw.name.trim() : '',
       apiUrl: typeof raw.apiUrl === 'string' ? raw.apiUrl.trim() : '',
       apiUrlFull: raw.apiUrlFull === true,
+      ...raw.auth === 'subscription' ? { auth: 'subscription' as const } : {},
+      ...isSubscriptionProvider(raw.subscription) ? { subscription: raw.subscription } : {},
       models,
     })
   }
@@ -559,7 +591,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
   // service is attached, the composition entry otherwise.
   let current: () => Config = () => config ?? {}
   const resolve = (): EffectiveConfig => {
-    const value = current() ?? {}
+    const value = unwrapConfig(current())
     setImageDataRoot(value.localStoragePath)
     let channels = normalizeChannels(value.channels)
     // Settings scopes are deep-frozen by the host. Legacy migration adds the
@@ -658,7 +690,8 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
   // keeps image persistence, cancellation, and retries coherent across both
   // entry points; Agent tools wait for their task result by default and render
   // images in the tool result instead of injecting a synthetic user message.
-  const runtime = new ImageGenerationRuntime(channelsView)
+  const subscriptions = new SubscriptionManager(ctx)
+  const runtime = new ImageGenerationRuntime(channelsView, undefined, subscriptions)
   const pendingConversationImages = new Map<string, ImageAttachmentRef>()
 
   // Host-rendered copy (skill catalog labels, run errors, produced node titles)
@@ -710,6 +743,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
 
   /** Settings write path, installed by the settings injection further down. */
   let mutateSettings: ((ops: Array<Record<string, unknown>>) => Promise<void>) | undefined
+  let settingsNamespace = IMAGEGEN_SETTINGS_NAMESPACE
 
   /** Entry paths the last library listing resolved, so lookups agree with it. */
   const entryPathByName = new Map<string, string>()
@@ -962,13 +996,15 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
   // how the user re-enables the plugin from the settings card.
   ctx.inject(['settings', 'attachments'], (sctx) => {
     const seam = sctx.get('settings') as unknown as SettingsSeam
+    settingsNamespace = resolveSettingsNamespaceCompat(ctx, seam, ImageGenSettingsNamespace)
     // Skill configuration values are written through the same namespace the
     // settings card edits; the panel never crafts settings ops itself.
-    mutateSettings = async ops => { await seam.mutate(IMAGEGEN_SETTINGS_NAMESPACE, ops) }
+    mutateSettings = async ops => { await seam.mutate(settingsNamespace, ops) }
     sctx.effect(
       () => {
         const routes = makeRoutes({
           settings: seam,
+          settingsNamespace,
           resolve: () => {
             const value = resolve()
             const channel = value.channels.find(candidate => candidate.id === value.defaultChannelId) ?? value.channels[0]
@@ -991,6 +1027,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
           attachments: sctx.attachments,
           pendingConversationImages,
           runtime,
+          subscriptions,
           resolveStorage: () => resolve().storage,
           skills: skillRunner,
           skillLibrary,
@@ -1062,7 +1099,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
     })
   }
 
-  installSettingsSectionCompat(ctx, ImageGenSettingsNamespace, Config, config ?? {}, {
+  installSettingsSectionCompat(ctx, ImageGenSettingsNamespace, Config, unwrapConfig(config), {
     setSource: (source) => {
       current = source
       sync()
