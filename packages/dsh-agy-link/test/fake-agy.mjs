@@ -23,6 +23,11 @@ if (process.env.FAKE_AGY_CWD_FILE) {
 if (process.env.FAKE_AGY_HOME_FILE) {
   try { writeFileSync(process.env.FAKE_AGY_HOME_FILE, process.env.HOME ?? '') } catch {}
 }
+// The plugin attributes bridged tool calls to a session by handing agy this
+// variable, which agy passes on to the bridge it spawns.
+if (process.env.FAKE_AGY_SESSION_FILE) {
+  try { writeFileSync(process.env.FAKE_AGY_SESSION_FILE, process.env.DSH_AGY_SESSION ?? '') } catch {}
+}
 // Capture stdin for long-prompt transport tests (issue #14/#11).
 if (process.env.FAKE_AGY_STDIN_FILE) {
   let buf = ''

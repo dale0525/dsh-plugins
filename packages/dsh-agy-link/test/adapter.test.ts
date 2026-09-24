@@ -175,6 +175,19 @@ test('ok run mirrors tools natively, streams text, and persists the binding', as
   assert.equal(b.lastMessageCount, 1)
 })
 
+test('the spawned agy carries this run session id, so the bridge can attribute its calls', async () => {
+  const { adapter } = makeAdapter()
+  const sessionFile = join(workDir, 'session.txt')
+  process.env.FAKE_AGY_MODE = 'ok'
+  process.env.FAKE_AGY_SESSION_FILE = sessionFile
+  try {
+    await runTurn(adapter, [msg('user', 'hello there')], { sessionId: 'sess-env-1' as never })
+    assert.equal(readFileSync(sessionFile, 'utf8'), 'sess-env-1')
+  } finally {
+    delete process.env.FAKE_AGY_SESSION_FILE
+  }
+})
+
 test('detectContinuation permits only trailing snapshots after our mirror result', () => {
   const toolResult = (callId: string): Message =>
     ({ role: 'user', content: [{ type: 'tool-result', toolCallId: callId, content: [] }], source: { kind: 'tool', callId } }) as never
