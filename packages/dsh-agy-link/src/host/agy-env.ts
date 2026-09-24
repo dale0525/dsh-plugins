@@ -144,13 +144,12 @@ export function syncAgyEnv(account: ManagedAccount, opts: AgyEnvOptions = {}): s
     const file = mcpConfigPath(home)
     writeIfChanged(file, mergeMcpConfig(readIfExists(file), opts.bridge))
     // Plan mode is the only mode that consults permissions.allow ('skip', the
-    // default, already passes everything). The file is agy's own and is only
-    // amended when agy already created it.
+    // default, already passes --dangerously-skip-permissions). Without the rule
+    // a plan-mode spawn auto-denies every mcp(dsh-tools) call, and headless mode
+    // cannot prompt — so the file is created when agy has not written one yet.
     const settings = join(home, '.gemini', 'antigravity-cli', 'settings.json')
-    if (existsSync(settings)) {
-      const next = allowMcpServer(readFileSync(settings, 'utf8'))
-      if (next !== null) writeIfChanged(settings, next)
-    }
+    const next = allowMcpServer(readIfExists(settings) ?? '{}')
+    if (next !== null) writeIfChanged(settings, next)
   }
   return home
 }

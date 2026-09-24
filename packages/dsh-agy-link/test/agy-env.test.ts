@@ -165,12 +165,17 @@ test('syncAgyEnv writes rules, skills and the MCP config, then leaves them untou
         mcpServers: Record<string, { command?: string; env?: Record<string, string> }>
       }
       assert.equal(mcp.mcpServers['dsh-tools']?.env?.DSH_MCP_URL, bridge.url)
-      // settings.json is agy's own file: never created by the plugin.
-      assert.equal(existsSync(join(home, '.gemini', 'antigravity-cli', 'settings.json')), false)
+      // A plan-mode spawn reads permissions.allow; without this rule headless
+      // mode auto-denies every mcp(dsh-tools) call and cannot prompt.
+      const settingsFile = join(home, '.gemini', 'antigravity-cli', 'settings.json')
+      const settings = JSON.parse(readFileSync(settingsFile, 'utf8')) as {
+        permissions?: { allow?: string[] }
+      }
+      assert.deepEqual(settings.permissions?.allow, ['mcp(dsh-tools)'])
 
-      const stamps = [rulesFile, skillFile, mcpFile].map((f) => statSync(f).mtimeMs)
+      const stamps = [rulesFile, skillFile, mcpFile, settingsFile].map((f) => statSync(f).mtimeMs)
       syncAgyEnv(acc, opts)
-      assert.deepEqual([rulesFile, skillFile, mcpFile].map((f) => statSync(f).mtimeMs), stamps)
+      assert.deepEqual([rulesFile, skillFile, mcpFile, settingsFile].map((f) => statSync(f).mtimeMs), stamps)
       assert.equal(readFileSync(rulesFile, 'utf8'), rules)
     })
   } finally {

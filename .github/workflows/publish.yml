@@ -97,6 +97,25 @@ jobs:
               echo "$name@$version already published -- skipping"
             else
               ( cd "$dir" && npm publish --access public )
+              # npm publish exits 0 for a STAGED publish too, so the exit code
+              # cannot tell a live release from one still awaiting approval.
+              # Poll the registry until the exact version resolves; a staged
+              # version never becomes visible, so this is the only real gate.
+              live=""
+              for _ in $(seq 1 20); do
+                if npm view "$name@$version" version --prefer-online >/dev/null 2>&1; then
+                  live=1
+                  break
+                fi
+                sleep 15
+              done
+              if [ -z "$live" ]; then
+                echo "::error::$name@$version is still not resolvable after 5 minutes."
+                echo "If this package uses staged publishing, approve the staged"
+                echo "version (or turn staged publishing off for it) and re-run."
+                exit 1
+              fi
+              echo "$name@$version is live"
             fi
             echo "::endgroup::"
           done < /tmp/plan.txt

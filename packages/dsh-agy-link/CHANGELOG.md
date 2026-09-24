@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.4 (2026-09-24)
+
+### English
+
+**Fixes**
+
+- **Plan mode now gets the MCP allow-rule instead of silently losing it.** `syncAgyEnv` only
+  amended `settings.json` when agy had already created it, so a user who switched
+  `permissionMode` to `plan` got no `mcp(dsh-tools)` entry and every bridge call was
+  auto-denied by headless mode, which cannot prompt. The file is now created (with only the
+  allow-rule) when it is absent; an existing document is still merged, never replaced.
+- **The release workflow can no longer report success for a staged publish.** `npm publish`
+  exits 0 when npm stages a version for manual approval, so the old loop printed
+  `+ <pkg>@<version>` and passed while nothing was installable. After each publish the
+  workflow now polls the registry until the exact version resolves and fails the job if it
+  never does, naming staged publishing as the likely cause.
+
+### 中文 (Chinese)
+
+**修复**
+
+- **plan 模式不再静默丢掉 MCP 白名单。** `syncAgyEnv` 此前只在 agy 已创建 `settings.json` 时才
+  改写它，因此把 `permissionMode` 切成 `plan` 的用户拿不到 `mcp(dsh-tools)` 规则，headless 模式
+  又会自动拒绝所有桥调用（无法弹窗询问）。现在文件不存在时会创建（只写白名单规则）；
+  已存在的文档仍然是合并，绝不整体替换。
+- **发布流程不再把「暂存发布」报成成功。** npm 把版本暂存待批时 `npm publish` 同样返回 0，
+  旧循环于是照打 `+ <pkg>@<version>` 并通过，而线上根本装不到。现在每次发布后都会轮询 registry
+  直到该确切版本可解析，超时即让 job 失败，并点名「暂存发布」这一可能原因。
+
 ## 0.5.3 (2026-09-24)
 
 ### English
