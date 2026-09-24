@@ -760,6 +760,7 @@ function pruneEmptyParents(absPaths, stopAt) {
     }
   }
 }
+
 /** 应用 snapshotResurrectedIgnored：把上游新造、我方忽略的路径退出索引并清盘。 */
 function removeResurrectedIgnored(snapshot) {
   if (snapshot.ignored.size === 0) return 0
