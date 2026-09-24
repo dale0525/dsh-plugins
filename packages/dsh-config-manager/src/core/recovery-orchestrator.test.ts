@@ -16,7 +16,7 @@ import path from 'node:path';
 
 import { createRecoveryOrchestrator } from './recovery-orchestrator.ts';
 import type { RecoveryOrchestratorDeps } from './recovery-orchestrator.ts';
-import { JournalStore } from './journal.ts';
+import { JournalStore, createJournalEntry } from './journal.ts';
 import { RunRegistry } from './run-registry.ts';
 import { nullLogger } from '../utils/logger.ts';
 import { zhMsg } from './messages.ts';
@@ -33,21 +33,28 @@ async function makeOrchestrator(opts: {
   lockDetail?: string;
   lockThrows?: boolean;
   recoverResult?: { ok: boolean; removed: boolean; state: string; detail?: string };
-} = {}): Promise<{ orchestrator: ReturnType<typeof createRecoveryOrchestrator>; spy: RecoverSpy }> {
+} = {}): Promise<{
+  orchestrator: ReturnType<typeof createRecoveryOrchestrator>
+  spy: RecoverSpy
+  store: JournalStore
+  clearCalls: () => number
+}> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-recovery-orch-'));
+  let clearCalls = 0;
+  const store = new JournalStore({ transactionsDir: path.join(dir, 'transactions') });
   const spy: RecoverSpy = {
     calls: 0,
     result: opts.recoverResult ?? { ok: true, removed: true, state: 'STALE_LOCK_DETECTED', detail: '已移除 stale ownership (op=autosync, pid=24140)' },
   };
   const deps: RecoveryOrchestratorDeps = {
-    store: new JournalStore({ transactionsDir: path.join(dir, 'transactions') }),
+    store,
     runs: new RunRegistry(),
     snapshotsDir: path.join(dir, 'snapshots'),
     host: { log: nullLogger() } as unknown as HostContext,
     msg: zhMsg,
     snapshotExists: async () => false,
     getEnvironmentFingerprint: () => 'fp-test',
-    clearSafeMode: async () => undefined,
+    clearSafeMode: async () => { clearCalls += 1; },
     inspectLockState: async () => {
       if (opts.lockThrows === true) throw new Error('probe failed');
       return { state: opts.lockState ?? 'FREE', ...(opts.lockDetail !== undefined ? { detail: opts.lockDetail } : {}) };
@@ -57,7 +64,7 @@ async function makeOrchestrator(opts: {
       return spy.result;
     },
   };
-  return { orchestrator: createRecoveryOrchestrator(deps), spy };
+  return { orchestrator: createRecoveryOrchestrator(deps), spy, store, clearCalls: () => clearCalls };
 }
 
 // ---------- ① 纯锁残留场景：incidents 为空，但锁事项必须可见 ----------
@@ -181,6 +188,54 @@ test('源码守卫：/sync/lock/recover 路由不经 mutation gate（否则回�
   assert.equal(route.includes('withMutationGate'), false, '回收路由绝不能被 withMutationGate 包裹（acquire 必失败 → 回收恒 423）');
   assert.equal(route.includes('runWithMutationLock'), false, '回收路由绝不 acquire 锁');
   assert.ok(route.includes('recoverStaleLock(true)'), '必须显式以 userConfirmed=true 调用回收');
+  assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 loopback + method 围栏');
+});
+
+// ---------- issue #32：dismiss 是 SAFE MODE 的唯一出口 ----------
+// 已发生故障：sync-push 中断留下 state=NEEDS_ATTENTION、snapshotId=null 的 journal，
+// SAFE MODE 因此阻断所有 mutation（423），而该 incident 无 trusted snapshot 可回滚 ——
+// 唯一出路是 dismiss；若 dismiss 不解除 SAFE MODE，闸门就没有出口。
+
+test('dismiss：放弃未解决 incident 后必须解除 SAFE MODE（无 snapshot incident 的唯一出口）', async () => {
+  const { orchestrator, store, clearCalls } = await makeOrchestrator();
+  const opId = '19059e36-f3a8-434e-ba71-a94c5c00a5e6';
+  const j = createJournalEntry('sync-push', {
+    operationId: opId, ownerInstanceId: 'o1', lockId: 'l1', packageVersion: '0.1.65', environmentFingerprint: 'fp-test',
+  }, '2026-09-24T05:53:04.000Z');
+  await store.create({ ...j, state: 'NEEDS_ATTENTION' });
+
+  assert.equal(clearCalls(), 0, '前置：尚未 dismiss 时不得解除阻断');
+  const r = await orchestrator.dismiss(opId, true);
+  assert.equal(r.status, 200);
+  assert.equal(r.body['dismissed'], true);
+  assert.equal(clearCalls(), 1, 'dismiss 成功后必须解除 SAFE MODE —— 否则该 incident 永久 423');
+  assert.deepEqual(await store.scanActive(), [], 'incident 必须已 quarantine（否则仍算未解决，阻断不该解除）');
+});
+
+test('dismiss：未显式确认（userConfirmed!==true）→ 400 且绝不解除阻断', async () => {
+  const { orchestrator, store, clearCalls } = await makeOrchestrator();
+  const opId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const j = createJournalEntry('sync-push', {
+    operationId: opId, ownerInstanceId: 'o1', lockId: 'l1', packageVersion: '0.1.65', environmentFingerprint: 'fp-test',
+  }, '2026-09-24T05:53:04.000Z');
+  await store.create({ ...j, state: 'NEEDS_ATTENTION' });
+
+  const r = await orchestrator.dismiss(opId, false);
+  assert.equal(r.status, 400);
+  assert.equal(clearCalls(), 0, '未确认时不得解除阻断');
+  assert.deepEqual(await store.scanActive(), [opId], 'incident 必须原样保留');
+});
+
+test('源码守卫：/sync/recovery/dismiss 路由不经 mutation gate（它就是解除该闸门的机制）', async () => {
+  const src = (await fs.readFile(new URL('../index.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+  const path = '/api/dsh-config-manager/sync/recovery/dismiss';
+  assert.ok(src.includes(`syncRecoveryDismiss: '${path}'`), 'API 常量必须登记解除保护路由');
+  const at = src.indexOf('path: API.syncRecoveryDismiss,');
+  assert.ok(at > 0, '路由表必须注册解除保护路由');
+  const route = src.slice(at, src.indexOf('\n    },', at));
+  assert.equal(route.includes('withMutationGate'), false, '解除保护路由绝不能被 withMutationGate 包裹（必 423 → 出口不可达）');
+  assert.equal(route.includes('runWithMutationLock'), false, '解除保护路由绝不 acquire 锁（残留锁与 SAFE MODE 可并存）');
+  assert.ok(route.includes('dismiss(operationId, true)'), '必须以 userConfirmed=true 调用 dismiss');
   assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 loopback + method 围栏');
 });
 

@@ -8,7 +8,7 @@
 import type { PlanItem, PlanItemKind } from '../../core/types.ts';
 import type { PullChange, SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts';
 import type { GithubPollResponse, SyncStatusResponse } from './sync-api.ts';
-import type { RecoveryLockStatus } from '../../ui/types.ts';
+import type { RecoveryIncident, RecoveryLockStatus } from '../../ui/types.ts';
 import { zhUiT, type UiT } from '../../ui/i18n.ts';
 
 /* ---------------------------------------------------------------- 残留环境锁入口 */
@@ -478,5 +478,70 @@ export function githubPollMessage(poll: GithubPollResponse, t: UiT = zhUiT): str
       return t('sync.github.pollError', { detail: poll.message ?? poll.errorCode ?? t('sync.github.unknownError') });
     default:
       return '';
+  }
+}
+
+/* ---------------------------------------------------------------- SAFE MODE 恢复入口 */
+
+/** 单条未解决 incident 的渲染行（按钮文案随进行中状态切换）。 */
+export interface RecoveryIncidentRow {
+  operationId: string
+  /** 人类可读的操作名（如「同步推送」） */
+  operationLabel: string
+  badgeLabel: string
+  badgeKind: 'warn' | 'error'
+  /** Host 已脱敏的原因文本 */
+  reason: string
+  createdAt: string
+  label: string
+  canDismiss: boolean
+}
+
+/** SAFE MODE 恢复面板模型（issue #32）。 */
+export interface RecoveryPanelModel {
+  /** 是否渲染整块（无 incident / 旧宿主不返回 recovery → false，不误报） */
+  visible: boolean
+  title: string
+  detail: string
+  items: RecoveryIncidentRow[]
+}
+
+/** operationType → 人类可读名（未知类型兜底为通用名，绝不抛错）。 */
+function recoveryOpLabel(operationType: string, t: UiT): string {
+  switch (operationType) {
+    case 'sync-push': return t('sync.recovery.op.syncPush')
+    case 'sync-pull': return t('sync.recovery.op.syncPull')
+    default: return t('sync.recovery.op.other')
+  }
+}
+
+/**
+ * SAFE MODE 恢复面板模型。**可见性恒为「有未解决 incident」**——这是 Host 侧 423
+ * （LOCK_BLOCK_BRIEF.blocked）的真实成因，UI 不自造第二套判据。
+ *
+ * 为什么必须有这个入口：`blocked` 闸门拦下所有 mutation，而恢复路由曾被整体删除，
+ * 于是无 trusted snapshot 的 incident 只剩「放弃恢复」一条路，且当时连这条路也没有
+ * 入口 → SAFE MODE 无出口、永久 423（已发生故障）。
+ */
+export function recoveryPanelModel(
+  incidents: readonly RecoveryIncident[] | undefined,
+  dismissing: string | null,
+  t: UiT = zhUiT,
+): RecoveryPanelModel {
+  const list = incidents ?? []
+  return {
+    visible: list.length > 0,
+    title: t('sync.recovery.title'),
+    detail: t('sync.recovery.attention'),
+    items: list.map((i) => ({
+      operationId: i.operationId,
+      operationLabel: recoveryOpLabel(i.operationType, t),
+      badgeLabel: i.decision === 'needs-attention' ? t('sync.recovery.badge.needsAttention') : t('sync.recovery.badge.recovering'),
+      badgeKind: i.decision === 'needs-attention' ? 'error' : 'warn',
+      reason: i.reason,
+      createdAt: i.createdAt,
+      label: dismissing === i.operationId ? t('sync.recovery.dismissing') : t('sync.recovery.dismiss'),
+      canDismiss: dismissing === null,
+    })),
   }
 }

@@ -12,6 +12,7 @@ import {
   channelTabModels, computeGithubLoginView, computeRemoteReady, computeSyncButtons, computeSyncStatus,
   formatDateTime, formatLastSync, githubPollMessage, kindLabel, lockPanelModel,
   privateRepoHint, pullApplyReportView, pushReportView, presetById, presetIdForUrl, readStoredChannel,
+  recoveryPanelModel,
   severityLabel, summarizePullChanges, WEBDAV_PRESETS, writeStoredChannel,
 } from './sync-view.ts'
 
@@ -433,6 +434,50 @@ test('sync-view: channelTabModels git 激活 → git active / webdav 未激活�
   assert.equal(busy[0]?.active, false)
   assert.equal(busy[1]?.active, true)
   assert.ok(busy.every((b) => b.disabled), 'busy 时两个子 tab 都禁用（防并发操作切换）')
+})
+
+/* ---------------------------------------------------------------- SAFE MODE 恢复入口（issue #32） */
+
+const INCIDENT_NEEDS_ATTENTION = {
+  operationId: '19059e36-f3a8-434e-ba71-a94c5c00a5e6',
+  operationType: 'sync-push',
+  state: 'NEEDS_ATTENTION',
+  decision: 'needs-attention' as const,
+  snapshotId: null,
+  reason: 'opaque APPLYING（空 steps）且 mutation 可能已开始，无 trusted snapshot 可回滚',
+  createdAt: '2026-09-24T05:53:04.000Z',
+}
+
+test('sync-view: recoveryPanelModel 无 incident → 整块隐藏（旧宿主不返回 recovery 也不误报）', () => {
+  assert.equal(recoveryPanelModel([], null, zhUiT).visible, false)
+  assert.equal(recoveryPanelModel(undefined, null, zhUiT).visible, false, '缺省 recovery 字段必须视为无阻断')
+})
+
+test('sync-view: recoveryPanelModel 有 incident → 显示、needs-attention 用 error 徽章、按钮可点', () => {
+  const m = recoveryPanelModel([INCIDENT_NEEDS_ATTENTION], null, zhUiT)
+  assert.equal(m.visible, true, '有未解决 incident 必须显示恢复入口')
+  assert.equal(m.title, '恢复事项')
+  assert.match(m.detail, /解除保护/, '说明必须点出可执行的按钮')
+  assert.equal(m.items.length, 1)
+  const row = m.items[0]!
+  assert.equal(row.operationLabel, '同步推送', 'operationType 必须映射为可读名')
+  assert.equal(row.badgeKind, 'error')
+  assert.equal(row.label, '解除保护')
+  assert.equal(row.canDismiss, true)
+  assert.equal(row.createdAt, INCIDENT_NEEDS_ATTENTION.createdAt)
+})
+
+test('sync-view: recoveryPanelModel 进行中 → 该行文案切「正在解除…」且全部行不可点（防重入）', () => {
+  const other = { ...INCIDENT_NEEDS_ATTENTION, operationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }
+  const m = recoveryPanelModel([INCIDENT_NEEDS_ATTENTION, other], INCIDENT_NEEDS_ATTENTION.operationId, zhUiT)
+  assert.equal(m.items[0]?.label, '正在解除…')
+  assert.equal(m.items[1]?.label, '解除保护')
+  assert.ok(m.items.every((i) => !i.canDismiss), '进行中时全部行不可点，避免并发 quarantine')
+})
+
+test('sync-view: recoveryPanelModel 未知 operationType → 兜底为通用名，绝不抛错', () => {
+  const m = recoveryPanelModel([{ ...INCIDENT_NEEDS_ATTENTION, operationType: 'brand-new-op' }], null, zhUiT)
+  assert.equal(m.items[0]?.operationLabel, '配置修改')
 })
 
 

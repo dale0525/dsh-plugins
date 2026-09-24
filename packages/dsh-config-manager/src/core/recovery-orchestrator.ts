@@ -353,6 +353,10 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
       // dismiss → quarantine（用户放弃；不删除 snapshot/journal evidence，不强行 RECOVERED）
       const result = await executeRecovery(store, { operationId, action: 'dismiss', snapshotId: j.snapshotId }, true);
       if (result === 'failed') return { status: 400, body: { error: 'dismiss 失败' } };
+      // 用户显式放弃后 incident 已 quarantine（移出 active）→ 若再无未解决 incident，
+      // SAFE MODE 必须一并解除。否则「无 trusted snapshot」的 incident 只能 dismiss，
+      // 而 dismiss 不解除阻断，SAFE MODE 就没有出口：所有 mutation 永久 423（已发生故障）。
+      await maybeClearSafeMode();
       return { status: 200, body: { ok: true, operationId, dismissed: true } };
     },
 

@@ -44,7 +44,7 @@ import type {
 } from './sync-api.ts'
 import {
   channelTabModels, computeGithubLoginView, computeRemoteReady, computeSyncButtons,
-  githubPollMessage, kindLabel, lockPanelModel, presetById,
+  githubPollMessage, kindLabel, lockPanelModel, presetById, recoveryPanelModel,
   presetIdForUrl, privateRepoHint, pullApplyReportView, pushReportView, readStoredChannel,
   severityLabel, WEBDAV_PRESETS, writeStoredChannel,
 } from './sync-view.ts'
@@ -99,6 +99,8 @@ interface SyncUiState {
   githubSignedIn: boolean | null
   /** 「回收残留锁」请求在途（防重入；瞬态，不进 store 切片） */
   recovering: boolean
+  /** 「解除保护」请求在途的 incident id（防重入；瞬态，不进 store 切片） */
+  dismissing: string | null
 }
 
 interface GithubUiState {
@@ -135,6 +137,7 @@ const initial: SyncUiState = {
   github: initialGithub,
   githubSignedIn: null,
   recovering: false,
+  dismissing: null,
 }
 
 /**
@@ -567,6 +570,28 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     }
   }
 
+  /* ------------------------------------------------ SAFE MODE 恢复入口（issue #32） */
+
+  /**
+   * 放弃未解决 incident 并解除 SAFE MODE 阻断。Host 侧刻意不经 mutation gate
+   * （它正是解除该闸门的机制，经闸门必然 423），且动作仅为一次原子 quarantine。
+   * 成功后重拉 status：incident 列表与 lock 摘要都由 Host 计算，UI 不自造结论。
+   */
+  const dismissRecovery = async (operationId: string): Promise<void> => {
+    if (stateRef.current.dismissing !== null) return
+    patch({ dismissing: operationId })
+    try {
+      const res = await api.dismissRecovery(operationId)
+      if (res.ok) toast.ok(uiT('sync.recovery.dismissed'))
+      else toast.warn(uiT('sync.recovery.dismissFailed'))
+      await loadStatus()
+    } catch (err) {
+      toast.error(`${t('toast.recoveryDismissFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
+    } finally {
+      patch({ dismissing: null })
+    }
+  }
+
   /* ------------------------------------------------ 通道子 tab 切换 */
 
   /** 切换通道子 tab：记录偏好。busy 时禁用切换（防并发操作）。 */
@@ -592,6 +617,8 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
 
   /** 残留锁面板模型（可见性/徽章/可点判据全来自纯函数，组件只装配）。 */
   const lockPanel = lockPanelModel(state.statusInfo?.lock, state.recovering, uiT)
+  /** SAFE MODE 恢复面板模型（issue #32：423「配置修改已被保护」的唯一出口）。 */
+  const recoveryPanel = recoveryPanelModel(state.statusInfo?.recovery, state.dismissing, uiT)
 
   return (
     <div className={css.viewBody}>
@@ -688,6 +715,33 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                   {state.recovering ? <Spinner label={lockPanel.label} /> : lockPanel.label}
                 </Button>
               </div>
+            </Card>
+          )}
+
+          {/* SAFE MODE 恢复入口（issue #32）：可见性由 Host 的 recovery.incidents 唯一决定
+              —— 它就是 423「配置修改已被保护」的成因。此前该闸门的恢复路由被整体删除，
+              无 trusted snapshot 的 incident 连「放弃恢复」都没有入口 → 永久 423（本 issue 症状）。 */}
+          {recoveryPanel.visible && (
+            <Card>
+              <span className={css.groupLabel}>{recoveryPanel.title}</span>
+              <span className={css.hint}>{recoveryPanel.detail}</span>
+              {recoveryPanel.items.map((item) => (
+                <div key={item.operationId} className={css.statRow}>
+                  <Badge kind={item.badgeKind}>{item.badgeLabel}</Badge>
+                  <span className={css.hint}>
+                    {item.operationLabel} · {item.createdAt}
+                    {item.reason === '' ? '' : ` · ${redact(item.reason)}`}
+                  </span>
+                  <Button
+                    variant="primary"
+                    disabled={!item.canDismiss || state.busy !== null}
+                    loading={state.dismissing === item.operationId}
+                    onClick={() => { void dismissRecovery(item.operationId) }}
+                  >
+                    {item.label}
+                  </Button>
+                </div>
+              ))}
             </Card>
           )}
 

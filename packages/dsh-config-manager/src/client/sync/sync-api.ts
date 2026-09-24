@@ -25,7 +25,7 @@
 import type { SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts';
 import type { PlanItemKind } from '../../core/types.ts';
 // 环境锁契约的**唯一**声明处（ui/types.ts）；此处只复用，不另立一套并行类型。
-import type { RecoveryLockRecoverResult, RecoveryLockStatus } from '../../ui/types.ts';
+import type { RecoveryDismissResult, RecoveryIncident, RecoveryLockRecoverResult, RecoveryLockStatus } from '../../ui/types.ts';
 import { ConfigManagerApiError } from '../api.ts';
 import { zhUiT, type UiT } from '../../ui/i18n.ts';
 
@@ -43,6 +43,7 @@ export const SYNC_API = {
   uiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
   rollback: '/api/dsh-config-manager/sync/rollback',
   lockRecover: '/api/dsh-config-manager/sync/lock/recover',
+  recoveryDismiss: '/api/dsh-config-manager/sync/recovery/dismiss',
 } as const;
 
 /** DSH credentials 中的同步 token 引用名（Host 半同值；仅供提示文案使用，值由 Host 读写） */
@@ -76,6 +77,8 @@ export interface SyncStatusResponse {
   lastSyncChannel?: 'git' | 'webdav';
   /** 环境锁分类摘要（只 state/attention，无 owner pid/op）：残留锁入口的徽章与可点判据 */
   lock?: RecoveryLockStatus;
+  /** SAFE MODE 出口：未解决 incident 列表（空数组/缺省 = 无阻断）。reason 已由 Host 脱敏。 */
+  recovery?: RecoveryIncident[];
 }
 
 /** webdav 通道状态字段（无任何 secret 值；password 只报 passwordConfigured 布尔） */
@@ -284,6 +287,12 @@ export class SyncApi {
    *  调用方必须处理 ok=false（拒绝是正常结果），并在成功后重拉 status 刷新锁摘要。 */
   async recoverStaleLock(): Promise<RecoveryLockRecoverResult> {
     return postJson<RecoveryLockRecoverResult>(SYNC_API.lockRecover, {}, this.t);
+  }
+
+  /** issue #32：放弃未解决 incident（quarantine）并解除 SAFE MODE 阻断。
+   *  Host 侧无 trusted snapshot 的 incident 只能走这条；成功后 SAFE MODE 自动解除。 */
+  async dismissRecovery(operationId: string): Promise<RecoveryDismissResult> {
+    return postJson<RecoveryDismissResult>(SYNC_API.recoveryDismiss, { operationId }, this.t);
   }
 
   /** 同步历史：列出本地祖先快照（按 createdAt 倒序）。 */

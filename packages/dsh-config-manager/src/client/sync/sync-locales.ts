@@ -103,6 +103,7 @@ export const zh = {
   'toast.rollbackPartial': '撤销部分完成，部分项目可能需人工恢复',
   'toast.rollbackFailed': '撤销失败',
   'toast.lockRecoverFailed': '回收残留锁失败',
+  'toast.recoveryDismissFailed': '解除保护失败',
   // —— 撤销本次覆盖（拉取结果弹窗内的危险操作：danger + 二次确认） ——
   'pull.undo': '撤销本次覆盖',
   'rollback.title': '撤销本次覆盖',
@@ -206,6 +207,7 @@ export const en: Record<keyof typeof zh, string> = {
   'toast.rollbackPartial': 'Undo partially completed; some items may need manual recovery',
   'toast.rollbackFailed': 'Undo failed',
   'toast.lockRecoverFailed': 'Failed to recover the stale lock',
+  'toast.recoveryDismissFailed': 'Failed to remove protection',
   // —— Undo this overwrite (dangerous action inside the pull report: danger + confirm) ——
   'pull.undo': 'Undo this overwrite',
   'rollback.title': 'Undo this overwrite',

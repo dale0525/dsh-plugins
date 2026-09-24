@@ -1061,7 +1061,11 @@ export type LockBlockReason =
  *  导出：定时备份调度器被挡时用同一份文案写日志，避免两处文案漂移。 */
 export const LOCK_BLOCK_MESSAGE: Record<LockBlockReason, string> = {
   locked: '另一个任务正在运行，请稍后重试。',
-  blocked: '配置修改已被保护，请先处理恢复事项后再继续。',
+  // issue #32：文案承诺的入口必须真的存在。SAFE MODE 的唯一出口是「放弃未解决 incident
+  // 并解除保护」（插件配置页的「解除保护」按钮 → POST /api/dsh-config-manager/sync/recovery/dismiss）。
+  blocked: '配置修改已被保护（上次中断的配置修改尚未处理），操作已被阻止。'
+    + '重试或重启 DSH 均无效：请打开「插件」页的 @logictan/dsh-plugins-all 配置页，'
+    + '点击「解除保护」后再重试。',
   unavailable: '操作暂时无法执行，请稍后重试；若持续失败请查看日志。',
   // 必须说清「重试/重启都不会好」并给出可操作路径：否则用户只会一遍遍重试（issue #27 实测如此）。
   // issue #31：文案承诺的入口必须真的能回收残留锁——GUI 已接线（插件配置页的「回收残留锁」
@@ -1076,7 +1080,7 @@ export const LOCK_BLOCK_MESSAGE: Record<LockBlockReason, string> = {
  *  短文案给「一行放不下长句」的场景。分开定义避免任一处再自造文案（issue #31 的漂移根因）。 */
 export const LOCK_BLOCK_BRIEF: Record<LockBlockReason, string> = {
   locked: '环境锁被另一项任务占用',
-  blocked: '配置修改已被保护，需先处理恢复事项',
+  blocked: '配置修改已被保护，需先解除保护',
   unavailable: '环境锁暂时不可用',
   // stale 必须点出「残留」——否则用户会像 issue #31 那样等 9 天（57 次静默跳过）。
   stale: '残留配置锁（持有进程已不存在），需先回收',

@@ -222,6 +222,8 @@ const API = {
   syncUiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
   // issue #27/#31：显式回收 stale 残留环境锁（GUI「回收残留锁」按钮）
   syncLockRecover: '/api/dsh-config-manager/sync/lock/recover',
+  // issue #32：SAFE MODE 出口 —— 放弃未解决 incident（quarantine）并解除阻断（GUI「解除保护」按钮）
+  syncRecoveryDismiss: '/api/dsh-config-manager/sync/recovery/dismiss',
 } as const
 
 /**
@@ -1542,6 +1544,9 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
                 passwordConfigured: webdavCred.configured,
               }
             : undefined
+          // SAFE MODE 出口：未解决 incident 列表（「配置修改已被保护」时页面据此渲染恢复入口）。
+          // 与 lock 同源同一次拉取，不额外增加轮询；无 incident 时为空数组。
+          const recoveryStatus = await recoveryOrchestrator.status()
           writeJson(res, 200, {
             ok: true,
             configured: full !== null,
@@ -1558,7 +1563,8 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
             lastSyncChannel: uiPrefs.lastSyncChannel,
             // 环境锁分类摘要（只 state/attention，无 owner pid/op）：残留锁入口据此显示状态徽章
             // 并决定「回收残留锁」是否可点。与恢复面板共用同一投影（见 recovery-orchestrator）。
-            lock: await recoveryOrchestrator.lockState(),
+            lock: recoveryStatus.body.lock,
+            recovery: recoveryStatus.body.incidents,
           })
         } catch (error) {
           writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -1886,6 +1892,29 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
         if (!guard(req, res, 'POST')) return
         // 无请求体：这是无参的显式确认动作（确认由用户点击按钮表达，不额外传 userConfirmed）。
         const result = await recoveryOrchestrator.recoverStaleLock(true)
+        writeJson(res, result.status, result.body)
+      },
+    },
+    // issue #32：SAFE MODE 出口（423「配置修改已被保护」时的恢复入口）。**不经 withMutationGate**
+    // —— 它就是解除该闸门的机制，经闸门必然 423、永远不可达（与 syncLockRecover 同策略，见上）。
+    // 也不取 mutationLock：残留锁与 SAFE MODE 可同时存在，取锁会在那种组合下再次 423 而堵死出口。
+    // 动作仅一次原子 rename（active → quarantine，保留证据、不删快照），用户点击按钮即为显式确认。
+    {
+      kind: 'exact',
+      path: API.syncRecoveryDismiss,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (body === undefined) {
+          writeJson(res, 400, { error: 'invalid JSON body' })
+          return
+        }
+        const operationId = typeof body['operationId'] === 'string' ? body['operationId'] : ''
+        if (operationId === '') {
+          writeJson(res, 400, { error: 'operationId required' })
+          return
+        }
+        const result = await recoveryOrchestrator.dismiss(operationId, true)
         writeJson(res, result.status, result.body)
       },
     },
