@@ -535,4 +535,86 @@ describe('WorkBuddy Host settings integration', () => {
     const remappedText = textFromRequest(remappedBody)
     expect(remappedText).toContain(JSON.stringify(mappedPath))
   })
+
+  it('keeps the short handle when the fs service exists but maps nothing', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-image-access-nomap-'))
+    vi.stubEnv('DSH_HOME', root)
+    const cnFile = join(root, 'cn.info')
+    await writeFile(cnFile, credentialDocument('copilot.tencent.com'))
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', cnFile)
+
+    const hostPath = 'C:\\Users\\Corrine Hu\\图片\\原图.png'
+    const image = {
+      attachmentId: 'sha256:test',
+      mediaType: 'image/png',
+      bytes: 3,
+      width: 1,
+      height: 1,
+    }
+    const attachmentStore = {
+      imageHostPath: () => hostPath,
+      readImageRequest: async () => ({
+        variantId: 'variant' as never,
+        attachment: image,
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: 'image/png',
+        bytes: 3,
+        width: 1,
+        height: 1,
+        depth: 'uchar',
+        space: 'srgb',
+        hasAlpha: false,
+      }),
+    }
+    const sentBodies: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        sentBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return new Response('data: [DONE]\n\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      }
+      throw new Error('offline in tests')
+    }))
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    ctx.provide('attachments', attachmentStore as never)
+    // The fs service is present — it just cannot map this host path.
+    ctx.provide('fs', { processPathFromHostPath: () => undefined } as never)
+    await ctx.plugin(WorkBuddy, {})
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id))
+        .toEqual(expect.arrayContaining(['workbuddy']))
+    })
+
+    for await (const _chunk of ctx.llm.stream({
+      provider: 'workbuddy',
+      model: 'glm-5.3',
+      messages: [{
+        id: 'image-nomap-test' as never,
+        role: 'user' as const,
+        source: { kind: 'user' as const },
+        content: [
+          { type: 'text' as const, text: 'describe' },
+          { type: 'image' as const, attachment: image },
+        ],
+      } as never],
+    })) {
+      // The captured HTTP request is the assertion boundary.
+    }
+
+    const body = sentBodies[0]
+    const messages = body?.['messages'] as { content?: string | { text?: string }[] }[] | undefined
+    const text = messages?.map(item => typeof item.content === 'string'
+      ? item.content
+      : item.content?.map(block => block.text ?? '').join('\n') ?? '').join('\n') ?? ''
+    // An unmappable path degrades to the plain handle: no access text, and
+    // the raw host path must not leak into the request.
+    expect(text).not.toContain('Normalized copy (read-only;')
+    expect(text).not.toContain(hostPath)
+    expect(JSON.stringify(body)).toContain('data:image/png;base64,AQID')
+  })
 })

@@ -243,6 +243,33 @@ describe('request-image contract across host generations', () => {
     }).rejects.toThrow('invalid image reference')
   })
 
+  it('keeps the short handle when the attachment store offers no host path', async () => {
+    // Plan §5's second degradation row: the mapper never runs without a host
+    // path, so the request must keep the plain handle and the image bytes.
+    const store = {
+      imageHostPath: () => undefined,
+      readImageRequest: async () => ({
+        variantId: 'variant' as never,
+        attachment: IMAGE_MESSAGE.content[1]?.type === 'image' ? IMAGE_MESSAGE.content[1].attachment : undefined,
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: 'image/png',
+        bytes: 3,
+        width: 1,
+        height: 1,
+        depth: 'uchar',
+        space: 'srgb',
+        hasAlpha: false,
+      }) as never,
+    }
+    const adapter = imageAdapter(store as unknown as Record<string, unknown>, WORKBUDDY_PROVIDER, (attachments, ref) =>
+      resolveImageAttachmentAccess(attachments, () => 'Z:\\would-be-mapping.png', ref))
+    const body = await serializedImageBody(adapter, WORKBUDDY_PROVIDER)
+    const modelText = textFromRequest(body)
+    expect(modelText).not.toContain('Normalized copy (read-only;')
+    expect(modelText).not.toContain('Z:\\would-be-mapping.png')
+    expect(JSON.stringify(body)).toContain('data:image/png;base64,AQID')
+  })
+
   it('fills the route pixel budget for a store that validates maxPixels (≤0.1.5 hosts)', async () => {
     let observed: unknown
     const store = {
