@@ -1351,3 +1351,141 @@ test('subdir：上游子目录里新增的依赖被预检拦下（退出码 2）
     rmSync(fork, { recursive: true, force: true })
   }
 })
+
+/**
+ * 上游新增的、被我方 .gitignore 排除的路径，不得被 pull 带进索引。
+ *
+ * 这是实测的静默故障（workbuddy v0.5.4 → v0.6.2）：`subtree pull` 会把上游新增文件写进**索引**，
+ * 而 .gitignore 只拦未跟踪文件、拦不住已在索引里的路径。这些路径不在 owned/added 里，也不在按
+ * **旧基线**算出的 deleted 里（旧基线树里根本没有它们）—— 三个清单都够不着，于是上游的
+ * `lib/variants-B3Pa4EBr.js` 与 `assets/{6,7}.png` 静默变成我方的跟踪文件。
+ *
+ * 后果不是「多了几个文件」：workbuddy 的构建钩子是 `prepack`（不是 `prepare`），CI 里 `pnpm test`
+ * 不重建 `lib/`，磁盘上只剩上游那个带 0.6.2 版本常量的 chunk，`tests/version.spec.ts` 报
+ * 「no built bundle declares WORKBUDDY_CONNECT_VERSION as 0.5.5」——测试红了，而真因在同步脚本。
+ *
+ * 同时钉住**反面**：非忽略的上游新增源码文件必须照常同步进来（计划 L139「上游新增文件 → 自动带入」、
+ * L172「上游新增文件正确带入」是验收项）。修法不能是把上游新增文件一律删掉。
+ */
+test('上游新增的 .gitignore 忽略路径不得被带进索引，非忽略的新增源码仍须同步进来', () => {
+  const upstream = mkdtempSync(join(tmpdir(), 'ign-up-'))
+  const fork = mkdtempSync(join(tmpdir(), 'ign-fork-'))
+  const g = (cwd) => (...args) =>
+    execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' })
+  const up = g(upstream)
+  const fk = g(fork)
+  const write = (cwd, rel, content) => {
+    mkdirSync(join(cwd, dirname(rel)), { recursive: true })
+    writeFileSync(join(cwd, rel), content)
+  }
+  try {
+    // ---------- 上游：v1.0.0 只有源码；v1.1.0 新增构建产物 lib/ 与一个源码文件 ----------
+    up('init', '-q', '-b', 'main')
+    up('config', 'user.email', 'up@example.com')
+    up('config', 'user.name', 'Up')
+    write(upstream, 'src/a.ts', 'export const a = 1\n')
+    write(upstream, 'package.json', '{"name":"foo","version":"1.0.0"}\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v1')
+    up('tag', 'v1.0.0')
+    const v1 = up('rev-parse', 'HEAD').trim()
+
+    write(upstream, 'src/a.ts', 'export const a = 2\n')
+    write(upstream, 'src/new.ts', 'export const brandNew = true\n')
+    write(upstream, 'lib/chunk-ABC.js', 'export const WORKBUDDY_CONNECT_VERSION = "9.9.9"\n')
+    write(upstream, 'assets/6.png', 'PNG-BYTES\n')
+    up('add', '-A')
+    up('commit', '-q', '-m', 'v2')
+    up('tag', 'v1.1.0')
+
+    // ---------- fork：按 AGENTS.md 配方收养（目录不存在时直接 subtree add） ----------
+    fk('init', '-q', '-b', 'main')
+    fk('config', 'user.email', 'fk@example.com')
+    fk('config', 'user.name', 'Fk')
+    mkdirSync(join(fork, 'scripts'), { recursive: true })
+    copyFileSync(join(REPO_ROOT, 'scripts/sync-upstream.mjs'), join(fork, 'scripts/sync-upstream.mjs'))
+    write(fork, 'README.md', 'fork root\n')
+    fk('add', '-A')
+    fk('commit', '-q', '-m', 'init')
+    fk('subtree', 'add', '--prefix=packages/foo', 'file://' + upstream, 'v1.0.0')
+    // 我方 .gitignore：构建产物与资源目录不入版本控制（AGENTS.md「构建产物不入版本控制」）
+    write(fork, 'packages/foo/.gitignore', '/lib/\n/assets/\n')
+    write(
+      fork,
+      'packages/foo/sync-policy.json',
+      JSON.stringify(
+        {
+          target: {
+            id: 'foo',
+            url: 'file://' + upstream,
+            prefix: 'packages/foo',
+            baseline: 'v1.0.0',
+            baselineCommit: v1,
+          },
+          owned: ['package.json'],
+          deleted: [],
+          added: [],
+        },
+        null,
+        2,
+      ) + '\n',
+    )
+    fk('add', '-A')
+    fk('commit', '-q', '-m', 'ours')
+    assert.ok(
+      !fk('ls-files', 'packages/foo/lib').trim(),
+      '前置条件：我方从未跟踪 lib/（它被 .gitignore 排除）',
+    )
+
+    // ---------- 同步到 v1.1.0 ----------
+    let r
+    try {
+      const stdout = execFileSync(
+        process.execPath,
+        ['scripts/sync-upstream.mjs', '--target', 'foo', '--ref', 'v1.1.0'],
+        { cwd: fork, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      )
+      r = { status: 0, stdout, stderr: '' }
+    } catch (err) {
+      r = { status: err.status, stdout: String(err.stdout ?? ''), stderr: String(err.stderr ?? '') }
+    }
+    assert.equal(r.status, 0, '同步必须成功；实际 stderr: ' + r.stderr.slice(-500))
+
+    // 判据 1：被我方忽略的上游新增路径不得进入索引（修复前它们会 STILL TRACKED）
+    const tracked = fk('ls-files', 'packages/foo').trim().split('\n')
+    for (const p of ['packages/foo/lib/chunk-ABC.js', 'packages/foo/assets/6.png']) {
+      assert.ok(
+        !tracked.includes(p),
+        '被我方 .gitignore 排除的上游新增路径不得被跟踪：' + p + '（实际索引：' + tracked.join(',') + '）',
+      )
+    }
+    // 判据 2：磁盘上也不得残留（我方本来就没有，清掉而不是留着）
+    assert.ok(
+      !existsSync(join(fork, 'packages/foo/lib/chunk-ABC.js')),
+      '上游新造且被我方忽略的产物不得落在磁盘上',
+    )
+    assert.ok(
+      !existsSync(join(fork, 'packages/foo/assets/6.png')),
+      '上游新造且被我方忽略的资源不得落在磁盘上',
+    )
+    // 判据 3（反面）：非忽略的上游新增源码必须照常同步进来 —— 计划 L139/L172 的验收项
+    assert.ok(
+      tracked.includes('packages/foo/src/new.ts'),
+      '上游新增的源码文件必须带入（不能靠「删掉所有上游新增文件」来修）',
+    )
+    assert.equal(
+      readFileSync(join(fork, 'packages/foo/src/new.ts'), 'utf8'),
+      'export const brandNew = true\n',
+      '上游新增源码内容必须落盘',
+    )
+    // 判据 4：owned 仍是我方版本，未被上游覆盖
+    assert.equal(
+      readFileSync(join(fork, 'packages/foo/package.json'), 'utf8'),
+      '{"name":"foo","version":"1.0.0"}\n',
+      'owned 的 package.json 必须保持我方版本',
+    )
+  } finally {
+    rmSync(upstream, { recursive: true, force: true })
+    rmSync(fork, { recursive: true, force: true })
+  }
+})

@@ -694,6 +694,69 @@ function snapshotIgnoredDeleted(target) {
 }
 
 /**
+ * pull **之前**判定「上游有、我方文件集里没有、且被我方 .gitignore 排除」的路径。
+ *
+ * 为什么必须单独处理：subtree pull 会把上游新增的文件写进**索引**，而 .gitignore 只拦
+ * 未跟踪文件、拦不住已经在索引里的路径。这些路径不在 owned/added 里，也不在按**旧基线**
+ * 算出的 deleted 里（旧基线树里根本没有它们）—— 三个清单都够不着，于是上游的构建产物与
+ * 宣传图会静默变成我方的跟踪文件。
+ *
+ * 与 removeDeleted 的分工是**按路径互斥**的：已在 target.deleted 里的路径归 removeDeleted，
+ * 这里只收它够不着的那些（上游本次新增），两者不重复处理同一路径。
+ *
+ * 实测 workbuddy v0.5.4 → v0.6.2：lib/variants-B3Pa4EBr.js 与 assets/{6,7}.png 被带进索引。
+ * workbuddy 的构建钩子是 prepack（不是 prepare），CI 里 pnpm test 不重建 lib/，磁盘上只剩
+ * 上游那个带 0.6.2 版本常量的 chunk，tests/version.spec.ts 因此报
+ * 「no built bundle declares WORKBUDDY_CONNECT_VERSION as 0.5.5」。
+ *
+ * 语义与 snapshotIgnoredDeleted 一致：我方磁盘上本来就有的，pull 后还原回去；
+ * 本来没有的（上游新造），清掉。
+ */
+function snapshotResurrectedIgnored(target, upstreamPaths) {
+  const ours = new Set(
+    git(['ls-files', '-z', target.prefix])
+      .split('\0')
+      .filter((f) => f !== '')
+      .map((f) => f.slice(target.prefix.length + 1)),
+  )
+  const ownedByDeleted = new Set(target.deleted)
+  const candidates = upstreamPaths
+    .filter((f) => !ours.has(f) && !ownedByDeleted.has(f))
+    .map((f) => full(target, f))
+  const dir = mkdtempSync(join(tmpdir(), 'sync-upstream-resurrect-'))
+  const ignored = new Set(
+    candidates.length === 0
+      ? []
+      : splitLines(gitAllowStatus1(['check-ignore', '--stdin'], candidates.join('\n') + '\n')),
+  )
+  const present = new Set()
+  for (const p of ignored) {
+    const abs = join(REPO_ROOT, p)
+    if (!existsSync(abs)) continue
+    copyFileSync(abs, join(dir, encodeURIComponent(p)))
+    present.add(p)
+  }
+  return { dir, ignored, present }
+}
+
+/** 应用 snapshotResurrectedIgnored：把上游新造、我方忽略的路径退出索引并清盘。 */
+function removeResurrectedIgnored(snapshot) {
+  if (snapshot.ignored.size === 0) return 0
+  const paths = [...snapshot.ignored]
+  git(['rm', '--cached', '-f', '--ignore-unmatch', '--', ...paths])
+  for (const p of paths) {
+    const abs = join(REPO_ROOT, p)
+    if (snapshot.present.has(p)) {
+      mkdirSync(dirname(abs), { recursive: true })
+      copyFileSync(join(snapshot.dir, encodeURIComponent(p)), abs)
+    } else {
+      rmSync(abs, { force: true })
+    }
+  }
+  return paths.length
+}
+
+/**
  * 第 3 步：把 `owned` 清单里的路径**一律**还原成我方版本。
  *
  * 为什么不是 `git checkout --ours -- <paths>`：`--ours/--theirs` 只对**未合并的索引条目**
@@ -808,6 +871,8 @@ function syncOne(target, ref) {  log('')
 
   // 被忽略的 deleted 路径要在 pull **之前**快照：merge 一落地，磁盘与 HEAD 都已是上游版本。
   const ignoredSnapshot = snapshotIgnoredDeleted(target)
+  // 上游新增且被我方 .gitignore 排除的路径同样要在 pull 前快照（见该函数注释）。
+  const resurrectedSnapshot = snapshotResurrectedIgnored(target, upstreamPaths)
   // 上游是 monorepo 时的拆分工作区（见 splitSubdirBranch）。非 subdir 目标恒为 null，
   // 走原来「直接 pull 上游 url + ref」的路径。
   let split = null
@@ -859,6 +924,13 @@ function syncOne(target, ref) {  log('')
 
     log('[sync-upstream] 4/4 重删我方删除：' + target.deleted.length + ' 个文件')
     if (target.deleted.length > 0) removeDeleted(target, ignoredSnapshot)
+
+    // 上游新增、被我方 .gitignore 排除的路径：pull 已把它们写进索引，.gitignore 拦不住。
+    // 不清掉的话它们会变成我方的跟踪文件（见 snapshotResurrectedIgnored 的实测记录）。
+    const resurrected = removeResurrectedIgnored(resurrectedSnapshot)
+    if (resurrected > 0) {
+      log('[sync-upstream]   上游新造 ' + resurrected + ' 个被我方 .gitignore 排除的路径 → 退出索引并清盘')
+    }
 
     // 归零判据（见 filesWithConflictMarkers 注释）：checkout 只改工作区，索引要 git add 才收敛。
     const conflicted = filesWithConflictMarkers(target.prefix)
@@ -917,6 +989,7 @@ function syncOne(target, ref) {  log('')
     gitFailure(err, '当前在分支 ' + branch + '；处理完冲突后手动 commit，或 git checkout - 放弃。')
   } finally {
     rmSync(ignoredSnapshot.dir, { recursive: true, force: true })
+    rmSync(resurrectedSnapshot.dir, { recursive: true, force: true })
     if (split !== null) removeSplitBranch(split)
   }
 }
