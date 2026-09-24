@@ -27,7 +27,7 @@ import { PoolAuthFlow } from './host/pool-auth.ts'
 import { QuotaService } from './host/quota.ts'
 import { StreamJsonParser } from './host/parser.ts'
 import { defaultMediaDir, sweepDir, type ImageRefLike } from './host/media.ts'
-import { startMcpBridge, type McpBridge, type ToolsServiceLike } from './host/mcp-bridge.ts'
+import { startMcpBridge, type AgentsServiceLike, type McpBridge, type ToolsServiceLike } from './host/mcp-bridge.ts'
 import { fileURLToPath } from 'node:url'
 
 export const name = 'agy-link'
@@ -780,6 +780,7 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
           const bridge = await startMcpBridge({
             bridgeScript: script,
             tools: () => (ctx.get('tools') as ToolsServiceLike | undefined),
+            agents: () => (ctx.get('agents') as AgentsServiceLike | undefined),
             allowlist: () => getConfig().mcpToolAllowlist,
             log,
           })

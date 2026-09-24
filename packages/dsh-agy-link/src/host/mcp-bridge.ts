@@ -14,10 +14,26 @@ import { randomBytes } from 'node:crypto'
 
 const MCP_SERVER_KEY = 'dsh-tools'
 
+/** Minimal structural view of the DSH agent registry we need. */
+export interface AgentsServiceLike {
+  get(id: string): unknown
+}
+
 /** Minimal structural view of the DSH tool registry we need. */
 export interface ToolsServiceLike {
   schemas(): Array<{ name: string; description: string; parameters: Record<string, unknown> }>
-  execute(input: { callId: string; name: string; arguments: unknown; signal: AbortSignal }): Promise<unknown>
+  execute(input: {
+    callId: string
+    name: string
+    arguments: unknown
+    signal: AbortSignal
+    /**
+     * The agent on whose behalf the call runs. The registry reads
+     * `agent.session.header.cwd` to place fs and bash tools in the session
+     * workspace, and the subagent tool refuses to run without it.
+     */
+    agent?: unknown
+  }): Promise<unknown>
 }
 
 /** MCP tool names are [a-zA-Z0-9_-]; DSH names may contain dots. */
@@ -79,6 +95,12 @@ function resultText(result: unknown): string {
 export function startMcpBridge(opts: {
   bridgeScript: string
   tools: () => ToolsServiceLike | undefined
+  /**
+   * Resolves the agent registry. Each agy run carries its own session id in the
+   * bridge process's env, which the script forwards as a request header, so the
+   * bridge can attribute a dispatch to the agent whose turn it is.
+   */
+  agents?: () => AgentsServiceLike | undefined
   allowlist: () => string
   log?: (msg: string) => void
 }): Promise<McpBridge> {
@@ -145,12 +167,17 @@ export function startMcpBridge(opts: {
           return;
         }
         callSeq++
+        const sessionId = String(req.headers['x-dsh-session'] ?? '')
+        // A session with no live agent resolves to undefined; the dispatch then
+        // behaves exactly as it did before attribution existed.
+        const agent = sessionId === '' ? undefined : opts.agents?.()?.get(sessionId)
         try {
           const result = await svc.execute({
             callId: 'agy-mcp-' + callSeq,
             name: dshName,
             arguments: parsed.arguments ?? {},
             signal: calls.signal,
+            agent,
           })
           sendJson(res, 200, { ok: true, text: resultText(result) })
         } catch (e) {

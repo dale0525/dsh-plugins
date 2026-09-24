@@ -103,6 +103,102 @@ test('mcp bridge: every dispatch carries a live AbortSignal', async () => {
   assert.equal(seen[0]!.aborted, true, 'closing the bridge must abort the caller signal')
 })
 
+test('mcp bridge: attributes each dispatch to the calling session agent', async () => {
+  // agy spawns one bridge process per run, so the session id travels in that
+  // process's env and reaches the bridge as a request header. Without it the
+  // registry has no agent: read/write/glob/grep silently run in the backend
+  // default cwd, bash in process.cwd(), and subagent throws.
+  const agent = { id: 'agent-1' }
+  const seen: Array<unknown> = []
+  const tools = {
+    schemas: () => [{ name: 'bash', description: 'x', parameters: { type: 'object', properties: {} } }],
+    execute: async (input: { agent?: unknown }) => {
+      seen.push(input.agent)
+      return { content: [{ type: 'text', text: 'ok' }] }
+    },
+  }
+  const bridge = await startMcpBridge({
+    bridgeScript: resolve(here, '../dist/bridge.mjs'),
+    tools: () => tools as never,
+    agents: () => ({ get: (id: string) => (id === 'sess-1' ? agent : undefined) }) as never,
+    allowlist: () => '',
+  })
+  const call = async (session: string): Promise<void> => {
+    const res = await fetch(bridge.url + '/call', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer ' + bridge.token,
+        'content-type': 'application/json',
+        'x-dsh-session': session,
+      },
+      body: JSON.stringify({ dshName: 'bash', arguments: { command: 'echo hi' } }),
+    })
+    assert.equal(((await res.json()) as { ok: boolean }).ok, true)
+  }
+  try {
+    await call('sess-1')
+    // A session with no live agent must resolve to undefined, never to some
+    // other agent that happens to be registered.
+    await call('sess-gone')
+  } finally {
+    await bridge.close()
+  }
+  assert.equal(seen.length, 2)
+  assert.equal(seen[0], agent)
+  assert.equal(seen[1], undefined)
+})
+
+test('mcp bridge script forwards DSH_AGY_SESSION as the session header', async () => {
+  // The whole attribution chain in one test: the plugin sets the var on the agy
+  // spawn, agy hands its env to the stdio server, the script turns it into the
+  // header the loopback endpoint resolves the agent from.
+  const agent = { id: 'agent-e2e' }
+  const seen: Array<unknown> = []
+  const tools = {
+    schemas: () => [{ name: 'bash', description: 'x', parameters: { type: 'object', properties: {} } }],
+    execute: async (input: { agent?: unknown }) => {
+      seen.push(input.agent)
+      return { content: [{ type: 'text', text: 'ran bash ok' }] }
+    },
+  }
+  const bridge = await startMcpBridge({
+    bridgeScript: resolve(here, '../dist/bridge.mjs'),
+    tools: () => tools as never,
+    agents: () => ({ get: (id: string) => (id === 'sess-e2e' ? agent : undefined) }) as never,
+    allowlist: () => '',
+  })
+  const child = spawn(process.execPath, [bridge.bridgeScript], {
+    env: { ...process.env, DSH_MCP_URL: bridge.url, DSH_MCP_TOKEN: bridge.token, DSH_AGY_SESSION: 'sess-e2e' },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  })
+  const lines: string[] = []
+  child.stdout!.setEncoding('utf8')
+  child.stdout!.on('data', (d: string) => { for (const l of d.split('\n')) if (l.trim() !== '') lines.push(l) })
+  const waitFor = async (pred: (msg: Record<string, unknown>) => boolean, ms = 5000): Promise<Record<string, unknown>> => {
+    const deadline = Date.now() + ms
+    for (;;) {
+      const idx = lines.findIndex((l) => { try { return pred(JSON.parse(l) as Record<string, unknown>) } catch { return false } })
+      if (idx >= 0) return JSON.parse(lines[idx]!) as Record<string, unknown>
+      if (Date.now() > deadline) throw new Error('timeout waiting for bridge reply; got: ' + lines.join(' | '))
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+  try {
+    child.stdin!.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n')
+    await waitFor((m) => m.id === 1)
+    child.stdin!.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n')
+    child.stdin!.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'bash', arguments: { command: 'echo hi' } } }) + '\n')
+    const call = await waitFor((m) => m.id === 2)
+    const content = (call.result as { content: Array<{ text: string }> }).content
+    assert.match(content[0]!.text, /ran bash ok/)
+  } finally {
+    child.kill()
+    await bridge.close()
+  }
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0], agent, 'DSH_AGY_SESSION must reach execute() as the resolved agent')
+})
+
 test('mcp bridge script speaks JSON-RPC over stdio end to end', async () => {
   const bridge = await startMcpBridge({
     bridgeScript: resolve(here, '../dist/bridge.mjs'),

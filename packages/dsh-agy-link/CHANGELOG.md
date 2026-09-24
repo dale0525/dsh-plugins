@@ -55,6 +55,15 @@ the agy-link rows are removed from the sync matrix. Provenance and LICENSE are k
     (`!signal.aborted`, `if (signal.aborted)`), so `execute({callId, name, arguments})` raised a
     `TypeError` that the bridge reported to agy as `ok: false`. The bridge now owns one
     `AbortController` for its lifetime, passes its signal on every dispatch, and aborts it in `close()`.
+  - **The bridge passed no `agent`, so agy-initiated tools ran with no session context.** The registry
+    reads `agent.session.header.cwd` to place `read`/`write`/`glob`/`grep` in the session workspace and
+    `bash` in the process cwd, and `subagent` refuses to run without one — so every bridged call either
+    silently used the wrong directory or threw. The plugin now sets `DSH_AGY_SESSION` on the agy spawn; agy
+    hands its env to the bridge process, which forwards it as a request header, and the loopback endpoint
+    resolves the agent through the host's `agents` registry before dispatching. The session id travels in
+    each run's env rather than in the shared per-account `mcp_config.json`, so concurrent runs of one
+    account cannot race. A session with no live agent resolves to `undefined` and keeps the previous
+    behaviour.
 
 ### 中文 (Chinese)
 
@@ -97,6 +106,13 @@ the agy-link rows are removed from the sync matrix. Provenance and LICENSE are k
     `if (signal.aborted)`），因此 `execute({callId, name, arguments})` 抛 `TypeError`，
     桥把 `ok: false` 回给 agy。现在桥持有单个 `AbortController`，每次派发都带上它的 signal，
     并在 `close()` 里 abort。
+  - **桥没给工具注册表传 `agent`，于是 agy 发起的工具全部缺失会话上下文。** 注册表要读
+    `agent.session.header.cwd` 才能把 `read`/`write`/`glob`/`grep` 放进会话工作区、把 `bash` 放进
+    进程 cwd，`subagent` 没有它则直接拒绝执行——所以经桥的调用要么静默用错目录，要么抛错。
+    现在插件在 spawn agy 时设置 `DSH_AGY_SESSION`；agy 把它自己的 env 交给桥进程，桥再作为请求头转发，
+    回环端点在派发前通过宿主的 `agents` 注册表解析出 agent。会话 id 走每次运行的 env，而不是共享的
+    按账号 `mcp_config.json`，因此同一账号的并发运行不会互相竞态。会话没有存活 agent 时解析为
+    `undefined`，行为与之前一致。
 
 ## 0.4.38 (2026-09-24)
 

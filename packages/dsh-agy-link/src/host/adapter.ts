@@ -642,6 +642,11 @@ export class AgyAdapter extends LlmAdapter {
           }
         : {}),
       ...(rec.accountHome !== undefined ? isolatedHomeEnv(rec.accountHome) : {}),
+      // agy hands its env to the bridge process it spawns, so this reaches the
+      // reverse MCP bridge and lets it attribute tool calls to this run's agent
+      // — without rewriting the per-account mcp_config, which concurrent runs
+      // of the same account share.
+      ...(sessionKey !== '' ? { DSH_AGY_SESSION: sessionKey } : {}),
       ...(account?.proxyUrl
         ? {
             ALL_PROXY: account.proxyUrl,

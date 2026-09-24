@@ -10,6 +10,10 @@ import { createInterface } from 'node:readline'
 
 const URL_BASE = process.env.DSH_MCP_URL || ''
 const TOKEN = process.env.DSH_MCP_TOKEN || ''
+// Set by the plugin on the agy spawn; agy hands its env to this process, so it
+// identifies the DSH session this run belongs to. Empty for a run with no
+// session, which the endpoint treats as "no agent".
+const SESSION = process.env.DSH_AGY_SESSION || ''
 const PROTOCOL = '2024-11-05'
 
 function post(path, body) {
@@ -29,6 +33,7 @@ function post(path, body) {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(data),
         Authorization: 'Bearer ' + TOKEN,
+        ...(SESSION === '' ? {} : { 'X-DSH-Session': SESSION }),
       },
       timeout: 600000,
     });
