@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.5.8 (2026-09-24)
+
+### English
+
+**Fixes**
+
+- **A managed HOME now gets its own default keychain on macOS.** agy stores its OAuth token
+  through go-keyring, which shells out to `/usr/bin/security add-generic-password`. macOS derives
+  a process's default keychain from `$HOME/Library/Keychains/`, and a managed HOME has no
+  keychain there — so the write could not land, the system raised
+  `A keychain cannot be found to store "antigravity"`, and the call blocked until agy's own 5s
+  timeout gave up (`Keyring SaveToken timed out after 5s, falling back to file storage`). Because
+  the token is refreshed roughly hourly, that alert came back for as long as agy ran.
+  `ensureAgyKeychain` now seeds an empty-password `login.keychain-db` at that conventional path
+  before every spawn, which macOS adopts as the default. The password is deliberately empty: the
+  keychain is a throwaway holding only the token agy already keeps in plaintext in the sibling
+  `.gemini/antigravity-cli/antigravity-oauth-token`, so inventing a secret would add a credential
+  to manage for no gain. Each account keeps its own keychain — the keyring service/account names
+  are constant (`gemini`/`antigravity`), so sharing one would let accounts read each other's
+  token. The real user's home is skipped.
+
+**Tests**
+
+- New `ensureAgyKeychain` case: on macOS it provisions a managed HOME and asserts `security
+  default-keychain` adopts it (re-running must reuse, not recreate); on other platforms it asserts
+  the function stays inert. It cleans up the keychain it created.
+
+### 中文 (Chinese)
+
+**修复**
+
+- **macOS 上受管 HOME 现在会有自己的默认钥匙串。** agy 通过 go-keyring 存 OAuth token，后者会执行
+  `/usr/bin/security add-generic-password`。macOS 从 `$HOME/Library/Keychains/` 推导进程的默认
+  钥匙串，而受管 HOME 下没有钥匙串，于是这次写入无处落地：系统弹出
+  `找不到用于存储"antigravity"的钥匙串`，调用一直阻塞到 agy 自己的 5 秒超时放弃
+  （`Keyring SaveToken timed out after 5s, falling back to file storage`）。token 大约每小时
+  刷新一次，因此只要 agy 在跑，这个弹窗就会反复出现。
+  现在每次启动前由 `ensureAgyKeychain` 在该约定路径下建一个空密码的 `login.keychain-db`，
+  macOS 会自动将其采纳为默认钥匙串。密码**故意留空**：这个钥匙串是一次性的，里面只有 agy
+  本来就以明文存放在隔壁 `.gemini/antigravity-cli/antigravity-oauth-token` 的同一个 token，
+  再造一个密码只会多出一份需要管理的凭据。每个账号各持有自己的钥匙串——keyring 的
+  service/account 名是固定值（`gemini`/`antigravity`），共用一把会让账号互相读到对方的
+  token。真实用户主目录被跳过。
+
+**测试**
+
+- 新增 `ensureAgyKeychain` 用例：macOS 上为受管 HOME 建立钥匙串，并断言 `security
+  default-keychain` 已采纳它（重复调用必须复用而非重建）；其他平台断言该函数完全不动作。
+  用例会清理自己建立的钥匙串。
+
 ## 0.5.7 (2026-09-24)
 
 ### English

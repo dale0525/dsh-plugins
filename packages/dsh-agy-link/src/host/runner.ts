@@ -2,8 +2,8 @@
 // `agy -p` process as its own process group; abort and watchdog kill the
 // whole tree (agy re-spawns exec children). stderr is captured as a tail
 // for error attribution; stdout is streamed line-by-line to the caller.
-import { spawn, type ChildProcess } from 'node:child_process'
-import { accessSync, constants, existsSync, readdirSync } from 'node:fs'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { accessSync, constants, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { PluginConfig } from '../common/types.ts'
@@ -51,6 +51,36 @@ export function isolatedHomeEnv(dir: string): Record<string, string> {
     }
   }
   return env
+}
+
+/**
+ * Seed a default keychain inside a managed HOME (macOS only).
+ *
+ * macOS resolves a process's default keychain from `$HOME/Library/Keychains/`
+ * and adds it to the search list when a keychain exists at that conventional
+ * path. A managed HOME has neither, so every keychain write agy performs pops
+ * the system alert "A keychain cannot be found to store ..." and then blocks
+ * until agy's own 5s SaveToken timeout gives up
+ * (`Keyring SaveToken timed out after 5s, falling back to file storage`).
+ * That happens once per OAuth refresh — roughly hourly — so the alert returns
+ * for as long as agy runs.
+ *
+ * An empty-password keychain is deliberate: it is a throwaway that only ever
+ * holds the same token agy already keeps in plaintext in the sibling
+ * `.gemini/antigravity-cli/antigravity-oauth-token`, and inventing a secret
+ * to protect it would add a credential to manage for no gain.
+ *
+ * The real user's home is left alone — it already has a login keychain, and
+ * `security create-keychain` against it would be destructive.
+ */
+export function ensureAgyKeychain(dir: string): void {
+  if (process.platform !== 'darwin') return
+  if (dir === homedir()) return
+  const keychainDir = join(dir, 'Library', 'Keychains')
+  const keychain = join(keychainDir, 'login.keychain-db')
+  if (existsSync(keychain)) return
+  mkdirSync(keychainDir, { recursive: true })
+  execFileSync('/usr/bin/security', ['create-keychain', '-p', '', keychain], { stdio: 'ignore' })
 }
 
 export const MIN_AGY_VERSION = '1.1.8'
@@ -252,6 +282,7 @@ export function startAgyProcess(opts: RunOptions): RunningProcess {
   const started = Date.now();
   const viaCmd = IS_WIN && isCmdShim(opts.bin)
   const env = withAgyQuietEnv(opts.env ?? process.env)
+  if (env.HOME !== undefined) ensureAgyKeychain(env.HOME)
   const child = viaCmd
     ? spawn(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', [opts.bin, ...opts.args].map(windowsQuote).join(' ')], {
         cwd: opts.cwd,

@@ -1,7 +1,10 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
-import { binCandidates, isolatedHomeEnv, isCmdShim, resolveAgyBin, startAgyProcess, windowsQuote, buildStreamInputLine, shouldUsePromptStdin, ARGV_PROMPT_LIMIT, withAgyQuietEnv } from '../src/host/runner.ts'
-import { spawn } from 'node:child_process'
+import { binCandidates, ensureAgyKeychain, isolatedHomeEnv, isCmdShim, resolveAgyBin, startAgyProcess, windowsQuote, buildStreamInputLine, shouldUsePromptStdin, ARGV_PROMPT_LIMIT, withAgyQuietEnv } from '../src/host/runner.ts'
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 test('windowsQuote leaves plain args untouched', () => {
@@ -41,6 +44,39 @@ test('isolatedHomeEnv always sets HOME + GEMINI_CLI_HOME', () => {
     const drive = isolatedHomeEnv('C:\\Users\\acc1')
     assert.equal(drive.HOMEDRIVE, 'C:')
     assert.equal(drive.HOMEPATH, '\\Users\\acc1')
+  }
+})
+
+// macOS derives the default keychain from $HOME/Library/Keychains. A managed
+// HOME has none, so each of agy's hourly go-keyring writes pops the system
+// alert and then burns its own 5s SaveToken timeout. Contract: after
+// provisioning, that write lands on a keychain inside the managed HOME.
+test('ensureAgyKeychain gives a managed HOME its own default keychain', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'agy-kc-'))
+  try {
+    ensureAgyKeychain(dir)
+    if (process.platform !== 'darwin') {
+      // No `security` elsewhere: the function must be inert, not half-applied.
+      assert.equal(existsSync(join(dir, 'Library')), false)
+      return
+    }
+    const keychain = join(dir, 'Library', 'Keychains', 'login.keychain-db')
+    assert.ok(existsSync(keychain), 'managed HOME gets a login keychain')
+    const out = execFileSync('/usr/bin/security', ['default-keychain'], {
+      env: { ...process.env, HOME: dir },
+      encoding: 'utf8',
+    })
+    assert.match(out, /login\.keychain-db/, 'macOS adopts it as the default')
+    // Second call must reuse it; re-running create-keychain would throw.
+    ensureAgyKeychain(dir)
+  } finally {
+    if (process.platform === 'darwin') {
+      execFileSync('/usr/bin/security', ['delete-keychain', join(dir, 'Library', 'Keychains', 'login.keychain-db')], {
+        env: { ...process.env, HOME: dir },
+        stdio: 'ignore',
+      })
+    }
+    await rm(dir, { recursive: true, force: true })
   }
 })
 
