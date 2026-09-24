@@ -176,19 +176,38 @@ interface QuotaSummaryResponse {
 }
 
 /**
- * Parse a go-keyring payload (optionally "go-keyring-base64:" prefixed) into
- * a normalized StoredToken. Shared by the macOS and Linux keyring readers.
+ * The OS-secret-store reader for a given platform, or a null-returning reader
+ * for platforms that have none. Split out from QuotaService so the dispatch
+ * mapping is directly assertable: every reader is a hard platform gate that
+ * returns null off its own platform, so calling the wrong one is
+ * indistinguishable from a host that simply has no stored credential.
  */
-function parseGoKeyringPayload(raw: string): StoredToken | null {
+export function secretStoreReaderFor(platform: NodeJS.Platform): () => StoredToken | null {
+  if (platform === 'darwin') return readMacKeychainToken
+  if (platform === 'linux') return readLinuxSecretToken
+  if (platform === 'win32') return readWindowsCredentialToken
+  return () => null
+}
+
+/**
+ * Parse a go-keyring payload (optionally "go-keyring-base64:" prefixed) into
+ * a normalized StoredToken. Shared by the macOS, Linux and Windows readers.
+ *
+ * The macOS Keychain stores the value with the prefix (verified live:
+ * `security find-generic-password -s gemini -a antigravity -w` returns
+ * `go-keyring-base64:<base64 of the JSON token document>`); Linux and
+ * Windows readers may hand over either form, hence the fallback.
+ */
+export function parseGoKeyringPayload(raw: string): StoredToken | null {
   let jsonStr = raw
   if (raw.startsWith('go-keyring-base64:')) {
     const b64 = raw.slice('go-keyring-base64:'.length)
     jsonStr = Buffer.from(b64, 'base64').toString('utf8')
   }
   try {
-    const parsed = JSON.parse(jsonStr) as Record<string, unknown>
-    const tok = normalizeStoredToken(parsed)
-    return tok && (tok.accessToken || tok.refreshToken) ? tok : null
+    // normalizeStoredToken returns null unless it found a non-empty
+    // access_token, so its result needs no further guard.
+    return normalizeStoredToken(JSON.parse(jsonStr) as Record<string, unknown>)
   } catch {
     return null
   }
@@ -257,7 +276,9 @@ export function readLinuxSecretToken(): StoredToken | null {
 /**
  * Reads the REAL system login's Antigravity OAuth token from the macOS
  * Keychain. agy stores credentials via go-keyring in the Keychain under
- * service "gemini" / account "antigravity" (base64-encoded JSON). This is the
+ * service "gemini" / account "antigravity" as `go-keyring-base64:` + base64
+ * of the JSON token document (parseGoKeyringPayload accepts either form).
+ * This is the
  * login of the interactive agy the user runs themselves; a plugin-managed HOME
  * gets its own token FILE instead (see getStoredToken), so this is only the
  * last resort for an account with no file of its own.
@@ -351,10 +372,7 @@ export class QuotaService {
    * touching it.
    */
   protected readOsSecretStoreToken(): StoredToken | null {
-    if (process.platform === 'darwin') return readMacKeychainToken()
-    if (process.platform === 'linux') return readLinuxSecretToken()
-    if (process.platform === 'win32') return readWindowsCredentialToken()
-    return null
+    return secretStoreReaderFor(process.platform)()
   }
 
   /**
@@ -382,17 +400,18 @@ export class QuotaService {
       try {
         const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
         const tok = normalizeStoredToken(raw)
-        if (tok && (tok.accessToken || tok.refreshToken)) return tok
+        if (tok) return tok
       } catch {
         // corrupted disk file — treat as absent
       }
     }
 
-    if (account.systemHome || !account.dir) {
+    // Gated on systemHome ALONE. A dir-less account is not by itself the
+    // system login: reading the store for one would hand an isolated slot the
+    // system login's identity — the exact mislabelling this precedence fixes.
+    if (account.systemHome) {
       const storedToken = this.readOsSecretStoreToken()
-      if (storedToken && (storedToken.accessToken || storedToken.refreshToken)) {
-        return storedToken
-      }
+      if (storedToken) return storedToken
     }
 
     return null

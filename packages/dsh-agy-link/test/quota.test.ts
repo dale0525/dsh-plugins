@@ -4,8 +4,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AccountPoolManager } from '../src/host/pool.ts'
-import { QuotaService, detectEmailFromAgyLogs, mergeFallbackFamilyQuota, normalizeStoredToken } from '../src/host/quota.ts'
-import { shouldPollAccount } from '../src/common/pool-types.ts'
+import { QuotaService, detectEmailFromAgyLogs, mergeFallbackFamilyQuota, normalizeStoredToken, parseGoKeyringPayload } from '../src/host/quota.ts'
+import { shouldPollAccount, type ManagedAccount } from '../src/common/pool-types.ts'
 import { writeAgyTokenFile, parsePastedCode, generatePkce } from '../src/host/oauth.ts'
 
 test('QuotaService parses stored tokens and saves token refresh updates', async () => {
@@ -64,7 +64,9 @@ test('normalizeStoredToken reads agy 1.1.16 nested shape with ISO expiry', () =>
   assert.equal(millis?.expiryMs, 1_800_000_000_000)
 })
 
-test('normalizeStoredToken parses go-keyring-base64 JSON payloads from Keychain', () => {
+test('parseGoKeyringPayload decodes the go-keyring-base64 form the Keychain actually holds', () => {
+  // Verified live: `security find-generic-password -s gemini -a antigravity -w`
+  // returns "go-keyring-base64:" + base64 of the JSON token document.
   const payload = {
     token: {
       access_token: 'ya29.keychain_access',
@@ -75,13 +77,19 @@ test('normalizeStoredToken parses go-keyring-base64 JSON payloads from Keychain'
     auth_method: 'consumer',
   }
   const b64 = Buffer.from(JSON.stringify(payload)).toString('base64')
-  const rawKeychainString = `go-keyring-base64:${b64}`
-  assert.ok(rawKeychainString.startsWith('go-keyring-base64:'))
-  const decoded = JSON.parse(Buffer.from(rawKeychainString.slice('go-keyring-base64:'.length), 'base64').toString('utf8'))
-  const token = normalizeStoredToken(decoded)
+
+  const token = parseGoKeyringPayload(`go-keyring-base64:${b64}`)
   assert.equal(token?.accessToken, 'ya29.keychain_access')
   assert.equal(token?.refreshToken, '1//keychain_refresh')
   assert.equal(token?.expiryMs, Date.parse('2026-08-21T15:34:29.273+08:00'))
+
+  // Bare JSON (no prefix) is the other form the readers may hand over.
+  assert.equal(parseGoKeyringPayload(JSON.stringify(payload))?.accessToken, 'ya29.keychain_access')
+  // Malformed input must not throw out of the reader.
+  assert.equal(parseGoKeyringPayload('go-keyring-base64:not-valid-base64!!'), null)
+  assert.equal(parseGoKeyringPayload('not json'), null)
+  // A payload with no access_token normalizes to null rather than a partial token.
+  assert.equal(parseGoKeyringPayload(JSON.stringify({ token: { refresh_token: 'only' } })), null)
 })
 
 test('writeAgyTokenFile emits the agy on-disk format and round-trips', async () => {
@@ -343,6 +351,45 @@ test('getStoredToken never reads the shared OS secret store for isolated pool ac
   assert.equal(storeReads, 0)
 })
 
+test('getStoredToken never reads the shared OS secret store for a dir-less account either', () => {
+  // Regression: the fallback gate used to be `account.systemHome || !account.dir`,
+  // so ANY account without a dir could adopt the system login's identity. A
+  // dir-less account is not the system login by construction (pool.ts writes
+  // dir:'' only together with systemHome:true), but the clause made isolation
+  // depend on that writer staying honest rather than on the account's own flag.
+  const dir = mkdtempSync(join(tmpdir(), 'agy-quota-dirless-'))
+  const pool = new AccountPoolManager(dir)
+  // Build a dir-less NON-systemHome account directly: the pool cannot produce
+  // one, but a hand-edited or synced pool.json can. agentHome points at an
+  // empty directory so the file lookup genuinely misses — otherwise it would
+  // resolve to the real homedir(), whose token file short-circuits the gate and
+  // makes this test pass against the buggy code too.
+  const rogue: ManagedAccount = {
+    id: 'acc_rogue_dirless',
+    alias: 'rogue',
+    dir: '',
+    agentHome: join(dir, 'empty-home'),
+    enabled: true,
+    createdAt: Date.now(),
+    cooldowns: {},
+    quotas: {},
+  }
+  let storeReads = 0
+  class DirlessService extends QuotaService {
+    override readOsSecretStoreToken() {
+      storeReads++
+      return { accessToken: 'ya29.real_system_login', refreshToken: '1//real_system_refresh' }
+    }
+  }
+  const svc = new DirlessService(pool)
+  assert.equal(
+    svc.getStoredToken(rogue),
+    null,
+    'systemHome alone gates the store — a bare dir-less account must not reach it',
+  )
+  assert.equal(storeReads, 0, 'the shared store is never consulted without systemHome')
+})
+
 test('detectEmailFromAgyLogs returns the latest email in a log file, not the first', () => {
   // Logs are append-ordered: an old login can appear ABOVE a newer one.
   // First-match returned the OLD account; the last match is the current one.
@@ -443,25 +490,27 @@ test('UI_PATHS contains all expected clean SVG paths', async () => {
 
 test('readOsSecretStoreToken dispatches per platform (GH #8 / GH #30)', async () => {
   const { readLinuxSecretToken, readMacKeychainToken, readWindowsCredentialToken } = await import('../src/host/quota.ts')
-  // Both readers are hard platform gates - safe to call anywhere.
+  // All three readers are hard platform gates - safe to call anywhere.
   if (process.platform !== 'darwin') assert.equal(readMacKeychainToken(), null, 'mac reader no-ops off darwin')
   if (process.platform !== 'linux') assert.equal(readLinuxSecretToken(), null, 'linux reader no-ops off linux')
   if (process.platform !== 'win32') assert.equal(readWindowsCredentialToken(), null, 'windows reader no-ops off win32')
-  // A subclass mirroring the production dispatch resolves without throwing.
-  // (Result is environment-dependent: a real keyring entry may exist.)
-  class DispatchProbe extends QuotaService {
-    override readOsSecretStoreToken() {
-      if (process.platform === 'linux') return readLinuxSecretToken()
-      if (process.platform === 'darwin') return readMacKeychainToken()
-      if (process.platform === 'win32') return readWindowsCredentialToken()
-      return null
+
+  // The dispatch mapping itself is asserted by identity. Comparing returned
+  // VALUES would be vacuous: every reader no-ops off its own platform, so a
+  // wrong branch looks exactly like a host with no stored credential.
+  const { secretStoreReaderFor } = await import('../src/host/quota.ts')
+  assert.equal(secretStoreReaderFor('darwin'), readMacKeychainToken)
+  assert.equal(secretStoreReaderFor('linux'), readLinuxSecretToken)
+  assert.equal(secretStoreReaderFor('win32'), readWindowsCredentialToken)
+  assert.equal(secretStoreReaderFor('freebsd')(), null, 'unknown platforms resolve to null')
+
+  // ...and the real method routes through it rather than inlining its own copy.
+  class Exposed extends QuotaService {
+    dispatch() {
+      return this.readOsSecretStoreToken()
     }
   }
   const dir = mkdtempSync(join(tmpdir(), 'agy-quota-dispatch-'))
-  const pool = new AccountPoolManager(dir)
-  const primary = pool.createAccountSlot('primary')
-  primary.systemHome = true
-  const svc = new DispatchProbe(pool)
-  const tok = svc.getStoredToken(primary)
+  const tok = new Exposed(new AccountPoolManager(dir)).dispatch()
   assert.ok(tok === null || typeof tok.accessToken === 'string', 'dispatch resolves without throwing')
 })

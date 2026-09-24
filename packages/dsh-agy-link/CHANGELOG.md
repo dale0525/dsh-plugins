@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.5.6 (2026-09-24)
+
+### English
+
+**Fixes**
+
+- **Token resolution can no longer borrow the system login's identity from a dir-less account.**
+  The OS-secret-store fallback was gated on `account.systemHome || !account.dir`. The second clause
+  meant any account with an empty `dir` could read the shared store, which belongs to the real
+  system login — so a hand-edited or synced `pool.json` could hand an isolated slot another
+  account's credential. Isolation now rests on the account's own `systemHome` flag alone.
+- **Removed dead token guards.** `normalizeStoredToken` already returns `null` unless it found a
+  non-empty `access_token`, so the `tok.accessToken || tok.refreshToken` checks after it were
+  unreachable. Their removal is behaviour-preserving.
+
+**Tests**
+
+- `parseGoKeyringPayload` is now exported and covered directly; the previous test hand-decoded the
+  base64 itself, leaving the real decoder — the only code that runs in production — untested. It now
+  also covers the bare-JSON form and malformed input.
+- The platform-dispatch test called a hand-written copy of the dispatch instead of the production
+  method. The mapping is now a pure `secretStoreReaderFor(platform)` asserted by reader identity
+  (comparing return values would be vacuous, since every reader no-ops off its own platform), and
+  `readOsSecretStoreToken` routes through it.
+- Added a regression test for the dir-less fallback above, verified to fail against the old gate.
+- The dispatch test no longer builds an account with `createAccountSlot('primary')` plus a forced
+  `systemHome = true`, which produced a state the pool itself never creates.
+
+### 中文 (Chinese)
+
+**修复**
+
+- **配额兜底不再可能从「无目录账号」借到系统登录的身份。** 系统密钥库兜底此前的门禁是
+  `account.systemHome || !account.dir`。后半句意味着任何 `dir` 为空的账号都能读取那个属于
+  真实系统登录的共享密钥库——手工编辑或同步来的 `pool.json` 足以让隔离槽位拿到别的账号的凭据。
+  现在隔离只由账号自身的 `systemHome` 标志决定。
+- **删除失效的 token 守卫。** `normalizeStoredToken` 在没有非空 `access_token` 时本就返回
+  `null`，其后的 `tok.accessToken || tok.refreshToken` 判断不可达。删除后行为不变。
+
+**测试**
+
+- `parseGoKeyringPayload` 现被导出并直接覆盖；此前的用例自己手工解码 base64，导致真正在生产
+  运行的解码函数零覆盖。新用例同时覆盖裸 JSON 形式与畸形输入。
+- 平台派发用例此前调用的是手写的派发副本，而非生产方法。现在把映射抽成纯函数
+  `secretStoreReaderFor(platform)` 并按「reader 身份」断言（比较返回值是无效的：每个 reader
+  在非本平台都返回 null，错误分支与「主机上没有凭据」不可区分），`readOsSecretStoreToken`
+  改为经由它路由。
+- 为上述「无目录兜底」补了回归用例，已验证它在旧门禁下会失败。
+- 派发用例不再用 `createAccountSlot('primary')` 加强行赋值 `systemHome = true` 造出池子
+  本身不会产生的状态。
+
 ## 0.5.5 (2026-09-24)
 
 ### English
