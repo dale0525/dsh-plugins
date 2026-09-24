@@ -34,6 +34,14 @@
   three `security` calls now run with `HOME` set to the managed dir, which adds nothing to the real
   list while still making that keychain the managed HOME's default.
 
+- **The keychain is no longer world-readable, and the real-home guard is now exact.**
+  `create-keychain` writes under the process umask — 0644 in practice — while the same token's
+  plaintext sibling is 0600; since anything in the `staff` group can traverse the user's home, the
+  keychain was the readable copy. It is now `chmod 0600`. The `dir === homedir()` guard also
+  normalizes with `resolve()`, because that guard now carries more weight than it did: the function
+  *modifies* keychain settings, so a trailing slash or relative path slipping past it would relax
+  the user's own login keychain to never-lock — a silent downgrade of their real credentials.
+
 **Tests**
 
 - New `ensureAgyKeychain` case: it provisions a managed HOME, asserts `show-keychain-info` reports
@@ -65,6 +73,12 @@
   **真实**钥匙串的搜索列表，而 `delete-keychain` 并不能可靠地把它移除。每次准备都会留下一条指向
   已被删除的临时目录的记录（实测已累积 22 条）。现在三次 `security` 调用都带着 `HOME=受管目录`
   执行，不再向真实列表添加任何内容，同时该钥匙串仍是该受管 HOME 眼中的默认钥匙串。
+
+- **钥匙串不再对同组可读，真实主目录守卫改为精确判定。** `create-keychain` 按进程 umask 落盘
+  （实测 0644），而同一个 token 的明文兄弟文件是 0600；由于 `staff` 组可穿过用户主目录，钥匙串
+  一度反而是可读的那一份。现在改为 `chmod 0600`。`dir === homedir()` 守卫也改用 `resolve()`
+  归一化——这条守卫现在的分量比过去重：函数会**修改**钥匙串设置，因此尾斜杠或相对路径一旦绕过
+  它，就会把用户自己的登录钥匙串放宽为永不上锁，等于静默削弱其真实凭据的安全性。
 
 **测试**
 
