@@ -198,15 +198,17 @@ test('pluginFiles: 剪枝清单覆盖已知运行时缓存，且是路径形状�
   assert.ok(flat.includes('.gemini/antigravity-cli/scratch'));
   assert.ok(flat.includes('.gemini/antigravity-cli/brain'));
   assert.ok(flat.includes('.npm'));
-  // 核心安全属性：**禁止**用单个「含糊词」当剪枝项 —— 单段 `scratch` 会把任意分区下的
-  // 同名业务目录一并剪掉。单段只允许出现在无歧义的缓存名上（如 `.npm`）。
-  const AMBIGUOUS = new Set([
-    'scratch', 'brain', 'conversations', 'cache', 'log', 'presence',
-    'implicit', 'annotations', 'mcp', 'Caches', 'Library',
+  // 核心安全属性：单段剪枝项必须**逐一显式批准** —— 单段 `scratch` 会把任意分区下的同名
+  // 业务目录一并剪掉。用白名单而非黑名单：新增任何单段项都必须在此显式放行，否则测试失败。
+  const SINGLE_SEGMENT_ALLOWED = new Set([
+    '.npm', // 无歧义：npm 自己的缓存目录名
   ]);
   for (const p of PLUGIN_FILES_EXCLUDED_DIRS) {
     if (p.length === 1) {
-      assert.equal(AMBIGUOUS.has(p[0]!), false, `单段剪枝项过于含糊，会误伤业务目录: ${p[0]}`);
+      assert.ok(
+        SINGLE_SEGMENT_ALLOWED.has(p[0]!),
+        `单段剪枝项未获显式批准（会误伤任意分区下的同名业务目录）: ${p[0]}`,
+      );
     }
   }
 });

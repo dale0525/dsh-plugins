@@ -97,7 +97,6 @@ export async function listRecursiveFollowingLinks(
    */
   const excludePatterns = (options.excludeDirs ?? []).map((p) => [...p]);
   const isExcludedByDesign = (entryRel: string): boolean => {
-    if (excludePatterns.length === 0) return false;
     const segs = entryRel.split('/');
     return excludePatterns.some((pat) => {
       for (let i = 0; i + pat.length <= segs.length; i++) {
@@ -163,8 +162,14 @@ export async function listRecursiveFollowingLinks(
           skippedLinks.push({ path: entryRel, reason: 'outside-home' });
           continue;
         }
+        // 剪枝对**链接**同样成立，且必须按目标判定：链接自身路径往往不在剪枝形状里，
+        // 但它指向的目录可能已被剪（`cli.log -> log/cli-*.log`）。只查 entryRel 会让
+        // 「log/ 已按设计跳过」与「log 里的日志经链接进了包」同时成立 —— 排除清单必须封闭。
+        if (isExcludedByDesign(entryRel) || isExcludedByDesign(rel(target))) {
+          excludedDirs.push(entryRel);
+          continue;
+        }
         if (st.isDirectory()) {
-          if (isExcludedByDesign(entryRel)) { excludedDirs.push(entryRel); continue; }
           if (await walk(abs, depth + 1, entryRel)) followedLinks += 1;
         } else if (st.isFile()) {
           paths.push(entryRel);

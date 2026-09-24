@@ -179,3 +179,34 @@ test('约定配置目录剪枝：命中路径形状的目录整棵跳过并留�
   assert.equal(plain.paths.length, 5, `不剪枝时应收集全部 5 个文件: ${plain.paths.join(',')}`);
   assert.deepEqual(plain.excludedDirs, []);
 });
+test(`约定配置目录剪枝：链接指向被剪目录时同样必须剪掉（排除清单是封闭的）`, async (t) => {
+  const home = tmpDir(`dshcm-home6-`);
+  t.after(() => fssync.rmSync(home, { recursive: true, force: true }));
+  const acc = path.join(home, 'plugin-config', 'agy-link', 'acc_1');
+  const cli = path.join(acc, '.gemini', 'antigravity-cli');
+  await fs.mkdir(path.join(cli, 'log'), { recursive: true });
+  await fs.mkdir(path.join(cli, 'scratch'), { recursive: true });
+  await fs.writeFile(path.join(cli, 'log', 'cli-1.log'), 'LOG');
+  await fs.writeFile(path.join(cli, 'scratch', 'big.pack'), 'BIG');
+  await fs.writeFile(path.join(cli, 'settings.json'), 'S');
+  // 真实形状（本机实测）：cli.log 是指向 log/ 下某文件的**文件**链接。只查链接自身路径
+  // 会放它进包，同时报告宣称 log/ 已跳过 —— 必须按解析后的目标判定。
+  await fs.symlink(path.join('log', 'cli-1.log'), path.join(cli, 'cli.log'));
+  // 目录链接指向被剪目录，同样必须剪掉
+  await fs.symlink(path.join(cli, 'scratch'), path.join(acc, 'scratch-link'));
+
+  const base = path.join(home, 'plugin-config');
+  const excludeDirs = [['.gemini', 'antigravity-cli', 'log'], ['.gemini', 'antigravity-cli', 'scratch']];
+  const listing = await listRecursiveFollowingLinks(base, home, { excludeDirs });
+
+  assert.deepEqual(listing.paths, [
+    'plugin-config/agy-link/acc_1/.gemini/antigravity-cli/settings.json',
+  ], `指向被剪目录的链接不得进包: ${listing.paths.join(',')}`);
+  assert.deepEqual(listing.excludedDirs, [
+    // 链接自身也被剪掉并留痕：它指向被剪目录，带出去只会是个断链
+    'plugin-config/agy-link/acc_1/.gemini/antigravity-cli/cli.log',
+    'plugin-config/agy-link/acc_1/.gemini/antigravity-cli/log',
+    'plugin-config/agy-link/acc_1/.gemini/antigravity-cli/scratch',
+    'plugin-config/agy-link/acc_1/scratch-link',
+  ], `被剪目录与被剪链接都要留痕: ${listing.excludedDirs.join(',')}`);
+});

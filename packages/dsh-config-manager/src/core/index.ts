@@ -29,6 +29,11 @@ export {
   ImportNotConfirmedError, ImportFailedError,
 } from './types.ts';
 export type * from './types.ts';
+// 文件类分区的遍历结果与剪枝契约：docs/spec/bundle-format-v1.md 要求第三方按
+// RecursiveListing.excludedDirs 对齐，故必须从公共出口可达。
+export type {
+  RecursiveListing, RecursiveWalkOptions, SkippedLink,
+} from '../utils/recursive-walk.ts';
 
 /* —— 迁移历史引擎（Phase 6） —— */
 export {

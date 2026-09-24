@@ -21,37 +21,44 @@ import type {
 export const DEFAULT_PLUGIN_FILE_WHITELIST: readonly string[] = ['dsh-ssh.json', 'pet.json'];
 
 /**
- * collectDir 下**按设计**跳过的运行时目录（路径形状，不是目录名 —— 见 utils/recursive-walk.ts）。
+ * collectDir 下**按设计**跳过的目录（路径形状，不是目录名 —— 见 utils/recursive-walk.ts）。
  *
  * 为什么需要：collectDir 是插件共享的跨设备配置容器，但插件会把整个 HOME 塞进它
  * （agy-link 的每个账号一个托管 HOME）。实测 ~/.dsh/plugin-config 遍历出 3,920 MB / 102,582 文件，
- * 其中约 3.9 GB 是缓存与历史 —— 收集它们会让一次推送跑几十分钟，且 scratch 内嵌的 git pack
- * 单文件 128.5 MB，已超 GitHub 的 100 MiB 硬上限，推送注定失败。
+ * 其中约 3.9 GB 是缓存、历史与工作现场 —— 收集它们会让一次推送跑几十分钟，且 scratch 内嵌的
+ * git pack 单文件 128.5 MB，已超 GitHub 的 100 MiB 硬上限，推送注定失败。
  *
- * 判据是「重建还是复用」：这些目录里没有账号身份，删掉后 agy 会在下次启动时重新生成，
- * 因此**排除它们不损失跨设备可用性**。反之账号身份（token / settings.json / .gemini/config/** /
- * Library/Keychains/login.keychain-db）一律保留，否则另一台机器拿到的是个空壳账号。
+ * 两类被剪内容**后果不同，不可混为一谈**（这是本清单唯一的判断难点）：
+ *  - 运行时再生品：下次启动重建，排除无损失。
+ *  - agy 的会话历史与工作现场：**不会被重建**，排除即永久丢失。这是有意取舍 —— 跨设备要的是
+ *    「账号能直接登录使用」，而这四项合计约 1.4 GB，带过去就会把推送重新推过 100 MiB 上限。
+ *    代价是**目标机没有历史会话**，报告必须如实说明（见 messages.ts 的 adapter.dirsExcluded）。
+ *    把它们说成「可重新生成」是错的，说成「不影响使用」也是错的。
  *
- * 排除只作用于导出：applyItem 只写快照里存在的文件，从**不删除**本地文件，
- * 所以本机缓存不会被清掉。
+ * 账号身份一律保留（token / settings.json / .gemini/config/** / Library/Keychains/login.keychain-db /
+ * pool.json），否则另一台机器拿到的是个空壳账号。
+ *
+ * 排除只作用于导出：applyItem 只写快照里存在的文件，从**不删除**本地文件，本机内容不会被清掉。
+ *
+ * 本清单是权威；docs/spec 与 CHANGELOG 里的枚举只是说明，冲突时以本文件为准。
  */
 export const PLUGIN_FILES_EXCLUDED_DIRS: readonly (readonly string[])[] = [
-  // 插件把 HOME 当普通目录用：Library/Caches（1.7 GB）、.npm（77 MB）
+  // ① 可再生：插件把 HOME 当普通目录用产生的缓存（1.7 GB / 77 MB）
   ['Library', 'Caches'],
   ['.npm'],
-  // agy 每个账号的会话历史与工作现场（0.6 GB / 0.5 GB / 0.3 GB）
-  ['.gemini', 'antigravity-cli', 'conversations'],
-  ['.gemini', 'antigravity-cli', 'scratch'],
-  ['.gemini', 'antigravity-cli', 'brain'],
-  // 日志与运行时痕迹：重建即可，无身份信息
+  // ① 可再生：日志与运行时痕迹，下次启动重建，无身份信息
   ['.gemini', 'antigravity-cli', 'log'],
   ['.gemini', 'antigravity-cli', 'presence'],
   ['.gemini', 'antigravity-cli', 'implicit'],
   ['.gemini', 'antigravity-cli', 'cache'],
   ['.gemini', 'antigravity-cli', 'updater'],
-  ['.gemini', 'antigravity-cli', 'annotations'],
-  // MCP 工具清单（含本机路径与端口），下次启动按当前环境重写
+  // ① 可再生：MCP 工具清单（126 个 .json，含本机路径），下次启动按当前环境重写
   ['.gemini', 'antigravity-cli', 'mcp'],
+  // ② 不可再生：agy 的会话历史与工作现场（合计约 1.4 GB）—— 排除即丢失，报告必须如实说明
+  ['.gemini', 'antigravity-cli', 'conversations'],
+  ['.gemini', 'antigravity-cli', 'brain'],
+  ['.gemini', 'antigravity-cli', 'annotations'],
+  ['.gemini', 'antigravity-cli', 'scratch'],
 ];
 
 export class PluginFilesAdapter implements ConfigAdapter<FilesSection> {
