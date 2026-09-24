@@ -8,7 +8,7 @@
  *   dialogMask + dialogCard dialogWide + dialogHeaderRow + dialogClose +
  *   dialogBodyScroll，零新增样式）；
  * - **通道配置弹窗**：通道子 tab（GitHub（git）/ WebDAV）切换，两个通道的
- *   配置表单、同步模式**各自独立**；关闭弹窗
+ *   配置表单**各自独立**；关闭弹窗
  *   = 放弃本次操作（GitHub 登录流程进行中则一并取消，§8.12 约定）；
  * - GitHub 子 tab：repoUrl（必填）+ 认证 token（可选，写入 DSH credentials 的提示）
  *   + **GitHub OAuth device flow 登录**（登录块跟随 git 通道配置放在弹窗内：
@@ -40,17 +40,16 @@ import { Modal } from '../common/Modal.tsx'
 import { runStore, toSyncStoreSlice, type SyncStoreSlice } from '../run-store.ts'
 import { SYNC_CREDENTIAL_REF, SYNC_WEBDAV_CREDENTIAL_REF } from './sync-api.ts'
 import type {
-  SyncApi, SyncPushPayload, SyncSectionInfo, SyncStatusResponse,
+  SyncApi, SyncPushPayload, SyncStatusResponse,
 } from './sync-api.ts'
 import {
   channelTabModels, computeGithubLoginView, computeRemoteReady, computeSyncButtons,
-  defaultChannelSyncState, githubPollMessage, kindLabel, presetById,
+  githubPollMessage, kindLabel, lockPanelModel, presetById,
   presetIdForUrl, privateRepoHint, pullApplyReportView, pushReportView, readStoredChannel,
-  recommendedSyncSections, severityLabel, syncSectionGroups, syncSectionOptions,
-  WEBDAV_PRESETS, writeStoredChannel,
+  severityLabel, WEBDAV_PRESETS, writeStoredChannel,
 } from './sync-view.ts'
 import type {
-  ChannelSyncState, GithubLoginPhase, SyncChannel, SyncMode, SyncSectionOption,
+  GithubLoginPhase, SyncChannel,
 } from './sync-view.ts'
 import { SyncHistoryView } from './SyncHistoryView.tsx'
 import css from '../config-manager.module.css'
@@ -75,13 +74,6 @@ interface SyncUiState {
   webdavUsername: string
   /** 仅内存：成功后清空（已写入 DSH credentials），绝不持久化/回显 */
   webdavPassword: string
-  /** git/webdav 各自独立的设置状态（同步模式） */
-  byChannel: {
-    git: ChannelSyncState
-    webdav: ChannelSyncState
-  }
-  /** 可同步分区目录（status.syncSections 回填；高级模式勾选列表数据源；两通道共用目录） */
-  catalog: SyncSectionOption[]
   /** 通道配置保存中（「保存配置」按钮 spinner；自动保存同用） */
   savingConfig: boolean
   busy: 'push' | 'pull' | 'rollback' | null
@@ -105,6 +97,8 @@ interface SyncUiState {
    * 仅内存瞬态（不进 store 切片）：切 tab/刷新后重新校验，保证新鲜。
    */
   githubSignedIn: boolean | null
+  /** 「回收残留锁」请求在途（防重入；瞬态，不进 store 切片） */
+  recovering: boolean
 }
 
 interface GithubUiState {
@@ -132,11 +126,6 @@ const initial: SyncUiState = {
   webdavUrl: '',
   webdavUsername: '',
   webdavPassword: '',
-  byChannel: {
-    git: defaultChannelSyncState(),
-    webdav: defaultChannelSyncState(),
-  },
-  catalog: [],
   savingConfig: false,
   busy: null,
   pushReport: null,
@@ -145,6 +134,7 @@ const initial: SyncUiState = {
   error: null,
   github: initialGithub,
   githubSignedIn: null,
+  recovering: false,
 }
 
 /**
@@ -167,10 +157,6 @@ function initFromStore(): SyncUiState {
     webdavUrl: s.webdavUrl,
     webdavUsername: s.webdavUsername,
     webdavPassword: s.webdavPassword,
-    byChannel: {
-      git: { ...defaultChannelSyncState(), ...s.byChannel.git },
-      webdav: { ...defaultChannelSyncState(), ...s.byChannel.webdav },
-    },
     busy: s.busy,
     savingConfig: s.savingConfig,
     pushReport: s.pushReport,
@@ -204,18 +190,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     runStore.patch({ sync: toSyncStoreSlice(next) })
   }
   const patch = (p: Partial<SyncUiState>): void => commit({ ...stateRef.current, ...p })
-  /** 更新指定通道的 byChannel 状态（子 tab 切换后 loadSnapshots 等场景用）。 */
-  const patchChannelState = (ch: SyncChannel, p: Partial<ChannelSyncState>): void => commit({
-    ...stateRef.current,
-    byChannel: {
-      ...stateRef.current.byChannel,
-      [ch]: { ...stateRef.current.byChannel[ch], ...p },
-    },
-  })
-  /** 更新当前激活通道的 byChannel 状态。 */
-  const patchChannel = (p: Partial<ChannelSyncState>): void => patchChannelState(state.channel, p)
-  /** 当前激活通道的设置状态（同步模式）。 */
-  const chState: ChannelSyncState = state.byChannel[state.channel]
   /** GitHub 流程态（不进 store 切片；commit 的镜像写幂等无害）。 */
   const patchGithub = (p: Partial<GithubUiState>): void => commit({
     ...stateRef.current,
@@ -237,19 +211,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
       // 回退 localStorage 记忆（升级前遗留）→ 最后按配置（sync-config.transport）
       const savedChannel: SyncChannel = info.transport?.type === 'webdav' ? 'webdav' : 'git'
       const remembered = info.lastSyncChannel ?? readStoredChannel()
-      // 可同步分区目录回填（host adapters 唯一事实源；两通道共用）
-      const catalog = info.syncSections !== undefined ? syncSectionOptions(info.syncSections) : []
-      // 每通道回填：优先该通道的持久化配置（syncSelectionByChannel）；
-      // 无持久化 → 默认模式 + 推荐分区
-      const selByCh = info.syncSelectionByChannel
-      const backfill = (ch: SyncChannel): Partial<ChannelSyncState> => {
-        const sel = selByCh?.[ch]
-        const persistedMode: SyncMode = sel?.mode === 'advanced' ? 'advanced' : 'default'
-        const persistedSections = sel !== undefined
-          ? sel.sections
-          : recommendedSyncSections(info.syncSections ?? [])
-        return { syncMode: persistedMode, syncSections: persistedSections }
-      }
       patch({
         loading: false,
         statusInfo: info,
@@ -257,11 +218,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
         repoUrl: info.repoUrl ?? '',
         webdavUrl: info.webdav?.url ?? '',
         webdavUsername: info.webdav?.username ?? '',
-        catalog,
-        byChannel: {
-          git: { ...stateRef.current.byChannel.git, ...backfill('git') },
-          webdav: { ...stateRef.current.byChannel.webdav, ...backfill('webdav') },
-        },
       })
       // 校验 GitHub token 有效性：已登录（有效）→ 隐藏 GitHub 登录块；未配置/失效 → 显示
       void validateGithub()
@@ -530,14 +486,8 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   }
 
   /** 组装 push 的公共载荷（分区选择；快照恒为明文） */
-  const buildPushPayload = (): SyncPushPayload => {
-    // 默认模式：不传 sections（= 全部推荐分区）；高级模式：传勾选分区
-    const selection =
-      chState.syncMode === 'advanced' && chState.syncSections.length > 0
-        ? { sections: chState.syncSections }
-        : {}
-    return { ...payload(), ...selection }
-  }
+  // 推送范围由 Host 固定（除 workspaces / sessions 外的全部分区），请求体不再携带分区选择。
+  const buildPushPayload = (): SyncPushPayload => payload()
 
   /** 推送：直接覆盖远端（无预览、无确认）。 */
   const runPush = async (): Promise<void> => {
@@ -599,36 +549,27 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     }
   }
 
-  /* ------------------------------------------------ 同步模式（默认/高级） */
+  /* ------------------------------------------------ 残留环境锁（issue #27/#31） */
 
-  /** 保存当前通道的分区选择到 Host（持久化；push 与 pull 共用；失败提示但不阻断本地 UI）。 */
-  const saveSelection = async (mode: SyncMode, sections: SectionId[]): Promise<void> => {
+  /**
+   * 显式回收 stale 残留锁。Host 侧刻意不经 mutation gate（要回收的正是挡住 acquire 的那把锁），
+   * 且活锁/无法证明 stale 一律拒绝 —— 故 ok=false 是**正常结果**，如实提示而非报成功。
+   * 成功后重拉 status：锁摘要由 Host 计算，UI 不自造结论。
+   */
+  const recoverStaleLock = async (): Promise<void> => {
+    if (stateRef.current.recovering) return
+    patch({ recovering: true })
     try {
-      await api.saveSelection({ transport: state.channel, mode, sections })
+      const res = await api.recoverStaleLock()
+      if (res.ok) toast.ok(uiT('sync.lock.recovered'))
+      else toast.warn(res.reason !== undefined ? `${uiT('sync.lock.refused')}（${redact(res.reason)}）` : uiT('sync.lock.refused'))
+      await loadStatus()
     } catch (err) {
-      // R-20/M-22：同步设置持久化失败（此前写共享 error Banner，与刚点的模式页签相距整屏）
-      toast.error(`${t('toast.selectionSaveFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
+      toast.error(`${t('toast.lockRecoverFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
+    } finally {
+      patch({ recovering: false })
     }
   }
-
-  /** 切换当前通道的同步模式并持久化（高级模式勾选沿用当前勾选，切回时保留）。 */
-  const setSyncMode = (mode: SyncMode): void => {
-    patchChannel({ syncMode: mode })
-    void saveSelection(mode, state.byChannel[state.channel].syncSections)
-  }
-
-  /** 当前通道高级模式勾选分区开关（增删 byChannel 勾选并立即持久化）。 */
-  const toggleSyncSection = (id: SectionId, checked: boolean): void => {
-    const cur = state.byChannel[state.channel].syncSections
-    const next = checked
-      ? (cur.includes(id) ? cur : [...cur, id])
-      : cur.filter((s) => s !== id)
-    patchChannel({ syncSections: next })
-    void saveSelection(state.byChannel[state.channel].syncMode, next)
-  }
-
-  /** 默认模式的推荐分区数（渲染计数用）。 */
-  const recommendedSectionCount = state.catalog.filter((c) => c.defaultIncluded).length
 
   /* ------------------------------------------------ 通道子 tab 切换 */
 
@@ -653,8 +594,8 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   const githubBusy =
     state.github.phase === 'starting' || state.github.phase === 'waiting' || state.github.phase === 'polling'
 
-  /** 高级模式勾选为空 → 禁止推送（默认模式不受限）。 */
-  const pushSelectionReady = chState.syncMode !== 'advanced' || chState.syncSections.length > 0
+  /** 残留锁面板模型（可见性/徽章/可点判据全来自纯函数，组件只装配）。 */
+  const lockPanel = lockPanelModel(state.statusInfo?.lock, state.recovering, uiT)
 
   return (
     <div className={css.viewBody}>
@@ -728,6 +669,29 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
               </Button>
             </div>
           </Card>
+
+          {/* 残留环境锁入口（issue #27/#31）：仅在锁非 FREE 时出现。此前 423 文案把用户指向
+              已删除的「事故恢复」面板与 CLI → 用户无出路（本 issue 的原始症状）。
+              attention=true（残留锁/无法判定）才给可点按钮；活锁会自行释放，只陈述不催回收。 */}
+          {lockPanel.visible && (
+            <Card>
+              <span className={css.groupLabel}>{uiT('sync.lock.title')}</span>
+              <div className={css.statRow}>
+                <Badge kind={lockPanel.badgeKind}>{lockPanel.badgeLabel}</Badge>
+              </div>
+              <span className={css.hint}>{lockPanel.detail}</span>
+              <div className={css.actionRow}>
+                <Button
+                  variant="primary"
+                  disabled={!lockPanel.canRecover || state.busy !== null}
+                  loading={state.recovering}
+                  onClick={() => { void recoverStaleLock() }}
+                >
+                  {state.recovering ? <Spinner label={lockPanel.label} /> : lockPanel.label}
+                </Button>
+              </div>
+            </Card>
+          )}
 
           {/* 通道配置弹窗（Radix Modal 统一 a11y：focus-trap / Esc / 焦点还原 / 滚动锁；
               内含推送结果/拉取结果等嵌套 Modal，Radix 支持嵌套弹窗） */}
@@ -948,85 +912,12 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             </Modal.Body>
           </Modal>
 
-          {/* 同步模式（当前通道）：默认（快速导出）/ 高级（自定义导出） */}
+          {/* 同步范围（固定）：不再有模式选择 —— 推送/拉取恒同步全部支持的分区，
+              只排除 workspaces（平台相关）与 sessions（设备相关）。 */}
           <Card>
-            <span className={css.groupLabel}>{t('mode.title')}</span>
-            <span className={css.hint}>{t('mode.hint')}</span>
-            <div className={css.tabRow} role="tablist">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={chState.syncMode === 'default'}
-                data-active={chState.syncMode === 'default' ? '' : undefined}
-                className={css.modeTab}
-                disabled={state.busy !== null}
-                onClick={() => { setSyncMode('default') }}
-              >
-                {t('mode.default')}
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={chState.syncMode === 'advanced'}
-                data-active={chState.syncMode === 'advanced' ? '' : undefined}
-                className={css.modeTab}
-                disabled={state.busy !== null}
-                onClick={() => { setSyncMode('advanced') }}
-              >
-                {t('mode.advanced')}
-              </button>
-            </div>
-            <div className={css.modeHint}>
-              {chState.syncMode === 'default' ? t('mode.defaultHint') : t('mode.advancedHint')}
-            </div>
-            <span className={css.hint}>{t('mode.persistHint')}</span>
-
-            {chState.syncMode === 'advanced' && (
-              <>
-                <span className={css.groupLabel}>{t('mode.sectionsTitle')}</span>
-                {state.catalog.length === 0 ? (
-                  <span className={css.hint}>{t('common.loading')}</span>
-                ) : (
-                  /* 分组勾选目录：与「导出备份·自定义模式」同构（分组 Card + 名称/描述/徽章） */
-                  <div className={css.groupList}>
-                    {syncSectionGroups(state.catalog).map((g) => (
-                      <Card key={g.group} className={css.groupCard}>
-                        <div className={css.groupHeader}>
-                          <span className={css.groupLabel}>{g.label}</span>
-                          {g.note !== undefined && <span className={css.groupNote}>{g.note}</span>}
-                        </div>
-                        <div className={css.groupItems}>
-                          {g.items.map((s) => (
-                            <Checkbox
-                              key={s.id}
-                              checked={chState.syncSections.includes(s.id)}
-                              onChange={(checked) => { toggleSyncSection(s.id, checked) }}
-                              label={
-                                <span className={css.categoryItem}>
-                                  <span className={css.categoryName}>{s.label}</span>
-                                  <span className={css.categoryDesc}>{s.description}</span>
-                                  {s.defaultIncluded && <Badge kind="ok">{t('mode.sectionRecommended')}</Badge>}
-                                </span>
-                              }
-                            />
-                          ))}
-                        </div>
-                      </Card>
-                    ))}
-                  </div>
-                )}
-                <span className={css.hint}>{t('mode.sectionsHint')}</span>
-                {chState.syncSections.length === 0 && <Banner kind="warn">{t('mode.atLeastOne')}</Banner>}
-              </>
-            )}
-
-            {chState.syncMode === 'default' && (
-              <span className={css.hint}>
-                {state.catalog.length === 0
-                  ? t('common.loading')
-                  : t('mode.defaultCount', { n: String(recommendedSectionCount) })}
-              </span>
-            )}
+            <span className={css.groupLabel}>{t('scope.title')}</span>
+            <span className={css.hint}>{t('scope.hint')}</span>
+            <span className={css.hint}>{t('scope.excludedHint')}</span>
           </Card>
 
           {/* 两个同步按钮（当前通道）：拉取 = 直接覆盖本地；推送 = 直接覆盖远端。
@@ -1040,7 +931,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
               {state.busy === 'pull' ? <Spinner label={buttons.pullLabel} /> : buttons.pullLabel}
             </Button>
             <Button
-              disabled={!buttons.canPush || githubBusy || !pushSelectionReady || state.busy !== null}
+              disabled={!buttons.canPush || githubBusy || state.busy !== null}
               onClick={() => { void runPush() }}
             >
               {state.busy === 'push' ? <Spinner label={buttons.pushLabel} /> : buttons.pushLabel}

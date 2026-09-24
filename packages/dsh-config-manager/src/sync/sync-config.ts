@@ -31,7 +31,7 @@ import { atomicWriteFile } from '../utils/atomic-write.ts';
 
 export const SYNC_CONFIG_FILE = 'sync-config.json';
 
-/** 同步通道类型（git / webdav；host 侧统一引用，sync-selection 复用）。 */
+/** 同步通道类型（git / webdav；host 侧统一引用）。 */
 export type SyncTransportType = 'git' | 'webdav';
 
 /** 当前 sync-config.json schema 版本号（v3：双命名空间共存，切换通道不丢失另一通道配置）。 */

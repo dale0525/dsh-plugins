@@ -1,7 +1,7 @@
 /**
  * m-self：插件自身 UI 偏好持久化（ui-prefs.json）。
  *
- * 与 sync-config.json / sync-selection.json 并列独立文件：语义清楚、schema 演进独立。
+ * 与 sync-config.json 并列独立文件：语义清楚、schema 演进独立。
  * 当前存 lastSyncChannel（用户上次选择的同步通道 git/webdav）。
  *
  * 背景（self 分区设计）：此前该偏好只存浏览器 localStorage（键
@@ -24,7 +24,7 @@ import { atomicWriteFile } from '../utils/atomic-write.ts';
 export const UI_PREFS_FILE = 'ui-prefs.json';
 export const UI_PREFS_SCHEMA_VERSION = 1;
 
-/** 同步通道类型（与 sync-selection / sync-config 共享语义；避免循环 import 自行声明） */
+/** 同步通道类型（与 sync-config 共享语义；避免循环 import 自行声明） */
 export type UiPrefsChannel = 'git' | 'webdav';
 
 /** 插件自身 UI 偏好（持久化面）。 */

@@ -12,7 +12,7 @@
  *  - heartbeat 走 **独立 sidecar** `environment.heartbeat.<instanceId>`，可安全用 Phase 1 `atomicWriteFile` 更新。
  *  - **operation-scoped** `MutationLockToken`：禁止 process-level reentrant（instanceId/handle/reenterCount 判嵌套）。
  *  - stale 检测只分类（LOCKED / STALE_LOCK_DETECTED / UNKNOWN_STATE），**绝不自动 unlink/takeover**。
- *  - recover 是独立显式动作（CLI `--recover-stale-lock`），用原子 rename 捕获 + 二次验证，二次验证失败不覆盖 successor。
+ *  - recover 是独立显式动作（插件配置页的「回收残留锁」按钮），用原子 rename 捕获 + 二次验证，二次验证失败不覆盖 successor。
  *  - destructive mutation 无 `--force`：必须成功 acquire，否则不得执行。
  *  - release 前校验 owner.instanceId === token.instanceId，不匹配不 unlink（ownership-lost）。
  *
@@ -822,7 +822,7 @@ export class EnvironmentLockManager {
     if (st.kind === 'corrupt') {
       // 存在但空/损坏/ACL 不可读：崩溃窗口残留（open('wx') 后未写完 owner 即死），无有效 owner
       // 无从误删；acquire 侧不执行（UNKNOWN_STATE），但显式 recovery 可安全回收（见 recoverStaleLock）
-      return { state: 'UNKNOWN_STATE', detail: 'ownership 存在但无有效 owner（可能崩溃残留空/损坏文件），不删除、不执行；可用 --recover-stale-lock 回收' }
+      return { state: 'UNKNOWN_STATE', detail: 'ownership 存在但无有效 owner（可能崩溃残留空/损坏文件），不删除、不执行；可用插件配置页的「回收残留锁」回收' }
     }
     const rec = st.rec
     // heartbeat 读取失败（EACCES）→ 无法确认 fresh → 保守不判 stale（避免误删）
@@ -857,7 +857,7 @@ export class EnvironmentLockManager {
     // —— capability/值缺失 → 无法可靠确定 → UNKNOWN_STATE（保守拒删）
     if (!this.probe.canGetOsIdentity() || rec.owner.osProcessStartIdentity === null || ident.osProcessStartIdentity === null) {
       // issue #36：Windows 默认无 OS identity 能力 + PID 会被复用 → 该分支此前永远停在
-      // UNKNOWN_STATE（连官方 recover-stale-lock 都拒绝），用户只能手工删锁文件。
+      // UNKNOWN_STATE（连显式回收都拒绝），用户只能手工删锁文件。
       // 心跳**长过期**（远超窗口，见 longExpiredAfterMs）说明写方早已停摆，判定为残留锁：
       // 只影响显式回收与状态分类，acquire 侧依旧不自动摘锁。
       const longExpired = this.longExpiredReason(heartbeat, now)
@@ -882,7 +882,7 @@ export class EnvironmentLockManager {
   /* ------------------------------------------------------------ recover (explicit) */
 
   /**
-   * 显式 stale recovery（独立动作；对应 CLI `--recover-stale-lock`）。
+   * 显式 stale recovery（独立动作；对应插件配置页的「回收残留锁」按钮）。
    * 只执行：inspect → prove definitely stale → 原子 rename 捕获 → 二次验证 → unlink。
    * **不自动触发**；仅当检测为 STALE_LOCK_DETECTED 才允许 capture。
    * 二次验证失败 → quarantine（保留 recovering 文件，不 rename 回环境锁，不覆盖 successor）。
@@ -1051,7 +1051,7 @@ export type LockBlockReason =
   | 'blocked'
   /**
    * 检测到 stale 残留锁（上次进程异常退出，持有者已确证死亡）——**重试不会自愈**，
-   * 必须显式回收（GUI「事故恢复」/ CLI `recover-stale-lock`）。见 issue #27。
+   * 必须显式回收（插件配置页的「回收残留锁」按钮）。见 issue #27。
    */
   | 'stale'
   /** 锁不可用/IO/权限/UNKNOWN（→ 「操作暂时无法执行，请稍后重试」） */
@@ -1064,11 +1064,11 @@ export const LOCK_BLOCK_MESSAGE: Record<LockBlockReason, string> = {
   blocked: '配置修改已被保护，请先处理恢复事项后再继续。',
   unavailable: '操作暂时无法执行，请稍后重试；若持续失败请查看日志。',
   // 必须说清「重试/重启都不会好」并给出可操作路径：否则用户只会一遍遍重试（issue #27 实测如此）。
-  // issue #31：文案承诺的「事故恢复」入口必须真的能回收残留锁——GUI 已接线
-  // （GET /recovery/status 的 lock 字段 + POST /recovery/lock/recover），两处入口都真实可达。
+  // issue #31：文案承诺的入口必须真的能回收残留锁——GUI 已接线（插件配置页的「回收残留锁」
+  // 按钮 → POST /api/dsh-config-manager/sync/lock/recover），该入口是本插件唯一的回收途径。
   stale: '检测到上次异常退出残留的配置锁（其持有进程已不存在），操作已被阻止。'
-    + '该锁不会自动清除，重试或重启 DSH 均无效：请在「事故恢复」中点击「回收残留锁」，'
-    + '或运行 dsh-config-manager recover-stale-lock 回收后再重试。',
+    + '该锁不会自动清除，重试或重启 DSH 均无效：请打开「插件」页的 '
+    + '@logictan/dsh-plugins-all 配置页，点击「回收残留锁」后再重试。',
 }
 
 /** 分类的**简短**文案（单行、可用于表格单元格/迁移历史摘要/日志前缀）。

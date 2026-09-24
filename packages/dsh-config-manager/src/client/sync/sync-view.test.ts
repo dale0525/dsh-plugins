@@ -6,13 +6,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import type { PullChange, SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts'
-import type { SectionId } from '../../schema/types.ts'
-import type { GithubPollResponse, SyncSectionInfo, SyncStatusResponse } from './sync-api.ts'
+import type { GithubPollResponse, SyncStatusResponse } from './sync-api.ts'
+import { zhUiT } from '../../ui/i18n.ts'
 import {
   channelTabModels, computeGithubLoginView, computeRemoteReady, computeSyncButtons, computeSyncStatus,
-  defaultChannelSyncState, formatDateTime, formatLastSync, githubPollMessage, kindLabel, privateRepoHint,
-  pullApplyReportView, pushReportView, presetById, presetIdForUrl, readStoredChannel, recommendedSyncSections,
-  severityLabel, summarizePullChanges, syncSectionGroups, syncSectionOptions, WEBDAV_PRESETS, writeStoredChannel,
+  formatDateTime, formatLastSync, githubPollMessage, kindLabel, lockPanelModel,
+  privateRepoHint, pullApplyReportView, pushReportView, presetById, presetIdForUrl, readStoredChannel,
+  severityLabel, summarizePullChanges, WEBDAV_PRESETS, writeStoredChannel,
 } from './sync-view.ts'
 
 /* ---------------------------------------------------------------- 私有仓库提示 */
@@ -24,66 +24,52 @@ test('sync-view: 私有仓库强制提示文案存在且强调私有', () => {
   assert.match(hint, /token/)
 })
 
-/* ---------------------------------------------------------------- 同步分区模式（默认/高级） */
+/* ---------------------------------------------------------------- 残留锁入口（issue #27/#31） */
 
-const SYNC_CATALOG: SyncSectionInfo[] = [
-  { id: 'settings', displayName: 'Settings', defaultIncluded: true },
-  { id: 'providers', displayName: 'Providers & Models', defaultIncluded: true },
-  { id: 'plugins', displayName: 'Plugins', defaultIncluded: true },
-  { id: 'skills', displayName: 'Skills', defaultIncluded: true },
-];
+test('sync-view: lockPanelModel 残留锁 → 需 attention、徽章 warn、按钮可点', () => {
+  const m = lockPanelModel({ state: 'STALE_LOCK_DETECTED', attention: true }, false, zhUiT)
+  assert.equal(m.visible, true, '残留锁必须显示入口')
+  assert.equal(m.attention, true)
+  assert.equal(m.badgeKind, 'warn')
+  assert.equal(m.badgeLabel, '残留锁')
+  assert.equal(m.canRecover, true, '残留锁必须可点回收')
+  assert.equal(m.label, '回收残留锁')
+  assert.match(m.detail, /重试或重启 DSH 均无效/)
+})
 
-test('sync-view: syncSectionOptions 把 host 目录投影为勾选项（保 id 顺序 + 导出目录分组/描述补充）', () => {
-  const opts = syncSectionOptions(SYNC_CATALOG)
-  assert.deepEqual(opts.map((o) => o.id), ['settings', 'providers', 'plugins', 'skills'])
-  assert.equal(opts[0]?.label, 'Settings')
-  assert.equal(opts[0]?.defaultIncluded, true)
-  // 分组/描述来自导出目录（单一事实源）：settings → general 组带描述；providers → ai 组
-  assert.equal(opts[0]?.group, 'general')
-  assert.match(opts[0]?.description ?? '', /DSH 全局设置/)
-  assert.equal(opts[1]?.group, 'ai')
-  assert.match(opts[1]?.description ?? '', /Provider/)
-  assert.equal(opts[2]?.group, 'extensions')
-  assert.equal(opts[3]?.group, 'customization')
-});
+test('sync-view: lockPanelModel 活锁（LOCKED）→ 显示但不催回收、按钮禁用', () => {
+  const m = lockPanelModel({ state: 'LOCKED', attention: false }, false, zhUiT)
+  assert.equal(m.visible, true, '活锁仍要可见（解释为何被挡）')
+  assert.equal(m.attention, false)
+  assert.equal(m.badgeKind, 'info')
+  assert.equal(m.badgeLabel, '另一任务持有')
+  assert.equal(m.canRecover, false, '活锁不得提供回收按钮（会自行释放，且回收必被拒绝）')
+})
 
-test('sync-view: syncSectionOptions 未知分区 id → 兜底（description 空、group=general）', () => {
-  const opts = syncSectionOptions([
-    { id: 'nope' as SectionId, displayName: 'Nope', defaultIncluded: true },
-  ])
-  assert.equal(opts[0]?.label, 'Nope')
-  assert.equal(opts[0]?.description, '')
-  assert.equal(opts[0]?.group, 'general')
-});
+test('sync-view: lockPanelModel 无锁/无数据 → 整块隐藏', () => {
+  assert.equal(lockPanelModel({ state: 'FREE', attention: false }, false, zhUiT).visible, false)
+  assert.equal(lockPanelModel(undefined, false, zhUiT).visible, false, '旧宿主不返回 lock → 不误报')
+})
 
-test('sync-view: syncSectionGroups 按导出分组投影（与「导出备份·自定义模式」同构，空组省略）', () => {
-  const groups = syncSectionGroups(syncSectionOptions(SYNC_CATALOG))
-  // settings(general) + providers(ai) + plugins(extensions) + skills(customization)
-  assert.deepEqual(groups.map((g) => g.group), ['general', 'ai', 'extensions', 'customization'])
-  assert.equal(groups[0]?.label, 'General')
-  assert.deepEqual(groups[0]?.items.map((i) => i.id), ['settings'])
-  assert.deepEqual(groups[2]?.items.map((i) => i.id), ['plugins'])
-});
+test('sync-view: lockPanelModel 回收进行中 → 按钮禁用且文案切换', () => {
+  const m = lockPanelModel({ state: 'STALE_LOCK_DETECTED', attention: true }, true, zhUiT)
+  assert.equal(m.canRecover, false, '回收中防重入')
+  assert.equal(m.label, '正在回收…')
+})
 
-test('sync-view: recommendedSyncSections 只取默认包含的分区（默认模式）', () => {
-  const rec = recommendedSyncSections(SYNC_CATALOG)
-  assert.deepEqual(rec, ['settings', 'providers', 'plugins', 'skills'])
-});
+test('sync-view: lockPanelModel UNKNOWN_STATE → attention + 可回收（无法判定也须给用户出路）', () => {
+  const m = lockPanelModel({ state: 'UNKNOWN_STATE', attention: true }, false, zhUiT)
+  assert.equal(m.attention, true)
+  assert.equal(m.badgeLabel, '锁状态无法判定')
+  assert.equal(m.canRecover, true, '无法判定时 recoverStaleLock 内部会拒绝，但入口必须可达')
+})
 
-test('sync-view: recommendedSyncSections 排除非默认包含分区', () => {
-  const catalog: SyncSectionInfo[] = [
-    { id: 'settings', displayName: 'Settings', defaultIncluded: true },
-    { id: 'credentialsStatus', displayName: 'Credentials', defaultIncluded: true },
-    { id: 'mcp', displayName: 'MCP', defaultIncluded: true },
-    { id: 'pluginFiles', displayName: 'Plugin Files', defaultIncluded: false },
-  ];
-  assert.deepEqual(recommendedSyncSections(catalog), ['settings', 'credentialsStatus', 'mcp'])
-});
-
-test('sync-view: 空/缺省目录 → 推荐分区为空数组（UI 显示「至少选一个」场景）', () => {
-  assert.deepEqual(recommendedSyncSections([]), [])
-  assert.deepEqual(syncSectionOptions([]), [])
-});
+test('sync-view: lockPanelModel 未知 state 字符串 → 兜底文案，不抛错', () => {
+  const m = lockPanelModel({ state: 'SOMETHING_NEW', attention: false }, false, zhUiT)
+  assert.equal(m.visible, true)
+  assert.equal(m.badgeLabel, '锁不可用')
+  assert.equal(m.badgeKind, 'info')
+})
 
 /* ---------------------------------------------------------------- 按钮状态 */
 
@@ -449,12 +435,4 @@ test('sync-view: channelTabModels git 激活 → git active / webdav 未激活�
   assert.ok(busy.every((b) => b.disabled), 'busy 时两个子 tab 都禁用（防并发操作切换）')
 })
 
-test('sync-view: defaultChannelSyncState 每通道独立缺省值', () => {
-  const git = defaultChannelSyncState()
-  assert.equal(git.syncMode, 'default')
-  assert.deepEqual(git.syncSections, [])
-  // 两通道缺省互不影响（同一默认工厂，调用即得独立实例）
-  const webdav = defaultChannelSyncState()
-  webdav.syncMode = 'advanced'
-  assert.equal(git.syncMode, 'default', '修改一个通道缺省不影响另一个')
-})
+

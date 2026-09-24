@@ -293,7 +293,7 @@ test('W-02: isReservedInternalRel 反斜杠归一（Windows 分隔符）', () =>
   assert.equal(isReservedInternalRel('dsh-config-manager\\sync\\work\\tmp.zip'), true);
   // 合法 self 配置不得误伤
   assert.equal(isReservedInternalRel('dsh-config-manager\\sync\\sync-config.json'), false);
-  assert.equal(isReservedInternalRel('dsh-config-manager/sync/sync-selection.json'), false);
+  assert.equal(isReservedInternalRel('dsh-config-manager/sync/ui-prefs.json'), false);
 });
 
 test('W-03b（Phase 6）: migration-history 目录加入 RESERVED_INTERNAL_PREFIXES（F23 投毒链闭合）', () => {

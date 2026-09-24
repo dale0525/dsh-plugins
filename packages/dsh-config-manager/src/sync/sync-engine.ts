@@ -70,21 +70,23 @@ export interface SyncEngineOptions {
   fsx?: SnapshotFs;
   /** 消息翻译器（缺省 ctx.msg ?? zh） */
   msg?: MsgFunc;
-  /**
-   * 同步范围（自定义同步模式持久化配置）：只处理这些分区。
-   * 缺省 = 全部推荐分区。应用于 push / pull 等全部链路，供宿主按持久化勾选复用
-   * 用户选择；手动请求仍可用 push(opts.sections) 覆盖。
-   */
-  sections?: SectionId[];
 }
 
 export interface SyncPushOptions {
   /** 覆盖自动生成的快照 id */
   snapshotId?: string;
-  /** 仅同步指定分区（缺省 = 全部推荐分区）。
-   *  传入未知分区 → 忽略并告警（不静默吞掉）。 */
-  sections?: SectionId[];
 }
+
+/**
+ * 同步范围中恒被排除的分区：
+ *  - `workspaces`：平台相关（含绝对路径），换机后无意义；
+ *  - `sessions`：设备相关（历史会话，含敏感内容，体积可达数百 MB）。
+ * 其余分区一律参与同步（含 pluginFiles 与 plugins 分区携带的 cordis.patch.yml）。
+ */
+export const EXCLUDED_SYNC_SECTIONS: ReadonlySet<SectionId> = new Set<SectionId>([
+  'workspaces',
+  'sessions',
+])
 
 export interface SyncPullOptions {
   /** 指定远端快照 id（缺省 = 最新） */
@@ -184,7 +186,6 @@ export class SyncEngine {
   private readonly exporterVersion: string;
   private readonly fsx: SnapshotFs;
   private readonly msg: MsgFunc;
-  private readonly sections: readonly SectionId[] | undefined;
 
   constructor(opts: SyncEngineOptions) {
     if (opts.ctx === null || typeof opts.ctx !== 'object') throw new Error(zhMsg('sync.missingCtx'));
@@ -210,54 +211,18 @@ export class SyncEngine {
     this.exporterVersion = opts.exporterVersion ?? '0.1.0';
     this.fsx = opts.fsx ?? createSnapshotFs();
     this.msg = opts.msg ?? msgOf(opts.ctx);
-    this.sections = opts.sections !== undefined && opts.sections.length > 0 ? [...opts.sections] : undefined;
-  }
-
-  /** 参与同步的分区全集：构造注入 sections（同步范围）时按注入范围过滤 ——
-   *  宿主侧 push/pull 全链路复用用户选择；手动请求仍可用 push(opts.sections) 覆盖。 */
-  private syncAdapters(): ConfigAdapter[] {
-    if (this.sections === undefined) return this.adapters;
-    const wanted = new Set(this.sections);
-    return this.adapters.filter((a) => wanted.has(a.id));
-  }
-
-  /** 未显式传 sections 时的默认范围。
-   *
-   *  - 构造注入 sections（高级模式：用户已在 UI 勾选并持久化）→ 该选择**就是**默认范围，
-   *    不再按 defaultIncluded 收窄（否则高级模式勾选的 sessions/pluginFiles 会被悄悄剔除）；
-   *  - 未注入（默认模式「快速导出」）→ 只取推荐分区 defaultIncluded。
-   *
-   *  defaultIncluded=false 的分区（sessions 含历史会话明文、pluginFiles）语义是「用户显式
-   *  勾选才同步」；把它们并进默认模式的范围会绕过 UI 勾选与「将同步 N 个推荐分区」计数，
-   *  把敏感内容静默推到远端通道。 */
-  private defaultTargets(): ConfigAdapter[] {
-    if (this.sections !== undefined) return this.syncAdapters();
-    return this.adapters.filter((a) => a.defaultIncluded);
   }
 
   /**
-   * push 候选 adapter：
-   * - sections 缺省/空 → 全部推荐分区（defaultIncluded）；
-   * - sections 显式给出 → 从**全部已挂载分区**取命中项（显式勾选可触达 defaultIncluded=false
-   *   的分区，这正是「默认关闭」的含义）；未知分区 → 警告跳过（不静默，用户能看见自己勾了哪个无效项）。
+   * 参与同步的分区全集（push / pull 全链路唯一范围来源）。
+   *
+   * 取消同步模式选择后，范围恒为「除 workspaces / sessions 外的全部已挂载分区」：
+   * 这两类分别是**平台相关**（含绝对路径，换机无意义）与**设备相关**（历史会话，
+   * 含敏感内容且体积可达数百 MB），属于跨设备同步的固有噪声，不随用户配置变化。
+   * 其余分区（含 pluginFiles 与 cordis.patch.yml 所在的 plugins 分区）一律同步。
    */
-  private pushTargets(sections: readonly SectionId[] | undefined, warnings: string[]): ConfigAdapter[] {
-    if (sections === undefined || sections.length === 0) return this.defaultTargets();
-    // 显式 sections 从**全部已挂载分区**解析，而非 syncAdapters()：后者受构造注入范围限制，
-    // 会让「手动 push(opts.sections) 覆盖持久化勾选」失效（未在注入范围内的合法分区被误判为未知）。
-    // 与路由侧 extractSyncSections(knownSyncSectionIds=全部 adapter) 的校验口径一致。
-    const available = this.adapters;
-    const byId = new Map(available.map((a) => [a.id, a]));
-    const out: ConfigAdapter[] = [];
-    for (const id of sections) {
-      const adapter = byId.get(id);
-      if (adapter === undefined) {
-        warnings.push(this.msg('sync.unknownSection', { section: id }));
-        continue;
-      }
-      out.push(adapter);
-    }
-    return out;
+  private syncAdapters(): ConfigAdapter[] {
+    return this.adapters.filter((a) => !EXCLUDED_SYNC_SECTIONS.has(a.id));
   }
 
   /**
@@ -274,12 +239,12 @@ export class SyncEngine {
   /**
    * push：导出分区（真实值）→ 组装快照 → 本地散文件副本 → transport.upload → 更新 sync-state。
    * 单项分区导出失败只告警跳过（§34.17），全部失败才整体失败。
-   * opts.sections：指定仅同步这些分区（自定义模式）；缺省 = 全部推荐分区。
+   * 同步范围恒为 syncAdapters()（除 workspaces / sessions 外的全部分区）。
    */
   async push(opts: SyncPushOptions = {}): Promise<SyncPushReport> {
     const warnings: string[] = [];
     const plainSections: Partial<Record<SectionId, SectionData>> = {};
-    const targets = this.pushTargets(opts.sections, warnings);
+    const targets = this.syncAdapters();
     for (const adapter of targets) {
       let section: ExportSection;
       try {

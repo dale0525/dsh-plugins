@@ -12,7 +12,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { SyncEngine, MAX_REMOTE_SNAPSHOTS, sectionsCarrySecrets } from './sync-engine.ts';
+import { SyncEngine, MAX_REMOTE_SNAPSHOTS, EXCLUDED_SYNC_SECTIONS, sectionsCarrySecrets } from './sync-engine.ts';
 import { hashSection, loadSyncState, SYNC_STATE_FILE } from './sync-state.ts';
 import { encryptSectionsPayload } from '../../tests/fixtures/legacy-snapshot-crypto.ts';
 import { computeSnapshotMeta } from './transport.ts';
@@ -215,7 +215,7 @@ test('凭据明文端到端：push 携带 .credentials.yaml 的 refs → pull �
     ));
     const transport = new MemSyncTransport();
     const pushReport = await makeEngine({ ctx: src, transport, stateDir: path.join(tmp, 'state-src') })
-      .push({ snapshotId: 'sync-cred', sections: ['credentialsStatus'] });
+      .push({ snapshotId: 'sync-cred' });
     assert.equal(pushReport.ok, true);
     const snapshot = transport.snapshots.get('sync-cred')!;
     assert.equal(snapshot.manifest.containsSecrets, true, '携带明文凭据必须如实标注');
@@ -235,21 +235,38 @@ test('凭据明文端到端：push 携带 .credentials.yaml 的 refs → pull �
   }
 });
 
-test('push: 默认范围 = 推荐分区（原 platformSpecific/deviceSpecific 也可同步，但 defaultIncluded=false 的仍不进）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-portable-'));
+test('push: 固定范围 = 除 workspaces / sessions 外的全部分区（含 cordis.patch.yml 所在的 plugins）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-scope-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
     seedSource(ctx);
     ctx.workspace.records.set('w1', { id: 'w1', path: 'C:\\work', title: 'work', sessionIds: [] });
+    await ctx.fs.writeFile('sessions/proj/s1.jsonl', Buffer.from('{"secret":"history"}\n', 'utf8'));
     await ctx.fs.writeFile('dsh-ssh.json', Buffer.from('{"hosts":{}}', 'utf8')); // pluginFiles 白名单
+    const adapters = createAdapters({ namespaces: NS, includeSessions: true, selfDir: 'dsh-config-manager' });
     const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
+    const engine = new SyncEngine({
+      ctx, transport, adapters,
+      importer: new Importer({ ctx, adapters, snapshotStore: new MemSnapshotStore() }),
+      stateDir: tmp, localSnapshotsDir: path.join(tmp, 'snap'),
+      now: () => new Date('2026-08-16T12:00:00.000Z'),
+    } as ConstructorParameters<typeof SyncEngine>[0]);
 
     await engine.push({ snapshotId: 'sync-p' });
     const uploaded = transport.snapshots.get('sync-p')!;
-    assert.ok(uploaded.manifest.sectionIds.includes('settings'));
-    assert.ok(uploaded.manifest.sectionIds.includes('workspaces' as SectionId), 'workspaces（推荐分区）默认同步');
-    assert.ok(uploaded.manifest.sectionIds.includes('mcp' as SectionId), 'mcp（推荐分区）默认同步');
+    const ids = uploaded.manifest.sectionIds;
+    assert.ok(ids.includes('settings' as SectionId));
+    assert.ok(ids.includes('plugins' as SectionId), 'plugins 分区必须同步（cordis.patch.yml 随它走）');
+    assert.ok(ids.includes('mcp' as SectionId));
+    assert.ok(ids.includes('pluginFiles' as SectionId), 'pluginFiles 不再需要显式勾选，直接进同步范围');
+    assert.ok(!ids.includes('workspaces' as SectionId), 'workspaces 恒排除：含本机绝对路径');
+    assert.ok(!ids.includes('sessions' as SectionId), 'sessions 恒排除：历史会话体积大且含敏感内容');
+    // 范围 === 全部 adapter 减去固定排除集（单一事实源，不在测试里重抄清单）
+    assert.deepEqual(
+      [...ids].sort(),
+      adapters.filter((a) => !EXCLUDED_SYNC_SECTIONS.has(a.id)).map((a) => a.id).sort(),
+      '同步集合 === 全部已挂载分区 - 固定排除集',
+    );
     // credentialsStatus / secrets 不是 ConfigAdapter，结构上不可能进入快照
     assert.ok(!('credentials' in uploaded.sections));
     assert.ok(!('secrets' in uploaded.sections));
@@ -258,95 +275,11 @@ test('push: 默认范围 = 推荐分区（原 platformSpecific/deviceSpecific �
   }
 });
 
-test('push: 默认范围尊重 adapter 的 defaultIncluded 契约（sessions/pluginFiles 不得默认上传）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-default-included-'));
+test('push: 构造注入 adapters 也受同一固定范围约束（无法借注入绕过排除集）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-scope-inject-'));
   try {
     const ctx = makeContext('darwin', '/Users/alice');
     seedSource(ctx);
-    // 复刻 Host 接线：includeSessions=true（index.ts 挂载 sessions 供显式勾选）
-    await ctx.fs.writeFile('sessions/proj/s1.jsonl', Buffer.from('{"secret":"history"}\n', 'utf8'));
-    await ctx.fs.writeFile('dsh-ssh.json', Buffer.from('{"hosts":{}}', 'utf8')); // pluginFiles 白名单
-    const adapters = createAdapters({ namespaces: NS, includeSessions: true, selfDir: 'dsh-config-manager' });
-    const transport = new MemSyncTransport();
-    const engine = new SyncEngine({
-      ctx, transport, adapters,
-      importer: new Importer({ ctx, adapters, snapshotStore: new MemSnapshotStore() }),
-      stateDir: tmp, localSnapshotsDir: path.join(tmp, 'snap'),
-      now: () => new Date('2026-08-16T12:00:00.000Z'),
-    } as ConstructorParameters<typeof SyncEngine>[0]);
-
-    await engine.push({ snapshotId: 'sync-di' });
-    const uploaded = transport.snapshots.get('sync-di')!;
-    const ids = uploaded.manifest.sectionIds;
-    // 默认模式（未显式勾选）= 推荐分区：defaultIncluded=false 的分区不得被静默上传
-    assert.ok(!ids.includes('sessions' as SectionId), 'sessions 默认关闭：含历史会话敏感内容，必须显式勾选才上传');
-    assert.ok(!ids.includes('pluginFiles' as SectionId), 'pluginFiles 默认关闭：必须显式勾选才上传');
-    assert.ok(ids.includes('settings' as SectionId), '推荐分区照常同步');
-    // 与 UI「将同步 N 个推荐分区」的计数同源
-    assert.deepEqual(
-      [...ids].sort(),
-      adapters.filter((a) => a.defaultIncluded).map((a) => a.id).sort(),
-      '默认上传集合 === defaultIncluded 集合',
-    );
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('push: 显式勾选 sessions → 仍可上传（默认关闭不等于不可同步）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-explicit-sessions-'));
-  try {
-    const ctx = makeContext('darwin', '/Users/alice');
-    seedSource(ctx);
-    await ctx.fs.writeFile('sessions/proj/s1.jsonl', Buffer.from('{"secret":"history"}\n', 'utf8'));
-    const adapters = createAdapters({ namespaces: NS, includeSessions: true, selfDir: 'dsh-config-manager' });
-    const transport = new MemSyncTransport();
-    const engine = new SyncEngine({
-      ctx, transport, adapters,
-      importer: new Importer({ ctx, adapters, snapshotStore: new MemSnapshotStore() }),
-      stateDir: tmp, localSnapshotsDir: path.join(tmp, 'snap'),
-      now: () => new Date('2026-08-16T12:00:00.000Z'),
-    } as ConstructorParameters<typeof SyncEngine>[0]);
-
-    const report = await engine.push({ snapshotId: 'sync-es', sections: ['sessions'] });
-    assert.equal(report.ok, true);
-    assert.ok(transport.snapshots.get('sync-es')!.manifest.sectionIds.includes('sessions' as SectionId),
-      '高级模式显式勾选 sessions → 允许上传（与 defaultIncluded 无关）');
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('push: 显式 sections（自定义同步）→ 只同步指定分区', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-sections-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    await ctx.fs.writeFile('skills/coding.md', Buffer.from('# Coding\n', 'utf8'));
-    const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-
-    const report = await engine.push({ snapshotId: 'sync-sel', sections: ['settings', 'skills'] });
-    assert.equal(report.ok, true);
-    const uploaded = transport.snapshots.get('sync-sel')!;
-    // 只含勾选的 portable 分区
-    assert.deepEqual(uploaded.manifest.sectionIds.sort(), ['settings', 'skills']);
-    assert.ok('settings' in uploaded.sections, 'settings 进入');
-    assert.ok('skills' in uploaded.sections, 'skills 进入');
-    // 未勾选的 portable 分区（providers/plugins/ui 等）不进入
-    assert.ok(!('providers' in uploaded.sections), '未勾选分区不进入');
-    assert.ok(!('plugins' in uploaded.sections), '未勾选分区不进入');
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('push: 构造注入持久化勾选后，显式 opts.sections 仍可覆盖（不被注入范围截断）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-ctor-override-'));
-  try {
-    const ctx = makeContext('darwin', '/Users/alice');
-    seedSource(ctx);
-    await ctx.fs.writeFile('skills/coding.md', Buffer.from('# Coding\n', 'utf8'));
     await ctx.fs.writeFile('sessions/proj/s1.jsonl', Buffer.from('{"a":1}\n', 'utf8'));
     const adapters = createAdapters({ namespaces: NS, includeSessions: true, selfDir: 'dsh-config-manager' });
     const transport = new MemSyncTransport();
@@ -354,129 +287,42 @@ test('push: 构造注入持久化勾选后，显式 opts.sections 仍可覆盖�
       ctx, transport, adapters,
       importer: new Importer({ ctx, adapters, snapshotStore: new MemSnapshotStore() }),
       stateDir: tmp, localSnapshotsDir: path.join(tmp, 'snap'),
-      // 模拟 makeSyncEngine：注入用户持久化的高级勾选
-      sections: ['settings'],
       now: () => new Date('2026-08-16T12:00:00.000Z'),
     } as ConstructorParameters<typeof SyncEngine>[0]);
 
-    // 显式覆盖成注入范围之外的分区：必须生效，不得被误判为未知分区
-    const report = await engine.push({ snapshotId: 'sync-ov', sections: ['skills', 'sessions'] });
-    assert.equal(report.ok, true, '显式覆盖的合法分区不得导致 ok=false');
-    assert.deepEqual(report.warnings, [], '合法分区不得产生 unknownSection 告警');
-    assert.deepEqual(
-      transport.snapshots.get('sync-ov')!.manifest.sectionIds.sort(),
-      ['sessions', 'skills'],
-      '显式 opts.sections 覆盖构造注入范围',
-    );
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('push: sections 含未知分区 → 警告跳过，其余照常同步', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-sections-skip-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-
-    const report = await engine.push({ snapshotId: 'sync-mix', sections: ['settings', 'mcp' as SectionId, 'nope' as SectionId] });
+    const report = await engine.push({ snapshotId: 'sync-inj' });
     assert.equal(report.ok, true);
-    const uploaded = transport.snapshots.get('sync-mix')!;
-    assert.deepEqual(uploaded.manifest.sectionIds.sort(), ['mcp', 'settings'], '同步已知分区');
-    // 未知分区给出明确告警（不静默）
-    const warnText = report.warnings.join('\n');
-    assert.ok(/nope/.test(warnText), `告警应点名 nope：${warnText}`);
+    assert.ok(!transport.snapshots.get('sync-inj')!.manifest.sectionIds.includes('sessions' as SectionId));
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
 
-test('push: sections 全为未知分区 → ok=false + 明确 message', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-sections-none-'));
+
+
+test('push: 范围恒定 —— 无法通过任何入参收窄或扩展到 workspaces / sessions', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-scope-fixed-'));
   try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
+    const ctx = makeContext('darwin', '/Users/alice');
     seedSource(ctx);
+    await ctx.fs.writeFile('skills/coding.md', Buffer.from('# Coding\n', 'utf8'));
+    await ctx.fs.writeFile('sessions/proj/s1.jsonl', Buffer.from('{"secret":"history"}\n', 'utf8'));
+    const adapters = createAdapters({ namespaces: NS, includeSessions: true, selfDir: 'dsh-config-manager' });
     const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
+    const engine = new SyncEngine({
+      ctx, transport, adapters,
+      importer: new Importer({ ctx, adapters, snapshotStore: new MemSnapshotStore() }),
+      stateDir: tmp, localSnapshotsDir: path.join(tmp, 'snap'),
+      now: () => new Date('2026-08-16T12:00:00.000Z'),
+    } as ConstructorParameters<typeof SyncEngine>[0]);
 
-    const report = await engine.push({ snapshotId: 'sync-empty', sections: ['nope' as SectionId] });
-    assert.equal(report.ok, false);
-    assert.equal(transport.snapshots.has('sync-empty'), false, '无有效分区时不上传快照');
-    assert.ok(report.message && report.message.includes('没有可同步'), `message：${report.message}`);
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('push: sections 缺省/空数组 → 全部分区（默认模式）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-sections-default-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    const transport = new MemSyncTransport();
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-
-    const report = await engine.push({ snapshotId: 'sync-def', sections: [] });
+    const report = await engine.push({ snapshotId: 'sync-fixed' });
     assert.equal(report.ok, true);
-    const uploaded = transport.snapshots.get('sync-def')!;
-    // 空数组 = 全量（默认模式）；应含 settings/providers 等多个分区
-    assert.ok('settings' in uploaded.sections);
-    assert.ok('providers' in uploaded.sections);
-    assert.ok(uploaded.manifest.sectionIds.length >= 4, `应同步全部推荐分区，实际 ${uploaded.manifest.sectionIds.length}`);
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-test('push: 构造注入 sections（持久化的高级模式勾选）→ 未显式传 opts 也按注入范围同步', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-ctor-sections-'));
-  try {
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    seedSource(ctx);
-    const transport = new MemSyncTransport();
-    // makeSyncEngine 注入持久化的高级模式勾选（advanced + sections）
-    const engine = makeEngine({
-      ctx, transport, stateDir: tmp,
-      extra: { sections: ['settings', 'skills'] },
-    });
-
-    // 不传 opts.sections（宿主按持久化勾选调用 engine.push() 的样子）
-    const report = await engine.push({ snapshotId: 'sync-auto' });
-    assert.equal(report.ok, true);
-    const uploaded = transport.snapshots.get('sync-auto')!;
-    assert.deepEqual(uploaded.manifest.sectionIds.sort(), ['settings', 'skills']);
-    assert.ok(!('providers' in uploaded.sections), '注入范围外的分区不进入');
-    assert.ok(!('plugins' in uploaded.sections));
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
-  }
-});
-
-/* ---------------- 旧版加密快照：明确拒绝 ---------------- */
-
-test('pullAndApply: 远端为旧版加密快照 → 明确拒绝（同步通道不再产生/读取加密快照）', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-pull-enc-'));
-  try {
-    const plain: SyncSnapshot = {
-      id: 'remote-enc',
-      createdAt: '2026-08-16T12:00:00.000Z',
-      manifest: { schemaVersion: 1, dshVersion: '1.2.3', platform: 'win32', sectionIds: ['settings'], containsSecrets: false },
-      sections: { settings: { version: 1, namespaces: {} } },
-    };
-    const enc = await encryptSectionsPayload(plain.sections as Partial<Record<SectionId, SectionData>>, 'pw-12345678');
-    const remote: SyncSnapshot = {
-      ...plain,
-      manifest: { ...plain.manifest, encrypted: true },
-      sections: enc,
-    };
-    const transport = new MemSyncTransport();
-    transport.snapshots.set('remote-enc', remote);
-    transport.metas.push(computeSnapshotMeta(remote));
-    const ctx = makeContext('win32', 'C:\\Users\\alice');
-    const engine = makeEngine({ ctx, transport, stateDir: tmp });
-    await assert.rejects(() => engine.pullAndApply(), /旧版加密快照/);
+    const ids = transport.snapshots.get('sync-fixed')!.manifest.sectionIds;
+    assert.ok(ids.includes('settings' as SectionId));
+    assert.ok(ids.includes('skills' as SectionId));
+    assert.ok(!ids.includes('sessions' as SectionId), 'sessions 不得进入同步');
+    assert.ok(!ids.includes('workspaces' as SectionId), 'workspaces 不得进入同步');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

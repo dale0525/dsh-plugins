@@ -220,7 +220,7 @@ export interface RecoveryStatus {
   /**
    * 环境锁状态摘要（issue #31）。纯残留锁**不是** journal：进程在 op 期间被杀时
    * `journalId: null`、`transactions/active/` 为空，incidents 恒为 []，而 423 文案却
-   * 让用户去「事故恢复」处理 → 面板恒空、GUI 无出路。本字段让面板能显示可执行的锁事项。
+   * 让用户去某个恢复面板处理 → 面板恒空、GUI 无出路。本字段让面板能显示可执行的锁事项。
    * 旧宿主不返回 → undefined（面板按「无锁事项」处理，不误报）。
    */
   lock?: RecoveryLockStatus;
@@ -239,6 +239,8 @@ export interface RecoveryLockRecoverResult {
   ok: boolean;
   removed: boolean;
   state: string;
+  /** ok=false 时的拒绝原因（用户可读；不含 owner pid/op 等内部诊断）。 */
+  reason?: string;
 }
 
 /** GET /recovery/:operationId/preview 响应（只读，零写入）。 */

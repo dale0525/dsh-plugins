@@ -13,7 +13,7 @@ DSH 配置的**远程同步**插件。双面 Cordis 插件：
 
 - 宿主半边 `src/index.ts`：`/api/dsh-config-manager/sync/*` 路由族、同步引擎、
   Agent 工具（`config_sync_push` / `config_sync_pull`）。
-- 浏览器半边 `src/client/`：设置页里**唯一的「同步」标签**。
+- 浏览器半边 `src/client/`：**插件页**（「插件 → @logictan/dsh-plugins-all」详情页）里的配置页。
 
 技术栈：TS 5.9（strict + `verbatimModuleSyntax` + `noUncheckedIndexedAccess`）、Node≥22、React 18 + CSS Modules、`node:test` 零依赖、tsdown + lightningcss 打包 client。
 
@@ -26,7 +26,7 @@ src/schema/    类型 / Manifest / 版本（CURRENT_SCHEMA_VERSION）
 src/security/  secret-scanner / redaction（日志脱敏）/ zip-security / vault
 src/adapters/  ConfigAdapter 实现（settings/ui/providers/plugins/mcp/prompts/skills/
                agentPresets/agentInstructions/workspaces/credentialsStatus/pluginFiles/self[/sessions]）
-src/sync/      SyncEngine + Git/WebDav 传输 + config/state/selection
+src/sync/      SyncEngine + Git/WebDav 传输 + config/state/ui-prefs
 src/ui/        框架无关 UI 逻辑（纯函数，node 可测）  ← 业务逻辑必须在此
 src/utils/     paths / zip / hashing / json / logger / atomic-write / env-lock / recursive-walk
 src/client/    React 壳（浏览器半）  ← 只做装配
@@ -42,7 +42,7 @@ docs/spec/     对外契约（写给第三方实现者）
 
 ### 页面落位
 
-- 容器：`src/client/index.ts`（`settings.section` 注册）+ `ConfigManagerSection.tsx`
+- 容器：`src/client/index.ts`（`plugins.bundle.config` 槽位注册，key = 聚合包名）+ `ConfigManagerSection.tsx`
 - 同步页：`src/client/sync/SyncSettingsView.tsx`（+ `SyncHistoryView` / `sync-view`）
 - 共享原语：`src/client/common/ui.tsx`（Button/Badge/Banner/Card/Spinner/Field/Checkbox 等）
   + `ErrorBanner.tsx` / `Modal.tsx` / `Icon.tsx` / `ToastViewport.tsx`
@@ -180,7 +180,7 @@ npm run smoke                    # 仅 core 冒烟
 - **journal step 的 `skipped` 只能表示「用户主动跳过」**：`warning`（非致命失败）与 `failed` 都必须记 `attention`。
 - 根目录勿提交：`lib/`、`dist/`、`node_modules/` 均已 gitignore。
 - **同步凭据走 DSH credentials 槽位引用**，`passwordConfigured` 仅布尔标记。
-- **只读核验不得用 POST 路由**：`/api/dsh-config-manager/sync/selection` 是**写**接口
-  （`guard(req, res, 'POST')` + 落盘 `sync-selection.json`），拿它「读当前值」会把用户的通道选择
-  重置成请求体里的值。核验选择状态直接读 `$DSH_HOME/dsh-config-manager/sync/sync-selection.json`。
-  其余 `POST` 路由同样按写操作对待。
+- **只读核验不得用 POST 路由**：`/api/dsh-config-manager/sync/lock/recover` 是**写**接口
+  （`guard(req, res, 'POST')` + 回收环境锁），拿它「读当前锁状态」会把可回收的锁真的回收掉。
+  核验锁状态读 `GET /sync/status` 的 `lock` 字段（只报 `state` / `attention`），或直接读
+  `$DSH_HOME/dsh-config-manager/locks/environment.lock`。其余 `POST` 路由同样按写操作对待。

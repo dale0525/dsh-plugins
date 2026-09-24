@@ -298,7 +298,6 @@ test('F23: self adapter 拒绝写内部 recovery/control-plane 保留区（但�
   // 合法：sync-config.json 是 self 白名单配置，必须放行
   const legitFiles = [
     'sync/sync-config.json',
-    'sync/sync-selection.json',
     'sync/ui-prefs.json',
     'sync/backup-schedule.json',
     'market/market-config.json',

@@ -41,11 +41,6 @@ export interface ModelToolsDeps {
   makeSyncEngine: (cfg: SyncConfig) => SyncEngine
 }
 
-/** SECTION_IDS 白名单过滤（未知/非法分区 id 丢弃，与 host 路由语义一致）。 */
-function filterSectionIds(ids: readonly string[]): SectionId[] {
-  return ids.filter((id): id is SectionId => (SECTION_IDS as readonly string[]).includes(id))
-}
-
 /** 解析同步引擎：channel 缺省取已配置的活动通道（git/webdav），未配置则抛可操作错误。 */
 async function resolveEngine(
   deps: ModelToolsDeps,
@@ -68,18 +63,15 @@ async function resolveEngine(
 /** 2 个工具的纯编排实现（可独立测试，不依赖 Cordis ctx）。所有返回均为 JsonValue（可序列化、无 undefined）。 */
 export function createModelTools(deps: ModelToolsDeps) {
   return {
-    /** 手动推送同步（写远端）。明文快照：勾选即同步，不加密、不脱敏。 */
+    /** 手动推送同步（写远端）。明文快照：勾选即同步，不加密、不脱敏。
+     *  同步范围由引擎固定（除 workspaces / sessions 外的全部分区）。 */
     async syncPush(input: {
       channel?: SyncTransportType
-      sections?: SectionId[]
     }): Promise<JsonValue> {
       const { engine } = await resolveEngine(deps, input.channel)
-      const sections = input.sections === undefined ? undefined : filterSectionIds(input.sections)
       // Phase 2 锁：push 写远端 + 本地散文件 + sync-state，属 GLOBAL mutation。
       // Step 3 P0-A：外部 push 记 intent journal（crash 后不可证明 → NEEDS_ATTENTION，不自动重推）。
-      const doPush = () => engine.push({
-        ...(sections === undefined ? {} : { sections }),
-      })
+      const doPush = () => engine.push({})
       const report = await runWithMutationLock(deps.host.mutationLock, { op: 'model-sync-push', isBlocked: () => deps.host.safeModeIsBlocked?.() ?? false }, async (lockCtx) => {
         if (deps.host.phase3Recovery !== undefined && lockCtx !== null) {
           const r = await deps.host.phase3Recovery.runExternalIntent({
@@ -153,17 +145,13 @@ export function registerModelTools(ctx: Context, deps: ModelToolsDeps): void {
   register(defineTool({
     name: 'config_sync_push',
     description:
-      '手动推送 DSH 配置同步到远端（Git/WebDAV），复用已持久化的通道配置。写远端属主动操作；快照为明文（私有通道自用），勾选即同步。',
+      '手动推送 DSH 配置同步到远端（Git/WebDAV），复用已持久化的通道配置。写远端属主动操作；快照为明文（私有通道自用），勾选即同步。'
+      + '同步范围固定为全部支持的分区（不含 workspaces / sessions）。',
     parameters: {
       channel: {
         type: 'string',
         enum: ['git', 'webdav'],
         description: '同步通道；缺省 = 已配置的活动通道',
-      },
-      sections: {
-        type: 'array',
-        items: { type: 'string', enum: [...SECTION_IDS] },
-        description: '仅推送的分区；缺省 = 全部推荐分区',
       },
     },
     output: {

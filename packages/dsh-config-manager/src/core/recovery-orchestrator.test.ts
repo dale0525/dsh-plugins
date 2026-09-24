@@ -2,7 +2,7 @@
  * RecoveryOrchestrator 测试（issue #31 聚焦）。
  *
  * 背景：残留环境锁**不是** journal —— 进程死在 `op=autosync` 期间时 `journalId: null`、
- * `transactions/active/` 为空，因此 status() 的 incidents 恒为 []，「事故恢复」面板对纯锁
+ * `transactions/active/` 为空，因此 status() 的 incidents 恒为 []，恢复面板对纯锁
  * 残留恒空，而 423 文案却让用户去那个面板处理。本测试锁定三件事：
  *  ① status() 必须附带环境锁分类，让面板能显示可执行的锁事项；
  *  ② 锁分类**只上报 state/attention**，绝不把 owner pid/op 等内部诊断放进响应体；
@@ -103,6 +103,24 @@ test('status：锁分类只上报 state/attention，绝不泄漏 owner pid/op（
   assert.deepEqual(r.body['lock'], { state: 'STALE_LOCK_DETECTED', attention: true });
 });
 
+// ---------- ②b 共享锁摘要：同步页徽章与恢复面板必须同一套 attention 判据 ----------
+
+test('lockState()：同步页可直接取同一份锁摘要（不再自造 attention 规则）', async () => {
+  const stale = await makeOrchestrator({ lockState: 'STALE_LOCK_DETECTED' });
+  assert.deepEqual(await stale.orchestrator.lockState(), { state: 'STALE_LOCK_DETECTED', attention: true });
+  const live = await makeOrchestrator({ lockState: 'LOCKED' });
+  assert.deepEqual(await live.orchestrator.lockState(), { state: 'LOCKED', attention: false });
+  const broken = await makeOrchestrator({ lockThrows: true });
+  assert.deepEqual(await broken.orchestrator.lockState(), { state: 'UNKNOWN_STATE', attention: true });
+});
+
+test('lockState()：与 status().body.lock 恒等（同一投影，禁止两处漂移）', async () => {
+  const { orchestrator } = await makeOrchestrator({ lockState: 'STALE_LOCK_DETECTED', lockDetail: 'owner pid=24140' });
+  const direct = await orchestrator.lockState();
+  const viaStatus = (await orchestrator.status()).body['lock'];
+  assert.deepEqual(direct, viaStatus);
+});
+
 // ---------- ③ 显式回收：需确认、不谎称成功 ----------
 
 test('recoverStaleLock：未携带 userConfirmed=true → 400 且不调用回收', async () => {
@@ -143,3 +161,26 @@ test('recoverStaleLock：未被判定为 stale → ok=false（绝不谎称成功
  * 同时锁分支必须排在 :operationId 解析之前——'lock' 不是 UUID，否则会被 400 挡掉。
  * 按文本解析源码前先归一化行尾（Windows 工作区 CRLF / CI LF），否则守卫只在一边通过。
  */
+
+// ---------- 源码守卫：回收路由的接线形态（#31 的关键不变量） ----------
+
+/**
+ * 为什么必须守卫：若要回收的正是那把挡住 acquire 的残留锁，把回收路由改成
+ * `runWithMutationLock`/`withMutationGate` 包裹后，acquire 必然返回 STALE_LOCK_DETECTED
+ * → 抛 423 → **回收永远无法执行**（正是本 issue 报告的那类「入口存在但结构上不可达」）。
+ * 按文本解析源码前先归一化行尾（Windows 工作区 CRLF / CI LF），否则守卫只在一边通过。
+ */
+test('源码守卫：/sync/lock/recover 路由不经 mutation gate（否则回收被自己的 423 挡死）', async () => {
+  const src = (await fs.readFile(new URL('../index.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+  const path = '/api/dsh-config-manager/sync/lock/recover';
+  assert.ok(src.includes(`syncLockRecover: '${path}'`), 'API 常量必须登记回收路由');
+  const at = src.indexOf('path: API.syncLockRecover,');
+  assert.ok(at > 0, '路由表必须注册回收路由');
+  // 路由对象字面量：从 path 到该对象在 4 空格缩进处的收尾（内层闭合缩进更深，不会提前截断）。
+  const route = src.slice(at, src.indexOf('\n    },', at));
+  assert.equal(route.includes('withMutationGate'), false, '回收路由绝不能被 withMutationGate 包裹（acquire 必失败 → 回收恒 423）');
+  assert.equal(route.includes('runWithMutationLock'), false, '回收路由绝不 acquire 锁');
+  assert.ok(route.includes('recoverStaleLock(true)'), '必须显式以 userConfirmed=true 调用回收');
+  assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 loopback + method 围栏');
+});
+

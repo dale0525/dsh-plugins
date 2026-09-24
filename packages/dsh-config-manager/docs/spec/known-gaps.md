@@ -170,7 +170,7 @@
 | 项 | 内容 |
 |---|---|
 | 现状 | `canGetOsIdentity()` 仍只在 Linux 为 true（`src/utils/env-lock.ts` 的 `defaultProbe`）。Windows 上 Node 无原生 API 读**其它进程**的创建时间；实现需 spawn `Get-Process`/WMI，而锁探测在每次 acquire 上都会跑，代价不可接受。 |
-| 已缓解 | 心跳**长过期**（阈值 `max(30 × staleAfterMs, 30 分钟)`，可注入 `longExpiredAfterMs`）时，把「心跳过期 + pid 存活 + 身份不可验证」判为 `STALE_LOCK_DETECTED`，使 `recover-stale-lock` 与 GUI「回收残留锁」可成功回收（issue #36 的期望行为）。 |
+| 已缓解 | 心跳**长过期**（阈值 `max(30 × staleAfterMs, 30 分钟)`，可注入 `longExpiredAfterMs`）时，把「心跳过期 + pid 存活 + 身份不可验证」判为 `STALE_LOCK_DETECTED`，使 GUI「回收残留锁」可成功回收（issue #36 的期望行为）。 |
 | 未解决 | ① 阈值内（< 30 分钟无心跳）的 PID 复用残留锁仍判 `UNKNOWN_STATE`，只能等待阈值过去；② 无法把「PID 复用」与「owner 真存活但心跳降级」精确区分——两者都靠「心跳长过期」这一代理判据，属**启发式**而非确证。 |
 | 为什么不更激进 | 缩短阈值会提高「误回收活锁」的风险（活着的 owner 在 ACL/磁盘异常下可能长时间写不进心跳）。当前取值是「用户实测等 9 天」与「误删活锁」之间的折中；要真正解决需注入平台级 identity 探测（`ProcessIdentityProbe` 已是可注入接口，宿主可自行实现）。 |
 | 验证方式 | `src/utils/env-lock.test.ts` 的 `§11.1-c11b`（9 天长过期 → 可识别 + 可显式回收 + acquire 仍不自动摘锁）与 `§11.1-c11c`（未达阈值仍保守 `UNKNOWN_STATE`；heartbeat 缺失不放宽；阈值可注入）。 |

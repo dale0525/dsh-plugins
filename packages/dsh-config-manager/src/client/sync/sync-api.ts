@@ -24,7 +24,8 @@
  */
 import type { SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts';
 import type { PlanItemKind } from '../../core/types.ts';
-import type { SectionId } from '../../schema/types.ts';
+// 环境锁契约的**唯一**声明处（ui/types.ts）；此处只复用，不另立一套并行类型。
+import type { RecoveryLockRecoverResult, RecoveryLockStatus } from '../../ui/types.ts';
 import { ConfigManagerApiError } from '../api.ts';
 import { zhUiT, type UiT } from '../../ui/i18n.ts';
 
@@ -38,10 +39,10 @@ export const SYNC_API = {
   githubCancel: '/api/dsh-config-manager/sync/github/cancel',
   githubValidate: '/api/dsh-config-manager/sync/github/validate',
   history: '/api/dsh-config-manager/sync/history',
-  selection: '/api/dsh-config-manager/sync/selection',
   config: '/api/dsh-config-manager/sync/config',
   uiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
   rollback: '/api/dsh-config-manager/sync/rollback',
+  lockRecover: '/api/dsh-config-manager/sync/lock/recover',
 } as const;
 
 /** DSH credentials 中的同步 token 引用名（Host 半同值；仅供提示文案使用，值由 Host 读写） */
@@ -73,22 +74,8 @@ export interface SyncStatusResponse {
   transport?: { type: string; ref: string };
   /** 上次选择的同步通道（磁盘 ui-prefs.json；UI 回填优先于此，localStorage 仅兜底） */
   lastSyncChannel?: 'git' | 'webdav';
-  /** 可同步分区目录（自定义同步勾选列表；host adapters 唯一事实源） */
-  syncSections?: SyncSectionInfo[];
-  /** 当前分区选择（当前激活通道；UI 回填用，与手动 push 共用） */
-  syncSelection?: SyncSelectionPayload;
-  /** 全部通道的分区选择（git/webdav 各自独立；UI 按当前 tab 取对应通道） */
-  syncSelectionByChannel?: Record<SyncTransportType, SyncSelectionPayload>;
-}
-
-/** 同步分区选择（POST /sync/selection 请求体 + status.syncSelection 响应；持久化于 Host）。
- *  git/webdav 通道各自独立（transport 缺省 git）。 */
-export interface SyncSelectionPayload {
-  /** 目标通道（git/webdav 各自独立的模式与勾选；缺省 git） */
-  transport?: SyncTransportType;
-  mode: 'default' | 'advanced';
-  /** 高级模式勾选分区；default 模式可为空数组 */
-  sections: SectionId[];
+  /** 环境锁分类摘要（只 state/attention，无 owner pid/op）：残留锁入口的徽章与可点判据 */
+  lock?: RecoveryLockStatus;
 }
 
 /** webdav 通道状态字段（无任何 secret 值；password 只报 passwordConfigured 布尔） */
@@ -117,19 +104,11 @@ export interface SyncConfigSaveResponse {
   };
 }
 
-/** 可同步分区条目（status.syncSections 项）。 */
-export interface SyncSectionInfo {
-  id: SectionId;
-  /** 展示名（host adapter displayName） */
-  displayName: string;
-  defaultIncluded: boolean;
-}
-
 /** push 请求体（token 可选：非空则 Host 先写入 DSH credentials 再使用）。
  *  扁平形状与 Host parseSyncBody 一致：git 携带 repoUrl/token；
  *  webdav 携带 url/username/password（顶层，不嵌套 webdav 对象）。
  *  git 可执行文件固定使用系统 PATH 中的 git，不再接受自定义路径。
- *  sections 可选（自定义同步模式）：只推送勾选分区；缺省 = 全部推荐分区。
+ *  同步范围由 Host 固定（除 workspaces / sessions 外的全部分区）。
  *  快照恒为明文：勾选即同步，不加密、不脱敏。 */
 export interface SyncPushPayload {
   /** 通道类型；缺省 'git' */
@@ -140,8 +119,6 @@ export interface SyncPushPayload {
   url?: string;
   username?: string;
   password?: string;
-  /** 仅同步指定分区（缺省 = 全部推荐分区） */
-  sections?: SectionId[];
 }
 
 /** POST /sync/pull 响应：拉取并直接覆盖本地（含应用前的变更摘要与回滚入口）。 */
@@ -302,16 +279,17 @@ export class SyncApi {
     return postJson<GithubValidateResponse>(SYNC_API.githubValidate, {}, this.t);
   }
 
+  /** 显式回收 stale 残留环境锁（POST /sync/lock/recover，无请求体）。
+   *  回收的是「挡住 acquire 的那把锁」，故 Host 侧刻意不经 mutation gate；活锁一律拒绝。
+   *  调用方必须处理 ok=false（拒绝是正常结果），并在成功后重拉 status 刷新锁摘要。 */
+  async recoverStaleLock(): Promise<RecoveryLockRecoverResult> {
+    return postJson<RecoveryLockRecoverResult>(SYNC_API.lockRecover, {}, this.t);
+  }
+
   /** 同步历史：列出本地祖先快照（按 createdAt 倒序）。 */
   async history(): Promise<SyncHistoryResponse> {
     const response = await fetch(SYNC_API.history);
     return readJson<SyncHistoryResponse>(response, this.t);
-  }
-
-  /** 保存同步分区选择（POST /sync/selection）：模式 + 勾选分区持久化到 Host。
-   *  push 与 pull 共用此配置（刷新/重启后仍然生效）。 */
-  async saveSelection(payload: SyncSelectionPayload): Promise<SyncSelectionPayload> {
-    return postJson<SyncSelectionPayload>(SYNC_API.selection, payload, this.t);
   }
 
   /** 保存同步通道配置（POST /sync/config）：url/username/password（git: repoUrl/token）持久化。

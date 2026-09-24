@@ -120,11 +120,6 @@ import {
   isGitConfig, isWebDavConfig,
 } from './sync/sync-config.ts'
 import type { SyncConfig, FullSyncConfig, SyncTransportType } from './sync/sync-config.ts'
-import {
-  defaultSyncSelection, effectiveSections, readAllSyncSelections, readSyncSelection, writeSyncSelection,
-  SYNC_SELECTION_SCHEMA_VERSION,
-} from './sync/sync-selection.ts'
-import type { SyncSelection, SyncSelectionMode } from './sync/sync-selection.ts'
 import { readUiPrefs, updateUiPrefs } from './sync/ui-prefs.ts'
 import type { UiPrefsChannel } from './sync/ui-prefs.ts'
 import type { SyncTransport } from './sync/transport.ts'
@@ -149,7 +144,7 @@ export const name = 'config-manager'
 export const inject = ['settings', 'credentials']
 
 /** Plugin version, kept in sync with package.json ("version"). */
-const PLUGIN_VERSION = '0.1.65'
+const PLUGIN_VERSION = '0.1.66'
 
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
@@ -221,12 +216,12 @@ const API = {
   // P2：同步历史 / 自动应用 / 一键回滚
   syncHistory: '/api/dsh-config-manager/sync/history',
   syncRollback: '/api/dsh-config-manager/sync/rollback',
-  // m-sync-selection：同步分区选择持久化（默认/高级模式 + 勾选分区）
-  syncSelection: '/api/dsh-config-manager/sync/selection',
   // m-sync-config：同步通道配置保存（UI 表单自动保存 /「保存配置」按钮；凭据写 DSH credentials）
   syncConfig: '/api/dsh-config-manager/sync/config',
   // m-self：插件 UI 偏好（如上次选择的同步通道；ui-prefs.json，随 self 分区进备份）
   syncUiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
+  // issue #27/#31：显式回收 stale 残留环境锁（GUI「回收残留锁」按钮）
+  syncLockRecover: '/api/dsh-config-manager/sync/lock/recover',
 } as const
 
 /**
@@ -1013,35 +1008,6 @@ export function mergePersistedWebDavUsername(cfg: SyncConfig, persisted: SyncCon
   return cfg
 }
 
-/**
- * 解析 push 请求体的分区选择（sections）——「高级/自定义导出」模式负载。
- * - 缺省 / 非数组 / 空数组 → undefined（= 全部 portable 推荐分区，即「默认/快速导出」模式）；
- * - 元素必须是 knownIds（已知 adapter id）中的非空字符串，非法 → SyncRouteError（不静默吞错）；
- * - 返回去重后的数组（保持原顺序；重复分区不做重复导出）。
- */
-export function extractSyncSections(
-  body: Record<string, unknown>,
-  knownIds: ReadonlySet<string>,
-): SectionId[] | undefined {
-  const raw = body['sections']
-  if (!Array.isArray(raw) || raw.length === 0) return undefined
-  const out: SectionId[] = []
-  const seen = new Set<string>()
-  for (const item of raw) {
-    if (typeof item !== 'string' || item === '') {
-      throw new SyncRouteError('sections must be an array of non-empty strings')
-    }
-    if (!knownIds.has(item)) {
-      throw new SyncRouteError(`unknown sync section: ${item}`)
-    }
-    if (!seen.has(item)) {
-      seen.add(item)
-      out.push(item as SectionId)
-    }
-  }
-  return out
-}
-
 /** POST /restore 请求体校验（纯函数；snapshotId 拒绝路径分隔符防 join 越界）。 */
 export type BuildRestoreBodyResult =
   | { ok: true; value: { snapshotId: string; dryRun: boolean } }
@@ -1312,17 +1278,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
    * 进程生命周期内存登记；同 kind 并发被 RunRegistry 拒绝，单 run 恒只有一个当前项。 */
   const runAbortControllers = new Map<string, AbortController>()
 
-  /** 已知 adapter id 集合（push 请求体 sections 校验用）。 */
-  const knownSyncSectionIds = new Set(adapters.map((a) => a.id))
-  /** 可同步分区目录（status 回填 UI「高级/自定义导出」勾选列表）。
-   *
-   *  含**全部已挂载分区**（不再按 portability 过滤）：改造一取消了 portability 对同步范围的
-   *  限制，所有分区都可勾选；这里若仍只列 portable，mcp/workspaces/credentialsStatus/
-   *  pluginFiles/sessions 就永远无法被勾选，用户既看不到也同步不了。
-   *  列表顺序即 adapters 顺序；defaultIncluded 由 UI 用于「推荐分区」默认勾选与计数。 */
-  const syncSectionCatalog = adapters
-    .map((a) => ({ id: a.id, displayName: a.displayName, portability: a.portability, defaultIncluded: a.defaultIncluded }))
-
   const makeImporter = (): Importer => new Importer({
     ctx: host,
     adapters,
@@ -1438,48 +1393,9 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
     return cfg
   }
 
-  /** 同步分区选择缓存（按通道；sync-selection.json；makeSyncEngine 同步读取用，保存路由更新）。
-   *  缺失通道 = 尚未加载（启动竞态窗口）；读取/使用处兜底 defaultSyncSelection。 */
-  const selectionCache: Partial<Record<SyncTransportType, SyncSelection>> = {}
-  void readAllSyncSelections(syncDir).then((all) => {
-    selectionCache.git = all.git
-    selectionCache.webdav = all.webdav
-  }).catch(() => { /* 读失败保持缺省 */ })
-
-  /** 确保指定通道缓存已加载（status/save 路由调用；启动竞态兜底）。 */
-  const ensureSelectionLoaded = async (channel: SyncTransportType): Promise<SyncSelection> => {
-    const cached = selectionCache[channel]
-    if (cached !== undefined) return cached
-    try {
-      const sel = await readSyncSelection(syncDir, channel)
-      selectionCache[channel] = sel
-      return sel
-    } catch {
-      const fallback = defaultSyncSelection()
-      selectionCache[channel] = fallback
-      return fallback
-    }
-  }
-
-  /** 指定通道的分区选择视图（{ mode, sections }，无 schemaVersion）。 */
-  const selectionView = async (channel: SyncTransportType): Promise<{ mode: SyncSelectionMode; sections: SectionId[] }> => {
-    const sel = await ensureSelectionLoaded(channel)
-    return { mode: sel.mode, sections: sel.sections }
-  }
-
-  /** 全部通道的分区选择视图（status 路由一次返回；UI 按当前 tab 取对应通道）。 */
-  const selectionViewByChannel = async (): Promise<Record<SyncTransportType, { mode: SyncSelectionMode; sections: SectionId[] }>> => {
-    const all = await readAllSyncSelections(syncDir)
-    selectionCache.git = all.git
-    selectionCache.webdav = all.webdav
-    const view = (sel: SyncSelection): { mode: SyncSelectionMode; sections: SectionId[] } =>
-      ({ mode: sel.mode, sections: sel.sections })
-    return { git: view(all.git), webdav: view(all.webdav) }
-  }
-
   /** 构造 SyncEngine：按 transport 分支构造对应传输（git → GitTransport；webdav → WebDavTransport）。
-   *  同步范围（sections）来自持久化分区选择：advanced 模式 → 只处理勾选分区，
-   *  push 与 pull 共用此配置。 */
+   *  同步范围由引擎自身的固定排除集决定（除 workspaces / sessions 外的全部分区），
+   *  push 与 pull 共用，不再有按通道持久化的分区选择。 */
   const makeSyncEngine = (cfg: SyncConfig): SyncEngine => {
     let transport: SyncTransport
     if (isWebDavConfig(cfg)) {
@@ -1509,8 +1425,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
         msg,
       })
     }
-    const channel: SyncTransportType = isWebDavConfig(cfg) ? 'webdav' : 'git'
-    const sections = effectiveSections(selectionCache[channel] ?? defaultSyncSelection())
     return new SyncEngine({
       ctx: host,
       transport,
@@ -1520,7 +1434,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
       localSnapshotsDir: join(syncDir, 'snapshots'),
       zipDir: tmpDir,
       msg,
-      ...(sections === undefined ? {} : { sections }),
     })
   }
 
@@ -1549,7 +1462,7 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
     clearSafeMode: async () => {
       if (host.phase3Recovery !== undefined) await host.phase3Recovery.clearSafeMode()
     },
-    // issue #31：环境锁只读探测 + 显式回收，供「事故恢复」面板显示/处理**残留锁**。
+    // issue #31：环境锁只读探测 + 显式回收，供配置页显示/处理**残留锁**。
     // 残留锁不是 journal（journalId 恒 null、transactions/active 为空），旧面板因此恒空。
     inspectLockState: async () => {
       const port = host.mutationLock as EnvironmentLockManager | undefined
@@ -1643,12 +1556,9 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
             lastTransport: state.transport,
             // 上次选择的同步通道（磁盘 ui-prefs；UI 回填优先于此，localStorage 仅兜底）
             lastSyncChannel: uiPrefs.lastSyncChannel,
-            // 可同步分区目录（「高级/自定义导出」勾选列表；只含 portable，无 secret 值）
-            syncSections: syncSectionCatalog,
-            // 当前分区选择（默认/高级模式 + 勾选分区；当前激活通道；UI 回填用）
-            syncSelection: await selectionView(transport),
-            // 全部通道的分区选择（git/webdav 各自独立；UI 按当前 tab 取对应通道）
-            syncSelectionByChannel: await selectionViewByChannel(),
+            // 环境锁分类摘要（只 state/attention，无 owner pid/op）：残留锁入口据此显示状态徽章
+            // 并决定「回收残留锁」是否可点。与恢复面板共用同一投影（见 recovery-orchestrator）。
+            lock: await recoveryOrchestrator.lockState(),
           })
         } catch (error) {
           writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -1719,7 +1629,7 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
     // ------------------------------------------------------ sync/push
     // m-sync-ui：推送（导出 portable 分区 → 提交私有仓库 → 更新 sync-state）。
     // token 可选：非空先写入 DSH credentials；成功则记忆仓库配置（回填表单用）。
-    // sections 可选（高级/自定义导出）：只推送勾选的分区；缺省 = 默认模式全部推荐分区。
+    // 同步范围由引擎固定（除 workspaces / sessions 外的全部已挂载分区），请求体不携带分区选择。
     {
       kind: 'exact',
       path: API.syncPush,
@@ -1735,12 +1645,11 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
           const engine = makeSyncEngine(syncCfg)
           const snapshotId =
             typeof body['snapshotId'] === 'string' && body['snapshotId'] !== '' ? body['snapshotId'] : undefined
-          const sections = extractSyncSections(body, knownSyncSectionIds)
           // 推送即直接覆盖远端（无预览、无确认）：勾选即同步是本插件的产品语义。
+          // 同步范围由引擎固定（除 workspaces / sessions 外的全部分区），请求体不再携带分区选择。
           const report = await withTimeout(
             engine.push({
               ...(snapshotId === undefined ? {} : { snapshotId }),
-              ...(sections === undefined ? {} : { sections }),
             }),
             ROUTE_TIMEOUT_MS,
             msg('host.syncPushTimeout'),
@@ -1965,48 +1874,19 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
         }
       },
     },
-    // ------------------------------------------------------ sync/selection
-    // m-sync-selection：保存同步分区选择（按通道：git/webdav 各自的模式 + 勾选分区）。
-    // 持久化到 sync-selection.json；push/pull 共用（makeSyncEngine 注入）。
-    // sections 元素必须是可同步（portable）分区 id；mode 非法 → 回退 default。
+    // -------------------------------------------------- sync/lock/recover
+    // issue #27/#31：GUI「回收残留锁」入口。**不经 withMutationGate** —— 要回收的正是那把
+    // 挡住 acquire 的残留锁，先取锁必然 423，回收会永远不可达（本 issue 的原始症状）。
+    // 是否真的 stale 由 EnvironmentLockManager.recoverStaleLock 内部重做判定（inspect →
+    // 确证死亡 → 原子 rename 捕获 → 二次验证），活锁/不确定一律拒绝，绝不误删。
     {
       kind: 'exact',
-      path: API.syncSelection,
+      path: API.syncLockRecover,
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        if (body === undefined) {
-          writeJson(res, 400, { error: 'invalid JSON body' })
-          return
-        }
-        try {
-          // 按通道读写：git/webdav 各自的模式与分区勾选独立（缺省 git 兜底）
-          const channel: SyncTransportType = body['transport'] === 'webdav' ? 'webdav' : 'git'
-          const mode: SyncSelectionMode = body['mode'] === 'advanced' ? 'advanced' : 'default'
-          const rawSections = Array.isArray(body['sections']) ? body['sections'] : []
-          // 目录已含全部分区（不再按 portability 过滤），变量名不沿用 portable*
-          const catalogSectionIds = new Set(syncSectionCatalog.map((s) => s.id))
-          for (const s of rawSections) {
-            if (typeof s !== 'string' || s === '') {
-              writeJson(res, 400, { error: 'sections must be an array of non-empty strings' })
-              return
-            }
-            if (!catalogSectionIds.has(s as SectionId)) {
-              writeJson(res, 400, { error: `unknown sync section: ${s}` })
-              return
-            }
-          }
-          const next: SyncSelection = {
-            schemaVersion: SYNC_SELECTION_SCHEMA_VERSION,
-            mode,
-            sections: [...new Set(rawSections as string[])] as SectionId[],
-          }
-          await writeSyncSelection(syncDir, channel, next)
-          selectionCache[channel] = next
-          writeJson(res, 200, { ok: true, transport: channel, mode: next.mode, sections: next.sections })
-        } catch (error) {
-          writeSyncRouteError(res, error)
-        }
+        // 无请求体：这是无参的显式确认动作（确认由用户点击按钮表达，不额外传 userConfirmed）。
+        const result = await recoveryOrchestrator.recoverStaleLock(true)
+        writeJson(res, result.status, result.body)
       },
     },
     // ------------------------------------------------------ sync/rollback

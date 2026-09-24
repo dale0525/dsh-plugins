@@ -83,6 +83,17 @@ export type RecoveryResult =
   | { status: 409; body: Record<string, unknown> }
   | { status: 500; body: Record<string, unknown> };
 
+/** 环境锁分类摘要：**只暴露分类**（owner pid/op/hostname 属内部诊断，绝不进响应体/UI）。 */
+export interface RecoveryLockSummary {
+  state: string;
+  /**
+   * 是否需用户显式处理。只对 STALE_LOCK_DETECTED（残留锁，重试不会自愈）与
+   * UNKNOWN_STATE（无法判定）为 true；LOCKED（另一任务活跃持有）会自行释放，
+   * 不该催用户回收 —— 否则又是一个误导。
+   */
+  attention: boolean;
+}
+
 export interface RecoveryOrchestrator {
   status(): Promise<RecoveryResult>;
   preview(operationId: string): Promise<RecoveryResult>;
@@ -93,6 +104,11 @@ export interface RecoveryOrchestrator {
   dismiss(operationId: string, userConfirmed: boolean): Promise<RecoveryResult>;
   /** issue #31：显式回收 stale 残留锁（无 operationId；非 journal 事项）。 */
   recoverStaleLock(userConfirmed: boolean): Promise<RecoveryResult>;
+  /**
+   * issue #31：环境锁分类摘要（**唯一** attention 判据）。
+   * status() 与同步页的残留锁入口共用本投影，避免两处各写一套「该不该催用户回收」。
+   */
+  lockState(): Promise<RecoveryLockSummary>;
 }
 
 export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): RecoveryOrchestrator {
@@ -176,7 +192,25 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
     }
   };
 
+  /**
+   * 环境锁分类摘要（issue #31）。探测失败 → 保守 UNKNOWN_STATE + attention，
+   * 绝不因为探测出错就把「可能有残留锁」说成「没有」。
+   */
+  const lockState = async (): Promise<RecoveryLockSummary> => {
+    try {
+      const insp = await inspectLockState();
+      return {
+        state: insp.state,
+        attention: insp.state === 'STALE_LOCK_DETECTED' || insp.state === 'UNKNOWN_STATE',
+      };
+    } catch {
+      return { state: 'UNKNOWN_STATE', attention: true };
+    }
+  };
+
   return {
+    lockState,
+
     async status() {
       const activeIds = await store.scanActive();
       const incidents: Array<{
@@ -199,20 +233,8 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
         });
       }
       const running = runs.listActive().filter((r) => r.kind === 'recovery').map((r) => ({ runId: r.runId, status: r.status }));
-      // issue #31：附带环境锁分类。**只暴露分类，不暴露 owner pid/op/hostname**（内部诊断）。
-      // attention 只对「需用户显式处理」的状态为 true：STALE_LOCK_DETECTED（残留锁，重试不会自愈）
-      // 与 UNKNOWN_STATE（无法判定）→ 引导用户回收；LOCKED（另一任务活跃持有）会自行释放，
-      // 不该催用户去「回收」，否则又是一个误导。探测失败 → 保守 UNKNOWN_STATE + attention。
-      let lock: { state: string; attention: boolean } | undefined;
-      try {
-        const insp = await inspectLockState();
-        lock = {
-          state: insp.state,
-          attention: insp.state === 'STALE_LOCK_DETECTED' || insp.state === 'UNKNOWN_STATE',
-        };
-      } catch {
-        lock = { state: 'UNKNOWN_STATE', attention: true };
-      }
+      // issue #31：附带环境锁分类（与同步页入口共用 lockState 投影，见上）。
+      const lock = await lockState();
       return { status: 200, body: { incidents, running, lock } };
     },
 
@@ -336,7 +358,7 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
 
     /**
      * issue #31：显式回收 stale 残留锁。**无 operationId**——残留锁没有 journal（这正是
-     * 「事故恢复」面板过去恒空的原因），因此不复用 confirm/execute 那套 journal 状态机。
+     * 恢复面板过去恒空的原因），因此不复用 confirm/execute 那套 journal 状态机。
      *
      * 正确性边界（不放松「绝不自动摘锁」）：
      *  - **不 acquire 锁**：要回收的正是挡住 acquire 的那把锁，先取锁必然失败；

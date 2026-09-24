@@ -1,5 +1,5 @@
 /**
- * Config Manager 设置页（settings.section 入口）—— Workbench Shell。
+ * Config Manager 配置页 —— 插件页 @logictan/dsh-plugins-all 详情页内的内容体。
  * 仅同步一个页面，故不设页签导航：主体直接是同步内容。
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
@@ -14,7 +14,7 @@ import { ToastViewport } from './common/ToastViewport.tsx'
 import css from './config-manager.module.css'
 
 export type ConfigManagerSectionProps =
-  & PropsRuntime<'settings.section'>
+  & PropsRuntime<'plugins.bundle.config'>
   & ConfigManagerSectionInjected
   & { t: TranslateNS<'config-manager'> }
 
@@ -41,7 +41,7 @@ export function ConfigManagerSection({ api, syncApi, syncT, t }: ConfigManagerSe
 
   return (
     <div className={css.section} id={MODAL_ROOT_ID}>
-      {/* 页面主体（独立滚动） */}
+      {/* 页面主体 */}
       <main className={css.shellMain}>
         <div className={css.pagePad}>
           <SyncSettingsView api={syncApi} t={syncT} />

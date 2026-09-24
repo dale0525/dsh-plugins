@@ -6,12 +6,64 @@
  * React 组件只做装配。文案直接用中文（项目源语言），组件不重复造。
  */
 import type { PlanItem, PlanItemKind } from '../../core/types.ts';
-import type { SectionId } from '../../schema/types.ts';
 import type { PullChange, SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts';
-import { DEFAULT_CATEGORIES } from '../../ui/export-flow.ts';
-import { EXPORT_GROUPS, type ExportGroup } from '../../ui/types.ts';
-import type { GithubPollResponse, SyncSectionInfo, SyncStatusResponse } from './sync-api.ts';
+import type { GithubPollResponse, SyncStatusResponse } from './sync-api.ts';
+import type { RecoveryLockStatus } from '../../ui/types.ts';
 import { zhUiT, type UiT } from '../../ui/i18n.ts';
+
+/* ---------------------------------------------------------------- 残留环境锁入口 */
+
+/** 残留锁面板的渲染模型（issue #27/#31：GUI 显式回收入口）。 */
+export interface LockPanelModel {
+  /** 是否渲染整块（无锁/旧宿主不返回 lock → false，不误报） */
+  visible: boolean
+  /** 是否需用户显式处理（残留锁/无法判定）——决定用警示语气还是中性陈述 */
+  attention: boolean
+  /** 状态徽章文案（分类映射；未知 state 兜底） */
+  badgeLabel: string
+  badgeKind: 'ok' | 'info' | 'warn' | 'error'
+  /** 说明文案（attention 时给出「重试/重启无效」的完整指引） */
+  detail: string
+  /** 按钮文案（回收中切换为进行中文案） */
+  label: string
+  /** 按钮是否可点（仅残留/无法判定可点；活锁会自行释放，回收必被拒绝） */
+  canRecover: boolean
+}
+
+/** LockState → 徽章文案/语气（未知 state 兜底为「锁不可用」，绝不抛错）。 */
+function lockBadge(state: string, t: UiT): { label: string; kind: LockPanelModel['badgeKind'] } {
+  switch (state) {
+    case 'STALE_LOCK_DETECTED': return { label: t('sync.lock.state.stale'), kind: 'warn' }
+    case 'UNKNOWN_STATE': return { label: t('sync.lock.state.unknown'), kind: 'warn' }
+    case 'LOCKED': return { label: t('sync.lock.state.locked'), kind: 'info' }
+    case 'FREE': return { label: t('sync.lock.state.free'), kind: 'ok' }
+    default: return { label: t('sync.lock.state.error'), kind: 'info' }
+  }
+}
+
+/**
+ * 残留锁面板模型。**可点判据恒为 attention**：与 Host 的 lockState() 投影同一套规则
+ * （STALE_LOCK_DETECTED / UNKNOWN_STATE 才催回收），避免 UI 自造第二套判据。
+ * 是否真的能回收仍由 Host 的 recoverStaleLock 内部重做判定，UI 不预判。
+ */
+export function lockPanelModel(
+  lock: RecoveryLockStatus | undefined,
+  recovering: boolean,
+  t: UiT = zhUiT,
+): LockPanelModel {
+  const state = lock?.state ?? 'FREE'
+  const badge = lockBadge(state, t)
+  const attention = lock?.attention === true
+  return {
+    visible: lock !== undefined && state !== 'FREE',
+    attention,
+    badgeLabel: badge.label,
+    badgeKind: badge.kind,
+    detail: attention ? t('sync.lock.attention') : t('sync.lock.brief'),
+    label: recovering ? t('sync.lock.recovering') : t('sync.lock.recover'),
+    canRecover: attention && !recovering,
+  }
+}
 
 /* ---------------------------------------------------------------- 私有仓库提示 */
 
@@ -22,63 +74,6 @@ import { zhUiT, type UiT } from '../../ui/i18n.ts';
  */
 export function privateRepoHint(t: UiT = zhUiT): string {
   return t('sync.privateRepoHint');
-}
-
-/* ---------------------------------------------------------------- 同步分区模式 */
-
-/** 远程同步模式：默认（快速导出） / 高级（自定义导出）。 */
-export type SyncMode = 'default' | 'advanced';
-
-/** 可同步分区选项（status.syncSections 投影 + 导出目录补充分组/描述；高级模式勾选目录单选项）。 */
-export interface SyncSectionOption {
-  id: SectionId;
-  label: string;
-  /** 一句话描述（来自导出目录；未知 id 为空串） */
-  description: string;
-  /** 所属导出分组（General / AI / Extensions / …；未知 id 兜底 'general'） */
-  group: ExportGroup;
-  /** 是否为推荐分区（defaultIncluded=true；默认模式全选、高级模式初始勾选） */
-  defaultIncluded: boolean;
-}
-
-/** host 目录（SyncSectionInfo[]）→ UI 勾选项（保留 id 顺序）。
- *  同步分区必为导出目录（DEFAULT_CATEGORIES）的可移植子集：分组/描述从导出目录
- *  补充（单一事实源，与「导出备份·自定义模式」的目录保持一致），未命中 id 兜底。 */
-export function syncSectionOptions(info: readonly SyncSectionInfo[]): SyncSectionOption[] {
-  const meta = new Map(DEFAULT_CATEGORIES.map((c) => [c.id, c]));
-  return info.map((s) => {
-    const cat = meta.get(s.id);
-    return {
-      id: s.id,
-      label: s.displayName,
-      description: cat?.description ?? '',
-      group: cat?.group ?? 'general',
-      defaultIncluded: s.defaultIncluded,
-    };
-  });
-}
-
-/** 高级模式勾选目录 → 按导出分组（EXPORT_GROUPS）投影：与「导出备份·自定义模式」同构，
- *  空分组省略；UI 直接渲染 groupCard。 */
-export function syncSectionGroups(options: readonly SyncSectionOption[]): {
-  group: ExportGroup;
-  label: string;
-  note?: string;
-  items: SyncSectionOption[];
-}[] {
-  return EXPORT_GROUPS
-    .map((g) => ({
-      group: g.id,
-      label: g.label,
-      ...(g.note !== undefined ? { note: g.note } : {}),
-      items: options.filter((o) => o.group === g.id),
-    }))
-    .filter((g) => g.items.length > 0);
-}
-
-/** 默认模式的推荐同步分区：默认包含的分区。 */
-export function recommendedSyncSections(info: readonly SyncSectionInfo[]): SectionId[] {
-  return info.filter((s) => s.defaultIncluded).map((s) => s.id);
 }
 
 /* ---------------------------------------------------------------- 变更摘要 */
@@ -146,25 +141,6 @@ export function severityLabel(severity: PlanItem['severity'], t: UiT = zhUiT): s
 export type SyncChannel = 'git' | 'webdav';
 
 /* ---------------------------------------------------------------- 每通道独立状态 */
-
-/**
- * 每个同步通道（git/webdav）各自独立的设置状态：
- * 同步模式（默认/高级 + 分区勾选）两通道互不共享。
- */
-export interface ChannelSyncState {
-  /** 同步模式：默认（快速导出推荐分区） / 高级（自定义勾选分区） */
-  syncMode: SyncMode
-  /** 高级模式勾选的同步分区（初始 = 推荐分区；空 = 未勾选任何分区） */
-  syncSections: SectionId[]
-}
-
-/** 缺省每通道状态（未配置时各字段默认值）。 */
-export function defaultChannelSyncState(): ChannelSyncState {
-  return {
-    syncMode: 'default',
-    syncSections: [],
-  }
-}
 
 /** 通道子 tab 的渲染模型（active/disabled 由组件据此装配 modeTabs）。 */
 export interface ChannelTabModel {

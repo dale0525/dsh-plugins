@@ -6,7 +6,6 @@
  *  - 内存瞬态（busy/savingConfig）不写入 sessionStorage，刷新后复位；
  *  - 非敏感状态序列化/反序列化往返（新实例 + 同存储 = 模拟刷新）；
  *  - 损坏/版本不符数据回退默认并清除脏键；
- *  - 旧版顶层 syncMode 载荷向后兼容迁移；
  *  - subscribe/notify 语义与 this 绑定回归（useSyncExternalStore 方式）。
  */
 import test from 'node:test'
@@ -62,36 +61,6 @@ test('run-store: token 与 webdav 密码绝不写入 sessionStorage', () => {
   const reloaded = new RunStore({ storage })
   assert.equal(reloaded.getSnapshot().sync.token, '')
   assert.equal(reloaded.getSnapshot().sync.webdavPassword, '')
-})
-
-test('run-store: byChannel 每通道同步模式与勾选各自往返恢复', () => {
-  const { storage, raw } = makeStorage()
-  const store = new RunStore({ storage })
-  store.patch({
-    sync: {
-      byChannel: {
-        git: {
-          syncSections: ['settings'],
-          syncMode: 'advanced',
-        },
-        webdav: {
-          syncSections: ['settings', 'skills'],
-          syncMode: 'default',
-        },
-      },
-    },
-  })
-
-  const text = raw()
-  assert.ok(text !== null)
-
-  // 刷新后分区选择正确保留（凭据本身走 DSH credentials，不进 UI 状态）
-  const reloaded = new RunStore({ storage })
-  const snap = reloaded.getSnapshot().sync
-  assert.equal(snap.byChannel.git.syncMode, 'advanced')
-  assert.deepEqual(snap.byChannel.git.syncSections, ['settings'])
-  assert.equal(snap.byChannel.webdav.syncMode, 'default')
-  assert.deepEqual(snap.byChannel.webdav.syncSections, ['settings', 'skills'])
 })
 
 test('run-store: busy 与 savingConfig 为内存瞬态——不写入 sessionStorage、刷新后复位', () => {
@@ -188,23 +157,4 @@ test('run-store: subscribe/getSnapshot 以裸引用调用时 this 绑定实例�
   unsub()
 })
 
-test('run-store: 旧版顶层 syncMode 载荷 → 迁移为 git 通道的 byChannel 状态', () => {
-  const { storage } = makeStorage()
-  const legacyPayload = {
-    v: 1,
-    panel: 'sync',
-    sync: {
-      channel: 'git',
-      repoUrl: 'https://github.com/user/repo.git',
-      syncMode: 'advanced',
-      syncSections: ['settings', 'skills'],
-      byChannel: {},
-    },
-  }
-  storage.setItem(STATE_KEY, JSON.stringify(legacyPayload))
 
-  const store = new RunStore({ storage })
-  const s = store.getSnapshot().sync
-  assert.equal(s.byChannel.git.syncMode, 'advanced')
-  assert.deepEqual(s.byChannel.git.syncSections, ['settings', 'skills'])
-})

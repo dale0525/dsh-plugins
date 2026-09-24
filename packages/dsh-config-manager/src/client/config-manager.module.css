@@ -27,14 +27,12 @@
 .section {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 0;
+  /* 落位为插件详情页里的一节（不再是设置弹窗内的整屏容器）：高度由内容决定，
+     滚动交给插件页自身，避免出现嵌套滚动区。 */
   font-family: var(--dsw-font-family);
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--dsw-alias-label-primary);
-  /* 弹窗内容区内的滚动包容：本组件自己管理滚动，不外溢 */
-  overflow: hidden;
   /* Toast 视口的定位上下文（见 §6 Overlays 的 .toastViewport）：
      通知层必须留在插件自己的层叠上下文内（宿主 overlay z-index 1000），
      故用绝对定位贴合本根节点，而非 Portal 到 body。 */
@@ -143,33 +141,27 @@
   align-self: center;
 }
 
-/* —— 页面主体（滚动区）：flex 链让页面内容可伸展填满视口高度 —— */
+/* —— 页面主体：flex 链让页面内容纵向排布 —— */
 .shellMain {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
 }
 
-/* 页面内容统一内边距（flex 链中层：撑满 shellMain，让 viewBody 能 flex 填充） */
+/* 页面内容统一内边距（插件详情页已自带外边距，故此处不再额外留白） */
 .pagePad {
-  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 12px 16px 16px;
 }
 
-/* —— 底部状态栏：与顶部页签条同款（圆角分段条 + 四周留白，不再通栏贴边） —— */
+/* —— 底部状态栏：圆角分段条 —— */
 .statusBar {
   display: flex;
   align-items: center;
   gap: 10px;
   flex: none;
   height: 28px;
-  margin: 0 8px 8px;
+  margin: 12px 0 0;
   padding: 0 10px;
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 8px;
@@ -516,31 +508,6 @@
   letter-spacing: 0.02em;
   color: var(--dsw-alias-label-tertiary);
   margin-bottom: 8px;
-}
-
-.groupHeader {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-/* 卡头内的分组标题：不收缩、不换行（防止长 hint 把标题挤成竖排） */
-.groupHeader .groupLabel {
-  flex: none;
-  white-space: nowrap;
-  margin-bottom: 0;
-}
-
-.groupNote {
-  font-size: 11px;
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.groupItems {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 
 /* 表单字段 */
@@ -928,8 +895,7 @@ button.statCard:focus-visible {
 }
 
 /* —— 分段控件（页内子视图切换） —— */
-.segGroup,
-.modeTabs {
+.segGroup {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -940,8 +906,7 @@ button.statCard:focus-visible {
   margin: 0 0 10px;
 }
 
-.segItem,
-.modeTab {
+.segItem {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -958,19 +923,16 @@ button.statCard:focus-visible {
   white-space: nowrap;
 }
 
-.segItem:hover,
-.modeTab:hover {
+.segItem:hover {
   color: var(--dsw-alias-label-primary);
 }
 
-.segItem:focus-visible,
-.modeTab:focus-visible {
+.segItem:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 1px;
 }
 
-.segItem[data-active],
-.modeTab[data-active] {
+.segItem[data-active] {
   background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-primary);
   font-weight: 600;
@@ -1423,25 +1385,8 @@ button.statCard:focus-visible {
   margin: 10px 0 10px;
 }
 
-/* 独占一行的分段/页签行（如同步页「默认 / 高级」模式切换）：
-   与上方说明文案分行，自身作为独立行块。
-   注意：本类必须**自带分段控件外壳**（border/radius/padding/bg-base），
-   否则 `.modeTab[data-active]` 的选中底色（layer-2）会与 Card 底色相同而「隐形」。 */
-.tabRow {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-wrap: wrap;
-  width: fit-content;
-  padding: 2px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  background: var(--dsw-alias-bg-base);
-  margin: 10px 0 10px;
-}
-
 /* 卡头单行（标题 + 右侧动作/徽章）：标题左、其余右。
-   与 .groupHeader 的区别：本类不做 baseline 对齐（按钮组需要居中），
+   本类不做 baseline 对齐（按钮组需要居中），
    且内嵌 .groupLabel 不保留底部外边距（否则整行会被撑高）。 */
 .headRow {
   display: flex;
@@ -1555,7 +1500,7 @@ button.statCard:focus-visible {
   flex: none;
 }
 
-/* 健康段兼作入口：仅在「存在未解决恢复事项」时渲染为按钮，直达备份页「事故恢复」。
+/* 健康段兼作入口：仅在「存在未解决恢复事项」时渲染为按钮。
    其余状态仍是纯展示的 span，避免出现无落点的可点区域。 */
 .statHealthAction {
   border: none;
@@ -2190,37 +2135,6 @@ button.statCard:focus-visible {
   align-items: center;
   gap: 18px;
   margin-bottom: 4px;
-}
-
-.groupList {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.groupCard {
-  margin: 0;
-}
-
-.categoryItem {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.categoryName {
-  font-weight: 500;
-  color: var(--dsw-alias-label-primary);
-  flex: none;
-}
-
-.categoryDesc {
-  font-size: 11px;
-  color: var(--dsw-alias-label-tertiary);
-  min-width: 0;
 }
 
 .optionsCard {

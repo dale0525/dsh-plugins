@@ -286,98 +286,29 @@ test('S-21 git 通道缺省：不带 transport → 请求体仍只含 git 字段
   assert.equal(sent['webdav'], undefined);
 });
 
-test('S-22 api.push()：高级（自定义导出）模式 → 请求体携带 sections；缺省不携带', async () => {
+test('S-22 api.push()：请求体恒不携带 sections（同步范围由 Host 固定）', async () => {
   const calls: FetchCall[] = [];
   installFetchMock((call) => {
     calls.push(call);
-    return jsonResponse(200, { ok: true, snapshotId: 'sync-sel', sections: ['settings'], warnings: [] });
-  });
-  const api = new SyncApi();
-  // 高级模式：传勾选分区
-  await api.push({ repoUrl: 'https://github.com/u/r.git', sections: ['settings', 'skills'] });
-  assert.equal(calls.length, 1);
-  const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.deepEqual(sent['sections'], ['settings', 'skills'], '高级模式应携带 sections');
-
-  // 默认模式：不传 sections（undefined → 全量推荐分区）
-  const calls2: FetchCall[] = [];
-  installFetchMock((call) => {
-    calls2.push(call);
     return jsonResponse(200, { ok: true, snapshotId: 'sync-def', sections: ['settings'], warnings: [] });
   });
+  const api = new SyncApi();
   await api.push({ repoUrl: 'https://github.com/u/r.git' });
-  const sent2 = JSON.parse(String(calls2[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent2['sections'], undefined, '默认模式不应携带 sections');
-});
-
-test('S-23 api.status()：解析 syncSections（可同步分区目录，无 secret 值）', async () => {
-  const body = {
-    ok: true, configured: true, credentialConfigured: true, credentialWritable: true, sectionCount: 4,
-    syncSections: [
-      { id: 'settings', displayName: 'Settings', defaultIncluded: true },
-      { id: 'skills', displayName: 'Skills', defaultIncluded: true },
-    ],
-  };
-  let called: FetchCall | null = null;
-  installFetchMock((call) => {
-    called = call;
-    return jsonResponse(200, body);
-  });
-  const lastCall = (): FetchCall | null => called;
-  const api = new SyncApi();
-  const result = await api.status();
-  assert.equal(result.syncSections?.length, 2);
-  assert.equal(result.syncSections?.[0]?.id, 'settings');
-  assert.equal(lastCall()?.url, SYNC_API.status);
-});
-
-test('S-24 api.status()：解析 syncSelection（持久化分区选择，UI 回填用）', async () => {
-  const body = {
-    ok: true, configured: true, credentialConfigured: true, credentialWritable: true, sectionCount: 2,
-    syncSelection: { mode: 'advanced', sections: ['settings', 'skills'] },
-  };
-  let called: FetchCall | null = null;
-  installFetchMock((call) => {
-    called = call;
-    return jsonResponse(200, body);
-  });
-  const lastCall = (): FetchCall | null => called;
-  const api = new SyncApi();
-  const result = await api.status();
-  assert.equal(result.syncSelection?.mode, 'advanced');
-  assert.deepEqual(result.syncSelection?.sections, ['settings', 'skills']);
-  assert.equal(lastCall()?.url, SYNC_API.status);
-});
-
-test('S-25 api.saveSelection()：POST /sync/selection 携带 transport + mode + sections（持久化到 Host）', async () => {
-  const calls: FetchCall[] = [];
-  installFetchMock((call) => {
-    calls.push(call);
-    return jsonResponse(200, { ok: true, transport: 'webdav', mode: 'advanced', sections: ['settings', 'skills'] });
-  });
-  const api = new SyncApi();
-  const result = await api.saveSelection({ transport: 'webdav', mode: 'advanced', sections: ['settings', 'skills'] });
-  assert.equal(result.mode, 'advanced');
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.url, SYNC_API.selection);
-  assert.equal(calls[0]?.init?.method, 'POST');
   const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.equal(sent['transport'], 'webdav', '按通道写入分区选择');
-  assert.equal(sent['mode'], 'advanced');
-  assert.deepEqual(sent['sections'], ['settings', 'skills']);
+  assert.equal(sent['sections'], undefined, '分区选择已取消：请求体不得携带 sections');
 });
 
-test('S-26 api.push()：明文同步 → 请求体只带通道与分区，不带任何加密字段', async () => {
+test('S-26 api.push()：明文同步 → 请求体只带通道，不带任何加密字段', async () => {
   const calls: FetchCall[] = [];
   installFetchMock((call) => {
     calls.push(call);
     return jsonResponse(200, { ok: true, snapshotId: 'sync-plain', sections: ['settings'], warnings: [] });
   });
   const api = new SyncApi();
-  await api.push({ repoUrl: 'https://github.com/u/r.git', sections: ['settings'] });
+  await api.push({ repoUrl: 'https://github.com/u/r.git' });
   assert.equal(calls.length, 1);
   const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
-  assert.deepEqual(sent['sections'], ['settings']);
   assert.equal('encrypt' in sent, false, '明文同步不携带 encrypt');
   assert.equal('includeSecrets' in sent, false);
   assert.equal('encryptPassword' in sent, false);
@@ -398,21 +329,6 @@ test('S-27 api.pull()：请求体只带通道配置（恒取远端最新，无�
   const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
   assert.equal(sent['repoUrl'], 'https://github.com/u/r.git');
   assert.equal('decryptPassword' in sent, false, '明文同步不携带 decryptPassword');
-});
-
-test('S-28b api.status()：syncSelectionByChannel 按通道独立解析（子 tab UI 回填）', async () => {
-  const body = {
-    ok: true, configured: true, credentialConfigured: true, credentialWritable: true, sectionCount: 2,
-    syncSelectionByChannel: {
-      git: { mode: 'default', sections: [] },
-      webdav: { mode: 'advanced', sections: ['settings'] },
-    },
-  };
-  installFetchMock(() => jsonResponse(200, body));
-  const api = new SyncApi();
-  const result = await api.status();
-  assert.equal(result.syncSelectionByChannel?.git.mode, 'default', 'git 通道选择独立');
-  assert.equal(result.syncSelectionByChannel?.webdav.mode, 'advanced');
 });
 
 test('S-29 api.saveUiPrefs()：POST /sync/ui-prefs 携带 lastSyncChannel（磁盘持久化）', async () => {
@@ -458,5 +374,42 @@ test('S-31 api.rollback()：POST /sync/rollback 携带 restoreId，解析 ok/ful
   assert.equal(calls[0]?.init?.method, 'POST');
   const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
   assert.equal(sent['restoreId'], 'restore-42');
+});
+
+test('S-32 api.recoverStaleLock()：POST /sync/lock/recover（无请求体），解析 ok/removed/state', async () => {
+  const calls: FetchCall[] = [];
+  installFetchMock((call) => {
+    calls.push(call);
+    return jsonResponse(200, { ok: true, removed: true, state: 'FREE' });
+  });
+  const api = new SyncApi();
+  const result = await api.recoverStaleLock();
+  assert.equal(result.ok, true);
+  assert.equal(result.removed, true);
+  assert.equal(result.state, 'FREE');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.url, SYNC_API.lockRecover);
+  assert.equal(calls[0]?.init?.method, 'POST');
+});
+
+test('S-33 api.recoverStaleLock()：Host 拒绝回收（ok=false + reason）→ 如实透传，不谎称成功', async () => {
+  installFetchMock(() => jsonResponse(200, { ok: false, removed: false, state: 'LOCKED', reason: '未判定为 stale，已拒绝回收' }));
+  const api = new SyncApi();
+  const result = await api.recoverStaleLock();
+  assert.equal(result.ok, false, '拒绝是正常结果，UI 必须据此提示而非报成功');
+  assert.equal(result.removed, false);
+  assert.equal(result.state, 'LOCKED');
+  assert.equal(result.reason, '未判定为 stale，已拒绝回收');
+});
+
+test('S-34 api.status()：解析 lock 摘要（残留锁入口的状态徽章数据源）', async () => {
+  const body = {
+    ok: true, configured: true, credentialConfigured: true, credentialWritable: true, sectionCount: 2,
+    lock: { state: 'STALE_LOCK_DETECTED', attention: true },
+  };
+  installFetchMock(() => jsonResponse(200, body));
+  const api = new SyncApi();
+  const result = await api.status();
+  assert.deepEqual(result.lock, { state: 'STALE_LOCK_DETECTED', attention: true });
 });
 

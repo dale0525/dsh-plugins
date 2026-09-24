@@ -5,8 +5,7 @@
  * PanelId 收敛为 'sync'。
  */
 import type { SyncPushReport, SyncPullApplyReport } from '../sync/sync-engine.ts'
-import type { ChannelSyncState, SyncChannel } from './sync/sync-view.ts'
-import { defaultChannelSyncState } from './sync/sync-view.ts'
+import type { SyncChannel } from './sync/sync-view.ts'
 import type { ConfigManagerApi } from './api.ts'
 
 /* ---------------------------------------------------------------- 基础类型 */
@@ -32,11 +31,6 @@ export interface SyncStoreSlice {
   webdavUsername: string
   /** 仅内存：成功后清空，绝不持久化/回显 */
   webdavPassword: string
-  /** git/webdav 通道各自独立的设置状态 */
-  byChannel: {
-    git: ChannelSyncState
-    webdav: ChannelSyncState
-  }
   busy: SyncBusyState
   savingConfig: boolean
   pushReport: SyncPushReport | null
@@ -48,14 +42,7 @@ export interface SyncStoreSlice {
 
 export type SyncBusyState = 'push' | 'pull' | 'rollback' | null
 
-export type PersistedChannelSyncState = ChannelSyncState
-
-export type PersistedSyncState = Omit<SyncStoreSlice, 'token' | 'webdavPassword' | 'busy' | 'savingConfig' | 'byChannel'> & {
-  byChannel: {
-    git: PersistedChannelSyncState
-    webdav: PersistedChannelSyncState
-  }
-}
+export type PersistedSyncState = Omit<SyncStoreSlice, 'token' | 'webdavPassword' | 'busy' | 'savingConfig'>
 
 export interface PersistedState {
   v: 1
@@ -82,10 +69,6 @@ export function defaultSyncStoreSlice(): SyncStoreSlice {
     webdavUrl: '',
     webdavUsername: '',
     webdavPassword: '',
-    byChannel: {
-      git: defaultChannelSyncState(),
-      webdav: defaultChannelSyncState(),
-    },
     busy: null,
     savingConfig: false,
     pushReport: null,
@@ -112,10 +95,6 @@ export function toSyncStoreSlice(s: SyncStoreSlice): SyncStoreSlice {
     webdavUrl: s.webdavUrl,
     webdavUsername: s.webdavUsername,
     webdavPassword: s.webdavPassword,
-    byChannel: {
-      git: { ...s.byChannel.git, syncSections: [...s.byChannel.git.syncSections] },
-      webdav: { ...s.byChannel.webdav, syncSections: [...s.byChannel.webdav.syncSections] },
-    },
     busy: s.busy,
     savingConfig: s.savingConfig,
     pushReport: s.pushReport,
@@ -128,9 +107,6 @@ export function toSyncStoreSlice(s: SyncStoreSlice): SyncStoreSlice {
 
 export function toPersistedState(state: StoreState): PersistedState {
   const s = state.sync
-  const def = defaultSyncStoreSlice()
-  const git = s.byChannel?.git ?? def.byChannel.git
-  const webdav = s.byChannel?.webdav ?? def.byChannel.webdav
 
   return {
     v: 1,
@@ -140,16 +116,6 @@ export function toPersistedState(state: StoreState): PersistedState {
       repoUrl: s.repoUrl,
       webdavUrl: s.webdavUrl,
       webdavUsername: s.webdavUsername,
-      byChannel: {
-        git: {
-          syncSections: Array.isArray(git.syncSections) ? [...git.syncSections] : [],
-          syncMode: git.syncMode,
-        },
-        webdav: {
-          syncSections: Array.isArray(webdav.syncSections) ? [...webdav.syncSections] : [],
-          syncMode: webdav.syncMode,
-        },
-      },
       pushReport: s.pushReport,
       pullReport: s.pullReport,
       lastRestoreId: s.lastRestoreId,
@@ -165,50 +131,16 @@ export function parsePersistedState(raw: string): PersistedState | null {
     if (typeof obj !== 'object' || obj === null) return null
     if (obj['v'] !== 1) return null
 
-    const defaultSync = defaultSyncStoreSlice()
     let syncSlice: PersistedSyncState
 
     if (typeof obj['sync'] === 'object' && obj['sync'] !== null) {
       const parsedSync = obj['sync'] as Record<string, unknown>
-      const rawByChannel = (parsedSync['byChannel'] ?? {}) as Record<string, unknown>
-      const gitRaw = (rawByChannel['git'] ?? {}) as Record<string, unknown>
-      const webdavRaw = (rawByChannel['webdav'] ?? {}) as Record<string, unknown>
-
-      const gitSections = Array.isArray(gitRaw['syncSections'])
-        ? (gitRaw['syncSections'] as any[])
-        : Array.isArray(parsedSync['syncSections'])
-          ? (parsedSync['syncSections'] as any[])
-          : [...defaultSync.byChannel.git.syncSections]
-
-      const gitMode = gitRaw['syncMode'] === 'advanced' || gitRaw['syncMode'] === 'default'
-        ? (gitRaw['syncMode'] as 'advanced' | 'default')
-        : parsedSync['syncMode'] === 'advanced' || parsedSync['syncMode'] === 'default'
-          ? (parsedSync['syncMode'] as 'advanced' | 'default')
-          : defaultSync.byChannel.git.syncMode
-
-      const webdavMode = webdavRaw['syncMode'] === 'advanced' || webdavRaw['syncMode'] === 'default'
-        ? (webdavRaw['syncMode'] as 'advanced' | 'default')
-        : defaultSync.byChannel.webdav.syncMode
 
       syncSlice = {
         channel: parsedSync['channel'] === 'webdav' ? 'webdav' : 'git',
         repoUrl: typeof parsedSync['repoUrl'] === 'string' ? parsedSync['repoUrl'] : '',
         webdavUrl: typeof parsedSync['webdavUrl'] === 'string' ? parsedSync['webdavUrl'] : '',
         webdavUsername: typeof parsedSync['webdavUsername'] === 'string' ? parsedSync['webdavUsername'] : '',
-        byChannel: {
-          git: {
-            ...defaultSync.byChannel.git,
-            ...gitRaw,
-            syncSections: gitSections,
-            syncMode: gitMode,
-          },
-          webdav: {
-            ...defaultSync.byChannel.webdav,
-            ...webdavRaw,
-            syncSections: Array.isArray(webdavRaw['syncSections']) ? (webdavRaw['syncSections'] as any[]) : [...defaultSync.byChannel.webdav.syncSections],
-            syncMode: webdavMode,
-          },
-        },
         pushReport: (parsedSync['pushReport'] as any) ?? null,
         pullReport: (parsedSync['pullReport'] as any) ?? null,
         lastRestoreId: typeof parsedSync['lastRestoreId'] === 'string' ? parsedSync['lastRestoreId'] : null,
@@ -308,16 +240,6 @@ export class RunStore {
         webdavPassword: '',
         busy: null,
         savingConfig: false,
-        byChannel: {
-          git: {
-            ...def.byChannel.git,
-            ...parsed.sync.byChannel.git,
-          },
-          webdav: {
-            ...def.byChannel.webdav,
-            ...parsed.sync.byChannel.webdav,
-          },
-        },
       },
     }
   }
