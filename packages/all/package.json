@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.23",
+  "version": "0.5.24",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -19,7 +19,7 @@
     "cordis.patch.yml"
   ],
   "dependencies": {
-    "@logictan/dsh-agy-link": "^0.5.1",
+    "@logictan/dsh-agy-link": "^0.5.2",
     "@logictan/dsh-better-reasoning-effort": "^0.5.0",
     "@logictan/dsh-browser-agent": "^0.2.0",
     "@logictan/dsh-config-manager": "^0.1.65",

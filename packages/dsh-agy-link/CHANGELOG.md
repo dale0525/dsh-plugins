@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.5.2 (2026-09-24)
+
+### English
+
+**Fixes**
+
+- **The reverse MCP bridge is now on by default.** The shipped patch row never set `mcpBridge`,
+  so it fell back to the schema default `false` and the bridge never started. With it off,
+  `syncAgyEnv` skips the MCP merge entirely and agy's `mcp_config.json` is never written — agy
+  silently cannot call any DSH tool, and nothing in the UI says so. The row now defaults it to
+  `true`; set `DSH_AGY_MCP_BRIDGE=0` to turn it back off.
+- **The bridge lists the calling agent's tools, not the global view.** `tools.schemas()` called
+  with no scope returns only the global layer, and DSH registers the agent-plane tools
+  (`subagent`, `bash`, `read`, `write`, …) per agent — so the bridge advertised a tool set the
+  run could not actually use. It now resolves the agent from the `X-DSH-Session` header the
+  bridge script already sends and passes it as the scope. Measured on a live run: 99 → 125
+  tools, with `subagent` now present.
+
+### 中文 (Chinese)
+
+**修复**
+
+- **反向 MCP 桥现在默认开启。** 随包发出的 patch 行从未设置 `mcpBridge`，于是回落到 schema 默认值
+  `false`，桥根本没启动。关闭时 `syncAgyEnv` 会整段跳过 MCP 合并，agy 的 `mcp_config.json`
+  永远写不进去 —— agy 静默地无法调用任何 DSH 工具，界面上也毫无提示。该行现默认 `true`，
+  置 `DSH_AGY_MCP_BRIDGE=0` 可关回。
+- **桥列出的是调用方 agent 的工具，而非全局视图。** 不带 scope 调用 `tools.schemas()` 只返回全局层，
+  而 `subagent` / `bash` / `read` / `write` 等 agent 面工具是 DSH 按 agent 注册的 —— 桥因此
+  对外宣称了一组该次运行实际用不了的工具。现在桥会用脚本本就发送的 `X-DSH-Session` 头解析出
+  agent 并作为 scope 传入。真机实测：99 → 125 个工具，`subagent` 已出现。
+
 ## 0.5.1 (2026-09-24)
 
 ### English

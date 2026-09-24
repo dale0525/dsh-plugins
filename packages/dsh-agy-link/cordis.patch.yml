@@ -13,3 +13,10 @@
         workspaceRoot: !!js "process.env.DSH_AGY_WORKSPACE_ROOT ?? ''"
         defaultModel: !!js "process.env.DSH_AGY_DEFAULT_MODEL ?? ''"
         defaultEffort: !!js "process.env.DSH_AGY_DEFAULT_EFFORT ?? ''"
+        # Reverse MCP bridge: exposes DSH's own tools to agy. ON by default —
+        # the schema default is false (the upstream author shipped it as
+        # experimental), and with it off syncAgyEnv never writes the bridge
+        # entry into agy's mcp_config.json, so agy silently cannot call any
+        # DSH tool. Set DSH_AGY_MCP_BRIDGE=0 to turn it back off.
+        mcpBridge: !!js "process.env.DSH_AGY_MCP_BRIDGE ?? 'true'"
+        mcpToolAllowlist: !!js "process.env.DSH_AGY_MCP_ALLOWLIST ?? ''"

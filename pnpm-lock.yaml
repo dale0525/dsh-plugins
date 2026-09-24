@@ -18,7 +18,7 @@ importers:
   packages/all:
     dependencies:
       '@logictan/dsh-agy-link':
-        specifier: ^0.5.1
+        specifier: ^0.5.2
         version: link:../dsh-agy-link
       '@logictan/dsh-better-reasoning-effort':
         specifier: ^0.5.0

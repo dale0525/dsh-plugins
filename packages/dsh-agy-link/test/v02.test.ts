@@ -55,6 +55,49 @@ test('mcp bridge: loopback endpoint serves tools and executes calls', async () =
   }
 })
 
+test('mcp bridge: the tool list is scoped to the calling agent', async () => {
+  // The registry's global view omits every agent-plane tool (subagent, bash,
+  // read, write, ...) — they are registered per agent by the preset. A bridge
+  // that listed the global view would advertise a set the run cannot use, so
+  // the endpoint must pass the agent resolved from the session header.
+  const agent = { session: { header: { cwd: '/tmp' } } }
+  const scopes: unknown[] = []
+  const scopedTools: ToolsServiceLike = {
+    schemas: (scope?: unknown) => {
+      scopes.push(scope)
+      return scope === agent
+        ? [{ name: 'subagent', description: 'delegate', parameters: {} }]
+        : [{ name: 'global_only', description: 'global layer', parameters: {} }]
+    },
+    execute: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+  }
+  const bridge = await startMcpBridge({
+    bridgeScript: resolve(here, '../dist/bridge.mjs'),
+    tools: () => scopedTools,
+    allowlist: () => '',
+    agents: () => ({ get: (id: string) => (id === 'sess-1' ? agent : undefined) }),
+  })
+  try {
+    const scoped = await fetch(bridge.url + '/tools', {
+      headers: { authorization: 'Bearer ' + bridge.token, 'x-dsh-session': 'sess-1' },
+    })
+    const scopedBody = (await scoped.json()) as { tools: Array<{ dshName: string }> }
+    assert.deepEqual(scopedBody.tools.map((t) => t.dshName), ['subagent'])
+    assert.equal(scopes.at(-1), agent)
+
+    // No session (or one that resolves to no live agent) falls back to the
+    // global view rather than throwing.
+    const anon = await fetch(bridge.url + '/tools', {
+      headers: { authorization: 'Bearer ' + bridge.token },
+    })
+    const anonBody = (await anon.json()) as { tools: Array<{ dshName: string }> }
+    assert.deepEqual(anonBody.tools.map((t) => t.dshName), ['global_only'])
+    assert.equal(scopes.at(-1), undefined)
+  } finally {
+    await bridge.close()
+  }
+})
+
 test('mcp bridge: allowlist restricts the served set', async () => {
   const bridge = await startMcpBridge({
     bridgeScript: resolve(here, '../dist/bridge.mjs'),

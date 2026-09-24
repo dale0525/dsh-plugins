@@ -21,7 +21,14 @@ export interface AgentsServiceLike {
 
 /** Minimal structural view of the DSH tool registry we need. */
 export interface ToolsServiceLike {
-  schemas(): Array<{ name: string; description: string; parameters: Record<string, unknown> }>
+  /**
+   * List the tools one scope can see. The scope is the calling agent; omitting
+   * it yields the GLOBAL view, which does NOT include the agent-plane tools
+   * (subagent, bash, read, write, ...) — those are registered per agent by the
+   * preset, so a global listing silently omits exactly the tools a bridged agy
+   * run needs.
+   */
+  schemas(scope?: unknown): Array<{ name: string; description: string; parameters: Record<string, unknown> }>
   execute(input: {
     callId: string
     name: string
@@ -128,7 +135,11 @@ export function startMcpBridge(opts: {
         const allow = opts.allowlist().split(',').map((s) => s.trim()).filter(Boolean)
         const allowSet = new Set(allow)
         const seen = new Set<string>()
-        const tools = svc.schemas()
+        // Resolve the calling agent so the listing matches what agy may actually
+        // call. Without it the global view hides every agent-plane tool.
+        const listSession = String(req.headers['x-dsh-session'] ?? '')
+        const listAgent = listSession === '' ? undefined : opts.agents?.()?.get(listSession)
+        const tools = svc.schemas(listAgent)
           .filter((t) => allow.length === 0 || allowSet.has(t.name))
           .filter((t) => {
             // internal transports and our own ask tool are not bridgeable
