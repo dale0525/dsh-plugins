@@ -1,10 +1,9 @@
 // QuotaService: fetch and refresh live quota statistics and user profile
 // directly from Google Antigravity backend (v1internal:fetchAvailableModels).
 //
-// Security note: NO OAuth client credentials are hard-coded here. agy 1.1.15
-// stores credentials in the macOS Keychain (Antigravity Safe Storage) and we
-// never attempt to re-exchange tokens with a guessed client id/secret — a
-// wrong client pair makes Google return invalid_client and surfaces as
+// Security note: NO OAuth client credentials are hard-coded here. We never
+// attempt to re-exchange tokens with a guessed client id/secret — a wrong
+// client pair makes Google return invalid_client and surfaces as
 // "API key is invalid" in the UI. Quota refresh degrades silently to
 // "unavailable" when credentials cannot be sourced.
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -256,9 +255,12 @@ export function readLinuxSecretToken(): StoredToken | null {
 }
 
 /**
- * Reads the active primary Antigravity OAuth token from the macOS Keychain.
- * agy 1.1.15+ on macOS stores primary credentials via go-keyring in the Keychain
- * under service "gemini" / account "antigravity" (base64-encoded JSON).
+ * Reads the REAL system login's Antigravity OAuth token from the macOS
+ * Keychain. agy stores credentials via go-keyring in the Keychain under
+ * service "gemini" / account "antigravity" (base64-encoded JSON). This is the
+ * login of the interactive agy the user runs themselves; a plugin-managed HOME
+ * gets its own token FILE instead (see getStoredToken), so this is only the
+ * last resort for an account with no file of its own.
  */
 export function readMacKeychainToken(): StoredToken | null {
   if (process.platform !== 'darwin') return null
@@ -343,10 +345,12 @@ export class QuotaService {
   }
 
   /**
-   * Read the system-HOME Keychain credential. Protected so tests (and future
-   * platforms) can substitute the reader without touching the real Keychain.
+   * Read the credential out of the OS secret store (Keychain / Secret Service /
+   * Credential Manager). That store is a SINGLE slot belonging to the real
+   * system login — protected so tests can substitute the reader without
+   * touching it.
    */
-  protected readSystemKeychainToken(): StoredToken | null {
+  protected readOsSecretStoreToken(): StoredToken | null {
     if (process.platform === 'darwin') return readMacKeychainToken()
     if (process.platform === 'linux') return readLinuxSecretToken()
     if (process.platform === 'win32') return readWindowsCredentialToken()
@@ -356,19 +360,25 @@ export class QuotaService {
   /**
    * Read the active token document and normalize it to a flat StoredToken.
    *
-   * Precedence for the primary / system-HOME account: the macOS Keychain
-   * WINS over the on-disk token file. agy >= 1.1.15 keeps its CURRENT
-   * credential in the Keychain; the on-disk antigravity-oauth-token can be a
-   * stale leftover from a PREVIOUS account's login (verified live: disk
-   * held an old account's token while agy itself was authenticated as
-   * someone else — disk-first precedence made every quota refresh fetch the
-   * WRONG account's numbers). Isolated pool accounts only ever read their
-   * own directory's file; the Keychain is one shared slot they must not see.
+   * The account's OWN HOME token file is authoritative. The plugin spawns agy
+   * with a HOME it manages and seeds that file; agy authenticates from it,
+   * refreshes it, and writes the result back there (verified live against agy
+   * 1.2.9: the spawned run loaded the seeded file's expiry, refreshed it, and
+   * logged "Keyring SaveToken timed out ... falling back to file storage").
+   * Preferring the OS secret store instead reported a DIFFERENT login's
+   * identity than the one agy was running with, because that store is a single
+   * slot owned by the real system login.
+   *
+   * The store is a fallback for the system-HOME account ONLY, and only when
+   * that account has no usable file of its own — the Linux / Windows logins
+   * that keep no on-disk token at all (GH #8 / GH #30). An isolated account
+   * never reads it: a missing file there means that slot is unusable, and
+   * borrowing the system login's credential would mislabel one account's
+   * numbers as another's.
    */
   getStoredToken(account: ManagedAccount): StoredToken | null {
-    const disk = (() => {
-      const file = this.getTokenFilePath(account)
-      if (!existsSync(file)) return null
+    const file = this.getTokenFilePath(account)
+    if (existsSync(file)) {
       try {
         const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
         const tok = normalizeStoredToken(raw)
@@ -376,17 +386,16 @@ export class QuotaService {
       } catch {
         // corrupted disk file — treat as absent
       }
-      return null
-    })()
+    }
 
     if (account.systemHome || !account.dir) {
-      const keychainToken = this.readSystemKeychainToken()
-      if (keychainToken && (keychainToken.accessToken || keychainToken.refreshToken)) {
-        return keychainToken
+      const storedToken = this.readOsSecretStoreToken()
+      if (storedToken && (storedToken.accessToken || storedToken.refreshToken)) {
+        return storedToken
       }
     }
 
-    return disk
+    return null
   }
 
   /** Persist refreshed tokens back in the SAME on-disk shape agy wrote. */

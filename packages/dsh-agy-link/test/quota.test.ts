@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { AccountPoolManager } from '../src/host/pool.ts'
@@ -11,8 +11,8 @@ import { writeAgyTokenFile, parsePastedCode, generatePkce } from '../src/host/oa
 test('QuotaService parses stored tokens and saves token refresh updates', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'agy-quota-test-'))
   const pool = new AccountPoolManager(dir)
-  // Primary rides the system HOME (Keychain); token files only exist for
-  // isolated secondary accounts — exercise those.
+  // Every account agy runs for carries a token file in its own HOME; exercise
+  // an isolated secondary slot.
   const acc = pool.createAccountSlot('quota-test')
 
   const tokenDir = join(acc.dir, '.gemini', 'antigravity-cli')
@@ -265,40 +265,57 @@ test('background refresh keeps the zero-network identity path (no userinfo when 
   assert.equal(pool.getAccount(acc.id)!.email, 'stable@gmail.com')
 })
 
-test('getStoredToken prefers the macOS Keychain credential over a stale disk token for the primary account', async () => {
-  // Real incident (verified live): agy 1.1.15+ keeps the CURRENT credential
-  // in the macOS Keychain; the on-disk antigravity-oauth-token was a stale
-  // leftover from a PREVIOUS account's login. Disk-first precedence made
-  // every quota refresh fetch the WRONG account's numbers while agy itself
-  // was happily authenticated as the right one.
-  const dir = mkdtempSync(join(tmpdir(), 'agy-quota-kc-'))
+test("getStoredToken trusts the account's own HOME token file over the shared OS secret store", async () => {
+  // The plugin spawns agy with a HOME it manages, and agy authenticates from
+  // THAT home's token file. Verified live against agy 1.2.9: a managed-HOME run
+  // loaded the seeded file's expiry, refreshed it, and wrote the new access
+  // token back into that same file ("Keyring SaveToken timed out ... falling
+  // back to file storage"). The shared OS secret store belongs to the REAL
+  // system login, so letting it win reported a different login's identity than
+  // the one agy was actually running with.
+  const dir = mkdtempSync(join(tmpdir(), 'agy-quota-home-'))
   const pool = new AccountPoolManager(dir)
   const primary = pool.getAccounts().find((a) => a.systemHome)!
   assert.ok(primary, 'bootstrap default primary exists')
+  const managedHome = join(dir, 'env', primary.id)
+  primary.agentHome = managedHome
 
-  const keychainToken = {
-    accessToken: 'ya29.keychain_current_login',
-    refreshToken: '1//keychain_refresh',
-    expiryMs: Date.now() + 3_600_000,
-  }
-  let keychainReads = 0
-  class KeychainFirstService extends QuotaService {
-    override readSystemKeychainToken() {
-      keychainReads++
-      return keychainToken
+  const tokenDir = join(managedHome, '.gemini', 'antigravity-cli')
+  mkdirSync(tokenDir, { recursive: true })
+  writeFileSync(
+    join(tokenDir, 'antigravity-oauth-token'),
+    JSON.stringify({ access_token: 'ya29.managed_home_current', expiry: Date.now() + 3600_000 }),
+    'utf8',
+  )
+
+  let storeReads = 0
+  class HomeFirstService extends QuotaService {
+    override readOsSecretStoreToken() {
+      storeReads++
+      return { accessToken: 'ya29.real_system_login', refreshToken: '1//real_system_refresh' }
     }
   }
 
-  const svc = new KeychainFirstService(pool)
-  const stored = svc.getStoredToken(primary)
-  assert.ok(keychainReads >= 1, 'primary token resolution consults the Keychain')
-  assert.equal(stored?.accessToken, 'ya29.keychain_current_login', 'Keychain credential wins over any disk file')
-  assert.equal(stored?.refreshToken, '1//keychain_refresh')
+  const svc = new HomeFirstService(pool)
+  assert.equal(
+    svc.getStoredToken(primary)?.accessToken,
+    'ya29.managed_home_current',
+    "the account's own HOME file is authoritative",
+  )
+  assert.equal(storeReads, 0, 'the shared store is not consulted while that file is usable')
+
+  // Without a file of its own, the shared store is the only source left — the
+  // GH #8 / GH #30 case (Linux / Windows logins that keep no on-disk token).
+  rmSync(tokenDir, { recursive: true, force: true })
+  const fallback = svc.getStoredToken(primary)
+  assert.equal(fallback?.accessToken, 'ya29.real_system_login')
+  assert.equal(fallback?.refreshToken, '1//real_system_refresh')
+  assert.equal(storeReads, 1, 'the store is read exactly once per resolution')
 })
 
-test('getStoredToken never reads the shared Keychain for isolated pool accounts', () => {
-  // The Keychain is ONE shared slot owned by the system-HOME login; isolated
-  // account slots must only ever see their own directory's token file.
+test('getStoredToken never reads the shared OS secret store for isolated pool accounts', () => {
+  // The OS secret store is ONE shared slot owned by the real system login;
+  // isolated account slots must only ever see their own directory's token file.
   const dir = mkdtempSync(join(tmpdir(), 'agy-quota-iso-'))
   const pool = new AccountPoolManager(dir)
   const acc = pool.createAccountSlot('isolated')
@@ -309,16 +326,21 @@ test('getStoredToken never reads the shared Keychain for isolated pool accounts'
     JSON.stringify({ access_token: 'ya29.isolated_own', expiry: Date.now() + 3600_000 }),
     'utf8',
   )
-  let keychainReads = 0
+  let storeReads = 0
   class IsoService extends QuotaService {
-    override readSystemKeychainToken() {
-      keychainReads++
-      return null
+    override readOsSecretStoreToken() {
+      storeReads++
+      return { accessToken: 'ya29.real_system_login', refreshToken: '1//real_system_refresh' }
     }
   }
   const svc = new IsoService(pool)
   assert.equal(svc.getStoredToken(acc)?.accessToken, 'ya29.isolated_own')
-  assert.equal(keychainReads, 0, 'isolated accounts must not touch the shared Keychain')
+  assert.equal(storeReads, 0, 'isolated accounts must not touch the shared OS secret store')
+
+  // A missing file means THIS slot is unusable — never borrow the system login.
+  rmSync(tokenDir, { recursive: true, force: true })
+  assert.equal(svc.getStoredToken(acc), null, 'the shared store is not a fallback for isolated accounts')
+  assert.equal(storeReads, 0)
 })
 
 test('detectEmailFromAgyLogs returns the latest email in a log file, not the first', () => {
@@ -419,7 +441,7 @@ test('UI_PATHS contains all expected clean SVG paths', async () => {
 })
 
 
-test('readSystemKeychainToken dispatches per platform (GH #8 / GH #30)', async () => {
+test('readOsSecretStoreToken dispatches per platform (GH #8 / GH #30)', async () => {
   const { readLinuxSecretToken, readMacKeychainToken, readWindowsCredentialToken } = await import('../src/host/quota.ts')
   // Both readers are hard platform gates - safe to call anywhere.
   if (process.platform !== 'darwin') assert.equal(readMacKeychainToken(), null, 'mac reader no-ops off darwin')
@@ -428,7 +450,7 @@ test('readSystemKeychainToken dispatches per platform (GH #8 / GH #30)', async (
   // A subclass mirroring the production dispatch resolves without throwing.
   // (Result is environment-dependent: a real keyring entry may exist.)
   class DispatchProbe extends QuotaService {
-    override readSystemKeychainToken() {
+    override readOsSecretStoreToken() {
       if (process.platform === 'linux') return readLinuxSecretToken()
       if (process.platform === 'darwin') return readMacKeychainToken()
       if (process.platform === 'win32') return readWindowsCredentialToken()

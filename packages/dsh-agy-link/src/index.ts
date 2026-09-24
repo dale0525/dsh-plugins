@@ -747,8 +747,9 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
     return () => clearInterval(timer)
   })
 
-  // Background quota refresh: reads local token files only (no agy spawns,
-  // no Keychain prompts), then one HTTPS call per account per poll interval
+  // Background quota refresh: reads each account's own local token file (no
+  // agy spawns), falling back to the OS secret store only for an account that
+  // has no file of its own; then one HTTPS call per account per poll interval
   // (default 15 min, configurable; clamped to at least 60s). Restricted
   // accounts (cooldown / auth-quarantined) are skipped by refreshAllQuotas.
   ctx.effect(() => {

@@ -141,7 +141,7 @@ dsh plugin --profile web add @logictan/dsh-agy-link
 ## 🧩 架构与工作原理
 
 1. **短生命周期进程驱动**：每一轮 DSH 对话启动一个独立的官方 `agy -p --output-format stream-json` 进程，解析 NDJSON 事件流。
-2. **多账号沙箱机制**：除主账号沿用系统默认 Keychain / HOME 外，所有备用账号在插件私有目录下建立专属 HOME 隔离区，独立写入 agy 格式的标准 OAuth 凭证。
+2. **多账号沙箱机制**：主账号使用插件托管的专属 HOME（凭据从系统登录复制一份、此后独立刷新），备用账号各自建立 HOME 隔离区，均独立写入 agy 格式的标准 OAuth 凭证。
 3. **双 Bucket 官方配额汇总**：插件定时后台静默轮询官方 `v1internal:retrieveUserQuotaSummary`，精准掌控每个账号的 5h 滚动削峰水位与 7d 账号阶梯周额度。
 4. **会话级无缝故障转移**：当遭遇 HTTP 429、额度耗尽或凭证异常时，号池调度器自动标记当前账号家族进入冷却，并无缝将后续请求路由到池内下一个有效账号。
 

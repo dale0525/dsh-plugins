@@ -3,8 +3,9 @@
 // reverse MCP bridge config — inside a directory the plugin owns, so the
 // user's real ~/.gemini is never read or written.
 //
-// Verified against the real CLI: agy resolves all of it from $HOME
-// (GEMINI_CLI_HOME alone is ignored, and the macOS Keychain is not used).
+// Verified against the real CLI: agy resolves all of it from $HOME and
+// GEMINI_CLI_HOME alone is ignored. It authenticates from that HOME's own
+// antigravity-oauth-token file, so a managed HOME is self-contained.
 // Rules live at $HOME/.gemini/GEMINI.md, global skills at
 // $HOME/.gemini/config/skills/<name>/SKILL.md, and MCP servers at
 // $HOME/.gemini/config/mcp_config.json.

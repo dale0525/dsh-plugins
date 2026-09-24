@@ -121,13 +121,11 @@ export class AccountPoolManager {
   /**
    * Bootstraps the primary account on first start.
    *
-   * The primary account rides the REAL system HOME with no directory
-   * isolation: agy 1.1.15+ persists credentials in the macOS Keychain
-   * ("Antigravity Safe Storage"), not in a ~/.gemini token file, so copying
-   * files cannot migrate sign-in state. Injecting HOME would log the
-   * primary account out of agy entirely (observed: "Please sign in").
-   * Only SECONDARY pool accounts get isolated HOME directories, created
-   * and signed in via /agy add-account.
+   * The primary account represents the REAL system sign-in. Its credential is
+   * seeded from there into a plugin-managed HOME (see agy-env.ts) rather than
+   * used in place, so the real ~/.gemini is never written to. Only SECONDARY
+   * pool accounts get isolated HOME directories of their own, created and
+   * signed in via /agy add-account.
    */
   private bootstrapDefaultAccount(): void {
     // The primary slot represents whatever account is currently logged into
@@ -157,7 +155,7 @@ export class AccountPoolManager {
   }
 
   /**
-   * Migrates pool files created before Keychain-aware primaries: an
+   * Migrates pool files created before the primary account became system-HOME based: an
    * acc_primary that carries an isolated dir (and likely a broken token
    * copy) is converted back to the system HOME so agy stays signed in.
    * The stale directory is left untouched (never deletes user data).

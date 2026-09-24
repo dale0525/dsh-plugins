@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.5.5 (2026-09-24)
+
+### English
+
+**Fixes**
+
+- **Quota resolution now reads the credential agy actually authenticates with.** The primary
+  account's token resolution preferred the macOS Keychain over the account's own on-disk token
+  file. That model was wrong: the plugin spawns agy with a HOME it manages, seeds that HOME's
+  `antigravity-oauth-token`, and agy loads, refreshes and rewrites *that* file (verified live
+  against agy 1.2.9 — the spawned run loaded the seeded file's expiry and logged
+  `Keyring SaveToken timed out ... falling back to file storage`). The Keychain entry belongs to
+  the real system login, so the old precedence could report a *different* login's identity and
+  quota than the one agy was running with. The account's own HOME file is now authoritative.
+  The OS secret store is read only for the system-HOME account, and only when it has no usable
+  file of its own — the Linux / Windows logins that keep no on-disk token (GH #8 / GH #30);
+  isolated pool accounts never read it, so a slot with no credential reports nothing instead of
+  borrowing the system login's. This also removes a Keychain access from the steady-state refresh
+  path, which blocks for the full 3s timeout and then fails outright when no interactive session
+  is available.
+
+### 中文 (Chinese)
+
+**修复**
+
+- **配额解析改为读取 agy 真正用来认证的那份凭据。** 主账号此前优先读 macOS Keychain、把账号自己
+  的磁盘 token 文件当作兜底。这个模型是错的：插件用自管的 HOME 启动 agy，把
+  `antigravity-oauth-token` 种进该 HOME，而 agy 读取、刷新并回写的正是这个文件（已对 agy 1.2.9
+  实测：被拉起的进程加载的是种子文件的过期时间，并打出
+  `Keyring SaveToken timed out ... falling back to file storage`）。Keychain 里那条凭据属于真实
+  系统登录，因此旧的优先级可能显示出一个与 agy 实际运行身份**不同**的登录的配额。现在以账号
+  自己的 HOME 文件为准；系统密钥库只在「系统 HOME 账号且它自己没有可用文件」时读取——即
+  Linux / Windows 上不落盘 token 的登录（GH #8 / GH #30）；隔离账号永不读取，因此该槽位没有
+  凭据时如实报空，而不是借用系统登录的身份。这同时把 Keychain 访问从常态刷新路径上摘掉了：
+  它每次都会阻塞满 3 秒超时，在没有交互式会话时更是直接失败。
+
 ## 0.5.4 (2026-09-24)
 
 ### English
