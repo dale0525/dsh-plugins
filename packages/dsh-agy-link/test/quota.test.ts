@@ -489,9 +489,8 @@ test('UI_PATHS contains all expected clean SVG paths', async () => {
 
 
 test('readOsSecretStoreToken dispatches per platform (GH #8 / GH #30)', async () => {
-  const { readLinuxSecretToken, readMacKeychainToken, readWindowsCredentialToken } = await import('../src/host/quota.ts')
-  // All three readers are hard platform gates - safe to call anywhere.
-  if (process.platform !== 'darwin') assert.equal(readMacKeychainToken(), null, 'mac reader no-ops off darwin')
+  const { readLinuxSecretToken, readWindowsCredentialToken } = await import('../src/host/quota.ts')
+  // Both readers are hard platform gates - safe to call anywhere.
   if (process.platform !== 'linux') assert.equal(readLinuxSecretToken(), null, 'linux reader no-ops off linux')
   if (process.platform !== 'win32') assert.equal(readWindowsCredentialToken(), null, 'windows reader no-ops off win32')
 
@@ -499,7 +498,11 @@ test('readOsSecretStoreToken dispatches per platform (GH #8 / GH #30)', async ()
   // VALUES would be vacuous: every reader no-ops off its own platform, so a
   // wrong branch looks exactly like a host with no stored credential.
   const { secretStoreReaderFor } = await import('../src/host/quota.ts')
-  assert.equal(secretStoreReaderFor('darwin'), readMacKeychainToken)
+  // macOS deliberately has NO reader: the `security` CLI call it used to make
+  // raised a Keychain prompt on every read, so darwin now falls through to the
+  // null-returning default. Only the VALUE is assertable here - there is no
+  // reader function left to compare identity against.
+  assert.equal(secretStoreReaderFor('darwin')(), null, 'darwin has no OS secret store reader')
   assert.equal(secretStoreReaderFor('linux'), readLinuxSecretToken)
   assert.equal(secretStoreReaderFor('win32'), readWindowsCredentialToken)
   assert.equal(secretStoreReaderFor('freebsd')(), null, 'unknown platforms resolve to null')

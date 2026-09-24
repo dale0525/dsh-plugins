@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.7 (2026-09-24)
+
+### English
+
+**Fixes**
+
+- **The macOS Keychain is no longer read.** `readMacKeychainToken` shelled out to
+  `security find-generic-password -s gemini -a antigravity -w` as a last-resort fallback. That
+  item belongs to the interactive `agy` the user runs themselves, so the call could never return
+  this plugin's own credential — but it did raise a macOS Keychain prompt each time it ran, which
+  surfaced as a recurring dialog. macOS now resolves to the null-returning default in
+  `secretStoreReaderFor`; the Linux Secret Service and Windows Credential Manager readers are
+  untouched.
+
+**Tests**
+
+- The platform-dispatch test no longer imports or asserts the deleted macOS reader. `darwin` is
+  asserted to resolve to a null-returning reader — the only assertion available, since there is no
+  reader function left to compare identity against.
+
+### 中文 (Chinese)
+
+**修复**
+
+- **不再读取 macOS 钥匙串。** `readMacKeychainToken` 会以兜底身份执行
+  `security find-generic-password -s gemini -a antigravity -w`。该条目属于用户自己交互运行的
+  `agy`，这个调用永远拿不到本插件自己的凭据——但它每次执行都会弹出 macOS 钥匙串授权框，
+  表现为反复出现的弹窗。现在 macOS 在 `secretStoreReaderFor` 中落到返回 null 的默认分支；
+  Linux Secret Service 与 Windows 凭据管理器两个 reader 不受影响。
+
+**测试**
+
+- 平台派发用例不再导入或断言已删除的 macOS reader。`darwin` 改为断言落到返回 null 的 reader
+  ——这是唯一可用的断言，因为已经没有 reader 函数可供比较身份。
+
 ## 0.5.6 (2026-09-24)
 
 ### English

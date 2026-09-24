@@ -183,7 +183,6 @@ interface QuotaSummaryResponse {
  * indistinguishable from a host that simply has no stored credential.
  */
 export function secretStoreReaderFor(platform: NodeJS.Platform): () => StoredToken | null {
-  if (platform === 'darwin') return readMacKeychainToken
   if (platform === 'linux') return readLinuxSecretToken
   if (platform === 'win32') return readWindowsCredentialToken
   return () => null
@@ -191,12 +190,8 @@ export function secretStoreReaderFor(platform: NodeJS.Platform): () => StoredTok
 
 /**
  * Parse a go-keyring payload (optionally "go-keyring-base64:" prefixed) into
- * a normalized StoredToken. Shared by the macOS, Linux and Windows readers.
- *
- * The macOS Keychain stores the value with the prefix (verified live:
- * `security find-generic-password -s gemini -a antigravity -w` returns
- * `go-keyring-base64:<base64 of the JSON token document>`); Linux and
- * Windows readers may hand over either form, hence the fallback.
+ * a normalized StoredToken. Shared by the Linux and Windows readers, which
+ * may hand over either form, hence the fallback.
  */
 export function parseGoKeyringPayload(raw: string): StoredToken | null {
   let jsonStr = raw
@@ -274,31 +269,6 @@ export function readLinuxSecretToken(): StoredToken | null {
 }
 
 /**
- * Reads the REAL system login's Antigravity OAuth token from the macOS
- * Keychain. agy stores credentials via go-keyring in the Keychain under
- * service "gemini" / account "antigravity" as `go-keyring-base64:` + base64
- * of the JSON token document (parseGoKeyringPayload accepts either form).
- * This is the
- * login of the interactive agy the user runs themselves; a plugin-managed HOME
- * gets its own token FILE instead (see getStoredToken), so this is only the
- * last resort for an account with no file of its own.
- */
-export function readMacKeychainToken(): StoredToken | null {
-  if (process.platform !== 'darwin') return null
-  try {
-    const raw = execFileSync('security', ['find-generic-password', '-s', 'gemini', '-a', 'antigravity', '-w'], {
-      encoding: 'utf8',
-      timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
-    if (!raw) return null
-    return parseGoKeyringPayload(raw)
-  } catch {
-    return null
-  }
-}
-
-/**
  * Read the primary Antigravity OAuth token from Windows Credential Manager.
  * agy on Windows stores it via go-keyring under target `gemini:antigravity`
  * (user `antigravity`) as a UTF-8 JSON blob with the same shape as macOS
@@ -366,10 +336,11 @@ export class QuotaService {
   }
 
   /**
-   * Read the credential out of the OS secret store (Keychain / Secret Service /
-   * Credential Manager). That store is a SINGLE slot belonging to the real
-   * system login — protected so tests can substitute the reader without
-   * touching it.
+   * Read the credential out of the OS secret store (Secret Service / Credential
+   * Manager). That store is a SINGLE slot belonging to the real system login —
+   * protected so tests can substitute the reader without touching it. macOS has
+   * no reader: the `security` CLI call it needed raised a Keychain prompt on
+   * every read, so it resolves to the null-returning default instead.
    */
   protected readOsSecretStoreToken(): StoredToken | null {
     return secretStoreReaderFor(process.platform)()
