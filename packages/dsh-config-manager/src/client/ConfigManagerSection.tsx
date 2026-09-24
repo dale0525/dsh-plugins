@@ -1,5 +1,5 @@
 /**
- * Config Manager 配置页 —— 插件页 @logictan/dsh-plugins-all 详情页内的内容体。
+ * Config Manager 配置页 —— 「插件 → @logictan/dsh-plugins-all」详情页里本插件那一行的页面。
  * 仅同步一个页面，故不设页签导航：主体直接是同步内容。
  */
 import { useEffect, useState, useSyncExternalStore } from 'react'
@@ -14,7 +14,7 @@ import { ToastViewport } from './common/ToastViewport.tsx'
 import css from './config-manager.module.css'
 
 export type ConfigManagerSectionProps =
-  & PropsRuntime<'plugins.bundle.config'>
+  & PropsRuntime<'plugins.row.config'>
   & ConfigManagerSectionInjected
   & { t: TranslateNS<'config-manager'> }
 
