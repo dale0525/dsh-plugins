@@ -101,8 +101,14 @@ jobs:
               # cannot tell a live release from one still awaiting approval.
               # Poll the registry until the exact version resolves; a staged
               # version never becomes visible, so this is the only real gate.
+              #
+              # 15 minutes, not 5: registry propagation outlasts the publish
+              # command by an unbounded margin. Measured 2026-09-24 (run
+              # 35973392248) -- @logictan/dsh-config-manager@0.1.66 became
+              # resolvable ~355s after the publish notice, while the old
+              # 5-minute window gave up at 306s and failed a healthy publish.
               live=""
-              for _ in $(seq 1 20); do
+              for _ in $(seq 1 60); do
                 if npm view "$name@$version" version --prefer-online >/dev/null 2>&1; then
                   live=1
                   break
@@ -110,9 +116,10 @@ jobs:
                 sleep 15
               done
               if [ -z "$live" ]; then
-                echo "::error::$name@$version is still not resolvable after 5 minutes."
-                echo "If this package uses staged publishing, approve the staged"
-                echo "version (or turn staged publishing off for it) and re-run."
+                echo "::error::$name@$version is still not resolvable after 15 minutes."
+                echo "Usually a publish held for approval (staged): approve the"
+                echo "staged version, or turn staged publishing off for this"
+                echo "package, then re-run."
                 exit 1
               fi
               echo "$name@$version is live"
