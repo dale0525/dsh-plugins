@@ -36,7 +36,21 @@ function credentialDocument(domain: string): string {
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
-  if (root !== undefined) await rm(root, { recursive: true, force: true })
+  if (root !== undefined) {
+    // A best-effort version-cache write can still be in flight when the host
+    // is disposed; when it lands between rm's child-unlink pass and the final
+    // rmdir, rm fails with ENOTEMPTY. A short retry absorbs that race.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rm(root, { recursive: true, force: true })
+        break
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (attempt >= 4 || (code !== 'ENOTEMPTY' && code !== 'ENOENT')) throw error
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+    }
+  }
   root = undefined
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
