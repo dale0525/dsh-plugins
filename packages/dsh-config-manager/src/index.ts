@@ -104,7 +104,7 @@ import { Phase3Recovery, TransactionRecoveryRequiredError, mapLockStateForStartu
 import type { JournalRunContext } from './core/phase3-host.ts'
 import { classifyStartup } from './core/startup-barrier.ts'
 import type { MutationLockPort } from './utils/env-lock.ts'
-import type { RecursiveListing } from './utils/recursive-walk.ts'
+import type { RecursiveListing, RecursiveWalkOptions } from './utils/recursive-walk.ts'
 import { GitTransport } from './sync/git/git-transport.ts'
 import { WebDavTransport } from './sync/webdav/webdav-transport.ts'
 import { DeviceFlowStore, GitHubAuthClient, GitHubAuthError } from './sync/github-auth.ts'
@@ -144,7 +144,7 @@ export const name = 'config-manager'
 export const inject = ['settings', 'credentials']
 
 /** Plugin version, kept in sync with package.json ("version"). */
-const PLUGIN_VERSION = '0.1.69'
+const PLUGIN_VERSION = '0.1.70'
 
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
@@ -781,8 +781,8 @@ class DshFileSystemFacade implements FileSystemFacade {
    * 跟随 junction / 符号链接的遍历 + 被跳过链接清单（issue #37）。
    * 实现下沉到 utils/recursive-walk.ts（可用真实临时目录直接单测）。
    */
-  async listRecursiveDetailed(dir: string): Promise<RecursiveListing> {
-    return listRecursiveFollowingLinks(this.abs(dir), this.homeDir)
+  async listRecursiveDetailed(dir: string, options?: RecursiveWalkOptions): Promise<RecursiveListing> {
+    return listRecursiveFollowingLinks(this.abs(dir), this.homeDir, options)
   }
 
   async mkdir(dir: string): Promise<void> {

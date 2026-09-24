@@ -146,3 +146,36 @@ test('issue #37：目录不可读不中断整次遍历；base 不在 home 内返
   const ok = await listRecursiveFollowingLinks(path.join(home, 'skills'), home);
   assert.deepEqual(ok.paths, ['skills/ok.md']);
 });
+test('约定配置目录剪枝：命中路径形状的目录整棵跳过并留痕，同名的别处不受影响', async (t) => {
+  const home = tmpDir('dshcm-home5-');
+  t.after(() => fssync.rmSync(home, { recursive: true, force: true }));
+  const acc = path.join(home, 'plugin-config', 'agy-link', 'acc_1');
+  await fs.mkdir(path.join(acc, '.gemini', 'antigravity-cli', 'scratch'), { recursive: true });
+  await fs.mkdir(path.join(acc, 'Library', 'Caches'), { recursive: true });
+  await fs.writeFile(path.join(home, 'plugin-config', 'agy-link', 'pool.json'), '{}');
+  await fs.writeFile(path.join(acc, '.gemini', 'GEMINI.md'), 'G');
+  await fs.writeFile(path.join(acc, '.gemini', 'antigravity-cli', 'scratch', 'big.pack'), 'BIG');
+  await fs.writeFile(path.join(acc, 'Library', 'Caches', 'blob'), 'CACHE');
+  // 同名的 `scratch`，但不在 .gemini/antigravity-cli 之下 → 不得被剪掉（判据是路径形状，不是目录名）
+  await fs.mkdir(path.join(acc, 'scratch'), { recursive: true });
+  await fs.writeFile(path.join(acc, 'scratch', 'keep.md'), 'KEEP');
+
+  const base = path.join(home, 'plugin-config');
+  const excludeDirs = [['.gemini', 'antigravity-cli', 'scratch'], ['Library', 'Caches']];
+  const listing = await listRecursiveFollowingLinks(base, home, { excludeDirs });
+
+  assert.deepEqual(listing.paths, [
+    'plugin-config/agy-link/acc_1/.gemini/GEMINI.md',
+    'plugin-config/agy-link/acc_1/scratch/keep.md',
+    'plugin-config/agy-link/pool.json',
+  ], `剪枝后清单不符: ${listing.paths.join(',')}`);
+  assert.deepEqual(listing.excludedDirs, [
+    'plugin-config/agy-link/acc_1/.gemini/antigravity-cli/scratch',
+    'plugin-config/agy-link/acc_1/Library/Caches',
+  ], `剪枝目录必须留痕: ${listing.excludedDirs.join(',')}`);
+
+  // 不传选项 → 行为与旧版完全一致（skills / sessions 等分区不受影响）
+  const plain = await listRecursiveFollowingLinks(base, home);
+  assert.equal(plain.paths.length, 5, `不剪枝时应收集全部 5 个文件: ${plain.paths.join(',')}`);
+  assert.deepEqual(plain.excludedDirs, []);
+});

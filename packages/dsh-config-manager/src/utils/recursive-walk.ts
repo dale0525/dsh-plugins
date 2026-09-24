@@ -26,6 +26,17 @@ export interface SkippedLink {
   reason: 'loop' | 'outside-home' | 'broken' | 'unreadable' | 'too-deep';
 }
 
+/**
+ * 遍历选项。
+ * `excludeDirs`：**按设计**跳过的目录（缓存 / 历史 / 临时产物），每项是一段路径形状
+ * （如 `['.gemini','antigravity-cli','scratch']`），按 homeDir 相对路径的**连续分段**匹配。
+ * 与 `skippedLinks` 的区别是语义，不是程度：那些是「本该进来却没进来」的缺失，
+ * 这些是「有意不带」的策略 —— 二者绝不能混进同一条告警。
+ */
+export interface RecursiveWalkOptions {
+  excludeDirs?: readonly (readonly string[])[];
+}
+
 export interface RecursiveListing {
   /** homeDir 相对、斜杠分隔、已排序的文件路径 */
   paths: string[];
@@ -35,6 +46,8 @@ export interface RecursiveListing {
   followedLinks: number;
   /** 读取失败的目录（ACL / 竞态删除等）——这些目录下的内容同样没进备份，必须留痕 */
   unreadableDirs: string[];
+  /** 按 `excludeDirs` 策略跳过的目录（其内容**有意**不进备份）；空 = 未启用剪枝 */
+  excludedDirs: string[];
 }
 
 /** 深度上限：防御病态目录树 / realpath 去重失效时的栈爆炸 */
@@ -62,17 +75,39 @@ async function realpathSafe(p: string): Promise<string | null> {
  * @param baseDir 绝对路径；不在 homeDir 内则返回空清单（与既有语义一致）
  * @param homeDir 绝对路径；产出相对它，跟随边界也是它
  */
-export async function listRecursiveFollowingLinks(baseDir: string, homeDir: string): Promise<RecursiveListing> {
+export async function listRecursiveFollowingLinks(
+  baseDir: string, homeDir: string, options: RecursiveWalkOptions = {},
+): Promise<RecursiveListing> {
   const base = path.resolve(baseDir);
   const home = path.resolve(homeDir);
   const paths: string[] = [];
   const skippedLinks: SkippedLink[] = [];
   const unreadableDirs: string[] = [];
+  const excludedDirs: string[] = [];
   let followedLinks = 0;
   /** 已进入过的目录 realpath（防环 / 防同一目标被两条链接重复收集） */
   const visited = new Set<string>();
 
   const rel = (abs: string): string => normalizeSlashes(path.relative(home, abs));
+
+  /**
+   * 路径形状剪枝：把每项模式当作**连续分段**去匹配 homeDir 相对路径的分段序列。
+   * 用分段而非子串，避免 `my-scratch` 被 `scratch` 误伤；模式要求多段，
+   * 是为了不误伤任意分区下的同名业务目录。
+   */
+  const excludePatterns = (options.excludeDirs ?? []).map((p) => [...p]);
+  const isExcludedByDesign = (entryRel: string): boolean => {
+    if (excludePatterns.length === 0) return false;
+    const segs = entryRel.split('/');
+    return excludePatterns.some((pat) => {
+      for (let i = 0; i + pat.length <= segs.length; i++) {
+        let hit = true;
+        for (let j = 0; j < pat.length; j++) if (segs[i + j] !== pat[j]) { hit = false; break; }
+        if (hit) return true;
+      }
+      return false;
+    });
+  };
 
   /** @returns 是否真的进入了该目录（false = 被边界/去重/IO 挡下） */
   const walk = async (dir: string, depth: number, viaLink: string | null): Promise<boolean> => {
@@ -105,6 +140,8 @@ export async function listRecursiveFollowingLinks(baseDir: string, homeDir: stri
       const abs = path.join(dir, entry.name);
       const entryRel = rel(abs);
       if (entry.isDirectory()) {
+        // 剪枝必须在**进入前**做：遍历成本（3.3s → 0.1s 量级）与清单正确性都取决于此
+        if (isExcludedByDesign(entryRel)) { excludedDirs.push(entryRel); continue; }
         await walk(abs, depth + 1, null);
       } else if (entry.isFile()) {
         paths.push(entryRel);
@@ -127,6 +164,7 @@ export async function listRecursiveFollowingLinks(baseDir: string, homeDir: stri
           continue;
         }
         if (st.isDirectory()) {
+          if (isExcludedByDesign(entryRel)) { excludedDirs.push(entryRel); continue; }
           if (await walk(abs, depth + 1, entryRel)) followedLinks += 1;
         } else if (st.isFile()) {
           paths.push(entryRel);
@@ -141,5 +179,5 @@ export async function listRecursiveFollowingLinks(baseDir: string, homeDir: stri
   };
 
   await walk(base, 0, null);
-  return { paths: paths.sort(), skippedLinks, followedLinks, unreadableDirs };
+  return { paths: paths.sort(), skippedLinks, followedLinks, unreadableDirs, excludedDirs: excludedDirs.sort() };
 }

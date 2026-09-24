@@ -7,7 +7,8 @@ import assert from 'node:assert/strict';
 import { SkillsAdapter } from './skills.ts';
 import { AgentPresetsAdapter } from './agent-presets.ts';
 import { AgentInstructionsAdapter } from './agent-instructions.ts';
-import { PluginFilesAdapter } from './plugin-files.ts';
+import { PluginFilesAdapter, PLUGIN_FILES_EXCLUDED_DIRS } from './plugin-files.ts';
+import type { RecursiveWalkOptions } from '../utils/recursive-walk.ts';
 import { SessionsAdapter } from './sessions.ts';
 import { SelfAdapter } from './self.ts';
 import { makeContext, makeImportContext, sha256Hex } from './test-helpers.ts';
@@ -57,6 +58,7 @@ test('issue #37: skills 导出把「跟随/跳过的链接」写进 warnings（�
     skippedLinks: [{ path: 'skills/broken', reason: 'broken' }],
     followedLinks: 1,
     unreadableDirs: [],
+    excludedDirs: [],
   });
   const out = await new SkillsAdapter().export(src, { includeSecrets: false });
   assert.deepEqual(out.data.files.map((f) => f.relativePath).sort(), ['coding.md', 'shared/inner.md']);
@@ -187,6 +189,46 @@ test('pluginFiles: 约定配置目录递归收集 + 与白名单去重 + 导入�
 test('pluginFiles: 非法 collectDir（绝对路径/越界）构造即抛错', () => {
   assert.throws(() => new PluginFilesAdapter(undefined, 'C:\\evil'), /collectDir 非法/);
   assert.throws(() => new PluginFilesAdapter(undefined, '../escape'), /collectDir 非法/);
+});
+test('pluginFiles: 剪枝清单覆盖已知运行时缓存，且是路径形状而非目录名', () => {
+  const flat = PLUGIN_FILES_EXCLUDED_DIRS.map((p) => p.join('/'));
+  // 实测来源：这三类占了 plugin-config 的 ~3 GB（Library/Caches 1.7GB、conversations 0.6GB、scratch 0.5GB）
+  assert.ok(flat.includes('Library/Caches'), `缺 Library/Caches: ${flat.join(', ')}`);
+  assert.ok(flat.includes('.gemini/antigravity-cli/conversations'));
+  assert.ok(flat.includes('.gemini/antigravity-cli/scratch'));
+  assert.ok(flat.includes('.gemini/antigravity-cli/brain'));
+  assert.ok(flat.includes('.npm'));
+  // 核心安全属性：**禁止**用单个「含糊词」当剪枝项 —— 单段 `scratch` 会把任意分区下的
+  // 同名业务目录一并剪掉。单段只允许出现在无歧义的缓存名上（如 `.npm`）。
+  const AMBIGUOUS = new Set([
+    'scratch', 'brain', 'conversations', 'cache', 'log', 'presence',
+    'implicit', 'annotations', 'mcp', 'Caches', 'Library',
+  ]);
+  for (const p of PLUGIN_FILES_EXCLUDED_DIRS) {
+    if (p.length === 1) {
+      assert.equal(AMBIGUOUS.has(p[0]!), false, `单段剪枝项过于含糊，会误伤业务目录: ${p[0]}`);
+    }
+  }
+});
+
+test('pluginFiles: 剪枝清单必须真的传给遍历内核，并把「按设计跳过」写进告警', async () => {
+  const src = makeContext('darwin', '/Users/alice');
+  await src.fs.writeFile('plugin-config/agy-link/pool.json', Buffer.from('{}', 'utf8'));
+  let received: RecursiveWalkOptions | undefined;
+  src.fs.listRecursiveDetailed = async (_dir, options) => {
+    received = options;
+    return {
+      paths: ['plugin-config/agy-link/pool.json'],
+      skippedLinks: [], followedLinks: 0, unreadableDirs: [],
+      excludedDirs: ['plugin-config/agy-link/acc_1/.gemini/antigravity-cli/scratch'],
+    };
+  };
+  const out = await new PluginFilesAdapter(undefined, 'plugin-config').export(src, { includeSecrets: false });
+  assert.deepEqual(out.data.files.map((f) => f.relativePath), ['plugin-config/agy-link/pool.json']);
+  assert.ok(received?.excludeDirs !== undefined && received.excludeDirs.length > 0,
+    '剪枝清单没传给遍历内核 → 缓存照样进备份');
+  assert.equal(out.warnings.some((w) => w.includes('按设计跳过')), true,
+    `缺剪枝告警: ${out.warnings.join(' | ')}`);
 });
 
 test('sessions: 默认关 + 文件级复制（deviceSpecific）', async () => {

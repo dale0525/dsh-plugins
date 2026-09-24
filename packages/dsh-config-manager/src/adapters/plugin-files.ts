@@ -20,6 +20,40 @@ import type {
 
 export const DEFAULT_PLUGIN_FILE_WHITELIST: readonly string[] = ['dsh-ssh.json', 'pet.json'];
 
+/**
+ * collectDir 下**按设计**跳过的运行时目录（路径形状，不是目录名 —— 见 utils/recursive-walk.ts）。
+ *
+ * 为什么需要：collectDir 是插件共享的跨设备配置容器，但插件会把整个 HOME 塞进它
+ * （agy-link 的每个账号一个托管 HOME）。实测 ~/.dsh/plugin-config 遍历出 3,920 MB / 102,582 文件，
+ * 其中约 3.9 GB 是缓存与历史 —— 收集它们会让一次推送跑几十分钟，且 scratch 内嵌的 git pack
+ * 单文件 128.5 MB，已超 GitHub 的 100 MiB 硬上限，推送注定失败。
+ *
+ * 判据是「重建还是复用」：这些目录里没有账号身份，删掉后 agy 会在下次启动时重新生成，
+ * 因此**排除它们不损失跨设备可用性**。反之账号身份（token / settings.json / .gemini/config/** /
+ * Library/Keychains/login.keychain-db）一律保留，否则另一台机器拿到的是个空壳账号。
+ *
+ * 排除只作用于导出：applyItem 只写快照里存在的文件，从**不删除**本地文件，
+ * 所以本机缓存不会被清掉。
+ */
+export const PLUGIN_FILES_EXCLUDED_DIRS: readonly (readonly string[])[] = [
+  // 插件把 HOME 当普通目录用：Library/Caches（1.7 GB）、.npm（77 MB）
+  ['Library', 'Caches'],
+  ['.npm'],
+  // agy 每个账号的会话历史与工作现场（0.6 GB / 0.5 GB / 0.3 GB）
+  ['.gemini', 'antigravity-cli', 'conversations'],
+  ['.gemini', 'antigravity-cli', 'scratch'],
+  ['.gemini', 'antigravity-cli', 'brain'],
+  // 日志与运行时痕迹：重建即可，无身份信息
+  ['.gemini', 'antigravity-cli', 'log'],
+  ['.gemini', 'antigravity-cli', 'presence'],
+  ['.gemini', 'antigravity-cli', 'implicit'],
+  ['.gemini', 'antigravity-cli', 'cache'],
+  ['.gemini', 'antigravity-cli', 'updater'],
+  ['.gemini', 'antigravity-cli', 'annotations'],
+  // MCP 工具清单（含本机路径与端口），下次启动按当前环境重写
+  ['.gemini', 'antigravity-cli', 'mcp'],
+];
+
 export class PluginFilesAdapter implements ConfigAdapter<FilesSection> {
   readonly id = 'pluginFiles' as const;
   readonly displayName = 'Plugin Files';
@@ -52,10 +86,10 @@ export class PluginFilesAdapter implements ConfigAdapter<FilesSection> {
     }
     // 2) 约定配置目录递归收集（相对 ~/.dsh 根的完整路径；与白名单文件去重）
     // issue #37：与 skills 等同一条遍历（跟随 junction/符号链接 + 跳过留痕）
-    let listing: RecursiveListing = { paths: [], skippedLinks: [], followedLinks: 0, unreadableDirs: [] };
+    let listing: RecursiveListing = { paths: [], skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [] };
     if (this.collectDir !== undefined) {
       try {
-        listing = await listFilesDetailed(ctx.fs, this.collectDir);
+        listing = await listFilesDetailed(ctx.fs, this.collectDir, { excludeDirs: PLUGIN_FILES_EXCLUDED_DIRS });
       } catch {
         // 目录不存在视为空
       }

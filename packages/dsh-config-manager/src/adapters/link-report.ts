@@ -9,7 +9,7 @@
  */
 import type { FileSystemFacade } from '../core/types.ts';
 import type { MsgFunc } from '../core/messages.ts';
-import type { RecursiveListing, SkippedLink } from '../utils/recursive-walk.ts';
+import type { RecursiveListing, RecursiveWalkOptions, SkippedLink } from '../utils/recursive-walk.ts';
 
 /** 跳过原因 → 消息 key（与 SkippedLink.reason 一一对应，穷尽映射） */
 const REASON_KEY: Record<SkippedLink['reason'], string> = {
@@ -24,9 +24,11 @@ const REASON_KEY: Record<SkippedLink['reason'], string> = {
 const MAX_PATHS_PER_REASON = 5
 
 /** 取遍历结果：宿主未实现 listRecursiveDetailed（旧版/测试 mock）时回退，行为与旧版一致。 */
-export async function listFilesDetailed(fs: FileSystemFacade, dir: string): Promise<RecursiveListing> {
-  if (fs.listRecursiveDetailed !== undefined) return fs.listRecursiveDetailed(dir)
-  return { paths: await fs.listRecursive(dir), skippedLinks: [], followedLinks: 0, unreadableDirs: [] }
+export async function listFilesDetailed(
+  fs: FileSystemFacade, dir: string, options?: RecursiveWalkOptions,
+): Promise<RecursiveListing> {
+  if (fs.listRecursiveDetailed !== undefined) return fs.listRecursiveDetailed(dir, options)
+  return { paths: await fs.listRecursive(dir), skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [] }
 }
 
 /** 把遍历结果转成告警行（无链接时返回空数组 —— 不制造噪音）。 */
@@ -48,6 +50,14 @@ export function linkWarnings(msg: MsgFunc, type: string, listing: RecursiveListi
       return `${msg(REASON_KEY[reason])} ${paths.length} 个: ${shown}${more}`
     }).join('；')
     out.push(msg('adapter.linksSkipped', { type, count: String(listing.skippedLinks.length), detail }))
+  }
+  if (listing.excludedDirs.length > 0) {
+    const shown = listing.excludedDirs.slice(0, MAX_PATHS_PER_REASON).join(', ')
+    const more = listing.excludedDirs.length > MAX_PATHS_PER_REASON
+      ? ` (+ ${listing.excludedDirs.length - MAX_PATHS_PER_REASON})` : ''
+    out.push(msg('adapter.dirsExcluded', {
+      type, count: String(listing.excludedDirs.length), detail: `${shown}${more}`,
+    }))
   }
   if (listing.unreadableDirs.length > 0) {
     const shown = listing.unreadableDirs.slice(0, MAX_PATHS_PER_REASON).join(', ')

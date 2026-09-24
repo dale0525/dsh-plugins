@@ -8,7 +8,7 @@
 import type { Manifest, SectionId, WorkspaceRecord } from '../schema/types.ts';
 import type { TombstoneKind } from '../schema/tombstones.ts';
 import type { MutationLockPort } from '../utils/env-lock.ts';
-import type { RecursiveListing } from '../utils/recursive-walk.ts';
+import type { RecursiveListing, RecursiveWalkOptions } from '../utils/recursive-walk.ts';
 import type { Logger } from '../utils/logger.ts';
 import { zhMsg } from './messages.ts';
 import type { MsgFunc } from './messages.ts';
@@ -122,8 +122,9 @@ export interface FileSystemFacade {
   /**
    * 与 listRecursive 相同的遍历，但**跟随**目录 junction / 符号链接，并附带被跳过的链接清单
    * （issue #37）。可选：未实现时调用方回退到 listRecursive（行为与旧版一致）。
+   * `options.excludeDirs` 用于**按设计**剪掉运行时缓存/历史目录（见 RecursiveWalkOptions）。
    */
-  listRecursiveDetailed?(dir: string): Promise<RecursiveListing>;
+  listRecursiveDetailed?(dir: string, options?: RecursiveWalkOptions): Promise<RecursiveListing>;
   mkdir(dir: string): Promise<void>;
 }
 

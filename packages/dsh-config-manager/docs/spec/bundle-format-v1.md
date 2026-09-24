@@ -525,6 +525,22 @@ win32 | darwin | linux | freebsd | openbsd | aix | sunos | android | cygwin | ha
 | `skills` / `agentPresets` / `sessions`（`FileCollectionAdapter` 子类） | `relativePath` = **homeDir 相对路径裁掉 `baseDir` 前缀**：`rel.replace(new RegExp('^' + escapeRegExp(baseDir) + '[\\/]'), '')`。注意正则只吃**一个**分隔符，且接受 `\` | `src/adapters/file-collection.ts:40` |
 | `agentInstructions` | `baseDir === ''` → `relativePath` = homeDir 相对路径**原样**（本实现恒为 `AGENTS.md`） | `src/adapters/agent-instructions.ts:30-35`、`src/adapters/file-collection.ts:40` |
 | `pluginFiles` | `relativePath` = **相对 `~/.dsh` 根的完整路径**（白名单文件如 `dsh-ssh.json`，或 `collectDir` 下的递归路径） | `src/adapters/plugin-files.ts:42-67` |
+
+##### A.1 `collectDir` 递归收集的剪枝契约
+
+`collectDir`（如 `plugin-config`）是插件共享的跨设备配置容器，插件会把整个托管 HOME 放进去，因此该目录天然包含大量运行时缓存与历史。收集这些内容的代价是**数量级**的：本机实测 `~/.dsh/plugin-config` 为 **3,920 MB / 102,582 文件**，剪枝后 **50.9 MB / 1,626 文件**（遍历 6,279 ms → 212 ms），且剪枝前最大单文件 **128.5 MB** 已超 GitHub 的 100 MiB 硬上限。
+
+因此 `pluginFiles` 的 `collectDir` 收集**按路径形状剪枝**已知运行时目录（`PLUGIN_FILES_EXCLUDED_DIRS`，`src/adapters/plugin-files.ts`）：`Library/Caches`、`.npm`、`.gemini/antigravity-cli/{conversations,scratch,brain,log,presence,implicit,cache,updater,annotations,mcp}`。
+
+第三方实现者必须知道的三点：
+
+| 契约 | 说明 |
+|---|---|
+| **匹配语义** | 每项是**连续路径分段**序列（如 `['.gemini','antigravity-cli','scratch']`），不是目录名、不是子串、不是 glob。`scratch` 作为单段会误伤任意分区下的同名业务目录，故含糊词一律要求多段 |
+| **剪枝是策略，不是缺失** | 被剪目录记入 `RecursiveListing.excludedDirs`，与表示内容缺失的 `skippedLinks` / `unreadableDirs` **语义不同、告警分列**（`adapter.dirsExcluded` 不含「未进备份」措辞） |
+| **只影响导出** | `applyItem` 只写快照中存在的文件，**从不删除**本地文件 —— 剪枝不会清掉本机缓存。导入侧因此对含剪枝项的旧快照完全兼容 |
+
+> 该剪枝**不**削减跨设备可用性：账号身份（`antigravity-oauth-token`、`settings.json`、`.gemini/config/**`、`Library/Keychains/login.keychain-db`）全部保留；被剪目录均可由插件在目标机重新生成。
 | `self` | `relativePath` = **相对 baseDir（`dsh-config-manager`）的路径**，来自固定白名单（`sync/sync-config.json` 等），**不递归** | `src/adapters/self.ts:32-42`、`src/adapters/self.ts:59-77` |
 | 归档条目名（全部分区统一） | `name = SECTION_FILE_PREFIXES[sectionId] + relativePath` —— **纯字符串拼接，无归一化、无 `path.join`、无去重** | `src/core/exporter.ts:288-295` |
 | CLI 离线备份路径 | 同一公式，但**先过 `isPathSafe(zipName)`**，不安全则跳过该条目并计入 `excludedCount`（写侧唯一做条目名校验的地方） | `src/core/backup-plan.ts:248-256`、`src/core/backup-plan.ts:282` |

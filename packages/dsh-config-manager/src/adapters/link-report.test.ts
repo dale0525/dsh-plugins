@@ -8,7 +8,22 @@ import { zhMsg } from '../core/messages.ts';
 import type { FileSystemFacade } from '../core/types.ts';
 import type { RecursiveListing } from '../utils/recursive-walk.ts';
 
-const clean: RecursiveListing = { paths: ['skills/a.md'], skippedLinks: [], followedLinks: 0, unreadableDirs: [] };
+const clean: RecursiveListing = { paths: ['skills/a.md'], skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [] };
+test('linkWarnings：按设计剪枝的运行时目录单独成行，不混入「未进备份」告警', () => {
+  const out = linkWarnings(zhMsg, 'Plugin Files', {
+    ...clean,
+    excludedDirs: ['plugin-config/agy-link/acc_1/.gemini/antigravity-cli/scratch'],
+  });
+  assert.equal(out.length, 1);
+  assert.match(out[0]!, /按设计跳过/);
+  assert.match(out[0]!, /scratch/);
+  // 剪枝是策略而非缺失：不得复用「未进备份」这类内容缺失的措辞
+  assert.doesNotMatch(out[0]!, /未进备份/);
+});
+
+test('linkWarnings：未剪枝时不产生任何剪枝告警（不制造噪音）', () => {
+  assert.deepEqual(linkWarnings(zhMsg, 'Plugin Files', clean), []);
+});
 
 test('linkWarnings：无链接 → 零告警（不制造噪音）', () => {
   assert.deepEqual(linkWarnings(zhMsg, 'Skills', clean), []);
@@ -27,6 +42,7 @@ test('linkWarnings：跳过项按原因归并，给出数量、原因与路径',
     paths: [],
     followedLinks: 1,
     unreadableDirs: [],
+    excludedDirs: [],
     skippedLinks: [
       { path: 'skills/self', reason: 'loop' },
       { path: 'skills/broken', reason: 'broken' },
@@ -48,7 +64,7 @@ test('linkWarnings：跳过项按原因归并，给出数量、原因与路径',
 
 test('linkWarnings：目录读取失败也必须告警（其内容同样未进备份）', () => {
   const out = linkWarnings(zhMsg, 'Skills', {
-    paths: [], followedLinks: 0, skippedLinks: [], unreadableDirs: ['skills/locked', 'skills/denied'],
+    paths: [], followedLinks: 0, skippedLinks: [], unreadableDirs: ['skills/locked', 'skills/denied'], excludedDirs: [],
   });
   assert.equal(out.length, 1);
   assert.match(out[0]!, /2 个目录读取失败/);
