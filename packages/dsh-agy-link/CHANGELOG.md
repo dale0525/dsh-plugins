@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.5.9 (2026-09-24)
+
+### English
+
+**Fixes**
+
+- **The managed keychain no longer relocks, so the hourly token refresh stops raising
+  `"security" wants to use the "login" keychain`.** 0.5.8 seeded the keychain but left macOS's
+  default policy on it — `lock-on-sleep timeout=300s` — so five minutes after agy's last write it
+  locked itself again. The next go-keyring refresh then landed on a locked keychain, and securityd
+  raised the system alert naming the requester, agy's own `/usr/bin/security -i` helper (the
+  "login" in the dialog is the keychain's *filename* inside the managed HOME, not the real user's
+  login keychain). `ensureAgyKeychain` now also unlocks the keychain and clears that policy on
+  every spawn, so writes land silently and an already-relocked keychain from an earlier version is
+  repaired in place.
+
+  Two measured details are load-bearing. Clearing the policy needs the keychain unlocked first:
+  `set-keychain-settings` on a locked keychain raises the same alert and fails with
+  `User canceled` (measured 5/5). And `unlock-keychain -p ''` on a keychain named
+  `login.keychain-db` exits 51 — `The user name or passphrase you entered is not correct.` —
+  *while unlocking successfully*; the reserved name makes `security` report an error regardless of
+  the password, so that status carries no signal and is deliberately not inspected.
+  `set-keychain-settings` is invoked with **no flags**, which is what macOS reads as "never lock"
+  (`show-keychain-info` then reports `no-timeout`); `-t 0` and `-t 0 -u` do **not** work — both
+  hang and then fail with `User canceled`.
+
+- **Provisioning no longer pollutes the real login keychain's search list.** `security` resolves
+  its search list from `$HOME`, so the previous `create-keychain` call — run under the real user's
+  HOME while targeting a managed path — appended that throwaway keychain to the *real* search list,
+  and `delete-keychain` did not reliably remove it. Every provisioning call left one entry behind
+  pointing at an already-deleted temp directory (measured: 22 such entries had accumulated). All
+  three `security` calls now run with `HOME` set to the managed dir, which adds nothing to the real
+  list while still making that keychain the managed HOME's default.
+
+**Tests**
+
+- New `ensureAgyKeychain` case: it provisions a managed HOME, asserts `show-keychain-info` reports
+  no timeout, then relocks the keychain and asserts a second call clears the policy again — the
+  reported failure is an already-relocked keychain, not a fresh one.
+
+### 中文 (Chinese)
+
+**修复**
+
+- **受管钥匙串不再自动上锁，每小时一次的 token 刷新不再弹
+  `"security"想使用"登录"钥匙串`。** 0.5.8 建出了钥匙串，却把它留在了 macOS 的默认策略上
+  （`lock-on-sleep timeout=300s`），于是 agy 最后一次写入五分钟后它又把自己锁上；下一次
+  go-keyring 刷新就落在锁定状态的钥匙串上，securityd 随即弹出系统弹窗，并把发起方写成 agy
+  自己的 `/usr/bin/security -i` 辅助进程（弹窗里的"登录"是受管 HOME 内该钥匙串的**文件名**，
+  不是真实用户的登录钥匙串）。现在 `ensureAgyKeychain` 每次启动都会额外解锁该钥匙串并清掉
+  这条策略，写入得以静默落地；旧版本遗留的、已经锁上的钥匙串也会被就地修好。
+
+  有两个实测细节是关键。清策略必须先解锁：对锁定的钥匙串执行 `set-keychain-settings` 会弹出
+  同一个弹窗并以 `User canceled` 失败（5/5 复现）。而在名为 `login.keychain-db` 的钥匙串上
+  `unlock-keychain -p ''` 会以 51 退出——报 `The user name or passphrase you entered is not
+  correct.`——但**解锁是成功的**：这个保留名让 `security` 无论密码是什么都报错，所以该退出码
+  不携带任何信息，故意不作检查。`set-keychain-settings` 以**不带任何参数**的方式调用，这才是
+  macOS 读作"永不上锁"的写法（此后 `show-keychain-info` 报 `no-timeout`）；`-t 0` 与
+  `-t 0 -u` **都不可行**——两者都会挂起，随后以 `User canceled` 失败。
+
+- **准备钥匙串不再污染真实登录钥匙串的搜索列表。** `security` 从 `$HOME` 推导搜索列表，因此
+  此前那次在真实用户 HOME 下、却指向受管路径的 `create-keychain`，会把这个一次性钥匙串追加进
+  **真实**钥匙串的搜索列表，而 `delete-keychain` 并不能可靠地把它移除。每次准备都会留下一条指向
+  已被删除的临时目录的记录（实测已累积 22 条）。现在三次 `security` 调用都带着 `HOME=受管目录`
+  执行，不再向真实列表添加任何内容，同时该钥匙串仍是该受管 HOME 眼中的默认钥匙串。
+
+**测试**
+
+- 新增 `ensureAgyKeychain` 用例：先为受管 HOME 建立钥匙串并断言 `show-keychain-info` 不再报告
+  超时，随后把钥匙串锁上，再断言第二次调用仍能清掉策略——真实故障是"已经锁上"的钥匙串，而不是
+  新建的钥匙串。
+
 ## 0.5.8 (2026-09-24)
 
 ### English

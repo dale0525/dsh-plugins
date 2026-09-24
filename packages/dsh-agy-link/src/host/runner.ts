@@ -2,9 +2,9 @@
 // `agy -p` process as its own process group; abort and watchdog kill the
 // whole tree (agy re-spawns exec children). stderr is captured as a tail
 // for error attribution; stdout is streamed line-by-line to the caller.
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { accessSync, constants, existsSync, mkdirSync, readdirSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { delimiter, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import type { PluginConfig } from '../common/types.ts'
 
@@ -70,17 +70,54 @@ export function isolatedHomeEnv(dir: string): Record<string, string> {
  * `.gemini/antigravity-cli/antigravity-oauth-token`, and inventing a secret
  * to protect it would add a credential to manage for no gain.
  *
+ * Creating it is not enough. `create-keychain` leaves macOS's default policy —
+ * `lock-on-sleep timeout=300s` — so five minutes after agy's last write the
+ * keychain relocks, and the next hourly go-keyring write lands on a locked
+ * keychain. securityd then raises `"security" wants to use the "login" keychain`
+ * (the requester is agy's own `/usr/bin/security -i` helper, hence the
+ * attribution in the dialog) and the write blocks until agy's 5s SaveToken
+ * timeout gives up. Clearing the policy needs the keychain unlocked first:
+ * `set-keychain-settings` on a locked keychain raises the same dialog and fails
+ * with `User canceled`. Both steps therefore run on every spawn, so a keychain
+ * built by an earlier version is repaired in place rather than only new ones
+ * being built correctly.
+ *
+ * Neither status is inspected, because neither is trustworthy:
+ * `unlock-keychain -p ''` exits 51 (`passphrase not correct`) while unlocking
+ * successfully — the reserved `login` name makes `security` report that error
+ * whatever the password — and `set-keychain-settings` reports nothing useful
+ * either way. The test asserts the outcome instead: `show-keychain-info` must
+ * exit 0 and report no timeout.
+ *
  * The real user's home is left alone — it already has a login keychain, and
  * `security create-keychain` against it would be destructive.
  */
 export function ensureAgyKeychain(dir: string): void {
   if (process.platform !== 'darwin') return
-  if (dir === homedir()) return
+  // `resolve` so a trailing slash or a relative path cannot slip past the guard.
+  // The guard carries more weight than it used to: the function now *modifies*
+  // keychain settings, and relaxing the real login keychain to never-lock would be
+  // a silent downgrade of the user's own credentials.
+  if (resolve(dir) === resolve(homedir())) return
   const keychainDir = join(dir, 'Library', 'Keychains')
   const keychain = join(keychainDir, 'login.keychain-db')
-  if (existsSync(keychain)) return
-  mkdirSync(keychainDir, { recursive: true })
-  execFileSync('/usr/bin/security', ['create-keychain', '-p', '', keychain], { stdio: 'ignore' })
+  // Every call runs with HOME pointed at the managed dir. `security` resolves its
+  // search list from $HOME, so creating under the real user's HOME would append
+  // this throwaway keychain to the *real* login keychain's search list and leave
+  // the path behind after the temp dir is gone (measured: +1 stale entry per call).
+  // Scoped this way the same keychain is still what that HOME sees as its default.
+  const env = { ...process.env, HOME: dir }
+  if (existsSync(keychain) === false) {
+    mkdirSync(keychainDir, { recursive: true })
+    execFileSync('/usr/bin/security', ['create-keychain', '-p', '', keychain], { stdio: 'ignore', env })
+  }
+  // `create-keychain` writes under the process umask (0644 in practice) while the
+  // same token's plaintext sibling is 0600. Anything in the `staff` group can
+  // traverse the user's home, so the token must not be the readable copy.
+  chmodSync(keychain, 0o600)
+  spawnSync('/usr/bin/security', ['unlock-keychain', '-p', '', keychain], { stdio: 'ignore', env })
+  // No flags: macOS reads the absence of -t and -l as "never lock".
+  spawnSync('/usr/bin/security', ['set-keychain-settings', keychain], { stdio: 'ignore', env })
 }
 
 export const MIN_AGY_VERSION = '1.1.8'

@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { binCandidates, ensureAgyKeychain, isolatedHomeEnv, isCmdShim, resolveAgyBin, startAgyProcess, windowsQuote, buildStreamInputLine, shouldUsePromptStdin, ARGV_PROMPT_LIMIT, withAgyQuietEnv } from '../src/host/runner.ts'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -76,6 +76,43 @@ test('ensureAgyKeychain gives a managed HOME its own default keychain', async ()
         stdio: 'ignore',
       })
     }
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// `create-keychain` alone leaves macOS's default policy on the keychain:
+// `lock-on-sleep timeout=300s`. Five minutes after agy's previous write the
+// keychain relocks, and the next hourly go-keyring write hits a locked keychain —
+// securityd raises `"security" wants to use the "login" keychain` (the requester is
+// agy's `/usr/bin/security -i` helper) and the write blocks until agy's own 5s
+// SaveToken timeout gives up. Contract: provisioning leaves the keychain with no
+// lock policy, so a write always lands silently.
+test('ensureAgyKeychain leaves the managed keychain with no lock policy', async () => {
+  if (process.platform !== 'darwin') return
+  const dir = await mkdtemp(join(tmpdir(), 'agy-kc-'))
+  const keychain = join(dir, 'Library', 'Keychains', 'login.keychain-db')
+  const env = { ...process.env, HOME: dir }
+  // `show-keychain-info` reports on stderr, and reading it needs the keychain
+  // unlocked: while locked it exits 128 with `User canceled` and raises the very
+  // dialog under test. Both halves are the assertion — status 0 proves unlocked,
+  // the text proves no lock policy.
+  const settings = () => spawnSync('/usr/bin/security', ['show-keychain-info', keychain], { env, encoding: 'utf8' })
+  const assertUnlockedWithoutLockPolicy = (when: string) => {
+    const r = settings()
+    assert.equal(r.status, 0, `${when}: keychain must be unlocked, got ${r.status}: ${r.stderr}`)
+    assert.doesNotMatch(r.stderr, /timeout=\d+/, `${when}: keychain must not carry the 300s auto-lock`)
+  }
+  try {
+    ensureAgyKeychain(dir)
+    assertUnlockedWithoutLockPolicy('fresh')
+    // The reported failure is a keychain that has already relocked (acc_primary was
+    // built at 19:26 and locked by 22:48). Provisioning must recover it, not just
+    // build new ones correctly.
+    execFileSync('/usr/bin/security', ['lock-keychain', keychain], { env, stdio: 'ignore' })
+    ensureAgyKeychain(dir)
+    assertUnlockedWithoutLockPolicy('after relock')
+  } finally {
+    execFileSync('/usr/bin/security', ['delete-keychain', keychain], { env, stdio: 'ignore' })
     await rm(dir, { recursive: true, force: true })
   }
 })
