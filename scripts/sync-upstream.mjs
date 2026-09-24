@@ -908,7 +908,10 @@ function syncOne(target, ref) {  log('')
       { stdio: 'inherit' },
     )
     log('[sync-upstream] 完成。当前分支：' + branch)
-    log('[sync-upstream] 下一步：推送该分支并开 PR（workflow 只开 PR，绝不直接推 main）。')
+    log(
+      '[sync-upstream] 下一步：推送该分支并开 PR。workflow 的做法是把该分支 squash 回 main 并保持暂存态，' +
+        '再由 create-pull-request 建 PR 分支 —— 它只推 PR 分支，绝不推 main。',
+    )
   } catch (err) {
     if (err instanceof SyncError) throw err
     gitFailure(err, '当前在分支 ' + branch + '；处理完冲突后手动 commit，或 git checkout - 放弃。')

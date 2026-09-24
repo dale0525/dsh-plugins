@@ -126,6 +126,19 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_OUTPUT, "path=" + rel + "\n");
           '
 
+      # 跑同步脚本自己的契约测试。脚本是本次改动的核心，它的不变量（policy 顺序、
+      # owned 覆盖、基线推进）比任何一个包的测试更贴近这次变更；根 `pnpm test` 虽然
+      # 也包含 `node --test scripts/*.test.mjs`，但那条只在 publish.yml 里跑，
+      # 本 workflow 之前完全不覆盖脚本本身 —— 脚本回归会一路带进 PR。
+      #
+      # 必须在 `Apply upstream sync` **之前**跑：测试用合成上游树比对「本仓库当前
+      # 跟踪的文件集」（computeLists 读的是索引），前提是索引干净。同步之后索引里已多出
+      # 上游新增文件（imagegen 的 src/client/config-entry.tsx 就是这样被带进来的），
+      # 它随即不再落入 deleted，该断言必然失败 —— 实测 CI run 35975689540 的 imagegen
+      # job 正是死在这一条。测试只依赖 node 内置模块与脚本本身，不需要 node_modules。
+      - name: Test sync script
+        run: node --test scripts/sync-upstream.test.mjs
+
       - name: Apply upstream sync
         id: sync
         env:
@@ -133,31 +146,38 @@ jobs:
         run: |
           node scripts/sync-upstream.mjs --target "$TARGET_ID"
 
-      - name: Capture applied branch
-        id: branch
+      # sync 脚本把结果提交在一条**临时分支**上（为了工作区可回退），那条分支从未推送到 origin。
+      # create-pull-request 会用 HEAD 反推 workingBase，然后执行
+      # `git reset --hard origin/<workingBase>`；HEAD 停在临时分支上时这一步必然
+      # `fatal: ambiguous argument 'origin/sync-upstream/...'` 并以 128 失败。
+      # 实测：6 个 job 里有 4 个死在这里，而它们全都已经成功完成了同步 —— 只是 PR 没开出来。
+      #
+      # 把同步结果搬回 main 并保持**暂存**态，令 workingBase == base == main，
+      # 交给 action 自己去建 PR 分支（它只推 PR 分支，从不推 base）。
+      - name: Move sync result onto main
         run: |
-          echo "name=$(git rev-parse --abbrev-ref HEAD)" >> "$GITHUB_OUTPUT"
+          sync_branch=$(git rev-parse --abbrev-ref HEAD)
+          git checkout main
+          git merge --squash --no-commit "$sync_branch"
+          git branch -D "$sync_branch"
+          echo "staged=$(git diff --cached --name-only | wc -l | tr -d ' ') 个文件"
 
       # 刻意不冻结：subtree pull 会带入上游的依赖变更，冻结会直接失败。
       # （publish.yml 相反——发布必须可复现，那里用 --frozen-lockfile。）
       - name: Install dependencies
         run: pnpm install --frozen-lockfile=false
 
-      # 先跑同步脚本自己的契约测试，再跑包测试：脚本是本次改动的核心，它自己的
-      # 不变量（policy 顺序、owned 覆盖、基线推进）比任何一个包的测试更贴近这次变更。
-      # 根 `pnpm test` 包含 `node --test scripts/*.test.mjs`，但那个只在 publish.yml 里跑，
-      # 同步 workflow 之前完全不覆盖脚本本身 —— 脚本回归会一路带进 PR。
-      - name: Test sync script
-        run: node --test scripts/sync-upstream.test.mjs
-
+      # 脚本自身的契约已由上面的 `Test sync script` 覆盖（它在同步前跑，理由见那里）。
       - name: Test
         run: ${{ matrix.test }}
 
       - name: Open pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
-          # 只推 PR 分支；本 action 从不推 base（main）
-          branch: ${{ steps.branch.outputs.name }}
+          # 固定分支名，不取当前 HEAD：此时 HEAD 已在 main 上（见上一步），
+          # 拿 HEAD 会得到 "main" 并让 action 拒绝在 base 上开 PR。
+          # 该分支由 action 自己创建/更新；它只推这个 head，从不推 base（main）。
+          branch: chore/sync-upstream-${{ matrix.id }}
           base: main
           title: 'chore: sync upstream ${{ matrix.id }}'
           commit-message: 'chore: sync upstream ${{ matrix.id }}'
