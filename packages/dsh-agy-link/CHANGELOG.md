@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.3 (2026-09-24)
+
+### English
+
+**Fixes**
+
+- **The bridge now exposes `run_code`, which is what actually makes DSH tools reachable
+  from agy.** Under `mode: ptc` the tools registry collapses every native tool name unless
+  the call carries a registry-minted `parent` token (`dsh-tools`: `collapses()` denies any
+  model-direct call except `run_code`). The bridge is a transport dispatcher and cannot mint
+  that token, so listing `bash` / `read` / `subagent` only produced
+  `Error: unknown tool "<name>"` on every call. `run_code` is exempt from the collapse by
+  design, so it is now listed and accepted: agy writes a DSH SDK program and calls any native
+  tool from inside it. Verified live against the running bridge — `run_code` returned `42`,
+  a program calling `tools.read` returned `9`, and a program calling
+  `tools.subagent({provider:'workbuddy-ai', …})` returned the subagent's reply.
+
+### 中文 (Chinese)
+
+**修复**
+
+- **桥现在暴露 `run_code`，这才是让 agy 真正够得着 DSH 工具的那一步。** 在 `mode: ptc` 下，
+  工具注册表会折叠一切未携带注册表签发 `parent` token 的原生工具名（`dsh-tools` 的
+  `collapses()` 只放行 `run_code`）。桥是传输层分发器，无法签发该 token，因此即便列出了
+  `bash` / `read` / `subagent`，每次调用也只会得到 `Error: unknown tool "<name>"`。
+  `run_code` 按设计豁免折叠，故现在列出并放行：agy 写一段 DSH SDK 程序，在程序内调用任意原生工具。
+  已对运行中的桥真机验证 —— `run_code` 返回 `42`，程序内调用 `tools.read` 返回 `9`，
+  程序内调用 `tools.subagent({provider:'workbuddy-ai', …})` 返回子代理回复。
+
 ## 0.5.2 (2026-09-24)
 
 ### English

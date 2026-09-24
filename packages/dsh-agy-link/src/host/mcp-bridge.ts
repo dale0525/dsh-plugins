@@ -142,8 +142,11 @@ export function startMcpBridge(opts: {
         const tools = svc.schemas(listAgent)
           .filter((t) => allow.length === 0 || allowSet.has(t.name))
           .filter((t) => {
-            // internal transports and our own ask tool are not bridgeable
-            if (t.name === 'run_code' || t.name === 'agy_ask') return false
+            // run_code IS bridgeable: under mode:ptc it is the single callable
+            // entry point (dsh-tools collapses every other name without a
+            // parent token), so hiding it would leave agy with no way in.
+            // Only our own ask tool stays out.
+            if (t.name === 'agy_ask') return false
             const mapped = toMcpName(t.name)
             if (seen.has(mapped)) return false // collision after mapping
             seen.add(mapped)
@@ -173,7 +176,7 @@ export function startMcpBridge(opts: {
           return
         }
         const dshName = typeof parsed.dshName === 'string' ? parsed.dshName : ''
-        if (dshName === '' || dshName === 'run_code' || dshName === 'agy_ask') {
+        if (dshName === '' || dshName === 'agy_ask') {
           sendJson(res, 400, { error: 'bad tool name' })
           return;
         }

@@ -17,7 +17,7 @@ const fakeTools: ToolsServiceLike = {
   schemas: () => [
     { name: 'bash', description: 'run a shell command', parameters: { properties: { command: { type: 'string' } } } },
     { name: 'read', description: 'read a file', parameters: { properties: { path: { type: 'string' } } } },
-    { name: 'run_code', description: 'internal transport', parameters: {} },
+    { name: 'run_code', description: 'run a DSH SDK program', parameters: {} },
     { name: 'agy_ask', description: 'our own ask tool', parameters: {} },
   ],
   execute: async (input) => ({ content: [{ type: 'text', text: 'ran ' + input.name + ' ok' }] }),
@@ -39,7 +39,11 @@ test('mcp bridge: loopback endpoint serves tools and executes calls', async () =
     const body = (await res.json()) as { tools: Array<{ name: string; dshName: string }> }
     const names = body.tools.map((t) => t.dshName)
     assert.ok(names.includes('bash') && names.includes('read'))
-    assert.ok(!names.includes('run_code') && !names.includes('agy_ask'))
+    // run_code IS bridgeable: under mode:ptc it is the only callable entry
+    // point (every other native name is collapsed without a parent token), so
+    // hiding it would leave agy with nothing it can actually call.
+    assert.ok(names.includes('run_code'))
+    assert.ok(!names.includes('agy_ask'))
     // execute round trip
     const call = await fetch(bridge.url + '/call', {
       method: 'POST',
@@ -49,6 +53,15 @@ test('mcp bridge: loopback endpoint serves tools and executes calls', async () =
     const callBody = (await call.json()) as { ok: boolean; text: string }
     assert.equal(callBody.ok, true)
     assert.match(callBody.text, /ran bash ok/)
+    // run_code must survive the call guard too, not just the listing
+    const runCode = await fetch(bridge.url + '/call', {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + bridge.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ dshName: 'run_code', arguments: { code: 'return 1' } }),
+    })
+    const runCodeBody = (await runCode.json()) as { ok: boolean; text: string }
+    assert.equal(runCodeBody.ok, true)
+    assert.match(runCodeBody.text, /ran run_code ok/)
     // allowlist filters
   } finally {
     await bridge.close()
