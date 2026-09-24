@@ -3,6 +3,45 @@
 本插件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
 
+## [2.6.0] — 全面适配 DSH 0.1.7（图标新命名字重兼容 · 设置卡片改挂 plugins.row.config · 翻页器安全打开降级）
+
+### 破坏性适配 & 核心修复
+- **【核心适配】全面兼容 DSH 0.1.7（解决 PR #12，特别鸣谢 @StoneFancyX 极具前瞻性的严谨适配与核查！）**：
+  - **图标导出名重命名自适应（尺寸改字重）**：
+    - DSH 0.1.7 将核心 UI 图标的导出命名规则从数字尺寸（如 `IconCheckOutline16`）重构为字重规范（如 `IconCheckOutlineRegular`）；
+    - 实现 `pickIcon()` 兼容选择器，依次匹配旧名与新名，并在未匹配时自动降级为空组件，彻底杜绝新版本解析为 `undefined` 导致 React #130 抛错并拖垮整个气泡槽条目的问题。
+  - **插件设置页全新插槽改造与视图分流（`plugins.row.config`）**：
+    - DSH 0.1.7 正式移除旧版 `settings.plugin.item`，重构为侧边栏独立插件管理页。本插件改挂第三方专属插槽 `plugins.row.config`（key 为 `dsh-easyrewrite#dsh-easyrewrite`），由 DSH 原生提供 Configure 控件打开行详情页，规范优雅且杜绝混入官方分组；
+    - 严格遵循官方组件契约，按 `props.view`（`summary` / `page`）分流渲染，外壳由页面托管，消除表单在列表中的嵌套与重复折叠。
+  - **版本翻页器与跨版本会话切换安全降级（解决 0.1.7 下 `ctx.sessions.open is not a function` 异常）**：
+    - DSH 0.1.7 将打开会话接口从 `ctx.sessions.open` 正式迁移为 `uiWorkspace.openSession`；
+    - 统一实现 `invokeOpenSession` 跨版本调度函数，优先通过 `ctx.get("uiWorkspace").openSession` 打开会话，并平滑回退至老版本 `ctx.sessions.open`；
+    - 翻页器版本切换 `goToVersion` 全面接入 `safeOpenSession` 多通道安全降级网，并在 0.1.7 下通过 `retainedBy.mainView` 精准识别激活会话，杜绝历史版本切换时抛错或静默归档超时。
+  - **版本兼容上限标称推高**：
+    - 将插件内部已验证上限常量 `MAX_TESTED_DSH_VERSION` 同步推高至 `0.1.7-rc.2`，消除在 0.1.5~0.1.7 区间内设置卡片误报“较新，适配评估中”的提示。
+
+### 致谢
+- ❤️ 特别感谢 **@StoneFancyX** 提交的高质量 PR #12 以及详尽严密的 0.1.7 接口核查文档，为本次 0.1.7 的平滑适配奠定了最坚实的基础！
+
+
+## [2.5.5] — 气泡接入官方字号变量 · 兼容第三方批注插件 · 严格守护1080p协调比例
+
+### 改进 & 兼容性
+- **【生态兼容】气泡节点补充类名，完美兼容第三方批注插件（解决 Issue #11，特别鸣谢 @SDUTNB 反馈！）**：
+  - 为用户自绘气泡 div 节点显式补充 `className: "dsh-easyrewrite-bubble"`（包含 `bubble` 关键字）；
+  - 彻底解决搭配 `@changfenhuang/dsh-annotation`（批注插件）使用时，其 DOM 选择器 `row.querySelector('[class*="bubble"]')` 匹配落空导致原始批注块无法折叠隐藏的问题，实现批注块优雅裁切与折叠。
+- **【样式变量对齐】用户气泡与编辑框正文字号/行高接入官方 CSS 变量**：
+  - 将写死的 `fontSize: "14px"` 与 `lineHeight: "22px"` 替换为带默认回退的官方变量：
+    - `fontSize: "var(--dsh-content-font-size, 14px)"`
+    - `lineHeight: "calc(22px + var(--dsh-content-font-delta, 0px))"`
+  - 同步应用于普通气泡（`bubbleStyle`）、撤回待定灰色气泡（`grayBubbleStyle`）以及气泡编辑框（`taStyle`），当用户在 DSH 设置中调整全局字号（如 17px）时，气泡能够等比平滑缩放，与助手回复完美对齐。
+- **【1080p视觉守护】坚守原生协调比例，拒绝过度修改**：
+  - 严格保留用户经过精细调优的 `borderRadius: "14px"` 与 `padding: "8px 14px"`，不盲从扩大气泡外形，坚决守护默认 1080p 分辨率下的紧凑节奏与优雅视觉美感。
+
+### 致谢
+- ❤️ 特别感谢 **@SDUTNB** 在多插件真实生产环境（高字号 + 批注插件协同）下的详尽反馈与精准定位！
+
+
 ## [2.5.4] — Host 端直接清除 fork 继承幽灵队列 · 彻底终结排队发送旧消息缺陷
 
 ### 修复

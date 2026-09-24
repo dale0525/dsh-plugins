@@ -11,8 +11,8 @@
     "id": "easyrewrite",
     "url": "https://github.com/Renzic-Stone/DSH-EasyRewrite",
     "prefix": "packages/dsh-easyrewrite",
-    "baseline": "v2.5.4",
-    "baselineCommit": "ecd336ec81b6c561c3d75d7ee12ed177c404b28c"
+    "baseline": "v2.6.0",
+    "baselineCommit": "8ccdaf46238c09536bd776937273fa9d9d67578b"
   },
   "owned": [
     ".gitignore",
