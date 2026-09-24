@@ -375,8 +375,9 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
           host.log[res.ok ? 'info' : 'warn'](`stale lock recovery: ok=${res.ok} state=${res.state} detail=${res.detail}`);
         }
         if (!res.ok) {
-          // 拒绝是正常结果（活锁/无法证明 stale/二次验证失败），不是 500
-          return { status: 200, body: { ok: false, removed: false, state: res.state, reason: res.detail ?? '未判定为 stale，已拒绝回收' } };
+          // 拒绝是正常结果（活锁/无法证明 stale/二次验证失败），不是 500。
+          // 不回传 res.detail：它含 op/pid/路径等内部诊断，只进上面的日志（契约见 ui/types.ts）。
+          return { status: 200, body: { ok: false, removed: false, state: res.state } };
         }
         // 回收成功后 stale 分类已消失；锁态交由客户端重新拉取 status 刷新
         return { status: 200, body: { ok: true, removed: res.removed, state: res.state } };

@@ -234,13 +234,16 @@ export interface RecoveryLockStatus {
   attention: boolean;
 }
 
-/** POST /recovery/lock/recover 响应（显式回收 stale 残留锁；拒绝时 ok=false）。 */
+/**
+ * POST /recovery/lock/recover 响应（显式回收 stale 残留锁；拒绝时 ok=false）。
+ *
+ * 拒绝**不带原因字符串**：底层 recoverStaleLock 的 detail 含 op/pid/路径等内部诊断，
+ * 只进宿主日志；而「拒绝」对用户只有一种含义（该锁仍被判定有效），UI 用本地化文案表达即可。
+ */
 export interface RecoveryLockRecoverResult {
   ok: boolean;
   removed: boolean;
   state: string;
-  /** ok=false 时的拒绝原因（用户可读；不含 owner pid/op 等内部诊断）。 */
-  reason?: string;
 }
 
 /** GET /recovery/:operationId/preview 响应（只读，零写入）。 */

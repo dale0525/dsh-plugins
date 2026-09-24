@@ -202,7 +202,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   const pendingSave = useRef<SyncPushPayload | null>(null)
   /** 保存请求在途（防重入：保存中又排入新改动 → 完成后补发最新 payload） */
   const savingRef = useRef(false)
-  /** 挂载时读取同步状态（配置回填 + 上次同步时间 + 凭据状态 + 两通道 selection） */
+  /** 挂载时读取同步状态（配置回填 + 上次同步时间 + 凭据状态） */
   const loadStatus = async (): Promise<void> => {
     patch({ loading: true, loadError: null })
     try {
@@ -485,15 +485,11 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     setChannelOpen(false)
   }
 
-  /** 组装 push 的公共载荷（分区选择；快照恒为明文） */
-  // 推送范围由 Host 固定（除 workspaces / sessions 外的全部分区），请求体不再携带分区选择。
-  const buildPushPayload = (): SyncPushPayload => payload()
-
   /** 推送：直接覆盖远端（无预览、无确认）。 */
   const runPush = async (): Promise<void> => {
     patch({ busy: 'push', pushReport: null, pullReport: null })
     try {
-      const report = await api.push(buildPushPayload())
+      const report = await api.push(payload())
       // 成功即清空 token/webdavPassword（已安全使用完；绝不持久化）；失败保留以便重试
       patch({
         busy: null, pushReport: report,
@@ -562,7 +558,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     try {
       const res = await api.recoverStaleLock()
       if (res.ok) toast.ok(uiT('sync.lock.recovered'))
-      else toast.warn(res.reason !== undefined ? `${uiT('sync.lock.refused')}（${redact(res.reason)}）` : uiT('sync.lock.refused'))
+      else toast.warn(uiT('sync.lock.refused'))
       await loadStatus()
     } catch (err) {
       toast.error(`${t('toast.lockRecoverFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
@@ -670,9 +666,11 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             </div>
           </Card>
 
-          {/* 残留环境锁入口（issue #27/#31）：仅在锁非 FREE 时出现。此前 423 文案把用户指向
+          {/* 残留环境锁入口（issue #27/#31）：可见性由 Host 的 lock.attention 唯一决定 ——
+              只对 STALE_LOCK_DETECTED / UNKNOWN_STATE 为 true。此前 423 文案把用户指向
               已删除的「事故恢复」面板与 CLI → 用户无出路（本 issue 的原始症状）。
-              attention=true（残留锁/无法判定）才给可点按钮；活锁会自行释放，只陈述不催回收。 */}
+              注意不能按 state 判断可见：所有权文件不存在时 Host 也报 LOCKED（空闲态），
+              按 state 渲染会让空闲态常驻一条「另一任务持有」的假告警。 */}
           {lockPanel.visible && (
             <Card>
               <span className={css.groupLabel}>{uiT('sync.lock.title')}</span>

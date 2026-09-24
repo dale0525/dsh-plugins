@@ -392,14 +392,15 @@ test('S-32 api.recoverStaleLock()：POST /sync/lock/recover（无请求体），
   assert.equal(calls[0]?.init?.method, 'POST');
 });
 
-test('S-33 api.recoverStaleLock()：Host 拒绝回收（ok=false + reason）→ 如实透传，不谎称成功', async () => {
-  installFetchMock(() => jsonResponse(200, { ok: false, removed: false, state: 'LOCKED', reason: '未判定为 stale，已拒绝回收' }));
+test('S-33 api.recoverStaleLock()：Host 拒绝回收（ok=false）→ 如实透传，不谎称成功', async () => {
+  // 拒绝不带原因串：底层 detail 含 op/pid/路径（内部诊断，只进宿主日志）。
+  installFetchMock(() => jsonResponse(200, { ok: false, removed: false, state: 'LOCKED' }));
   const api = new SyncApi();
   const result = await api.recoverStaleLock();
   assert.equal(result.ok, false, '拒绝是正常结果，UI 必须据此提示而非报成功');
   assert.equal(result.removed, false);
   assert.equal(result.state, 'LOCKED');
-  assert.equal(result.reason, '未判定为 stale，已拒绝回收');
+  assert.equal('reason' in result, false, '内部诊断绝不回传响应体');
 });
 
 test('S-34 api.status()：解析 lock 摘要（残留锁入口的状态徽章数据源）', async () => {

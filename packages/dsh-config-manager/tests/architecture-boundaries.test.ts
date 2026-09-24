@@ -230,3 +230,48 @@ test('F7 架构边界：各层 import 依赖方向守护（违规即失败并列
     + `层间相对依赖一览（信息）：\n${uniqueCross.join('\n')}`,
   );
 });
+
+/**
+ * CSS Modules 引用完整性：TSX 里 css.X 引用的每个类名，config-manager.module.css 必须有定义。
+ *
+ * 背景（该守护存在的唯一理由）：css-modules.d.ts 把 CSS Module 声明为松散 Record<string, string>，
+ * 因此引用一个已删除的类名不会报类型错误，运行时 className 变成 undefined —— 元素静默失去布局与
+ * 选中底色，既有测试无一覆盖。真实发生过一次：删除「同步模式」分段控件时误删了 .modeTabs /
+ * .modeTab，而通道配置弹窗（GitHub / WebDAV）仍在用它们。
+ *
+ * 口径：CSS 去注释后取全部 .类名（含 .dataTable td.dim 这类复合/后代选择器，只匹配顶层选择器
+ * 会误报）；源码取 src/client/** 下的 css.类名。
+ */
+test('CSS Modules：TSX 引用的每个 css.X 都在 config-manager.module.css 中有定义', () => {
+  const cssPath = path.join(SRC_ROOT, 'client', 'config-manager.module.css');
+  const cssSource = fs.readFileSync(cssPath, 'utf8');
+  const cssNoComments = cssSource.replace(/\/\*[\s\S]*?\*\//g, '');
+  const defined = new Set<string>();
+  for (const m of cssNoComments.matchAll(/\.([A-Za-z][A-Za-z0-9_-]*)/g)) defined.add(m[1]!);
+
+  const clientRoot = path.join(SRC_ROOT, 'client');
+  const walk = (dir: string): string[] => {
+    const acc: string[] = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) acc.push(...walk(full));
+      else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) acc.push(full);
+    }
+    return acc;
+  };
+
+  const missing: string[] = [];
+  for (const file of walk(clientRoot)) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/\bcss\.([A-Za-z][A-Za-z0-9_]*)/g)) {
+      const name = m[1]!;
+      if (!defined.has(name)) missing.push(path.relative(SRC_ROOT, file).split(path.sep).join('/') + ' → css.' + name);
+    }
+  }
+
+  assert.deepEqual(
+    [...new Set(missing)].sort(),
+    [],
+    'TSX 引用了 CSS 中不存在的类名（className 会变成 undefined，元素静默失去样式）：',
+  );
+});

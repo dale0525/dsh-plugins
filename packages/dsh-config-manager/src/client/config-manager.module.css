@@ -895,7 +895,10 @@ button.statCard:focus-visible {
 }
 
 /* —— 分段控件（页内子视图切换） —— */
-.segGroup {
+/* `modeTabs/modeTab` 是通道配置弹窗（GitHub / WebDAV）的页签，与 segGroup/segItem 同一视觉模式，
+   但由不同组件使用，故两套类名并存：删掉任一都会让对应组件失去布局与选中底色。 */
+.segGroup,
+.modeTabs {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -906,7 +909,8 @@ button.statCard:focus-visible {
   margin: 0 0 10px;
 }
 
-.segItem {
+.segItem,
+.modeTab {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -923,16 +927,19 @@ button.statCard:focus-visible {
   white-space: nowrap;
 }
 
-.segItem:hover {
+.segItem:hover,
+.modeTab:hover {
   color: var(--dsw-alias-label-primary);
 }
 
-.segItem:focus-visible {
+.segItem:focus-visible,
+.modeTab:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 1px;
 }
 
-.segItem[data-active] {
+.segItem[data-active],
+.modeTab[data-active] {
   background: var(--dsw-alias-bg-layer-2);
   color: var(--dsw-alias-label-primary);
   font-weight: 600;
