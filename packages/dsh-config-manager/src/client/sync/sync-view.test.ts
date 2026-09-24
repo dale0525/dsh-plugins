@@ -37,17 +37,15 @@ test('sync-view: lockPanelModel 残留锁 → 需 attention、徽章 warn、按�
   assert.match(m.detail, /重试或重启 DSH 均无效/)
 })
 
-test('sync-view: lockPanelModel 活锁（LOCKED）→ 显示但不催回收、按钮禁用', () => {
+test('sync-view: lockPanelModel LOCKED 且 attention=false → 整块隐藏', () => {
+  // 实测（env-lock.ts:818-821）：所有权文件不存在时 Host 也返回 LOCKED，所以「空闲」与
+  // 「另一任务在跑」在 state 上不可区分 —— 只能按 attention 渲染，否则空闲态常驻假告警。
   const m = lockPanelModel({ state: 'LOCKED', attention: false }, false, zhUiT)
-  assert.equal(m.visible, true, '活锁仍要可见（解释为何被挡）')
-  assert.equal(m.attention, false)
-  assert.equal(m.badgeKind, 'info')
-  assert.equal(m.badgeLabel, '另一任务持有')
-  assert.equal(m.canRecover, false, '活锁不得提供回收按钮（会自行释放，且回收必被拒绝）')
+  assert.equal(m.visible, false, 'attention=false（含空闲态 LOCKED）不得渲染整块')
+  assert.equal(m.canRecover, false)
 })
 
-test('sync-view: lockPanelModel 无锁/无数据 → 整块隐藏', () => {
-  assert.equal(lockPanelModel({ state: 'FREE', attention: false }, false, zhUiT).visible, false)
+test('sync-view: lockPanelModel 无数据（旧宿主）→ 整块隐藏', () => {
   assert.equal(lockPanelModel(undefined, false, zhUiT).visible, false, '旧宿主不返回 lock → 不误报')
 })
 
@@ -59,16 +57,18 @@ test('sync-view: lockPanelModel 回收进行中 → 按钮禁用且文案切换'
 
 test('sync-view: lockPanelModel UNKNOWN_STATE → attention + 可回收（无法判定也须给用户出路）', () => {
   const m = lockPanelModel({ state: 'UNKNOWN_STATE', attention: true }, false, zhUiT)
+  assert.equal(m.visible, true)
   assert.equal(m.attention, true)
   assert.equal(m.badgeLabel, '锁状态无法判定')
   assert.equal(m.canRecover, true, '无法判定时 recoverStaleLock 内部会拒绝，但入口必须可达')
 })
 
-test('sync-view: lockPanelModel 未知 state 字符串 → 兜底文案，不抛错', () => {
-  const m = lockPanelModel({ state: 'SOMETHING_NEW', attention: false }, false, zhUiT)
+test('sync-view: lockPanelModel 未知 state + attention=true → 兜底文案，不抛错', () => {
+  const m = lockPanelModel({ state: 'SOMETHING_NEW', attention: true }, false, zhUiT)
   assert.equal(m.visible, true)
   assert.equal(m.badgeLabel, '锁不可用')
   assert.equal(m.badgeKind, 'info')
+  assert.equal(m.canRecover, true, 'attention=true 即给出口，不因 state 未知而锁死')
 })
 
 /* ---------------------------------------------------------------- 按钮状态 */

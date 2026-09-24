@@ -176,7 +176,6 @@ export const uiZh = {
   'sync.github.unknownError': '未知错误',
   // 残留环境锁（issue #27/#31：GUI 显式回收入口）
   'sync.lock.title': '残留配置锁',
-  'sync.lock.brief': '残留配置锁（持有进程已不存在），需先回收',
   'sync.lock.attention': '检测到上次异常退出残留的配置锁，推送/拉取都会被阻止；该锁不会自动清除，重试或重启 DSH 均无效。',
   'sync.lock.recover': '回收残留锁',
   'sync.lock.recovering': '正在回收…',
@@ -184,8 +183,6 @@ export const uiZh = {
   'sync.lock.refused': '未回收：该锁仍被判定为有效（可能另一个任务正在运行）。',
   'sync.lock.state.stale': '残留锁',
   'sync.lock.state.unknown': '锁状态无法判定',
-  'sync.lock.state.locked': '另一任务持有',
-  'sync.lock.state.free': '无锁',
   'sync.lock.state.error': '锁不可用',
   // 配置市场（m-market-ui：market-view 纯渲染模型文案；React 壳文案在 config-manager-market 命名空间）
   'market.statusLoading': '正在读取市场状态…',
@@ -394,7 +391,6 @@ export const uiEn: Record<UiTextKey, string> = {
   'sync.github.unknownError': 'Unknown error',
   // Stale environment lock (issue #27/#31: explicit recovery entry in the GUI)
   'sync.lock.title': 'Stale config lock',
-  'sync.lock.brief': 'Stale config lock (owner process is gone) — recover it first',
   'sync.lock.attention': 'A config lock left behind by an abnormal exit was detected; push and pull are both blocked. It is never cleared automatically — retrying or restarting DSH will not help.',
   'sync.lock.recover': 'Recover stale lock',
   'sync.lock.recovering': 'Recovering…',
@@ -402,8 +398,6 @@ export const uiEn: Record<UiTextKey, string> = {
   'sync.lock.refused': 'Not recovered: the lock is still judged valid (another task may be running).',
   'sync.lock.state.stale': 'Stale lock',
   'sync.lock.state.unknown': 'Lock state undetermined',
-  'sync.lock.state.locked': 'Held by another task',
-  'sync.lock.state.free': 'No lock',
   'sync.lock.state.error': 'Lock unavailable',
   'market.statusLoading': 'Reading market status…',
   'market.statusUnconfigured': 'No markets added (enter a public Git repository URL)',

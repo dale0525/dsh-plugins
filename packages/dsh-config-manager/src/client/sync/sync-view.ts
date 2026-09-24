@@ -35,15 +35,19 @@ function lockBadge(state: string, t: UiT): { label: string; kind: LockPanelModel
   switch (state) {
     case 'STALE_LOCK_DETECTED': return { label: t('sync.lock.state.stale'), kind: 'warn' }
     case 'UNKNOWN_STATE': return { label: t('sync.lock.state.unknown'), kind: 'warn' }
-    case 'LOCKED': return { label: t('sync.lock.state.locked'), kind: 'info' }
-    case 'FREE': return { label: t('sync.lock.state.free'), kind: 'ok' }
     default: return { label: t('sync.lock.state.error'), kind: 'info' }
   }
 }
 
 /**
- * 残留锁面板模型。**可点判据恒为 attention**：与 Host 的 lockState() 投影同一套规则
- * （STALE_LOCK_DETECTED / UNKNOWN_STATE 才催回收），避免 UI 自造第二套判据。
+ * 残留锁面板模型。**可见与可点判据都恒为 attention**：与 Host 的 lockState() 投影同一套
+ * 规则（STALE_LOCK_DETECTED / UNKNOWN_STATE），避免 UI 自造第二套判据。
+ *
+ * 为什么**不能**按 state 判断可见性：Host 的 LockState 里根本没有「空闲」取值——所有权文件
+ * 不存在时 inspectLockState() 返回的是 LOCKED（"可能正被创建中"，见 env-lock.ts:818-821）。
+ * 于是「空闲」与「另一任务正在运行」在 state 上不可区分，按 state 渲染会让空闲态常驻一条
+ * 「另一任务持有」的假告警。attention 才是 Host 给出的唯一可操作信号。
+ *
  * 是否真的能回收仍由 Host 的 recoverStaleLock 内部重做判定，UI 不预判。
  */
 export function lockPanelModel(
@@ -51,15 +55,14 @@ export function lockPanelModel(
   recovering: boolean,
   t: UiT = zhUiT,
 ): LockPanelModel {
-  const state = lock?.state ?? 'FREE'
-  const badge = lockBadge(state, t)
+  const badge = lockBadge(lock?.state ?? '', t)
   const attention = lock?.attention === true
   return {
-    visible: lock !== undefined && state !== 'FREE',
+    visible: attention,
     attention,
     badgeLabel: badge.label,
     badgeKind: badge.kind,
-    detail: attention ? t('sync.lock.attention') : t('sync.lock.brief'),
+    detail: t('sync.lock.attention'),
     label: recovering ? t('sync.lock.recovering') : t('sync.lock.recover'),
     canRecover: attention && !recovering,
   }
