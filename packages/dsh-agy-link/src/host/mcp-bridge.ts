@@ -225,10 +225,14 @@ export function mcpConfigPath(home: string): string {
  * replaced: this file is agy's own (users keep other servers in it, and agy
  * may accept JSON the strict parser rejects), so a config the plugin cannot
  * understand is left for its owner instead of being flattened.
+ *
+ * An EMPTY file is the one exception: it holds no foreign servers to protect,
+ * and agy leaves a zero-byte mcp_config.json behind on some installs, so
+ * treating it as opaque would silently disable the bridge forever.
  */
 export function mergeMcpConfig(previous: string | null, bridge: McpBridge): string {
   let root: Record<string, unknown> = {}
-  if (previous !== null) {
+  if (previous !== null && previous.trim() !== '') {
     try {
       const v: unknown = JSON.parse(previous)
       if (v === null || typeof v !== 'object' || Array.isArray(v)) return previous

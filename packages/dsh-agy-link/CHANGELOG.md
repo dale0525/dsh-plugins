@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.1 (2026-09-24)
+
+### English
+
+**Fixes**
+
+- **A zero-byte `mcp_config.json` no longer disables the reverse MCP bridge.** `mergeMcpConfig`
+  treats a document it cannot parse as foreign and returns it byte-identical — correct for a
+  hand-written config, wrong for an empty file. agy leaves a 0-byte
+  `$HOME/.gemini/config/mcp_config.json` behind on some installs, and `JSON.parse('')` throws, so the
+  bridge entry was never written: on such a machine agy could not call any DSH tool, and the failure
+  was silent (the rest of `syncAgyEnv` still succeeded). An empty or whitespace-only document is now
+  treated as "no document yet", the same as a missing file.
+
+### 中文 (Chinese)
+
+**修复**
+
+- **零字节的 `mcp_config.json` 不再让反向 MCP 桥失效。** `mergeMcpConfig` 把「解析不了」的文档
+  当作他人所有、原样返回 —— 对手写配置是对的，对空文件是错的。agy 在部分安装里会留下 0 字节的
+  `$HOME/.gemini/config/mcp_config.json`，而 `JSON.parse('')` 会抛异常，于是桥的条目永远写不进去：
+  这类机器上 agy 无法调用任何 DSH 工具，且失败是静默的（`syncAgyEnv` 的其余部分照常成功）。
+  现在空文档（含只有空白字符）与文件不存在同等对待，按「尚无文档」处理。
+
 ## 0.5.0 (2026-09-24)
 
 ### English

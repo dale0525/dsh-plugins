@@ -268,6 +268,11 @@ test('mergeMcpConfig targets agy own config and preserves foreign servers', asyn
     assert.equal(mergeMcpConfig(opaque, bridge), opaque)
     // No file yet is the normal first-run case.
     assert.ok(JSON.parse(mergeMcpConfig(null, bridge)).mcpServers['dsh-tools'])
+    // An existing but EMPTY file is the same case, not an opaque document:
+    // agy leaves a zero-byte mcp_config.json behind, and honouring it as
+    // "foreign" would leave the bridge unconfigured forever.
+    assert.ok(JSON.parse(mergeMcpConfig('', bridge)).mcpServers['dsh-tools'])
+    assert.ok(JSON.parse(mergeMcpConfig('\n', bridge)).mcpServers['dsh-tools'])
   } finally {
     await bridge.close()
   }
