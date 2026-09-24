@@ -93,7 +93,7 @@ describe('WorkBuddy adapter model descriptors', () => {
 
 describe('request-image contract across host generations', () => {
   /**
-   * The exact failure from docs/image-request-maxpixels-2026-09-23.md: a
+   * The exact failure observed on ≤0.1.5 hosts: a
    * link-installed plugin runs the pi-ai it was built with (0.1.6, which hands
    * `readImageRequest` a per-image target with no `maxPixels`) against a host
    * attachment service from ≤0.1.5 (which validates `maxPixels` and throws
