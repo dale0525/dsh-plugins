@@ -1394,6 +1394,9 @@ test('上游新增的 .gitignore 忽略路径不得被带进索引，非忽略�
     write(upstream, 'src/new.ts', 'export const brandNew = true\n')
     write(upstream, 'lib/chunk-ABC.js', 'export const WORKBUDDY_CONNECT_VERSION = "9.9.9"\n')
     write(upstream, 'assets/6.png', 'PNG-BYTES\n')
+    // 嵌套一层：与 lib/chunk-ABC.js 共享 lib/ 父目录。用来钉住「删完一层分支后，
+    // 共享的父目录也必须继续被检查并删除」——带 visited 去重的实现会在这里漏删 lib/。
+    write(upstream, 'lib/nested/deep.js', 'export const deep = 1\n')
     up('add', '-A')
     up('commit', '-q', '-m', 'v2')
     up('tag', 'v1.1.0')
@@ -1479,6 +1482,17 @@ test('上游新增的 .gitignore 忽略路径不得被带进索引，非忽略�
     assert.ok(
       !existsSync(join(fork, 'packages/foo/assets')),
       '清空后的 assets/ 目录必须一并删除',
+    )
+    // 判据 2c：共享父目录的多分支。lib/chunk-ABC.js 与 lib/nested/deep.js 都删掉后，
+    // lib/nested/ 与 lib/ 都必须消失。带 visited 去重的实现会先因 lib/nested 非空而
+    // 把 lib 记进 visited，删掉 nested 后便再也不检查 lib，导致空的 lib/ 残留。
+    assert.ok(
+      !existsSync(join(fork, 'packages/foo/lib/nested')),
+      '嵌套的忽略目录必须删除',
+    )
+    assert.ok(
+      !existsSync(join(fork, 'packages/foo/lib')),
+      '多分支共享的父目录在子目录删净后也必须删除（visited 去重会漏掉这里）',
     )
     // 判据 3（反面）：非忽略的上游新增源码必须照常同步进来 —— 计划 L139/L172 的验收项
     assert.ok(

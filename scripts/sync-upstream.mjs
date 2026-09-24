@@ -749,11 +749,12 @@ function snapshotResurrectedIgnored(target, upstreamPaths) {
  * 「no built bundles in lib/」——把一个已修好的同步问题伪装成构建问题。
  */
 function pruneEmptyParents(absPaths, stopAt) {
-  const seen = new Set()
   for (const abs of absPaths) {
+    // 不用 visited 集合去重：dirname 每轮都严格缩短路径，循环必然终止；
+    // 反过来，把「本轮因非空而没删」的目录记下来会永久跳过它 —— 于是
+    // lib/a/x.js 与 lib/b/y.js 都删掉后，lib/ 仍留在磁盘上（实测）。
     let dir = dirname(abs)
-    while (dir !== stopAt && dir.startsWith(stopAt + sep) && !seen.has(dir)) {
-      seen.add(dir)
+    while (dir !== stopAt && dir.startsWith(stopAt + sep)) {
       if (!existsSync(dir) || readdirSync(dir).length > 0) break
       rmdirSync(dir)
       dir = dirname(dir)
