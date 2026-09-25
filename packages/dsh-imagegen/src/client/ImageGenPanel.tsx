@@ -741,21 +741,23 @@ export function ImageGenPanel(props: {
     const refresh = (): void => {
       void api.taskList().then(next => {
         if (disposed) return
+        const previous = tasksRef.current
         const newlyCompleted = next.filter(task => task.status === 'completed'
-          && task.result !== undefined
-          && !tasksRef.current.some(old => old.id === task.id && old.status === 'completed'))
+          && task.resultAvailable
+          && !previous.some(old => old.id === task.id && old.status === 'completed'))
+        const completed = next.find(task => task.status === 'completed'
+          && !previous.some(old => old.id === task.id && old.status === 'completed')
+          && !comparison?.taskIds.includes(task.id))
         tasksRef.current = next
-        setTasks(previous => {
-          const completed = next.find(task => task.status === 'completed'
-            && !previous.some(old => old.id === task.id && old.status === 'completed')
-            && !comparison?.taskIds.includes(task.id))
-          if (completed?.result !== undefined) {
-            setImages(completed.result.images)
-            if (completed.result.history !== undefined) setHistory(completed.result.history)
-            setError(completed.result.historyError ?? null)
-          }
-          return next
-        })
+        setTasks(next)
+        if (completed !== undefined) {
+          void api.taskGet(completed.id).then(full => {
+            if (disposed || full.result === undefined) return
+            setImages(full.result.images)
+            if (full.result.history !== undefined) setHistory(full.result.history)
+            setError(full.result.historyError ?? null)
+          }).catch(() => {})
+        }
         if (newlyCompleted.length > 0) {
           void api.historyList().then(entries => {
             if (!disposed) setHistory(entries)
