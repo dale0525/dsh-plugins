@@ -969,9 +969,9 @@ test('every reasoning-only turn stall trips at the shipped default', () => {
 })
 
 test('the old default of 512 misses them — this is the regression', () => {
-  // Measured over 22 sessions (9195 calls): 512 catches 0 of 56 reasoning-only
-  // turn stalls, 384 catches 40. Two of these three captures are invisible to
-  // 512, which is why the default moved.
+  // Measured over 22 sessions (9195 calls): of the 56 reasoning-only calls with
+  // >=384 reasoning chars, 512 catches 0 and 384 catches 40. Two of these three
+  // captures are invisible to 512, which is why the default moved.
   const caught = STALL.stalls.filter(
     (s) => trip(s.text, { ...CONFIG, minRepeatedReasoningCycleChars: 512 }) > 0,
   )

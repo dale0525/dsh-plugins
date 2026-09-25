@@ -308,11 +308,12 @@ export interface Config {
    * the reasoning rule demands a longer verbatim run before truncating a call.
    *
    * Measured across 22 sessions (9195 calls), the calls this rule exists to catch
-   * — reasoning-only, ending the turn with no text and no tool call — repeat a
-   * phrase pool in their last 384-516 characters. `512` catches **0 of 56** of
-   * them; `384` catches 40 (71%). The earlier `512` was calibrated on a single
-   * reproduction where the bleeds happened to run long, and its "costs no recall"
-   * claim does not survive the wider corpus.
+   * — reasoning-only, ending the turn with no text and no tool call — number 60
+   * (56 of them with >=384 reasoning chars). They repeat a phrase pool in their
+   * last 384-516 characters. `512` catches **0 of 56** of them; `384` catches 40
+   * (71%). The earlier `512` was calibrated on a single reproduction where the
+   * bleeds happened to run long, and its "costs no recall" claim does not survive
+   * the wider corpus.
    */
   minRepeatedReasoningCycleChars?: number
   /**
