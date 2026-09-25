@@ -11,8 +11,8 @@
     "id": "better-reasoning-effort",
     "url": "https://github.com/HaoyueQin/dsh-better-reasoning-effort",
     "prefix": "packages/dsh-better-reasoning-effort",
-    "baseline": "v0.4.0",
-    "baselineCommit": "833c6e0c96716412c1d74a22af4c9286cc7fcd3c"
+    "baseline": "v0.4.1",
+    "baselineCommit": "3d0175bc4236651d175691330b260839fa0c2e63"
   },
   "owned": [
     "cordis.patch.yml",

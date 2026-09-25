@@ -239,31 +239,51 @@ export const KNOWLEDGE_BASE: readonly KnowledgeEntry[] = [
     note: 'DeepSeek 视觉实验版 id（deepseek-v4-flash-vision-exp）。官方目录已标注该模型退役，名字仍被接受、由现行 deepseek-flash 提供服务——图片输入现已由 deepseek-flash 原生提供。',
   },
   {
+    id: 'deepseek-v4-1-flash',
+    // V4.1-Flash is DeepSeek's CURRENT flagship and it takes image input, which
+    // the shared `deepseek-v4` stem cannot express: that entry carries the text
+    // floor its pro/legacy siblings share, and one modal answer cannot be both.
+    // This entry keys every V4.1 spelling, and it must stay ahead of the base
+    // stem -- the longest-hit rule guarantees that, these patterns are strictly
+    // longer -- so an id, or a display name, that says "V4.1 Flash" declares
+    // images even when the relay invented the id itself.
+    // 'deepseek-flash' is the CURRENT official id (2026-09-10) and belongs
+    // here, not to the stem: the pricing page serves it as V4.1-Flash, and a
+    // third-party reseller exposing DeepSeek's own model under that name means
+    // the same model.
+    patterns: ['deepseek-v4.1-flash', 'deepseek-flash'],
+    efforts: { off: 'none', low: 'low', high: 'high', max: 'max' },
+    defaultEffort: 'high',
+    compat: { thinkingFormat: 'deepseek', supportsReasoningEffort: true },
+    input: ['text', 'image'],
+    contextWindow: 1_048_576,
+    maxTokens: 384_000,
+    note: 'DeepSeek-V4.1-Flash（2026-09-10 发布的现行官方模型，官方 id 为 deepseek-flash；25 万并发、**原生图片输入**）。V4.1 的各写法（deepseek-flash、deepseek-v4.1-flash、deepseek-v4-1-flash，以及带日期后缀的第三方变体）都归此条——纯文本的 deepseek-v4 主干不再吞掉它们。官方枚举同 V4 系：Off（thinking:"disabled"）/ Low / High / Max，默认 High；容量 1,048,576 上下文 / 最大输出 384K。',
+  },
+  {
     id: 'deepseek-v4',
-    // One pattern covers the family: every serving suffixes the base id
-    // (deepseek-v4-flash, deepseek-v4-pro, deepseek-v4-flash-free ...), so
-    // the shared stem keys them all -- including free/aggregator spellings
-    // the official catalog never lists. Closing thinking is the
-    // 'thinking: disabled' object, so the off spelling is a non-null
-    // placeholder that arms the deepseek format's disabled branch. The
-    // placeholder must stay 'none': pi-ai's deepseek completions branch only
-    // checks non-null (any string arms thinking:disabled), while the same map
-    // rides the Responses API as reasoning.effort, whose official DeepSeek
-    // values are none/low/high/max -- 'off' would be a 400 there.
-    // 'deepseek-flash' is the CURRENT official id (2026-09-10): the pricing
-    // page's compatibility note accepts the legacy deepseek-v4-flash /
-    // deepseek-v4-flash-vision-exp spellings but serves the same current
-    // model, so one declaration covers both. It also matches third-party
-    // resellers that expose DeepSeek's own model under that name, which is
-    // the AI's own least-surprising reading of the id.
-    patterns: ['deepseek-v4', 'deepseek-flash'],
+    // One pattern covers the family's TEXT-floor members: every serving
+    // suffixes the base id (deepseek-v4-flash, deepseek-v4-pro,
+    // deepseek-v4-flash-free ...), so the shared stem keys them all --
+    // including free/aggregator spellings the official catalog never lists.
+    // Closing thinking is the 'thinking: disabled' object, so the off spelling
+    // is a non-null placeholder that arms the deepseek format's disabled
+    // branch. The placeholder must stay 'none': pi-ai's deepseek completions
+    // branch only checks non-null (any string arms thinking:disabled), while
+    // the same map rides the Responses API as reasoning.effort, whose official
+    // DeepSeek values are none/low/high/max -- 'off' would be a 400 there.
+    // The stem deliberately stops at 'deepseek-v4': the image-capable V4.1
+    // generation keys its own strictly longer entry above, while this entry
+    // keeps the retired deepseek-v4-flash spelling and the text-only
+    // deepseek-v4-pro, whose declarations agree with its text floor.
+    patterns: ['deepseek-v4'],
     efforts: { off: 'none', low: 'low', high: 'high', max: 'max' },
     defaultEffort: 'high',
     compat: { thinkingFormat: 'deepseek', supportsReasoningEffort: true },
     input: ['text'],
     contextWindow: 1_048_576,
     maxTokens: 384_000,
-    note: 'DeepSeek 官方枚举 Low / High / Max（默认 High；minimal、medium、xhigh 兼容映射，ultra→max），Off 即 thinking:"disabled"（Responses API 下 off 以 reasoning.effort:"none" 表示）。官方模型现为 deepseek-flash（= DeepSeek-V4.1-Flash，2026-09-10 发布，25 万并发、原生图片输入）与 deepseek-v4-pro（= DeepSeek-V4-Pro-0813，2026-09-14 起请求全量路由到 V4.1-Flash、不支持图片）；deepseek-v4-flash 与 deepseek-v4-flash-vision-exp 是已退役模型的兼容别名。容量：1,048,576 上下文 / 最大输出 384K（393,216；默认非思考 8K、思考 64K、effort=max 时 128K）。',
+    note: 'DeepSeek 官方枚举 Low / High / Max（默认 High；minimal、medium、xhigh 兼容映射，ultra→max），Off 即 thinking:"disabled"（Responses API 下 off 以 reasoning.effort:"none" 表示）。本条目是 V4 家族的**纯文本**成员：deepseek-v4-pro（= DeepSeek-V4-Pro-0813，官方不支持图片）与已退役模型的兼容别名 deepseek-v4-flash（deepseek-v4-flash-vision-exp 另有视觉条目）。**收图的 V4.1-Flash（官方 id deepseek-flash）另有专门条目**，其 input 含 image。容量：1,048,576 上下文 / 最大输出 384K（393,216；默认非思考 8K、思考 64K、effort=max 时 128K）。',
   },
   {
     id: 'deepseek-v3',
@@ -698,17 +718,38 @@ export const KNOWLEDGE_BASE: readonly KnowledgeEntry[] = [
     note: 'Gemini 通用安全档：Low / Medium / High（官方 OpenAI 兼容映射表另收 minimal：2.5 系映射为 1,024 预算、3.1 Flash-Lite/3 Flash 原生 minimal、3.1 Pro 落 low）。none 仅能关 2.5 非 Pro；2.5 Pro 与 3 代不可关；各型默认不一（flash-lite 默认关）。官方另收音频/视频/PDF。',
   },
   {
+    id: 'xai-grok-4-7',
+    // grok-4.7 shipped after the 2026-08 pass that read it as 404 upstream;
+    // that reading is retired here. xAI's own docs were unreachable for this
+    // pass, so every field below is a public-catalog reading rather than a
+    // first-party one: OpenRouter publishes the slug x-ai/grok-4.7 with
+    // reasoning_effort in its supported_parameters, and models.dev records
+    // the ladder as low/medium/high/xhigh -- the same four steps 4.6 takes,
+    // which is why the same declaration shape is reused. The default level
+    // and whether thinking can be closed are NOT established, so neither an
+    // `off` nor a defaultEffort is declared. Capacity follows the sources
+    // that agree (500K context); max output disagrees across catalogs
+    // (450K vs 500K), so it stays out.
+    patterns: ['grok-4.7'],
+    efforts: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh' },
+    compat: { thinkingFormat: 'openai', supportsReasoningEffort: true },
+    input: ['text', 'image'],
+    contextWindow: 500_000,
+    note: 'Grok 4.7（上游快照 grok-4.7-20260916）：档位 Low / Medium / High / XHigh——**取自公开目录**（OpenRouter 的 supported_parameters、models.dev 对 docs.x.ai 的转述），本次 xAI 官方文档站不可达、未能一手证实；默认档位与"能否关闭思考"同样未证实，故不声明 Off，也不写默认档。带图输入（目录记 text+image+file，PDF 存疑），500K 上下文；最大输出各目录给出 450K 与 500K 两种值，按"分歧即不写"处理。2026-08 那次"grok-4.7 不存在（官方 404）"的结论已随发布作废。',
+  },
+  {
     id: 'xai-grok-high',
     patterns: ['grok-4.6'],
     // grok-4.6 adds xhigh on top of low/medium/high (default) and cannot
     // close thinking (docs.x.ai model page + reasoning capability page).
-    // grok-4.7 does NOT exist upstream (404, re-checked 2026-08-24).
+    // (An earlier pass read grok-4.7 as 404 upstream; it shipped later --
+    // see the entry above.)
     efforts: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh' },
     defaultEffort: 'high',
     compat: { thinkingFormat: 'openai', supportsReasoningEffort: true },
     input: ['text', 'image'],
     contextWindow: 500_000,
-    note: 'Grok 4.6 档位：Low / Medium / High(默认) / XHigh，思考不可关闭；带图输入、500K 上下文。grok-4.7 不存在（官方 404 已核），已除名。',
+    note: 'Grok 4.6 档位：Low / Medium / High(默认) / XHigh，思考不可关闭；带图输入、500K 上下文。Grok 4.7 见上一条（此前记为"不存在"，已随发布作废）。',
   },
   {
     id: 'xai-grok-4-5',
@@ -1050,6 +1091,22 @@ export const KNOWLEDGE_BASE: readonly KnowledgeEntry[] = [
     note: '混元 Hy4 preview：官方 README——reasoning 默认 high（深度思考），关闭经 chat_template_kwargs.reasoning_effort=no_think；官方规格表 1M 上下文（770B-A49B MoE，Gated DSA）。low 档官方未列，如有请手调；视觉未声明，按需手勾。来源：Tencent-Hunyuan/Hy4-preview 官方 README。',
   },
   {
+    id: 'step-5-preview',
+    // StepFun's official model is 'step-5-preview' (there is no bare
+    // 'step-5'), carrying the same three-step reasoning_effort ladder as the
+    // 3.x line with no way to close thinking -- hence no `off`. The official
+    // page calls medium the "default recommendation". 1M context, 64K max
+    // output, native image + video input.
+    patterns: ['step-5'],
+    efforts: { low: 'low', medium: 'medium', high: 'high' },
+    defaultEffort: 'medium',
+    compat: { thinkingFormat: 'openai', supportsReasoningEffort: true },
+    input: ['text', 'image'],
+    contextWindow: 1_000_000,
+    maxTokens: 65_536,
+    note: '阶跃 Step-5-Preview（官方 id 即 step-5-preview，无裸 step-5；pattern 取家族主干以兼容网关写法）：档位 Low / Medium(官方标"默认推荐") / High，思考不可关闭；原生图片 + 视频输入；1M 上下文、64K 最大输出（官方另注 max_tokens 默认 INF、与 64K 上限并存，以端点实测为准）。',
+  },
+  {
     id: 'step-3-7',
     // StepFun step-3.7 is the vision-capable generation; 3.5 stayed
     // text-only on the official serving plan.
@@ -1109,6 +1166,42 @@ export const KNOWLEDGE_BASE: readonly KnowledgeEntry[] = [
     input: ['text', 'image'],
     contextWindow: 1_048_576,
     note: 'MiniMax-M3：官方 thinking 参数 enabled/adaptive/disabled（无 effort 档），开=High、关=disabled；原生多模态（图/视频，核心词表仅含图），1M 上下文。',
+  },
+  {
+    id: 'mimo-v2-6',
+    // Xiaomi MiMo v2.6 (and the v2.5 generation it supersedes) takes a required
+    // thinking.type toggle (enabled/disabled, default enabled) plus a required
+    // reasoning.effort. The official page lists the accepted effort values as
+    // none/minimal/low/medium/high/xhigh/max/ultra and normalizes minimal to
+    // low and xhigh/max/ultra to high -- but says outright that reasoning
+    // strength is not differentiated yet, so the ladder below is what the
+    // endpoint ACCEPTS, not a set of levels that behave differently today.
+    // xhigh/max are deliberately absent: the endpoint folds them into high.
+    // One entry covers both generations: the same models are documented under
+    // one contract, and the family's only text-only member (v2.5-pro) keys its
+    // own entry with a strictly longer pattern.
+    patterns: ['mimo-v2.6', 'mimo-v2.5'],
+    efforts: { off: 'none', low: 'low', medium: 'medium', high: 'high' },
+    compat: { thinkingFormat: 'openai', supportsReasoningEffort: true },
+    input: ['text', 'image'],
+    contextWindow: 1_048_576,
+    maxTokens: 131_072,
+    note: '小米 MiMo v2.6 系列（mimo-v2.6-pro / -flash / -pro-ultraspeed；1M 上下文 / 128K 最大输出、原生全模态）与其前代 mimo-v2.5。官方文档：thinking.type（enabled/disabled，默认 enabled）+ reasoning.effort（none 关闭；其余合法值均开启，且**现阶段暂未区分推理强度**——minimal 归一为 low、xhigh/max/ultra 归一为 high），因此这里声明的是端点**接受**的档位 Off / Low / Medium / High（xhigh、max 不声明，端点只会折叠为 high）。思考模式下 temperature / top_p 不可自定义（强制 1.0 / 0.95）；带工具调用的历史轮必须完整回传 reasoning_content，否则 400。mimo-v2.5 与 v2.5-pro 官方定于 2026-10-21 下线。',
+  },
+  {
+    id: 'mimo-v2-5-pro',
+    // The v2.5 flagship is the family's only text-only member -- the official
+    // capability table lists no multimodal understanding for it (models.dev
+    // agrees, attachment=false), while every v2.6 model and mimo-v2.5 do.
+    // Strictly longer pattern than the family entry's 'mimo-v2.5', so the
+    // longest-hit rule routes it here.
+    patterns: ['mimo-v2.5-pro'],
+    efforts: { off: 'none', low: 'low', medium: 'medium', high: 'high' },
+    compat: { thinkingFormat: 'openai', supportsReasoningEffort: true },
+    input: ['text'],
+    contextWindow: 1_048_576,
+    maxTokens: 131_072,
+    note: '小米 MiMo v2.5-Pro：该家族唯一的**纯文本**成员（官方能力表未列全模态理解），1M 上下文 / 128K 最大输出，推理契约与 v2.6 系列相同（thinking.type + reasoning.effort，none 关闭、其余档位暂不区分强度）。官方定于 2026-10-21 下线。',
   },
   {
     id: 'baidu-ernie',
