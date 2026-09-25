@@ -301,13 +301,18 @@ export interface Config {
   maxRepeatedReasoningCycleChars?: number
   /**
    * Shortest reasoning tail that must be an exact repetition of one period
-   * before the reasoning rule ends the stream. Default `512`.
+   * before the reasoning rule ends the stream. Default `384`.
    *
    * Higher than the visible-output default (`256`) on purpose: reasoning is
    * private scratch space that legitimately restates a heading or a plan step, so
    * the reasoning rule demands a longer verbatim run before truncating a call.
-   * Measured, `512` and `1024` select exactly the same seven calls as `256` on
-   * the reproduction, so the stricter value costs no recall.
+   *
+   * Measured across 22 sessions (9195 calls), the calls this rule exists to catch
+   * — reasoning-only, ending the turn with no text and no tool call — repeat a
+   * phrase pool in their last 384-516 characters. `512` catches **0 of 56** of
+   * them; `384` catches 40 (71%). The earlier `512` was calibrated on a single
+   * reproduction where the bleeds happened to run long, and its "costs no recall"
+   * claim does not survive the wider corpus.
    */
   minRepeatedReasoningCycleChars?: number
   /**
@@ -478,7 +483,7 @@ export const Config: z<Config, ConfigRefs> = z.object({
   maxRepeatedCycleChars: z.number().step(1).min(0).default(512).volatile(),
   minRepeatedCycleChars: z.number().step(1).min(2).default(256).volatile(),
   maxRepeatedReasoningCycleChars: z.number().step(1).min(0).default(512).volatile(),
-  minRepeatedReasoningCycleChars: z.number().step(1).min(2).default(512).volatile(),
+  minRepeatedReasoningCycleChars: z.number().step(1).min(2).default(384).volatile(),
   maxRepeatedReasoningLineChars: z.number().step(1).min(0).default(2048).volatile(),
   minRepeatedReasoningLineCoverage: z.number().min(0).max(1).default(0.6).volatile(),
   breakCode: z.string().default('REPETITIVE_OUTPUT').volatile(),

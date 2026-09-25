@@ -178,7 +178,7 @@ window.__ModuleLoader__.load({
         min: 2,
         step: 1,
         unit: "字符",
-        hint: "推理尾部至少要重复多长才判定。默认 512。",
+        hint: "推理尾部至少要重复多长才判定。默认 384。",
       },
       {
         key: "maxRepeatedReasoningLineChars",

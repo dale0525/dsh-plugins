@@ -186,7 +186,7 @@ interface Config {
   minRepeatedCycleChars?: number
   /** Longest repeating period of the REASONING, in chars — **the rule that ends #5976**. 0 disables. Default 512. */
   maxRepeatedReasoningCycleChars?: number
-  /** Shortest reasoning tail that must repeat before the reasoning rule fires. Default 512. */
+  /** Shortest reasoning tail that must repeat before the reasoning rule fires. Default 384. */
   minRepeatedReasoningCycleChars?: number
   /** Repeated-LINE characters that end a reasoning bleed — **the rule for a period-free phrase pool**. 0 disables. Default 2048. */
   maxRepeatedReasoningLineChars?: number
@@ -278,7 +278,9 @@ The period of 172 sits between 128 and 256, which is why both `64` and `128` are
 
 `512` is chosen over the barely-sufficient `256` for the same reason as on the reasoning side: **a cap below a real period fails silently**, and the measured periods on this side have already grown once (12 → 26 → 172). The extra precision costs nothing — the false-positive count over those 2,973 texts is unchanged at zero.
 
-`minRepeatedReasoningCycleChars` defaults to `512` (stricter than the visible-output `256`): reasoning is private scratch space that legitimately restates a plan, so a longer verbatim run is required before cutting.
+`minRepeatedReasoningCycleChars` defaults to `384` (stricter than the visible-output `256`): reasoning is private scratch space that legitimately restates a plan, so a longer verbatim run is required before cutting.
+
+**Why 384 and not 512**: splitting a 22-session, 9,195-call corpus by outcome isolates the class this rule exists to save — calls that produce **only reasoning**, emitting neither text nor a tool call, so the turn ends naturally. There are 56 of them (93% genuinely the last step of their turn), and their repeating tails sit in the final **384–516 characters**: `512` catches **0 of 56**, `384` catches 40 (**71%**). The curve is steep — `480` catches 41%, `448` 64% — and plateaus at 71% from `400` down. The original `512` was calibrated on a single reproduction whose repeats happened to run long; its "costs no recall" claim does not hold on the wider corpus. Lowering it to `384` costs nothing measurable: replayed over 879 calls that did produce text or a tool call, `384` fires one extra time — and that call is the same phrase-pool loop, it simply went on to emit output afterwards — for an **effective false-positive count of 0**.
 
 ### Why a second reasoning rule was needed
 

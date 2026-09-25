@@ -45,6 +45,19 @@ const FIXTURE = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures-reasoning-bleed.json'), 'utf8'),
 )
 
+/**
+ * The class the reasoning rule actually exists to save: calls that produced
+ * *only* reasoning and then stopped.
+ *
+ * The bleed fixture above is a call that kept going. These three are the shape
+ * the harness cannot recover from — no text-delta, no tool-call-delta, so
+ * `StepEndReason` is never derived and the turn loop never breaks. Captured from
+ * session 344ba9405118, trimmed to the last 1024 characters.
+ */
+const STALL = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures-reasoning-stall.json'), 'utf8'),
+)
+
 const CONFIG = {
   maxThinkingSteps: 3,
   minReasoningChars: 2048,
@@ -940,19 +953,61 @@ test('the correction sends the model back to its task, not to a conclusion', asy
 })
 
 /* -------------------------------------------------------------------------- */
+/* the reasoning-only turn stall — why the default is 384 and not 512         */
+/* -------------------------------------------------------------------------- */
+
+test('every reasoning-only turn stall trips at the shipped default', () => {
+  // These are the calls that ended a turn with no text and no tool call. A rule
+  // that misses them leaves the turn loop spinning, which is the whole failure.
+  assert.ok(STALL.stalls.length >= 3, 'fixture must carry the stall captures')
+  for (const stall of STALL.stalls) {
+    const at = trip(stall.text, { ...CONFIG, minRepeatedReasoningCycleChars: 384 })
+    assert.ok(at > 0, `t${stall.turn}/s${stall.step} must trip at 384`)
+    // The cut must land inside the tail, not at its very last character.
+    assert.ok(at < stall.text.length, `t${stall.turn}/s${stall.step} cut at the end`)
+  }
+})
+
+test('the old default of 512 misses them — this is the regression', () => {
+  // Measured over 22 sessions (9195 calls): 512 catches 0 of 56 reasoning-only
+  // turn stalls, 384 catches 40. Two of these three captures are invisible to
+  // 512, which is why the default moved.
+  const caught = STALL.stalls.filter(
+    (s) => trip(s.text, { ...CONFIG, minRepeatedReasoningCycleChars: 512 }) > 0,
+  )
+  assert.ok(
+    caught.length < STALL.stalls.length,
+    'fixture must separate 384 from 512, otherwise it cannot pin the default',
+  )
+})
+
+test('the stall captures are cut by the reasoning rule, through apply()', async () => {
+  // The helper-level assertion above cannot show that the plugin actually ends
+  // the call; this drives the real stream wrapper.
+  const { stream, steered } = host({ minRepeatedReasoningCycleChars: 384 })
+  const out = await drive(stream, reasoningChunks(STALL.stalls[0].text))
+  assert.equal(out.at(-1).type, 'finish')
+  assert.equal(out.at(-1).reason.kind, 'stop')
+  assert.ok(steered.length > 0, 'the cut must steer a correction back to the model')
+})
+
+/* -------------------------------------------------------------------------- */
 /* the shipped schema                                                         */
 /* -------------------------------------------------------------------------- */
 
 test('the schema ships the reasoning rule on, with its calibrated defaults', () => {
-  const resolved = plugin.Config(CONFIG)
+  // The keys are omitted so this reads the schema's own defaults rather than
+  // echoing CONFIG — otherwise it would keep passing after a default moved.
+  const { maxRepeatedReasoningCycleChars, minRepeatedReasoningCycleChars, ...rest } = CONFIG
+  const resolved = plugin.Config(rest)
   assert.equal(resolved.maxRepeatedReasoningCycleChars.get(), 512)
-  assert.equal(resolved.minRepeatedReasoningCycleChars.get(), 512)
+  assert.equal(resolved.minRepeatedReasoningCycleChars.get(), 384)
 })
 
 test('the schema accepts the reasoning keys and applies their defaults', () => {
   const resolved = plugin.Config({ ...CONFIG, maxRepeatedReasoningCycleChars: undefined, minRepeatedReasoningCycleChars: undefined })
   assert.equal(resolved.maxRepeatedReasoningCycleChars.get(), 512)
-  assert.equal(resolved.minRepeatedReasoningCycleChars.get(), 512)
+  assert.equal(resolved.minRepeatedReasoningCycleChars.get(), 384)
 })
 
 test('the schema rejects a negative reasoning period', () => {

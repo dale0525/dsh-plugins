@@ -51,7 +51,7 @@ const DEFAULT_CONFIG = {
   maxRepeatedCycleChars: 512,
   minRepeatedCycleChars: 256,
   maxRepeatedReasoningCycleChars: 512,
-  minRepeatedReasoningCycleChars: 512,
+  minRepeatedReasoningCycleChars: 384,
   maxRepeatedReasoningLineChars: 2048,
   minRepeatedReasoningLineCoverage: 0.6,
 }

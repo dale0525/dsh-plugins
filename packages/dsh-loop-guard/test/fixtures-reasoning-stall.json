@@ -1,0 +1,24 @@
+{
+ "note": "Reasoning-only calls that ended their turn with a natural stop. Each repeats a small phrase pool at its tail and then emits neither text nor a tool call, so no post-call detector can reach it and the turn loop never settles.",
+ "source": "session 344ba9405118 (DSH-Novel), captured 2026-09-25",
+ "stalls": [
+  {
+   "turn": 4,
+   "step": 69,
+   "callLen": 6753,
+   "text": "the function throws. But we got results...\n\nHmm, unless `positions` has all nodes. Let me check: `positions` starts with `[[focusId, {x:0,y:0}]]`, then for each ring adds entries. All nodes are in `rings` (I add every node to `rings`). So positions should have all.\n\nOK so why empty edges?\n\nLet me actually look at the generated code. Let me read the dispatch region of the file.\n\nLet me read it.\n\nLet me do that — reading beats guessing.\n\nLet me read the function around the dispatch and the edge loop.\n\nLet me go.\n\nLet me read lines 600-760.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nOK.\n\nLet me read.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting."
+  },
+  {
+   "turn": 6,
+   "step": 40,
+   "callLen": 2538,
+   "text": "n fields (faction_id, location_id, controlling_faction_id, headquarters_id, etc.) for `extractFixedRelations`.\n\nActually — `extractFixedRelations(entList)` takes the entity list. So the entity objects need their raw fields. In the test, entities are `{id, name, type}`. For fixed relations the entity needs fields like `headquarters_id`, `controlling_faction_id`, `faction_id` etc.\n\nLet me find the parseYaml helper and the entity loading used elsewhere (e.g. in the app). Let me grep.\n\nLet me grep for `parseYaml` in the repo.\n\nLet me go.\n\nDecisive.\n\nLet me grep.\n\nOK.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write."
+  },
+  {
+   "turn": 7,
+   "step": 14,
+   "callLen": 4134,
+   "text": " were regenerated too (byte sizes differ: force 314851 vs old 316774; columns 347290 vs 342796). Small differences could be from my slightly different wrapper (I added `.dn-editor-scroll{overflow:visible!important}`).\n\nTo keep the evidence honest and consistent, I'll replace all three with the newly rendered ones.\n\nLet me re-shoot with a taller window so nothing is clipped.\n\nLet me do that.\n\nLet me go.\n\nDecisive.\n\nLet me re-shoot with window-size 1512x2600.\n\nLet me go.\n\nOK.\n\nLet me write.\n\nLet me produce.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me produce.\n\nLet me write.\n\nLet me go.\n\nWriting.\n\nLet me write.\n\nLet me go.\n\nWriting."
+  }
+ ]
+}
