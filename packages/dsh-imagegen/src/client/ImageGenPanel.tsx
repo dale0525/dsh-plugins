@@ -739,24 +739,34 @@ export function ImageGenPanel(props: {
   useEffect(() => {
     let disposed = false
     const refresh = (): void => {
-      void api.taskList().then(next => {
+      void api.taskList().then(async summaries => {
         if (disposed) return
         const previous = tasksRef.current
+        const previousById = new Map(previous.map(task => [task.id, task] as const))
+        const needsHydration = summaries.filter(summary => summary.status === 'completed'
+          && summary.resultAvailable
+          && previousById.get(summary.id)?.status !== 'completed')
+        const fetched = await Promise.all(needsHydration.map(async summary => {
+          try { return await api.taskGet(summary.id) } catch { return undefined }
+        }))
+        if (disposed) return
+        const fullById = new Map(fetched
+          .filter((task): task is GenerationTask => task !== undefined)
+          .map(task => [task.id, task] as const))
+        const next: GenerationTask[] = summaries.map(summary => fullById.get(summary.id) ?? previousById.get(summary.id) ?? summary)
         const newlyCompleted = next.filter(task => task.status === 'completed'
-          && task.resultAvailable
+          && task.result !== undefined
           && !previous.some(old => old.id === task.id && old.status === 'completed'))
         const completed = next.find(task => task.status === 'completed'
+          && task.result !== undefined
           && !previous.some(old => old.id === task.id && old.status === 'completed')
           && !comparison?.taskIds.includes(task.id))
         tasksRef.current = next
         setTasks(next)
-        if (completed !== undefined) {
-          void api.taskGet(completed.id).then(full => {
-            if (disposed || full.result === undefined) return
-            setImages(full.result.images)
-            if (full.result.history !== undefined) setHistory(full.result.history)
-            setError(full.result.historyError ?? null)
-          }).catch(() => {})
+        if (completed?.result !== undefined) {
+          setImages(completed.result.images)
+          if (completed.result.history !== undefined) setHistory(completed.result.history)
+          setError(completed.result.historyError ?? null)
         }
         if (newlyCompleted.length > 0) {
           void api.historyList().then(entries => {
