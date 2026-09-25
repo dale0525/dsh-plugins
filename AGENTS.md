@@ -19,11 +19,11 @@ dsh-plugins/
 │   ├── dsh-easyrewrite/        # 有上游 → git subtree fork
 │   ├── dsh-imagegen/           # 有上游 → git subtree fork
 │   ├── dsh-workbuddy-connect/  # 有上游 → git subtree fork
-│   └── <pkg>/sync-policy.json  # 该 fork 的上游身份与同步清单（仅 fork 有）
+│   └── <pkg>/upstream.json     # 该 fork 的上游身份（仅 fork 有）
 ├── scripts/
 │   ├── aggregate.mjs       # aggregate.yml → patch + deps
 │   ├── publish.mjs         # 按依赖边拓扑推导发布顺序（子插件 → 聚合包）
-│   └── sync-upstream.mjs   # 上游同步（policy 应用）
+│   └── sync-upstream.mjs   # 上游同步的只读工具（--list / --changed）
 └── packages/dsh-config-manager/scripts/dev-watch.mjs   # 源 → 产物自动重建（子包内）
 ```
 
@@ -41,12 +41,12 @@ dsh-plugins/
 **子插件的来源决定它要不要 fork**：`packages/<name>/` 有两种合法形态，选哪种由**它有没有上游**决定。
 
 - **改造自别人的上游仓库** → 必须是该上游的 `git subtree` fork。不能是「把安装副本拷进来」的普通目录：没有 subtree 祖先就没有三方合并基准，该插件**永久无法自动同步**，且我方改造在每次人工重拷时都会丢失。
-- **我们自制的插件**（无上游）→ **不 fork，也不该硬套**。直接把目录放进 `packages/<name>/` 即可，不需要 `sync-policy.json`，也不参与上游同步。
+- **我们自制的插件**（无上游）→ **不 fork，也不该硬套**。直接把目录放进 `packages/<name>/` 即可，不需要 `upstream.json`，也不参与上游同步。
 
 判断有无上游：该插件是否发布自、或改造自一个**独立的外部仓库**。有则走 fork，没有则走自制。
 
 **已去 fork 化的包是第三种状态**：衍生自上游、但主体已重写且同步从未跑过（继续 fork 只会让每次人工重拷丢失改造），
-经裁定后按自制形态维护 —— 不建 `sync-policy.json`、不参与同步，**保留** LICENSE 与来源记录、不重写历史。
+经裁定后按自制形态维护 —— 不建 `upstream.json`、不参与同步，**保留** LICENSE 与来源记录、不重写历史。
 
 **fork 的判据**（自制插件不适用；fork 场景下空输出即未收养，**不要继续下一步**）：
 
@@ -82,8 +82,8 @@ dsh plugin --profile <p> add @logictan/dsh-plugins-all   # 用户安装的入口
 git subtree add --prefix=packages/<name> <上游仓库 URL> <基线 tag>
 ```
 
-收养后建 `packages/<name>/sync-policy.json`（声明 `target` / `owned` / `deleted` / `added`）。
-**不要**另建上游总表：`node scripts/sync-upstream.mjs --list` 从各 policy 汇总，policy 就是唯一登记处。
+收养后建 `packages/<name>/upstream.json`（声明 `id` / `url` / `prefix`）。
+**不要**另建上游总表：`node scripts/sync-upstream.mjs --list` 从各 `upstream.json` 汇总，它就是唯一登记处。
 
 ### 2. 放进 `packages/<name>/`
 
@@ -134,7 +134,7 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（CI 会�
 | 检查 | 判据 |
 |---|---|
 | **上游祖先已建立**（仅限有上游的） | `git log --oneline --grep="git-subtree-dir: packages/<name>"` 有输出（§1）；自制插件此条不适用 |
-| **该包有 sync-policy**（仅限有上游的） | `packages/<name>/sync-policy.json` 存在且 `target` / `owned` / `deleted` / `added` 齐备；自制插件不需要 |
+| **该包有上游身份**（仅限有上游的） | `packages/<name>/upstream.json` 存在且 `id` / `url` / `prefix` 齐备；自制插件不需要 |
 | 聚合生成物与清单一致 | `node scripts/aggregate.mjs --check` 无 drift |
 | patch 行 `id` 未撞车 | 人工比对全仓库 `cordis.patch.yml` 的行 `id`（无自动检查） |
 | 发布顺序正确 | `npm run publish:plan` 中该子插件在聚合包之前 |
@@ -184,41 +184,42 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（CI 会�
 
 ## 🔀 上游同步
 
-每个 fork 子包自带一份 `packages/<pkg>/sync-policy.json`，声明**它自己**的上游身份与清单；
-`scripts/sync-upstream.mjs` glob 出全部 policy 并逐个同步，**policy 跟随它的包**。同步**只开 PR，绝不直接推 main**。
+**同步是手工的。** 仓库只保留 `git subtree` 祖先和一个**只读**的查询工具：没有定时任务、
+没有自动应用、没有自动 PR。每个 fork 子包自带一份 `packages/<pkg>/upstream.json`，
+只声明它的上游身份（`id` / `url` / `prefix`）。
 
 ```bash
-node scripts/sync-upstream.mjs --list                  # 列出全部目标与计数
-node scripts/sync-upstream.mjs --dry-run               # 看计划，零写入
-node scripts/sync-upstream.mjs --target <id>           # 只同步一个目标
+node scripts/sync-upstream.mjs --list              # 各 fork 的上游、上次同步点、上游最新 tag
+node scripts/sync-upstream.mjs --changed <id>      # 上游从上次同步点到最新 tag 改了什么
 ```
 
-policy 顺序是**铁律**（顺序反了会让我们的改造被上游覆盖）：
+脚本不 pull、不 checkout、不 rm、不 commit（`scripts/sync-upstream.test.mjs` 钉住这条契约）。
+`--changed` 把 tag fetch 到 `FETCH_HEAD` 再 `git diff --stat`，不动工作区。
 
+### 手工同步一个 fork
+
+```bash
+git subtree pull --prefix=packages/<pkg> <url> <tag>
 ```
-git subtree pull --prefix=packages/<pkg> <target.url> <ref>   # 产生冲突
-git checkout --theirs -- packages/<pkg>                       # 1) 冲突条目取上游
-git checkout <pull 前的 HEAD> -- <owned 列表>                  # 2) 再恢复我方改造
-git rm -f --ignore-unmatch <deleted 列表>                      # 3) 重删我方删除
-git commit
-```
 
-> **第 2 步必须按 commit 取，不能写 `git checkout --ours`**：`--ours/--theirs` 只对**未合并的
-> 索引条目**生效。git 对「双方都改、但改在不同区域」的文件会干净地三方合并 —— 既无冲突标记，
-> 索引里也没有 stage 1/2/3，此时 `--ours` 是**空操作**，我方版本会被上游内容静默污染
-> （`package.json` 的版本号、我方改过的文案都会这样丢）。以 pull **之前**的 HEAD 为唯一真源覆盖，
-> 才对冲突与非冲突路径一视同仁。脚本用 `restoreOwned()` 实现，并有针对性测试钉住这条契约。
+然后**逐个冲突手工裁定**，`git commit`。没有「我方文件清单」这回事。
 
-> **第 3 步的陷阱**：上游若跟踪了被我方 `.gitignore` 的路径（workbuddy / easyrewrite 的 `lib/`、
-> imagegen 的 `docs/images/`），`git rm -f` 会连**磁盘上的构建产物与 README 配图**一起删掉。
-> 脚本对这类路径改用 `git rm --cached` 并在 merge 后恢复磁盘内容；手改时同理。
+> **为什么删掉了 `owned` / `deleted` / `added` 清单**：那套清单把「可三方合并」压成「整文件二选一」。
+> 上游与我们改在同一文件的**不同区域**时，git 本来能干净三方合并，清单却用
+> `git checkout <pull 前的 HEAD> -- <owned>` 把整个文件覆盖回我方版本 —— 上游在该文件里的改动被
+> **静默丢弃**，连冲突标记都不出现。实测 workbuddy v0.5.4 → v0.6.2：`locales.ts` 干净自动合并，
+> `WorkBuddyPluginCard.tsx` 3 处冲突、`index.ts` 7 处冲突，全部可见、可逐处裁定。
 
-真实价值边界：上游一天 1-2 个版本、我们砍掉了大部分代码，**这个同步不会带来「版本对齐」**，它只把上游在「我们保留的文件」里的 bug 修复拉进来。
+### 手工同步要自己盯住的三件事
 
-**改了 fork 的文件集就必须重算清单**：第 2 步 `--theirs` 会取回上游全部文件，只有登记在
-`owned` 里的才会被恢复成我方版本。**新增一个我方文件却忘了登记，下一次同步就被上游版本静默覆盖**
-（`env-lock.ts` 的修复就差点这样丢掉）。跑 `node scripts/sync-upstream.mjs --refresh-policy`
-按当前 fork 状态重算 `owned` / `deleted` / `added`。
+| 事项 | 判据 |
+|---|---|
+| 我方架构与上游冲突 | 上游把功能加进我方也改过的文件时，取上游的**内容**、留我方的**架构** |
+| 宿主依赖世代 | 上游按新世代宿主写的代码，需要把 `package.json` 的宿主依赖抬到同世代 |
+| 上游新增的导出 | 上游在 `src/index.ts` 里新增的导出不会自己出现在我方版本里，要手工补 |
+
+真实价值边界：上游一天 1-2 个版本、我们砍掉了大部分代码，**这个同步不会带来「版本对齐」**，
+它只把上游在「我们保留的文件」里的 bug 修复拉进来。代价是没有自动通知了 —— 靠人记得跑 `--list`。
 
 ## 📤 发布
 

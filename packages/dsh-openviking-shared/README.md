@@ -15,9 +15,9 @@ Upstream ships this library to eight harnesses (Claude Code, Codex, OpenCode, ds
 openclaw, the bundled `agent-plugins` servers, and cursor/trae/trae-cn/zcode through
 `install.sh`). Only the DSH plugin is forked here, so `TARGETS` names it alone and the
 rest of upstream's machinery — the installer, `lib/install/`, the `lib/MANIFEST` the
-installer read, and the tests that covered those harnesses — is deleted. See
-`sync-policy.json`: every one of those paths is listed in `deleted` and is re-removed on
-each upstream sync, so an upstream change cannot quietly bring them back.
+installer read, and the tests that covered those harnesses — is deleted here. A manual
+upstream sync (`git subtree pull`) brings those paths back, so re-delete them by hand:
+there is no automatic re-removal list any more.
 
 Modules in `lib/` that no DSH plugin imports are dead here; `sync.mjs` reports them as
 `unused lib/<file>` when it runs.

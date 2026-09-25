@@ -1,0 +1,5 @@
+{
+  "id": "openviking",
+  "url": "https://github.com/volcengine/OpenViking.git",
+  "prefix": "packages/dsh-openviking"
+}

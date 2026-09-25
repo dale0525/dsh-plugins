@@ -22,10 +22,10 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest
 |---|---|
 | `packages/all/` | 聚合载体 `@logictan/dsh-plugins-all`；`aggregate.yml` 手写，`cordis.patch.yml` 与 `package.json` 是生成物 |
 | `packages/<pkg>/` | 各个子插件。有上游的走 `git subtree` fork，自制的直接放这里——判据见 `AGENTS.md` |
-| `packages/<pkg>/sync-policy.json` | 仅 fork 有：该包的上游同步清单（`target` / `owned` / `deleted` / `added`） |
+| `packages/<pkg>/upstream.json` | 仅 fork 有：该包的上游身份（`id` / `url` / `prefix`） |
 | `scripts/aggregate.mjs` | 由 `aggregate.yml` 生成聚合 patch 与 dependencies |
 | `scripts/publish.mjs` | 按依赖边推导发布顺序（子插件 → 聚合包）；`npm run publish:plan` 预览 |
-| `scripts/sync-upstream.mjs` | 按各包的 `sync-policy.json` 把上游改动合进来（只开 PR） |
+| `scripts/sync-upstream.mjs` | 上游同步的只读工具：`--list` 看各 fork 上游到哪、`--changed <id>` 看改了什么。同步本身手工做 |
 
 ## 开发
 

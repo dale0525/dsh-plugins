@@ -1,0 +1,5 @@
+{
+  "id": "openviking-shared",
+  "url": "https://github.com/volcengine/OpenViking.git",
+  "prefix": "packages/dsh-openviking-shared"
+}
