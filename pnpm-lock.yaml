@@ -27,7 +27,7 @@ importers:
         specifier: ^0.2.0
         version: link:../dsh-browser-agent
       '@logictan/dsh-config-manager':
-        specifier: ^0.1.71
+        specifier: ^0.1.72
         version: link:../dsh-config-manager
       '@logictan/dsh-desktop-agent':
         specifier: ^0.1.3
