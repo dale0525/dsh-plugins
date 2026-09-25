@@ -59,7 +59,21 @@ export const PLUGIN_FILES_EXCLUDED_DIRS: readonly (readonly string[])[] = [
   ['.gemini', 'antigravity-cli', 'brain'],
   ['.gemini', 'antigravity-cli', 'annotations'],
   ['.gemini', 'antigravity-cli', 'scratch'],
+  // ① 可再生：依赖的内容寻址仓库（重新安装依赖即恢复），实测本机 plugin-config 下 63,577 个文件
+  ['Library', 'pnpm'],
 ];
+
+/**
+ * collectDir 下**按设计**跳过的文件（按文件名后缀匹配，见 utils/recursive-walk.ts）。
+ *
+ * 为什么需要：SQLite 的 WAL 边车（`-shm` 索引 / `-wal` 日志）是数据库的**瞬时状态**，
+ * 随 DB 进程关闭即被回收或合并进主文件。搬过去有两个真实代价，都不划算：
+ *  - 恢复后它与目标机的主 DB 文件不是同一时刻的状态，WAL 回放可能污染数据；
+ *  - 32 KB 的文件里只有几十字节非零，却正是「小体积高压缩」形态（见 readEntry 的注释）。
+ *
+ * 用后缀而不是全名：任何 SQLite 库都会产生同名边车，清单不该跟着库名增长。
+ */
+export const PLUGIN_FILES_EXCLUDED_FILE_SUFFIXES: readonly string[] = ['-shm', '-wal'];
 
 export class PluginFilesAdapter implements ConfigAdapter<FilesSection> {
   readonly id = 'pluginFiles' as const;
@@ -93,10 +107,13 @@ export class PluginFilesAdapter implements ConfigAdapter<FilesSection> {
     }
     // 2) 约定配置目录递归收集（相对 ~/.dsh 根的完整路径；与白名单文件去重）
     // issue #37：与 skills 等同一条遍历（跟随 junction/符号链接 + 跳过留痕）
-    let listing: RecursiveListing = { paths: [], skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [] };
+    let listing: RecursiveListing = { paths: [], skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [], excludedFiles: [] };
     if (this.collectDir !== undefined) {
       try {
-        listing = await listFilesDetailed(ctx.fs, this.collectDir, { excludeDirs: PLUGIN_FILES_EXCLUDED_DIRS });
+        listing = await listFilesDetailed(ctx.fs, this.collectDir, {
+          excludeDirs: PLUGIN_FILES_EXCLUDED_DIRS,
+          excludeFileSuffixes: PLUGIN_FILES_EXCLUDED_FILE_SUFFIXES,
+        });
       } catch {
         // 目录不存在视为空
       }

@@ -28,10 +28,13 @@ export async function listFilesDetailed(
   fs: FileSystemFacade, dir: string, options?: RecursiveWalkOptions,
 ): Promise<RecursiveListing> {
   if (fs.listRecursiveDetailed !== undefined) return fs.listRecursiveDetailed(dir, options)
-  return { paths: await fs.listRecursive(dir), skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [] }
+  return {
+    paths: await fs.listRecursive(dir), skippedLinks: [], followedLinks: 0,
+    unreadableDirs: [], excludedDirs: [], excludedFiles: [],
+  }
 }
 
-/** 把遍历结果转成告警行（无链接时返回空数组 —— 不制造噪音）。 */
+/** 把遍历结果转成告警行（无链接、无按设计剪枝项、无不可读目录时返回空数组 —— 不制造噪音）。 */
 export function linkWarnings(msg: MsgFunc, type: string, listing: RecursiveListing): string[] {
   const out: string[] = []
   if (listing.followedLinks > 0) {
@@ -57,6 +60,14 @@ export function linkWarnings(msg: MsgFunc, type: string, listing: RecursiveListi
       ? ` (+ ${listing.excludedDirs.length - MAX_PATHS_PER_REASON})` : ''
     out.push(msg('adapter.dirsExcluded', {
       type, count: String(listing.excludedDirs.length), detail: `${shown}${more}`,
+    }))
+  }
+  if (listing.excludedFiles.length > 0) {
+    const shown = listing.excludedFiles.slice(0, MAX_PATHS_PER_REASON).join(', ')
+    const more = listing.excludedFiles.length > MAX_PATHS_PER_REASON
+      ? ` (+ ${listing.excludedFiles.length - MAX_PATHS_PER_REASON})` : ''
+    out.push(msg('adapter.filesExcluded', {
+      type, count: String(listing.excludedFiles.length), detail: `${shown}${more}`,
     }))
   }
   if (listing.unreadableDirs.length > 0) {

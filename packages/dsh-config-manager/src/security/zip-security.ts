@@ -2,7 +2,7 @@
  * ZIP 解压安全（规范 §19 / 设计 §9 / core utils/zip.ts 的强化层）。
  *
  * 分工（避免与 core 重复）：
- * - core `utils/zip.ts` 已实现：条目名 isPathSafe、条目数/压缩体积/解压体积/单条/压缩比限额、
+ * - core `utils/zip.ts` 已实现：条目名 isPathSafe、条目数/压缩体积/解压体积/单条限额、
  *   CRC32 与尺寸校验、ZipArchive.readEntry 预算、safeExtract 基础解压。
  * - 本模块在其上强化 core 未覆盖的攻击面：
  *   1. **symlink 条目拒绝**：解析中央目录 external attrs 的 Unix mode（S_IFLNK 0xA000）→ 拒绝；

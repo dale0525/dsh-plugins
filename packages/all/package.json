@@ -22,7 +22,7 @@
     "@logictan/dsh-agy-link": "^0.5.9",
     "@logictan/dsh-better-reasoning-effort": "^0.5.0",
     "@logictan/dsh-browser-agent": "^0.2.0",
-    "@logictan/dsh-config-manager": "^0.1.70",
+    "@logictan/dsh-config-manager": "^0.1.71",
     "@logictan/dsh-desktop-agent": "^0.1.3",
     "@logictan/dsh-easyrewrite": "^2.5.4",
     "@logictan/dsh-fakeip-fetch": "^0.1.0",

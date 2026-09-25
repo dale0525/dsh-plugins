@@ -30,11 +30,14 @@ export interface SkippedLink {
  * 遍历选项。
  * `excludeDirs`：**按设计**跳过的目录（缓存 / 历史 / 临时产物），每项是一段路径形状
  * （如 `['.gemini','antigravity-cli','scratch']`），按 homeDir 相对路径的**连续分段**匹配。
+ * `excludeFileSuffixes`：**按设计**跳过的文件，按**文件名后缀**匹配（如 `['-shm']` 命中
+ * `conversation_summaries.db-shm`）。文件没有分段可匹配，故与目录用不同的判据。
  * 与 `skippedLinks` 的区别是语义，不是程度：那些是「本该进来却没进来」的缺失，
  * 这些是「有意不带」的策略 —— 二者绝不能混进同一条告警。
  */
 export interface RecursiveWalkOptions {
   excludeDirs?: readonly (readonly string[])[];
+  excludeFileSuffixes?: readonly string[];
 }
 
 export interface RecursiveListing {
@@ -48,6 +51,8 @@ export interface RecursiveListing {
   unreadableDirs: string[];
   /** 按 `excludeDirs` 策略跳过的目录（其内容**有意**不进备份）；空 = 未启用剪枝 */
   excludedDirs: string[];
+  /** 按 `excludeFileSuffixes` 策略跳过的文件（**有意**不进备份）；空 = 未启用文件剪枝 */
+  excludedFiles: string[];
 }
 
 /** 深度上限：防御病态目录树 / realpath 去重失效时的栈爆炸 */
@@ -84,6 +89,7 @@ export async function listRecursiveFollowingLinks(
   const skippedLinks: SkippedLink[] = [];
   const unreadableDirs: string[] = [];
   const excludedDirs: string[] = [];
+  const excludedFiles: string[] = [];
   let followedLinks = 0;
   /** 已进入过的目录 realpath（防环 / 防同一目标被两条链接重复收集） */
   const visited = new Set<string>();
@@ -96,6 +102,10 @@ export async function listRecursiveFollowingLinks(
    * 是为了不误伤任意分区下的同名业务目录。
    */
   const excludePatterns = (options.excludeDirs ?? []).map((p) => [...p]);
+  const excludeSuffixes = options.excludeFileSuffixes ?? [];
+  /** 文件名后缀剪枝：与目录的路径形状判据不同，文件按 basename 判定 */
+  const isFileExcludedByDesign = (name: string): boolean =>
+    excludeSuffixes.some((s) => name.endsWith(s));
   const isExcludedByDesign = (entryRel: string): boolean => {
     const segs = entryRel.split('/');
     return excludePatterns.some((pat) => {
@@ -143,6 +153,7 @@ export async function listRecursiveFollowingLinks(
         if (isExcludedByDesign(entryRel)) { excludedDirs.push(entryRel); continue; }
         await walk(abs, depth + 1, null);
       } else if (entry.isFile()) {
+        if (isFileExcludedByDesign(entry.name)) { excludedFiles.push(entryRel); continue; }
         paths.push(entryRel);
       } else if (entry.isSymbolicLink()) {
         // 目录 junction / 符号链接：跟随（issue #37 的核心修复）。
@@ -162,16 +173,25 @@ export async function listRecursiveFollowingLinks(
           skippedLinks.push({ path: entryRel, reason: 'outside-home' });
           continue;
         }
-        // 剪枝对**链接**同样成立，且必须按目标判定：链接自身路径往往不在剪枝形状里，
-        // 但它指向的目录可能已被剪（`cli.log -> log/cli-*.log`）。只查 entryRel 会让
+        // 目录形状剪枝对**链接**同样成立，且必须按目标判定：链接自身路径往往不在剪枝形状里，
+        // 但它指向的内容可能已被剪（`cli.log -> log/cli-*.log`）。只查 entryRel 会让
         // 「log/ 已按设计跳过」与「log 里的日志经链接进了包」同时成立 —— 排除清单必须封闭。
+        // 注意这一条**不看目标类型**：指向已剪目录的文件链接同样是「有意不带」。
         if (isExcludedByDesign(entryRel) || isExcludedByDesign(rel(target))) {
           excludedDirs.push(entryRel);
           continue;
         }
+        // 文件后缀剪枝则必须**先确认目标是文件**：名字以 -shm/-wal 结尾的目录链接
+        // 会被下面的文件判据误当成文件剪掉，且不留痕。
         if (st.isDirectory()) {
           if (await walk(abs, depth + 1, entryRel)) followedLinks += 1;
         } else if (st.isFile()) {
+          // 判据取**链接名**与**目标名**两者：否则 `alias.db-shm -> db/x.db-shm`
+          // 会把已剪文件的内容带进包。
+          if (isFileExcludedByDesign(entry.name) || isFileExcludedByDesign(path.basename(target))) {
+            excludedFiles.push(entryRel);
+            continue;
+          }
           paths.push(entryRel);
           followedLinks += 1;
         } else {
@@ -184,5 +204,8 @@ export async function listRecursiveFollowingLinks(
   };
 
   await walk(base, 0, null);
-  return { paths: paths.sort(), skippedLinks, followedLinks, unreadableDirs, excludedDirs: excludedDirs.sort() };
+  return {
+    paths: paths.sort(), skippedLinks, followedLinks, unreadableDirs,
+    excludedDirs: excludedDirs.sort(), excludedFiles: excludedFiles.sort(),
+  };
 }

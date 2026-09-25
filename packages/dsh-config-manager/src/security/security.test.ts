@@ -336,17 +336,27 @@ test('zip-security: 解压中途失败 → 中止并完整清理目标目录', a
   await withTmp(async (dir) => {
     const zipPath = path.join(dir, 'bomb.zip');
     const destDir = path.join(dir, 'out');
-    // 条目 1 正常写入，条目 2 高压缩比（zip bomb 模拟）→ readEntry 触发 ratio 上限
+    // 条目 1 正常写入，条目 2 撑破累计解压体积预算 → readEntry 中途抛错
     await fs.writeFile(zipPath, zipToBuffer([
       { name: 'ok.txt', data: Buffer.from('written-first') },
-      { name: 'bomb.txt', data: Buffer.from('a'.repeat(50_000)) },
+      { name: 'too-big.txt', data: Buffer.from('a'.repeat(50_000)) },
     ]));
     await assert.rejects(
-      () => safeExtractHardened(zipPath, destDir, { maxRatio: 5 }),
+      () => safeExtractHardened(zipPath, destDir, { maxTotalBytes: 100 }),
       ZipSafetyError,
     );
     await assert.rejects(() => fs.access(destDir), /ENOENT/, '失败后目标目录应被完整清理');
   });
+});
+
+test('zip: 高压缩比条目必须可读（SQLite 边车回归）', () => {
+  // 实测故障：32 KB 的 SQLite WAL 索引（-shm）只有几十字节非零，deflate 后压缩比 237～386。
+  // 读取侧曾有压缩比闸门，把它判为 zip bomb → 本插件产出自己读不了的 ZIP，
+  // 拉取时报「备份完整性校验失败」。此断言钉住该形态必须可读。
+  const data = Buffer.alloc(32 * 1024);
+  data.write('sqlite shm header');
+  const archive = parseZip(zipToBuffer([{ name: 'plugin-files/x.db-shm', data }]));
+  assert.equal(archive.readEntry('plugin-files/x.db-shm').length, data.length);
 });
 
 test('zip-security: createHardenedZipParser 签名对齐 parseZipOverride', () => {

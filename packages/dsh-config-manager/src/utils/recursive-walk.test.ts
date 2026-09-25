@@ -210,3 +210,46 @@ test(`约定配置目录剪枝：链接指向被剪目录时同样必须剪掉�
     'plugin-config/agy-link/acc_1/scratch-link',
   ], `被剪目录与被剪链接都要留痕: ${listing.excludedDirs.join(',')}`);
 });
+test('瞬时状态文件剪枝：按后缀命中并留痕，链接指向被剪文件时同样剪掉', async (t) => {
+  const home = tmpDir('dshcm-home7-');
+  t.after(() => fssync.rmSync(home, { recursive: true, force: true }));
+  const db = path.join(home, 'plugin-config', 'agy-link', 'db');
+  await fs.mkdir(db, { recursive: true });
+  await fs.writeFile(path.join(db, 'conversation_summaries.db'), 'MAIN');
+  await fs.writeFile(path.join(db, 'conversation_summaries.db-shm'), 'SHM');
+  await fs.writeFile(path.join(db, 'conversation_summaries.db-wal'), 'WAL');
+  // 后缀判据只作用于文件名：名字里含 -shm 但不是后缀的文件必须留下
+  await fs.writeFile(path.join(db, 'notes-shm.md'), 'KEEP');
+  // 名字以 -wal 结尾的**目录链接**：后缀判据必须先确认目标是文件，否则会被误当文件剪掉且不留痕。
+  // 目标放在 plugin-config 之外（但在 home 内），否则它作为真实目录会先被遍历，
+  // 链接再到达时按既有去重规则判为 loop —— 那样就测不到「目录链接」这条路径。
+  const linkTarget = path.join(home, 'link-target-wal');
+  await fs.mkdir(linkTarget, { recursive: true });
+  await fs.writeFile(path.join(linkTarget, 'keep.txt'), 'KEEP');
+  try {
+    await fs.symlink(path.join(db, 'conversation_summaries.db-shm'), path.join(db, 'alias.db-shm'), 'file');
+    await fs.symlink(linkTarget, path.join(db, 'dir-link-wal'), 'dir');
+  } catch {
+    t.skip('本环境无法创建符号链接，跳过');
+    return;
+  }
+
+  const base = path.join(home, 'plugin-config');
+  const listing = await listRecursiveFollowingLinks(base, home, { excludeFileSuffixes: ['-shm', '-wal'] });
+
+  assert.deepEqual(listing.paths, [
+    'plugin-config/agy-link/db/conversation_summaries.db',
+    'plugin-config/agy-link/db/dir-link-wal/keep.txt',
+    'plugin-config/agy-link/db/notes-shm.md',
+  ], `文件剪枝后清单不符: ${listing.paths.join(',')}`);
+  assert.deepEqual(listing.excludedFiles, [
+    'plugin-config/agy-link/db/alias.db-shm',
+    'plugin-config/agy-link/db/conversation_summaries.db-shm',
+    'plugin-config/agy-link/db/conversation_summaries.db-wal',
+  ], `被剪文件必须留痕: ${listing.excludedFiles.join(',')}`);
+
+  // 不传选项 → 行为与旧版完全一致（其它分区不受影响）
+  const plain = await listRecursiveFollowingLinks(base, home);
+  assert.equal(plain.paths.length, 6, `不剪枝时应收集全部 6 个文件: ${plain.paths.join(',')}`);
+  assert.deepEqual(plain.excludedFiles, []);
+});

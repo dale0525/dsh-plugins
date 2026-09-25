@@ -62,7 +62,7 @@
 
 ### 1.1 布局总表
 
-bundle 是一个普通 ZIP。**顶层是扁平条目，不写显式目录条目**（`src/core/exporter.ts:281-303` 只 push 文件条目；读取侧把 `name.endsWith('/')` 视为目录条目并跳过，`src/utils/zip.ts:300`、`src/utils/zip.ts:322`）。
+bundle 是一个普通 ZIP。**顶层是扁平条目，不写显式目录条目**（`src/core/exporter.ts:281-303` 只 push 文件条目；读取侧把 `name.endsWith('/')` 视为目录条目并跳过，`src/utils/zip.ts:297`、`src/utils/zip.ts:319`）。
 
 | ZIP 内相对路径 | 形态 | 来源 |
 |---|---|---|
@@ -105,30 +105,35 @@ manifest.json
 | 规则 | 细节 | 取证 |
 |---|---|---|
 | 分隔符 | **写侧**恒为正斜杠 `/`。**读侧**：`isPathSafe` 只拒绝「以 `/` 或 `\` 开头」的名字与「含 `..` 段」的名字，**中段反斜杠会被接受**（实测见 §3.3.2 的 C10 与「isPathSafe 逐值」段；缺口登记见 §10 G-11） | `src/utils/paths.ts:45-54`（`isPathSafe`，`src/utils/zip.ts:13` 引用）；checksums 侧另有 `relPath.includes('\\')` 拒绝（`src/security/integrity.ts:63`） |
-| 绝对路径 | 拒绝（`/abs`、`C:\`、`C:/`、UNC） | `src/utils/zip.ts:289`、`src/core/smoke.test.ts:480-485` |
-| 目录穿越 | 拒绝含 `..` 段的条目名（Zip Slip） | `src/utils/zip.ts:289` |
-| 文件名编码 | UTF-8；写侧置 general purpose flag bit 11（`0x0800`）；**读侧不校验该 flag**（见 §1.5） | `src/utils/zip.ts:106`、`src/utils/zip.ts:287` |
-| 压缩方法 | 写侧恒 deflate（method=8）；读侧只接受 0（store）与 8（deflate），其余抛错 | `src/utils/zip.ts:107`、`src/utils/zip.ts:211-221` |
-| CRC32 | 每条目必带；读侧逐条校验，不符即整体拒绝 | `src/utils/zip.ts:226-228` |
-| 解压尺寸 | 必须与中央目录声明的 `uncompressedSize` 一致 | `src/utils/zip.ts:223-225` |
-| 数据描述符（bit 3） | 写侧**从不**设置；读侧**不解析也不校验**该 flag（见 §1.5） | `src/utils/zip.ts:106`（写 `0x0800`，未含 `0x0008`）、`src/utils/zip.ts:197-208` |
-| 显式目录条目 | 允许存在但会被跳过（不产生文件） | `src/utils/zip.ts:300`、`src/utils/zip.ts:322` |
+| 绝对路径 | 拒绝（`/abs`、`C:\`、`C:/`、UNC） | `src/utils/zip.ts:286`、`src/core/smoke.test.ts:480-485` |
+| 目录穿越 | 拒绝含 `..` 段的条目名（Zip Slip） | `src/utils/zip.ts:286` |
+| 文件名编码 | UTF-8；写侧置 general purpose flag bit 11（`0x0800`）；**读侧不校验该 flag**（见 §1.5） | `src/utils/zip.ts:104`、`src/utils/zip.ts:284` |
+| 压缩方法 | 写侧恒 deflate（method=8）；读侧只接受 0（store）与 8（deflate），其余抛错 | `src/utils/zip.ts:105`、`src/utils/zip.ts:209-219` |
+| CRC32 | 每条目必带；读侧逐条校验，不符即整体拒绝 | `src/utils/zip.ts:224-226` |
+| 解压尺寸 | 必须与中央目录声明的 `uncompressedSize` 一致 | `src/utils/zip.ts:221-223` |
+| 数据描述符（bit 3） | 写侧**从不**设置；读侧**不解析也不校验**该 flag（见 §1.5） | `src/utils/zip.ts:104`（写 `0x0800`，未含 `0x0008`）、`src/utils/zip.ts:195-206` |
+| 显式目录条目 | 允许存在但会被跳过（不产生文件） | `src/utils/zip.ts:297`、`src/utils/zip.ts:319` |
 | 条目顺序 | 无契约保证；不要依赖顺序 | `src/core/exporter.ts:198-303`（顺序由 adapter registry 与收尾写入决定，未在格式层固定） |
 
 ### 1.3 安全限额（读侧默认值，第三方 exporter 的产物必须落在限额内）
 
 | 限额 | 默认值 | 取证 |
 |---|---|---|
-| 条目数 `maxEntries` | 10000 | `src/utils/zip.ts:36` |
-| 解压后累计字节 `maxTotalBytes` | 500 MiB | `src/utils/zip.ts:37` |
-| 压缩数据累计字节 `maxCompressedBytes` | 200 MiB | `src/utils/zip.ts:38` |
-| 单条目解压后 `maxSingleBytes` | 100 MiB | `src/utils/zip.ts:39` |
-| 单条目压缩比 `maxRatio` | 200 | `src/utils/zip.ts:40` |
+| 条目数 `maxEntries` | 10000 | `src/utils/zip.ts:35` |
+| 解压后累计字节 `maxTotalBytes` | 500 MiB | `src/utils/zip.ts:36` |
+| 压缩数据累计字节 `maxCompressedBytes` | 200 MiB | `src/utils/zip.ts:37` |
+| 单条目解压后 `maxSingleBytes` | 100 MiB | `src/utils/zip.ts:38` |
 | JSON 嵌套深度 | 64 | `src/utils/json.ts:7` |
 | JSON 单文档字节 | 64 MiB | `src/utils/json.ts:8` |
 | 市场条目 `config.zip` 字节上限 | 64 MiB（**仅市场通道**，普通导入不受此限） | `src/market/types.ts:30` |
 
-超出限额的后果是**抛错并整体拒绝**，不是部分导入（`src/utils/zip.ts:269-271`、`src/utils/zip.ts:231-239`）。
+超出限额的后果是**抛错并整体拒绝**，不是部分导入（`src/utils/zip.ts:266-268`、`src/utils/zip.ts:228-231`）。
+
+**本实现不设压缩比限额（有意，第三方不要照抄成"漏了一项"）**：上述四项限额**全部是绝对字节预算**，
+没有"解压/压缩比"闸门。原因不是疏忽：解压结果已被 `maxSingleBytes`（单条）与 `maxTotalBytes`（累计）
+双重封顶，压缩比**不提供任何增量防护**，却会误杀"小体积高压缩"的合法条目 —— SQLite 的 `-shm`/`-wal`
+边车就是这种形态（32 KB 稀疏文件，内容仅几十字节非零，实测压缩比 237～386）。曾有过 `maxRatio: 200`，
+它使本实现产出了自己的读取器拒收的 ZIP。
 
 ### 1.4 更严格的「加固解析」差异（第三方需知）
 
@@ -149,8 +154,8 @@ manifest.json
 
 | 阶段 | 做什么 | 不做什么 | 取证 |
 |---|---|---|---|
-| ① `parseZip(buf, limits)`（构造 `ZipArchive`） | 解析 EOCD → 遍历中央目录 → 逐条 `isPathSafe(name)` → 累计条目数与压缩体积 | **不读本地文件头、不解压、不校验 CRC、不校验尺寸、不看 method 是否受支持、不看 flag** | `src/utils/zip.ts:254-306` |
-| ② `archive.readEntry(name)`（真正取字节） | 定位本地文件头 → 取压缩数据 → 按 method 解压 → 校验 `uncompressedSize` → 校验 CRC32 → 累计解压体积与压缩比 | 不重新校验条目名 | `src/utils/zip.ts:192-241` |
+| ① `parseZip(buf, limits)`（构造 `ZipArchive`） | 解析 EOCD → 遍历中央目录 → 逐条 `isPathSafe(name)` → 累计条目数与压缩体积 | **不读本地文件头、不解压、不校验 CRC、不校验尺寸、不看 method 是否受支持、不看 flag** | `src/utils/zip.ts:251-303` |
+| ② `archive.readEntry(name)`（真正取字节） | 定位本地文件头 → 取压缩数据 → 按 method 解压 → 校验 `uncompressedSize` → 校验 CRC32 → 累计解压体积 | 不重新校验条目名、不看压缩比 | `src/utils/zip.ts:190-238` |
 
 因此：**method=12（bzip2）与 CRC 不符的条目，`parseZip` 会成功返回**，错误只在 `readEntry` 时才抛出（实测 V2 / V3）。第三方 importer 若把「`parseZip` 成功」当作「bundle 合法」，会得到一个静默半合法的中间态。
 
@@ -158,10 +163,10 @@ manifest.json
 
 | 项 | 真实行为 | 取证 |
 |---|---|---|
-| 写侧 | 恒 `deflateRawSync` + 本地头/中央目录 method 字段 = `8` | `src/utils/zip.ts:100`、`src/utils/zip.ts:107`、`src/utils/zip.ts:122` |
-| 读侧 method = `0`（store） | **接受**：直接把压缩数据切片当解压结果，不做 inflate | `src/utils/zip.ts:211-212` |
-| 读侧 method = `8`（deflate） | **接受**：`zlib.inflateRawSync(raw, { maxOutputLength: maxSingleBytes })`；inflate 失败 → `ZipSafetyError`（`条目 "X" 解压失败: ...`） | `src/utils/zip.ts:213-218` |
-| 读侧其它 method | **抛错**：`条目 "X" 使用未知压缩方法 {n}` | `src/utils/zip.ts:219-221` |
+| 写侧 | 恒 `deflateRawSync` + 本地头/中央目录 method 字段 = `8` | `src/utils/zip.ts:98`、`src/utils/zip.ts:105`、`src/utils/zip.ts:120` |
+| 读侧 method = `0`（store） | **接受**：直接把压缩数据切片当解压结果，不做 inflate | `src/utils/zip.ts:209-210` |
+| 读侧 method = `8`（deflate） | **接受**：`zlib.inflateRawSync(raw, { maxOutputLength: maxSingleBytes })`；inflate 失败 → `ZipSafetyError`（`条目 "X" 解压失败: ...`） | `src/utils/zip.ts:211-216` |
+| 读侧其它 method | **抛错**：`条目 "X" 使用未知压缩方法 {n}` | `src/utils/zip.ts:217-219` |
 
 **实测**（§1.6 命令 `V2`）：把 `config/settings.json` 的 method 改为 `12` → `parseZip OK`；`readEntry` 抛 `条目 "config/settings.json" 使用未知压缩方法 12`。
 
@@ -178,9 +183,9 @@ manifest.json
 
 | 项 | 真实行为 | 取证 |
 |---|---|---|
-| 写侧 | 本地头 `crc` 字段（偏移 14）与中央目录 `crc` 字段（偏移 16）都写真实 CRC32 | `src/utils/zip.ts:101`、`src/utils/zip.ts:110`、`src/utils/zip.ts:125` |
-| 读侧取值来源 | **只读中央目录的 CRC**（`src/utils/zip.ts:280` 的 `c.readUInt32LE(pos + 16)`），本地头的 CRC 字段**被忽略** | `src/utils/zip.ts:280`、`src/utils/zip.ts:294-302` |
-| 校验 | `crc32(解压结果) !== meta.crc32` → 抛 `条目 "X" CRC32 校验失败（ZIP 已损坏）` | `src/utils/zip.ts:226-228` |
+| 写侧 | 本地头 `crc` 字段（偏移 14）与中央目录 `crc` 字段（偏移 16）都写真实 CRC32 | `src/utils/zip.ts:99`、`src/utils/zip.ts:108`、`src/utils/zip.ts:123` |
+| 读侧取值来源 | **只读中央目录的 CRC**（`src/utils/zip.ts:277` 的 `c.readUInt32LE(pos + 16)`），本地头的 CRC 字段**被忽略** | `src/utils/zip.ts:277`、`src/utils/zip.ts:291-299` |
+| 校验 | `crc32(解压结果) !== meta.crc32` → 抛 `条目 "X" CRC32 校验失败（ZIP 已损坏）` | `src/utils/zip.ts:224-226` |
 | 校验时机 | `readEntry` 阶段（不是 `parseZip` 阶段） | 同上 |
 
 **实测**（§1.6 `V3`）：中央目录与本地头的 CRC 各翻转 1 bit → `parseZip OK`；`readEntry` 抛 `CRC32 校验失败（ZIP 已损坏）`。
@@ -193,9 +198,9 @@ manifest.json
 
 | 项 | 真实行为 | 取证 |
 |---|---|---|
-| 写侧 | 本地头（偏移 6）与中央目录（偏移 8）都写 `0x0800` | `src/utils/zip.ts:106`、`src/utils/zip.ts:121` |
-| 读侧 | **没有任何代码读取 general purpose flag 字段**（`parseZip` 只取 method / crc / 尺寸 / 名字长度 / extra / comment / localOffset） | `src/utils/zip.ts:279-302`（无 flag 读取）；`src/security/zip-security.ts:80-101` 同样只额外读 `externalAttrs` |
-| 条目名解码 | 恒 `b.subarray(...).toString('utf8')`，**与 flag 无关** | `src/utils/zip.ts:287`、`src/security/zip-security.ts:89` |
+| 写侧 | 本地头（偏移 6）与中央目录（偏移 8）都写 `0x0800` | `src/utils/zip.ts:104`、`src/utils/zip.ts:119` |
+| 读侧 | **没有任何代码读取 general purpose flag 字段**（`parseZip` 只取 method / crc / 尺寸 / 名字长度 / extra / comment / localOffset） | `src/utils/zip.ts:276-299`（无 flag 读取）；`src/security/zip-security.ts:80-101` 同样只额外读 `externalAttrs` |
+| 条目名解码 | 恒 `b.subarray(...).toString('utf8')`，**与 flag 无关** | `src/utils/zip.ts:284`、`src/security/zip-security.ts:89` |
 
 **实测**（§1.6 `V5`）：把本地头与中央目录的 bit11 都清掉 → `parseZip OK`；`readEntry OK(504B)`；条目名仍是正确的 UTF-8。
 
@@ -210,9 +215,9 @@ manifest.json
 
 | 项 | 真实行为 | 取证 |
 |---|---|---|
-| 写侧 | flag 恒为 `0x0800`（**不含** `0x0008`），因此**从不**产生数据描述符 | `src/utils/zip.ts:106`、`src/utils/zip.ts:121` |
-| 读侧定位数据 | `dataStart = localOffset + 30 + nameLen + extraLen`；`raw = buf.subarray(dataStart, dataStart + compressedSize)` —— `compressedSize` 取自**中央目录**，本地头的 `compressedSize` 字段被忽略 | `src/utils/zip.ts:202-208` |
-| 读侧对 bit3 | **不检查**该 flag，也不跳过任何描述符字节 | `src/utils/zip.ts:279-302`（无 flag 读取） |
+| 写侧 | flag 恒为 `0x0800`（**不含** `0x0008`），因此**从不**产生数据描述符 | `src/utils/zip.ts:104`、`src/utils/zip.ts:119` |
+| 读侧定位数据 | `dataStart = localOffset + 30 + nameLen + extraLen`；`raw = buf.subarray(dataStart, dataStart + compressedSize)` —— `compressedSize` 取自**中央目录**，本地头的 `compressedSize` 字段被忽略 | `src/utils/zip.ts:200-206` |
+| 读侧对 bit3 | **不检查**该 flag，也不跳过任何描述符字节 | `src/utils/zip.ts:276-299`（无 flag 读取） |
 
 **实测**（§1.6 `V6`）：只置 bit3（本地头仍写正确 CRC/尺寸）→ `readEntry OK`。
 
@@ -230,9 +235,9 @@ manifest.json
 
 | 项 | 真实行为 | 取证 |
 |---|---|---|
-| 识别 | `isDirectory: name.endsWith('/')`（只看名字，不看 external attrs） | `src/utils/zip.ts:300`、`src/security/zip-security.ts:113` |
-| `readEntry` | 目录条目**直接返回 0 字节**，不读本地头、不解压 | `src/utils/zip.ts:195` |
-| 解压（`safeExtract`） | `if (meta.isDirectory) continue;` —— 跳过，不建目录、不写文件 | `src/utils/zip.ts:322`、`src/security/zip-security.ts:155` |
+| 识别 | `isDirectory: name.endsWith('/')`（只看名字，不看 external attrs） | `src/utils/zip.ts:297`、`src/security/zip-security.ts:113` |
+| `readEntry` | 目录条目**直接返回 0 字节**，不读本地头、不解压 | `src/utils/zip.ts:193` |
+| 解压（`safeExtract`） | `if (meta.isDirectory) continue;` —— 跳过，不建目录、不写文件 | `src/utils/zip.ts:319`、`src/security/zip-security.ts:155` |
 | 分区提取 | `if (rel === '' \|\| rel.endsWith('/')) continue;` —— 文件类分区也跳过目录条目 | `src/core/analyzer.ts:253` |
 
 **实测**（§1.6 `S-2 C6` / `C7`）：往 ZIP 里加 `custom/skills/probe/dir-entry/`（0 字节）与 `custom/skills/`（0 字节）→ `analysis.valid=true`；skills 计划项为 `[]`；目标文件系统**没有**新增任何条目。
@@ -247,15 +252,16 @@ manifest.json
 
 | 检查项 | 强制？ | 取值来源 |
 |---|---|---|
-| 条目名安全（绝对路径 / 盘符 / UNC / `..` 段 / NUL） | **强制** | 中央目录的 name（`src/utils/zip.ts:289`） |
-| 条目数与压缩体积限额 | **强制** | EOCD + 中央目录（`src/utils/zip.ts:263-271`、`src/utils/zip.ts:290-293`） |
-| method ∈ {0, 8} | **强制**（其它拒绝） | 中央目录（`src/utils/zip.ts:279`） |
-| `解压结果长度 === uncompressedSize` | **强制** | 中央目录（`src/utils/zip.ts:223-225`） |
-| CRC32 === 解压结果 CRC | **强制** | **中央目录**（`src/utils/zip.ts:226-228`） |
+| 条目名安全（绝对路径 / 盘符 / UNC / `..` 段 / NUL） | **强制** | 中央目录的 name（`src/utils/zip.ts:286`） |
+| 条目数与压缩体积限额 | **强制** | EOCD + 中央目录（`src/utils/zip.ts:260-268`、`src/utils/zip.ts:287-290`） |
+| method ∈ {0, 8} | **强制**（其它拒绝） | 中央目录（`src/utils/zip.ts:276`） |
+| `解压结果长度 === uncompressedSize` | **强制** | 中央目录（`src/utils/zip.ts:221-223`） |
+| CRC32 === 解压结果 CRC | **强制** | **中央目录**（`src/utils/zip.ts:224-226`） |
 | UTF-8 flag 已置 | **不检查** | — |
 | 数据描述符 | **不解析、不拒绝** | — |
 | 目录条目 | **跳过，不拒绝** | name 尾随 `/` |
-| 解压总体积 / 单条压缩比限额 | **强制** | `readEntry` 累计（`src/utils/zip.ts:230-239`） |
+| 解压总体积限额 | **强制** | `readEntry` 累计（`src/utils/zip.ts:228-231`） |
+| 单条压缩比限额 | **不检查（有意）** | 解压结果已由单条/累计字节预算封顶，比例闸门无增量防护，见 §1.3 |
 | 重复条目名 / symlink | 仅 `parseZipHardened` 强制（§1.4） | 中央目录 externalAttrs（`src/security/zip-security.ts:87-98`） |
 
 ### 1.6 §1.5 的实测命令与输出（可复现）
@@ -278,12 +284,12 @@ V9 真实数据描述符（bit3=1，本地头 CRC/尺寸=0 + 16B 描述符） �
 ```
 
 ```text
---- method=0 的尺寸/比例边界（独立探针）---
+--- method=0 的尺寸边界（独立探针）---
 S1 正常 stored                                    → readEntry OK len=22
 S2 stored：声明 compressedSize = 0                 → readEntry THROW: 解压尺寸不符（0 ≠ 22）
 S3 stored：声明 compressedSize > 实际               → readEntry THROW: 解压尺寸不符（26 ≠ 22）
 S4 stored：compSize=uncompSize=5 但内容 22 字节      → readEntry THROW: CRC32 校验失败（ZIP 已损坏）
-S5 stored：压缩比 > 200（compSize=1, uncompSize=22） → readEntry THROW: 解压尺寸不符（1 ≠ 22）
+S5 stored：声明 compressedSize < 实际（compSize=1, uncompSize=22） → readEntry THROW: 解压尺寸不符（1 ≠ 22）
 ```
 
 ```text
@@ -534,20 +540,21 @@ win32 | darwin | linux | freebsd | openbsd | aix | sunos | android | cygwin | ha
 
 `collectDir`（如 `plugin-config`）是插件共享的跨设备配置容器，插件会把整个托管 HOME 放进去，因此该目录天然包含大量缓存、历史与工作现场。收集这些内容的代价是**数量级**的：本机实测 `~/.dsh/plugin-config` 为 **3,920 MB / 102,582 文件**，剪枝后 **50.9 MB / 1,626 文件**（遍历 6,279 ms → 212 ms），且剪枝前最大单文件 **128.5 MB** 已超 GitHub 的 100 MiB 硬上限。
 
-因此 `pluginFiles` 的 `collectDir` 收集**按路径形状剪枝**（`PLUGIN_FILES_EXCLUDED_DIRS`）。**权威清单是该常量本身**（`src/adapters/plugin-files.ts`）—— 本规格不复制其完整清单，避免两处漂移。
+因此 `pluginFiles` 的 `collectDir` 收集**分两层剪枝**：目录按**路径形状**（`PLUGIN_FILES_EXCLUDED_DIRS`），文件按**文件名后缀**（`PLUGIN_FILES_EXCLUDED_FILE_SUFFIXES`）。**权威清单是这两个常量本身**（`src/adapters/plugin-files.ts`）—— 本规格不复制其完整清单，避免两处漂移。
 
-第三方实现者必须知道的四点：
+第三方实现者必须知道的五点：
 
 | 契约 | 说明 |
 |---|---|
 | **匹配语义** | 每项是**连续路径分段**序列（如 `['.gemini','antigravity-cli','scratch']`），不是目录名、不是子串、不是 glob；匹配对象是 **homeDir 相对路径**。单段项仅允许**明确无歧义**的缓存名（该常量中至多出现一项，本规格不点名）；`scratch` / `cache` / `log` 这类含糊词一律要求多段，否则会误伤任意分区下的同名业务目录 |
 | **必须对链接同样成立** | 剪枝不仅看条目自身路径，还要看**链接解析后的目标**。否则 `cli.log -> log/cli-*.log` 这类文件链接会把已剪目录的内容带进包，同时报告却宣称该目录已跳过 |
-| **取值形态** | `excludedDirs` 是 **homeDir 相对、`/ `分隔、已排序**的路径数组；`paths` **不含**被剪目录下的任何文件 |
+| **文件按后缀剪枝** | 目录有「连续分段」可匹配，文件没有，故文件用**文件名后缀**判据（如 `-shm` 命中 `conversation_summaries.db-shm`）。当前清单是 SQLite 的两种 WAL 边车 `-shm` / `-wal`：它们是数据库的**瞬时状态**，随进程关闭被回收或合并进主文件，搬过去反而可能与目标机主库不一致。用后缀而非全名 —— 任何 SQLite 库都会产生同名边车，清单不该跟着库名增长 |
+| **取值形态** | `excludedDirs` / `excludedFiles` 都是 **homeDir 相对、`/ `分隔、已排序**的路径数组；`paths` **不含**被剪目录下的任何文件、也不含被剪文件 |
 | **只影响导出** | `applyItem` 只写快照中存在的文件，**从不删除**本地文件 —— 剪枝不会清掉本机内容。导入侧因此对含剪枝项的旧快照完全兼容 |
 
-> **剪枝的代价必须如实报告**。被剪内容分两类，后果不同：**运行时再生品**（`Library/Caches`、`.npm`、`log` 等）下次启动重建，排除无损失；**agy 的会话历史与工作现场**（约 1.4 GB，具体目录见该常量中标注「不可再生」的项）**不会被重建，排除即永久丢失**。跨设备恢复后账号可直接登录使用，但**目标机没有这些历史会话**。
+> **剪枝的代价必须如实报告**。被剪内容分两类，后果不同：**可再生品**（`Library/Caches`、`.npm`、`log` 等下次启动重建；`Library/pnpm` 的依赖内容寻址仓库重装依赖即恢复）排除无损失；**agy 的会话历史与工作现场**（约 1.4 GB，具体目录见该常量中标注「不可再生」的项）**不会被重建，排除即永久丢失**。跨设备恢复后账号可直接登录使用，但**目标机没有这些历史会话**。
 >
-> 因此报告文案（`adapter.dirsExcluded`）不得把二者统称为「缓存」或断言「不影响使用」—— 那会让用户误以为没有内容损失。账号身份（`antigravity-oauth-token`、`settings.json`、`.gemini/config/**`、`Library/Keychains/login.keychain-db`、`pool.json`）一律保留，这才是「可直接使用」的依据。
+> 因此报告文案（`adapter.dirsExcluded` / `adapter.filesExcluded`）不得把二者统称为「缓存」或断言「不影响使用」—— 那会让用户误以为没有内容损失。账号身份（`antigravity-oauth-token`、`settings.json`、`.gemini/config/**`、`Library/Keychains/login.keychain-db`、`pool.json`）一律保留，这才是「可直接使用」的依据。
 >
 > `pool.json` 内记录的绝对路径在加载时按 `basename` 重定位（`packages/dsh-agy-link/src/host/pool.ts` 的 `load()`），故跨机可用；但 `agentHome` **只在插件启用时**由启动流程改写，未启用时它仍是上一台机器的路径。
 `SECTION_FILE_PREFIXES` 全部以 `/` 结尾：`custom/skills/`、`agents/presets/`、`custom/agent-instructions/`、`plugin-files/`、`sessions/`、`self/`（`src/schema/config.ts:32-39`）。
@@ -576,14 +583,14 @@ win32 | darwin | linux | freebsd | openbsd | aix | sunos | android | cygwin | ha
 
 | 层 | 规则 | 位置 | 效果 |
 |---|---|---|---|
-| **L1：`parseZip` 条目名闸** | `isPathSafe(name)` 为假 → 抛 `ZipSafetyError`，**整个 bundle 被拒**（不是跳过该条目） | `src/utils/zip.ts:289`、`src/security/zip-security.ts:92` | 拒绝 `../`、以 `/` 或 `\` 开头、盘符 `C:/`、UNC `\\`、NUL |
+| **L1：`parseZip` 条目名闸** | `isPathSafe(name)` 为假 → 抛 `ZipSafetyError`，**整个 bundle 被拒**（不是跳过该条目） | `src/utils/zip.ts:286`、`src/security/zip-security.ts:92` | 拒绝 `../`、以 `/` 或 `\` 开头、盘符 `C:/`、UNC `\\`、NUL |
 | **L2：`isPathSafe` 的实际覆盖** | 拒绝：空串、含 `\0`、以 `/` 或 `\` 开头、`^[a-zA-Z]:[\\/]`、`^\\\\`、**任一分段 === `..`**。**不拒绝**：中段反斜杠、`//`（空段）、`./`、尾随 `/`、`~` | `src/utils/paths.ts:45-54` | 见 §3.3.2 实测表 |
 | **L3：F23 预留命名空间闸** | `isReservedInternalRel(normalizePath(path.join(baseDir, ref)))` 为真 → 计划项标 `Error`（不执行）；`applyItem` 前再查一次（纵深防御） | `src/adapters/file-collection.ts:59-66`、`src/adapters/file-collection.ts:97-100`、`src/utils/paths.ts:107-114` | 拒绝写 `dsh-config-manager/{snapshots,transactions,locks,recovery-history,migration-history}/`、`safe-mode`、`environment-fingerprint.token`、`sync/{snapshots,work}/` |
-| **L4：解压目标越界闸** | `safeExtract` / `safeExtractHardened` 用 `isSameOrChild(target, destDir)` 复查 | `src/utils/zip.ts:324-326`、`src/security/zip-security.ts:157-159` | 仅用于「解压到目录」路径（本实现的 bundle 导入走内存解析，不走这条） |
+| **L4：解压目标越界闸** | `safeExtract` / `safeExtractHardened` 用 `isSameOrChild(target, destDir)` 复查 | `src/utils/zip.ts:321-323`、`src/security/zip-security.ts:157-159` | 仅用于「解压到目录」路径（本实现的 bundle 导入走内存解析，不走这条） |
 
 **必须注意的落差**：L1 依赖 `isPathSafe`，而 `isPathSafe` **不折叠 `..`、也不拒绝中段反斜杠**。实测（§3.3.2）：
 
-- 含 `..` 段的条目名会被 L1 拒绝 → 这一点是好的，且**写侧 `zipToBuffer` 也会先拒**（`src/utils/zip.ts:95-97`），因此正常导出产物永远不会出现这种名字。
+- 含 `..` 段的条目名会被 L1 拒绝 → 这一点是好的，且**写侧 `zipToBuffer` 也会先拒**（`src/utils/zip.ts:93-95`），因此正常导出产物永远不会出现这种名字。
 - **中段反斜杠既不被写侧拒绝、也不被读侧拒绝**（C10 实测 `parseZip ACCEPT`、`skills plan=["Create:skills:probe/back\\slash.md"]`、目标落到 `skills/probe/back/slash.md`）。这是**真实缺口**，不是理论问题：`src/security/integrity.ts:63` 对 checksums 表里的键明确拒绝 `\`，但**条目名侧没有同等检查**。
 
 ##### D. 给第三方实现者的规范建议（明确区分「现状」与「建议」）
@@ -776,7 +783,7 @@ THROW 备份 schema v2（高于当前 1，需升级插件），无法导入（�
 
 > **本实现的状态（勿误读为已实现）**：本实现 **没有**实现这个探测——`src/` 全库检索 `DCA1` 零命中，
 > `analyzer.loadBundle` 直接把字节交给 ZIP 解析器，因此 `DCA1` 容器会得到
-> `ZipSafetyError: 不是合法的 ZIP 文件（缺少中央目录结束记录）`（`src/utils/zip.ts:261`），
+> `ZipSafetyError: 不是合法的 ZIP 文件（缺少中央目录结束记录）`（`src/utils/zip.ts:258`），
 > 而非「需先解密」。这是**已知的实现缺口**（§10 G-14），不是规格与实现的一致性契约：
 > 第三方**不得**以本实现为参照声称「已做识别」。
 
@@ -1306,10 +1313,10 @@ errors   = []
 | **G-08** | **密码强度校验（基线形同虚设 → 一度接通 → 随加密层整体移除）** | 基线 `0.1.59` 中强度校验函数已实现且有单测，但**零调用**——导出端只要求 `password` 是非空字符串。**形同虚设**：有一个「看起来在守、实际不跑」的强度函数 | 基线：`src/security/encryption.ts:165-174`（函数定义） | 基线：弱密码可被接受（当时无闸门） | ➖ **已整体移除（含加密层本身）**：本实现 删除了整个 `src/security/encryption.ts` 与全部加密入口（§4），强度校验随之一并不存在——**不是「保留了密码但去掉强度校验」，而是「没有密码这回事」**。第三方**不得**假设本格式有密码强度要求，**也不应**在自己的实现里加闸门：那会让跨实现迁移被拒。 |
 | **G-09** | **文件类分区内容不扫描 secret** | `skills`/`agentPresets`/`agentInstructions`/`pluginFiles`/`sessions`/`self` 的文件内容**完全不进扫描器**，也不计入 `redactedHits` | 基线：`src/core/exporter.ts:161-167`、`src/adapters/self.ts:21-22` | 「默认不含秘密」对文件类分区**不成立**；`pluginFiles` 默认 `false` 与市场 BANNED 是对此的缓解，但**用户显式勾选即可带出明文** | ✅ **已修复（已实测复核）**：文件类分区改走 `scanFileSectionText`（定义 `src/core/exporter.ts:135-161`，调用点 `:248`），命中**计入 `redactedHits`** 并逐条产出 `export.fileSectionSecrets` 告警（`src/core/messages.ts:28`）。**边界（仍然成立）**：只报告**不改写**（绝不剥离用户文件内容）；默认 `defaultSecretScanner` 未实现 `scanText` → 该分支返回空、行为与修复前一致（`src/core/exporter.ts:130-131`、`:137`），生产路径注入的是含 `scanText` 的强化扫描器。**遗留的告警去重问题**见本表 G-13 |
 | **G-10** | **`secrets` 在 `sections` 中恒 `false` 但语义被复用** | `sections.secrets` 永远是 `false`（无 adapter）；「是否含凭据」由 `security.containsSecrets` 承载。若第三方按「`sections.secrets === true` 表示含凭据」理解会出错 | 基线：`src/core/exporter.ts:296`（基线行号）；§0.2 运行验证 | 格式语义的坑（文档级，非实现缺陷） | ✅ **已收口（规格侧澄清，实现未变）**：`buildSectionFlags` 里 `flags['secrets'] = false` 仍在（**当前工作区** `src/core/exporter.ts:372`），这不是实现缺陷而是**语义设计**；§2.5 已加显式警告块，§9 步骤 4 的验收判据明确「含秘密/需密码只看 `security.containsSecrets` / `security.encrypted`，不看 `sections.secrets`」。第三方按该判据实现即不会误判 |
-| **G-11** | **条目名侧不拒绝中段反斜杠（与 checksums 侧不一致）** | `isPathSafe` 只拒绝「以 `/` 或 `\` 开头」与「含 `..` 段」的名字，**中段 `\` 被接受**：`isPathSafe('custom/skills/back\\slash.md') === true`，写侧 `zipToBuffer` 也接受，读侧 `parseZip` 也接受。后果：① 同一份 bundle 在 Windows 目标上把 `\` 当分隔符（`skills/probe/back/slash.md`），在 POSIX 目标上当普通字符（`skills/probe/back\slash.md`）——**跨平台路径语义不一致**；② 而 `checksums.json` 的键侧**明确拒绝**含 `\` 的路径（`src/security/integrity.ts:63`），两套规则不对齐 | `src/utils/paths.ts:45-54`（无 `\` 检查）、`src/utils/zip.ts:95-97`、`src/utils/zip.ts:289`；§3.3.2 实测 C10 | 条目名安全边界；跨平台不一致；第三方若照抄 `isPathSafe` 会继承该缺陷 | ✅ **仍然成立**（本版新增登记，实测确认）。**这是本表唯一一条「未修复的格式行为缺陷」**（G-14 是同类未修复项，但属**识别能力**缺口而非格式读写行为） |
+| **G-11** | **条目名侧不拒绝中段反斜杠（与 checksums 侧不一致）** | `isPathSafe` 只拒绝「以 `/` 或 `\` 开头」与「含 `..` 段」的名字，**中段 `\` 被接受**：`isPathSafe('custom/skills/back\\slash.md') === true`，写侧 `zipToBuffer` 也接受，读侧 `parseZip` 也接受。后果：① 同一份 bundle 在 Windows 目标上把 `\` 当分隔符（`skills/probe/back/slash.md`），在 POSIX 目标上当普通字符（`skills/probe/back\slash.md`）——**跨平台路径语义不一致**；② 而 `checksums.json` 的键侧**明确拒绝**含 `\` 的路径（`src/security/integrity.ts:63`），两套规则不对齐 | `src/utils/paths.ts:45-54`（无 `\` 检查）、`src/utils/zip.ts:93-95`、`src/utils/zip.ts:286`；§3.3.2 实测 C10 | 条目名安全边界；跨平台不一致；第三方若照抄 `isPathSafe` 会继承该缺陷 | ✅ **仍然成立**（本版新增登记，实测确认）。**这是本表唯一一条「未修复的格式行为缺陷」**（G-14 是同类未修复项，但属**识别能力**缺口而非格式读写行为） |
 | **G-12** | **G-04 的收窄残留：checksums 表缺失/为空时「未登记条目」漏报** | 反向完整性检查（「ZIP 里在、校验表里不在」的条目）原本整段嵌在「表存在」分支内：剥掉 `integrity/checksums.json` 或把它置为 `{}` ⇒ 一个条目都不校验、也零告警，却 `valid=true` | 基线：`src/core/analyzer.ts:163`（`if (archive.has(CHECKSUMS_FILE))` 包住整段） | 与 G-04 同源：可静默绕过完整性校验 | 🚧 **本轮审计新发现，正在修复（未收口）**。**工作区已见修复**：`src/core/analyzer.ts:167-172` 把「表缺失或为空」统一映射为 `import.checksumsMissing` 告警，反向检查（`:196-205`）此时不再运行（无表可对照）；回归测试 `INT-02` / `INT-03` / `INT-04`（`tests/conformance/roundtrip.test.ts:945-1031`）。**但由并行任务负责收口与验收，本文件不声称已修完**——详见 §7.4「行为正在变更」提示与 `docs/spec/known-gaps.md` §2 |
 | **G-13** | **G-09 的告警去重问题** | 文件类分区的 secret 命中告警原本按 **hit** 计数且不去重：同一行同时命中「字段名」与「值形状」会产出两条**同路径**告警，少数文件就吃满 `MAX_FILE_SECTION_WARNINGS_PER_SECTION` 上限，使含真实明文凭据的其它文件被静默淹没 | 基线：`src/core/exporter.ts` 按 hit 逐条 push | 告警噪声，可淹没真正需要关注的命中；**不改变**「命中是否被检出」这一安全事实（计数始终可信） | 🚧 **本轮审计新发现，正在修复（未收口）**。**工作区已见修复**：`src/core/exporter.ts:252-273` 先按**文件路径**去重、再截断到 `MAX_FILE_SECTION_WARNINGS_PER_SECTION`（语义 = 不同**文件**数，常量在 `:107-108`），并对被截断的文件数补一条**汇总告警**；`redactedHits` 仍计**全量命中**。回归测试 `tests/core/exporter.test.ts:381` / `:436` / `:456`。**但由并行任务负责收口，本文件不声称已修完** |
-| **G-14** | **`DCA1` 外层容器探测未实现（规格 §4.6 / §9 步骤 2 声称「本实现只做识别不做解密」，实际未识别）** | 加密层移除后，§4.6 与 §9 步骤 2 仍写着「先探测前 4 字节是否等于 `DCA1`，是则报『需先解密』」，并声称本实现**已做识别**。实际 `src/` 全库检索 `DCA1` **零命中**，`analyzer.loadBundle` 把字节直接交给 ZIP 解析器 ⇒ `DCA1` 容器得到的是 `ZipSafetyError: 不是合法的 ZIP 文件（缺少中央目录结束记录）`（`src/utils/zip.ts:261` / `src/security/zip-security.ts:62`，实测确认），**不是**「需先解密」 | 规格 §4.6 / §9 步骤 2 vs `grep -rn DCA1 src/`（零命中） | 第三方按规格「照抄本实现」会以为探测已存在而跳过实现；真正的 `DCA1` 产物报错误导用户去查「备份损坏」而非「需先解密」 | ⚠️ **仍然成立（本次登记）**：§4.6 已加显式状态块、§9 步骤 2 的验收列已改为「**本实现未实现此探测**」，**不再声称已识别**。是否补实现属独立决策，**本文件不声称已修复** |
+| **G-14** | **`DCA1` 外层容器探测未实现（规格 §4.6 / §9 步骤 2 声称「本实现只做识别不做解密」，实际未识别）** | 加密层移除后，§4.6 与 §9 步骤 2 仍写着「先探测前 4 字节是否等于 `DCA1`，是则报『需先解密』」，并声称本实现**已做识别**。实际 `src/` 全库检索 `DCA1` **零命中**，`analyzer.loadBundle` 把字节直接交给 ZIP 解析器 ⇒ `DCA1` 容器得到的是 `ZipSafetyError: 不是合法的 ZIP 文件（缺少中央目录结束记录）`（`src/utils/zip.ts:258` / `src/security/zip-security.ts:62`，实测确认），**不是**「需先解密」 | 规格 §4.6 / §9 步骤 2 vs `grep -rn DCA1 src/`（零命中） | 第三方按规格「照抄本实现」会以为探测已存在而跳过实现；真正的 `DCA1` 产物报错误导用户去查「备份损坏」而非「需先解密」 | ⚠️ **仍然成立（本次登记）**：§4.6 已加显式状态块、§9 步骤 2 的验收列已改为「**本实现未实现此探测**」，**不再声称已识别**。是否补实现属独立决策，**本文件不声称已修复** |
 
 > 说明：G-07 目前**没有可观测后果**（因为 `MIN = CURRENT = 1`，迁移路径不可达）。**G-06 已修复后，这条定时问题已解除**：一旦发布 schema v2，`loadBundle` 会沿迁移链真实执行迁移（`src/core/analyzer.ts:218-222`），而不是「判定可迁移却按新格式直接用」。v2 发布前仍应补一条「v1 → v2 真实迁移」的端到端测试。
 >

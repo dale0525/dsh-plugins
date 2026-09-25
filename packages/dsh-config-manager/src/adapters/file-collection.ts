@@ -33,7 +33,7 @@ export abstract class FileCollectionAdapter implements ConfigAdapter<FilesSectio
     const warnings: string[] = [];
     // issue #37：用「跟随 junction/符号链接」的遍历，并把跟随/跳过的链接写进告警——
     // 此前链接目录及其全部内容被静默排除，备份仍报成功。
-    let listing: RecursiveListing = { paths: [], skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [] };
+    let listing: RecursiveListing = { paths: [], skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [], excludedFiles: [] };
     try {
       listing = await listFilesDetailed(ctx.fs, this.baseDir);
     } catch {

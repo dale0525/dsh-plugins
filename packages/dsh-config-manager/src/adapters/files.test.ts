@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { SkillsAdapter } from './skills.ts';
 import { AgentPresetsAdapter } from './agent-presets.ts';
 import { AgentInstructionsAdapter } from './agent-instructions.ts';
-import { PluginFilesAdapter, PLUGIN_FILES_EXCLUDED_DIRS } from './plugin-files.ts';
+import { PluginFilesAdapter, PLUGIN_FILES_EXCLUDED_DIRS, PLUGIN_FILES_EXCLUDED_FILE_SUFFIXES } from './plugin-files.ts';
 import type { RecursiveWalkOptions } from '../utils/recursive-walk.ts';
 import { SessionsAdapter } from './sessions.ts';
 import { SelfAdapter } from './self.ts';
@@ -59,6 +59,7 @@ test('issue #37: skills 导出把「跟随/跳过的链接」写进 warnings（�
     followedLinks: 1,
     unreadableDirs: [],
     excludedDirs: [],
+    excludedFiles: [],
   });
   const out = await new SkillsAdapter().export(src, { includeSecrets: false });
   assert.deepEqual(out.data.files.map((f) => f.relativePath).sort(), ['coding.md', 'shared/inner.md']);
@@ -198,11 +199,15 @@ test('pluginFiles: 剪枝清单覆盖已知运行时缓存，且是路径形状�
   assert.ok(flat.includes('.gemini/antigravity-cli/scratch'));
   assert.ok(flat.includes('.gemini/antigravity-cli/brain'));
   assert.ok(flat.includes('.npm'));
+  // 实测来源：agy 账号下的依赖内容寻址仓库占 1.0 GB，重新安装依赖即恢复
+  assert.ok(flat.includes('Library/pnpm'), `缺 Library/pnpm: ${flat.join(', ')}`);
   // 核心安全属性：单段剪枝项必须**逐一显式批准** —— 单段 `scratch` 会把任意分区下的同名
   // 业务目录一并剪掉。用白名单而非黑名单：新增任何单段项都必须在此显式放行，否则测试失败。
   const SINGLE_SEGMENT_ALLOWED = new Set([
     '.npm', // 无歧义：npm 自己的缓存目录名
   ]);
+  // 文件剪枝项必须是后缀形状（全名会让清单随库名增长），且确实覆盖 SQLite 两种边车
+  assert.deepEqual([...PLUGIN_FILES_EXCLUDED_FILE_SUFFIXES].sort(), ['-shm', '-wal']);
   for (const p of PLUGIN_FILES_EXCLUDED_DIRS) {
     if (p.length === 1) {
       assert.ok(
@@ -223,12 +228,15 @@ test('pluginFiles: 剪枝清单必须真的传给遍历内核，并把「按设�
       paths: ['plugin-config/agy-link/pool.json'],
       skippedLinks: [], followedLinks: 0, unreadableDirs: [],
       excludedDirs: ['plugin-config/agy-link/acc_1/.gemini/antigravity-cli/scratch'],
+      excludedFiles: [],
     };
   };
   const out = await new PluginFilesAdapter(undefined, 'plugin-config').export(src, { includeSecrets: false });
   assert.deepEqual(out.data.files.map((f) => f.relativePath), ['plugin-config/agy-link/pool.json']);
   assert.ok(received?.excludeDirs !== undefined && received.excludeDirs.length > 0,
     '剪枝清单没传给遍历内核 → 缓存照样进备份');
+  assert.ok(received?.excludeFileSuffixes !== undefined && received.excludeFileSuffixes.length > 0,
+    '文件剪枝清单没传给遍历内核 → SQLite 边车照样进备份');
   assert.equal(out.warnings.some((w) => w.includes('按设计跳过')), true,
     `缺剪枝告警: ${out.warnings.join(' | ')}`);
 });

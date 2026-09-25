@@ -8,7 +8,7 @@ import { zhMsg } from '../core/messages.ts';
 import type { FileSystemFacade } from '../core/types.ts';
 import type { RecursiveListing } from '../utils/recursive-walk.ts';
 
-const clean: RecursiveListing = { paths: ['skills/a.md'], skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [] };
+const clean: RecursiveListing = { paths: ['skills/a.md'], skippedLinks: [], followedLinks: 0, unreadableDirs: [], excludedDirs: [], excludedFiles: [] };
 test('linkWarnings：按设计剪枝的运行时目录单独成行，不混入「未进备份」告警', () => {
   const out = linkWarnings(zhMsg, 'Plugin Files', {
     ...clean,
@@ -18,6 +18,19 @@ test('linkWarnings：按设计剪枝的运行时目录单独成行，不混入�
   assert.match(out[0]!, /按设计跳过/);
   assert.match(out[0]!, /scratch/);
   // 剪枝是策略而非缺失：不得复用「未进备份」这类内容缺失的措辞
+  assert.doesNotMatch(out[0]!, /未进备份/);
+});
+
+test('linkWarnings：按设计剪枝的瞬时状态文件单独成行，且说明它们为何不属于配置', () => {
+  const out = linkWarnings(zhMsg, 'Plugin Files', {
+    ...clean,
+    excludedFiles: ['plugin-config/agy-link/env/acc_1/x.db-shm'],
+  });
+  assert.equal(out.length, 1);
+  assert.match(out[0]!, /按设计跳过/);
+  assert.match(out[0]!, /x\.db-shm/);
+  assert.match(out[0]!, /瞬时状态/);
+  // 与目录剪枝同理：策略不是缺失，不得复用内容缺失的措辞
   assert.doesNotMatch(out[0]!, /未进备份/);
 });
 
@@ -43,6 +56,7 @@ test('linkWarnings：跳过项按原因归并，给出数量、原因与路径',
     followedLinks: 1,
     unreadableDirs: [],
     excludedDirs: [],
+    excludedFiles: [],
     skippedLinks: [
       { path: 'skills/self', reason: 'loop' },
       { path: 'skills/broken', reason: 'broken' },
@@ -64,7 +78,7 @@ test('linkWarnings：跳过项按原因归并，给出数量、原因与路径',
 
 test('linkWarnings：目录读取失败也必须告警（其内容同样未进备份）', () => {
   const out = linkWarnings(zhMsg, 'Skills', {
-    paths: [], followedLinks: 0, skippedLinks: [], unreadableDirs: ['skills/locked', 'skills/denied'], excludedDirs: [],
+    paths: [], followedLinks: 0, skippedLinks: [], unreadableDirs: ['skills/locked', 'skills/denied'], excludedDirs: [], excludedFiles: [],
   });
   assert.equal(out.length, 1);
   assert.match(out[0]!, /2 个目录读取失败/);

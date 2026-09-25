@@ -127,7 +127,7 @@ test('E-02 空配置：导出成功，manifest 合法，无数据也产生有效
 test('E-03 大配置：1MB+ 技能文件 + 大量 namespace，往返校验一致', async () => {
   await withTmp(async (dir) => {
     const src = makeContext('linux', '/home/big');
-    // 大技能文件（1MB+，用真随机内容避免可压缩性触发 zip bomb 压缩比上限）
+    // 大技能文件（1MB+；真随机内容保证压缩后仍是 1MB 量级，真实压到解压体积路径）
     const bigContent = crypto.randomBytes(1024 * 1024);
     await src.fs.writeFile('skills/big.md', bigContent);
     // 大量 namespace

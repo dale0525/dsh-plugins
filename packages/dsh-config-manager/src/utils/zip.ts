@@ -2,7 +2,7 @@
  * ZIP 读写封装：node:zlib（deflate raw）+ 自实现 CRC32，零依赖。
  * 同时是 ZIP 安全的第一道防线（规范 §19，m4 的 zip-security 可在此基础上强化）：
  *   - 条目名 isPathSafe（拒绝 ../、绝对路径、盘符、UNC、NUL）
- *   - 条目数 / 压缩体积 / 解压体积 / 单条 / 压缩比（zip bomb）上限
+ *   - 条目数 / 压缩体积 / 解压体积 / 单条上限（全部是绝对字节预算，不设压缩比闸门，理由见 readEntry）
  *   - 解压时逐条 CRC32 与尺寸校验，损坏即整体拒绝
  * 解压只允许写入受控目标目录（safeExtract），绝不落任意路径。
  */
@@ -29,7 +29,6 @@ export interface ZipSafetyLimits {
   maxTotalBytes?: number;      // 解压后累计字节上限
   maxCompressedBytes?: number; // ZIP 内压缩数据累计上限
   maxSingleBytes?: number;     // 单条目解压后上限
-  maxRatio?: number;           // 单条目解压/压缩比上限（zip bomb 检测）
 }
 
 export const DEFAULT_ZIP_SAFETY_LIMITS: Required<ZipSafetyLimits> = {
@@ -37,7 +36,6 @@ export const DEFAULT_ZIP_SAFETY_LIMITS: Required<ZipSafetyLimits> = {
   maxTotalBytes: 500 * 1024 * 1024,
   maxCompressedBytes: 200 * 1024 * 1024,
   maxSingleBytes: 100 * 1024 * 1024,
-  maxRatio: 200,
 };
 
 export class ZipSafetyError extends Error {
@@ -188,7 +186,7 @@ export class ZipArchive {
     return this.metas.some((m) => m.name === name);
   }
 
-  /** 读取并解压单条目（带 CRC32 / 尺寸 / 体积预算 / 压缩比校验） */
+  /** 读取并解压单条目（带 CRC32 / 尺寸 / 体积预算校验） */
   readEntry(name: string): Uint8Array {
     const meta = this.metas.find((m) => m.name === name);
     if (!meta) throw new ZipSafetyError(`ZIP 中不存在条目: ${name}`);
@@ -231,12 +229,11 @@ export class ZipArchive {
     if (this.totalUncompressed > this.limits.maxTotalBytes) {
       throw new ZipSafetyError('ZIP 解压总字节数超过上限');
     }
-    if (meta.compressedSize > 0) {
-      const ratio = out.length / meta.compressedSize;
-      if (ratio > this.limits.maxRatio) {
-        throw new ZipSafetyError(`条目 "${name}" 压缩比 ${ratio.toFixed(1)} 超过上限（疑似 zip bomb）`);
-      }
-    }
+    // 此处**刻意不设压缩比闸门**：解压结果已被上面的 maxOutputLength（单条）与 maxTotalBytes
+    // （累计）双重封顶，压缩比不再提供任何增量防护，却会误杀「小体积高压缩」的合法文件 ——
+    // SQLite 的 -shm / -wal 边车正是如此（32 KB 稀疏文件，内容仅几十字节非零，实测压缩比 237～386），
+    // 它们随 pluginFiles 进备份后会让本插件产出自己的读取器拒收的 ZIP。加回前请先读
+    // docs/spec/bundle-format-v1.md §1.3。
     return out;
   }
 

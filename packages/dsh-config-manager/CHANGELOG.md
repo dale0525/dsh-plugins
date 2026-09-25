@@ -9,6 +9,28 @@ This file records release highlights of dsh-config-manager (bilingual: 中文 + 
 > **Release workflow**: on tag push, CI extracts the current version's section as the release notes highlights;
 > the build fails fast if the section is missing, so you cannot forget to update it.
 
+## [0.1.71] - 2026-09-24
+
+### 🐛 修复：拉取报「备份完整性校验失败」—— 读取侧的压缩比闸门拒收本插件自己产出的 ZIP
+
+拉取时整包校验失败，点名 `plugin-files/plugin-config/agy-link/env/acc_primary/.gemini/antigravity-cli/conversation_summaries.db-shm`。
+根因不在远端：该 ZIP 由本机 `snapshotToZip()` 现产，而 `readEntry` 有一条**单条目压缩比上限（`maxRatio: 200`）**。
+SQLite 的 WAL 索引 `-shm` 是 32 KB 稀疏文件（仅几十字节非零），deflate 后 138 字节，压缩比 **237.4** —— 被判为 zip bomb。
+本机实测还有 `Library/pnpm/store/v11/index.db-shm`（32,768 → 85 B，压缩比 **385.5**）同型命中。
+
+**这层闸门不提供任何增量防护**：解压结果早已被 `maxOutputLength`（单条 100 MiB）与累计 `maxTotalBytes`（500 MiB）双重封顶，
+压缩比只多杀合法文件。更糟的是**写侧从不做这个检查**，于是本插件能产出自己的读取器拒收的 ZIP。
+本次删除该闸门（读写两侧行为重新对齐），并给出回归断言。
+
+### 🔧 变更：导出侧不再收集 SQLite 边车与 pnpm 依赖仓库
+
+同一次事故暴露的两处"不该进备份"的内容，一并从 `pluginFiles` 收集里剪掉：
+
+- **SQLite WAL 边车**（后缀 `-shm` / `-wal`，如 `*.db-shm` / `*.db-wal`）：数据库**瞬时状态**，随进程关闭回收或合并进主文件；
+  搬过去可能与目标机主库不一致，属于"恢复它反而有害"。按**文件名后缀**剪枝（新增 `PLUGIN_FILES_EXCLUDED_FILE_SUFFIXES`），
+  与目录的"路径形状"剪枝分属两层判据，并新增告警 `adapter.filesExcluded` 如实报告。
+- **`Library/pnpm`**：依赖的内容寻址仓库（本机 `plugin-config` 下实测 **63,577 个文件**，全部是包内容），重装依赖即恢复。按路径形状剪枝。
+
 ## [0.1.70] - 2026-09-24
 
 ### 🐛 修复：推送卡住数十分钟 —— 插件配置目录把 3.9 GB 运行时缓存当配置同步
