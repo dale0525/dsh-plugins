@@ -13,6 +13,11 @@ import type { WorkBuddyWebStatus } from '../status-paths.ts'
  * The check is deliberately limited to the discriminator (plus `error`'s
  * `message`, which the error paragraph renders): validating optional fields
  * here would reject documents the host legitimately omits fields from.
+ *
+ * `reasonCode` is therefore *not* rejected here — a card renders `reason`
+ * either way — but every reader must narrow it with
+ * `isWorkBuddySignedOutReasonCode` before branching on it, since the wire
+ * value is not guaranteed to be inside the enum.
  */
 export function isWorkBuddyWebStatus(value: unknown): value is WorkBuddyWebStatus {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false

@@ -136,6 +136,27 @@ describe('WorkBuddy plugin card', () => {
     expect(tree.indexOf(confirmBody)).toBeLessThan(tree.indexOf('minimax-m3'))
   })
 
+  it('names probe candidates from the catalog rows before the stored result', async () => {
+    // Display-name priority: catalog model name → stored probe result name →
+    // raw id. The action keeps using the id regardless of what the name is.
+    status({
+      candidates: ['hy3', 'glm-5.2', 'minimax-m3'],
+      results: [{ id: 'glm-5.2', name: 'Stored Name', validation: 'non-validating', efforts: [], probedAt: Date.now() }],
+    })
+    statusBody.models = [
+      { id: 'hy3', name: 'HY-3 Display', free: true },
+      { id: 'glm-5.2', name: 'GLM 5.2' },
+    ]
+    await mount()
+    const tree = JSON.stringify(view!.toJSON())
+    // Catalog names win over both the stored result name…
+    expect(tree).toContain('HY-3 Display')
+    expect(tree).toContain('GLM 5.2')
+    expect(tree).not.toContain('Stored Name')
+    // …and an id the catalog does not know still renders as itself.
+    expect(tree).toContain('minimax-m3')
+  })
+
   it('keeps a detected model in the candidate list, relabelled', async () => {
     // Regression: a detected model used to leave the candidate list, so its
     // button vanished and re-running it meant clearing every other result.

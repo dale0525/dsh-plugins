@@ -1,9 +1,15 @@
-/** WorkBuddy status card contributed to Harness Plugin configuration. */
+/**
+ * WorkBuddy status card, rendered on whichever settings surface the host
+ * provides: dispatched directly by DSH 0.1.5's settings Plugins tab (one card
+ * per variant), or mounted by the bundle configuration page DSH 0.1.6+'s
+ * Plugins page renders. The component itself is surface-agnostic — its props
+ * are only the injected copy and variant.
+ */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
-import type { WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from '../status-paths.ts'
+import { WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH, isWorkBuddySignedOutReasonCode } from '../status-paths.ts'
+import type { WorkBuddySignedOutReasonCode, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
@@ -31,6 +37,14 @@ export interface WorkBuddyCardVariant {
   signedOutKey: WorkBuddySettingsKey
   statusPath: string
   probePath: string
+  /**
+   * The product's own name, used verbatim inside the Agent prompt. Taken from
+   * the variant rather than derived from a reason code: the two products fail
+   * in the same shapes, so nothing in the failure says which name is right.
+   */
+  appName: string
+  /** Locale key for "no decryption program is configured" on this product. */
+  unavailableKey: WorkBuddySettingsKey
 }
 
 /** CN WorkBuddy; the plugin's long-standing card and default. */
@@ -41,6 +55,8 @@ export const CN_CARD_VARIANT: WorkBuddyCardVariant = {
   signedOutKey: 'signedOutHint',
   statusPath: WORKBUDDY_STATUS_PATH,
   probePath: WORKBUDDY_PROBE_PATH,
+  appName: 'WorkBuddy',
+  unavailableKey: 'assistUnavailableCN',
 }
 
 /** International WorkBuddy AI. */
@@ -51,6 +67,8 @@ export const AI_CARD_VARIANT: WorkBuddyCardVariant = {
   signedOutKey: 'signedOutHintAI',
   statusPath: WORKBUDDY_AI_STATUS_PATH,
   probePath: WORKBUDDY_AI_PROBE_PATH,
+  appName: 'WorkBuddy AI',
+  unavailableKey: 'assistUnavailableAI',
 }
 
 /** Both cards, in display order. */
@@ -66,11 +84,112 @@ export type WorkBuddyPluginCardProps = WorkBuddyPluginCardInjected
 
 const POLL_INTERVAL_MS = 60_000
 
+/**
+ * The reason codes whose failures the Agent assist block covers: the plugin
+ * cannot reach a decryption program, for any of the five reasons in §5.5.
+ *
+ * This is the *only* place the card decides whether the block applies. It
+ * branches on the code, never on `reason` text: the prose is written for a
+ * human and is expected to change, so matching it would silently stop
+ * matching after any wording edit.
+ *
+ * `encrypted-credential-unreadable` is deliberately absent — the app was found
+ * and ran, so "look for the app" is not the fix for it.
+ */
+const ASSIST_REASON_CODES: readonly WorkBuddySignedOutReasonCode[] = [
+  'electron-binary-not-found',
+  'electron-binary-ambiguous',
+  'electron-binary-unavailable',
+  'electron-path-invalid',
+  'electron-discovery-incomplete',
+]
+
+/** Locale key for one failure's summary inside the Agent prompt. */
+function assistSummaryKey(code: WorkBuddySignedOutReasonCode, variant: WorkBuddyCardVariant): WorkBuddySettingsKey {
+  switch (code) {
+    case 'electron-binary-not-found': return 'assistNotFound'
+    case 'electron-binary-ambiguous': return 'assistAmbiguous'
+    case 'electron-discovery-incomplete': return 'assistIncomplete'
+    case 'electron-path-invalid': return 'assistPathInvalid'
+    default: return variant.unavailableKey
+  }
+}
+
+/** Copy text to the clipboard, reporting whether it worked. */
+async function copyPrompt(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText === undefined) return false
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The Agent assist block for a path failure: what is wrong, one copyable
+ * request, and a re-check. Rendered only for the codes above.
+ */
+function AssistBlock(
+  { t, variant, code, busy, onRecheck }: {
+    t: (key: WorkBuddySettingsKey, params?: Record<string, unknown>) => string
+    variant: WorkBuddyCardVariant
+    code: WorkBuddySignedOutReasonCode
+    busy: boolean
+    onRecheck: () => void
+  },
+) {
+  const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
+  const prompt = t('assistantPrompt', {
+    appName: variant.appName,
+    failureSummary: t(assistSummaryKey(code, variant)),
+  })
+  return (
+    <div style={assistStyle}>
+      <h4 style={assistHeadingStyle}>{t('assistantHeading')}</h4>
+      <p style={bodyStyle}>{t('assistantIntro')}</p>
+      <div style={assistPromptRowStyle}>
+        {/* Selectable on purpose: a failed clipboard write must still leave the
+            user a way to copy the text by hand. */}
+        <p style={assistPromptStyle}>{prompt}</p>
+        <button
+          type="button"
+          style={buttonStyle}
+          onClick={() => {
+            void (async () => {
+              const ok = await copyPrompt(prompt)
+              setCopied(ok)
+              setCopyFailed(!ok)
+            })()
+          }}
+        >
+          {t('assistantCopy')}
+        </button>
+      </div>
+      {/* `role="status"` so the copy result is announced, not just shown. */}
+      {copied ? <p style={assistFeedbackStyle} role="status">{t('assistantCopied')}</p> : null}
+      {copyFailed ? <p style={assistFeedbackStyle} role="status">{t('assistantCopyFailed')}</p> : null}
+      <p style={bodyStyle}>{t('assistantAfter')}</p>
+      <div style={rowStyle}>
+        <button type="button" style={buttonStyle} disabled={busy} onClick={onRecheck}>
+          {busy ? t('assistantRechecking') : t('assistantRecheck')}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 const cardStyle: CSSProperties = {
   overflow: 'hidden',
   border: '1px solid var(--dsw-alias-border-l2)',
   borderRadius: 10,
   background: 'var(--dsw-alias-bg-module-platform)',
+  // The card is an <li> under BOTH seats: DSH 0.1.5's Plugins tab nests cards
+  // in its own <ul>, and the 0.1.6+ configuration page provides a <ul> too.
+  // Neither owner draws list markers for its cards, and this keeps the new
+  // page's <ul> free of them even before the host's own styles land.
+  listStyle: 'none',
 }
 const headerStyle: CSSProperties = {
   boxSizing: 'border-box',
@@ -107,6 +226,21 @@ const modelOfferStyle: CSSProperties = { display: 'flex', flexDirection: 'column
 const modelRateStyle: CSSProperties = { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' }
 const contextPreferenceStyle: CSSProperties = { display: 'flex', alignItems: 'flex-start', gap: 9, padding: '10px 12px', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, color: 'var(--dsw-alias-label-primary)', fontSize: 13, lineHeight: '20px' }
 const contextPreferenceCopyStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 2 }
+/**
+ * The Agent assist block. Sits beside the existing error line rather than
+ * replacing it: the short diagnosis stays the headline, this adds the way out.
+ */
+const assistStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10, padding: '12px 14px', marginTop: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.04))' }
+const assistHeadingStyle: CSSProperties = { margin: 0, fontSize: 14, lineHeight: '20px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+const assistPromptRowStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 8, padding: '8px 9px 8px 11px', borderRadius: 7, background: 'var(--dsw-alias-bg-layer-1)' }
+const assistPromptStyle: CSSProperties = { flex: '1 1 220px', minWidth: 0, margin: 0, color: 'var(--dsw-alias-label-primary)', fontSize: 12, lineHeight: '19px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', userSelect: 'text' }
+const assistFeedbackStyle: CSSProperties = { margin: 0, fontSize: 12, lineHeight: '19px', color: 'var(--dsw-alias-label-secondary)' }
+/**
+ * Left half of one merged context/visibility row: the visibility checkbox (when
+ * the account has one) beside the model's name and rate. Kept as a flex span so
+ * the capacity column stays flush right no matter how long the name runs.
+ */
+const contextRowMainStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }
 const modelBadgeChipStyle: CSSProperties = {
   padding: '1px 8px', borderRadius: 999, fontSize: 11, lineHeight: '18px',
   background: 'var(--dsw-alias-state-success-subtle, rgba(34, 160, 107, 0.12))',
@@ -337,46 +471,73 @@ function ModelOfferRow({ model, t }: {
 }
 
 /**
- * Context capacity, listed in full.
+ * Context window and model visibility, one row per catalog model.
  *
- * Every model the upstream reports a capacity for, largest first. A one-line
- * summary with the exceptions on hover was tried and rejected: capacity is
- * reference data you scan by model, and hiding most of it behind a hover made
- * the common case (a model you already have in mind) the hard one to look up.
+ * The list is driven by the full current catalog, not by context metadata:
+ * hiding a model is a statement about the picker, and a model without a
+ * declared window is still hideable — its row just shows an em dash where the
+ * capacity would be. Rows with a window keep the original ordering (largest
+ * first); rows without one trail at the end in catalog order.
  *
- * Purely a report of the upstream's own numbers. The plugin offers no tier
- * picker: the CN catalog declares one capacity per model and publishes no
- * alternatives, so a menu there would mean inventing client-side policy. The
- * international document does declare alternatives (`supportedLengths`), and
- * they are shown as a secondary figure rather than merged into one number —
+ * Each row is one <label>, so the checkbox is named by its row without a
+ * duplicated aria string. The checkbox state comes from the status document
+ * only — no optimistic flip — so a save that fails leaves the box where the
+ * host's truth says it is, next to the failure notice `control` records.
+ * Checkboxes render only when the document carries a visibility section (a
+ * signed-in account with a stable user id); a uid-less credential shows the
+ * plain capacity list rather than editing a bucket every such account would
+ * share.
+ *
+ * Purely a report of the upstream's own numbers otherwise. The plugin offers
+ * no tier picker: the CN catalog declares one capacity per model and publishes
+ * no alternatives, so a menu there would mean inventing client-side policy.
+ * The international document does declare alternatives (`supportedLengths`),
+ * and they are shown as a secondary figure rather than merged into one number —
  * the default is the budget actually requested, while the larger value is a
  * ceiling the upstream would accept.
  */
-function ContextTable({ models, t, useMaximumContextWindow, disabled, onUseMaximumContextWindow }: {
+function ContextTable({ models, t, useMaximumContextWindow, contextPreferenceDisabled, onUseMaximumContextWindow, visibility, visibilityControlsDisabled, visibilityToggling, onVisibilityToggle }: {
   models: readonly WorkBuddyWebModelBadge[] | undefined
   t: WorkBuddyPluginCardInjected['t']
   useMaximumContextWindow?: boolean
-  disabled?: boolean
+  /** Whether the maximum-context preference checkbox is locked (card `busy`). */
+  contextPreferenceDisabled?: boolean
   onUseMaximumContextWindow?: (enabled: boolean) => void
+  /** Per-account hidden-model state; undefined renders no checkboxes. */
+  visibility: WorkBuddyWebVisibilitySection | undefined
+  /** Whether the visibility checkboxes are locked while other card actions run (`busy`). */
+  visibilityControlsDisabled?: boolean
+  /** The models whose visibility writes are in flight; only those rows lock. */
+  visibilityToggling: ReadonlySet<string>
+  onVisibilityToggle?: (modelId: string, visible: boolean) => void
 }): React.ReactNode {
-  const known = (models ?? [])
-    .filter(model => model.contextWindow !== undefined)
-    // Largest first: the big windows are the ones a user reaches for, and the
-    // small ones are then easy to spot at the end.
-    .sort((a, b) => (b.contextWindow as number) - (a.contextWindow as number))
-  const canSelectMaximum = known.some(model => model.maxContextWindow !== undefined
+  const rows = [...(models ?? [])].sort((a, b) => {
+    // Largest first, the ordering this table has always used; rows without a
+    // declared window trail at the end, keeping catalog order within the group
+    // (Array#sort is stable).
+    if (a.contextWindow === undefined) return b.contextWindow === undefined ? 0 : 1
+    if (b.contextWindow === undefined) return -1
+    return b.contextWindow - a.contextWindow
+  })
+  const canSelectMaximum = rows.some(model => model.maxContextWindow !== undefined
     && model.maxContextWindow > (model.defaultContextWindow ?? model.contextWindow ?? 0))
   const showPreference = onUseMaximumContextWindow !== undefined && (canSelectMaximum || useMaximumContextWindow === true)
-  if (known.length === 0 && !showPreference) return null
+  if (rows.length === 0 && !showPreference) return null
+  const hidden = new Set(visibility?.disabled ?? [])
   return (
     <div style={quotaListStyle}>
       <h3 style={quotaTitleStyle}>{t('contextHeading')}</h3>
+      {/*
+        * The preference is a policy about every row below it, not a row
+        * itself: it keeps its own bordered label and stays above the list, so
+        * the two checkbox kinds never read as one group.
+        */}
       {showPreference && onUseMaximumContextWindow !== undefined ? (
         <label style={contextPreferenceStyle}>
           <input
             type="checkbox"
             checked={useMaximumContextWindow === true}
-            disabled={disabled}
+            disabled={contextPreferenceDisabled}
             onChange={event => { onUseMaximumContextWindow(event.currentTarget.checked) }}
           />
           <span style={contextPreferenceCopyStyle}>
@@ -385,27 +546,62 @@ function ContextTable({ models, t, useMaximumContextWindow, disabled, onUseMaxim
           </span>
         </label>
       ) : null}
-      {known.map(model => {
-        const capacity = model.contextWindow as number
-        // Only shown when the upstream declared a larger alternative, so the
-        // CN list (which declares none) is unchanged.
-        const alternative = model.maxContextWindow !== undefined && model.maxContextWindow > capacity
-          ? model.maxContextWindow
-          : undefined
-        return (
-          <div key={model.id} style={quotaLabelStyle}>
-            <span>{model.name}</span>
-            <span style={modelOfferStyle}>
-              <span style={{ textAlign: 'right' }}>{formatTokens(capacity)}</span>
-              {alternative !== undefined
-                ? <span style={modelRateStyle}>{t('contextUpTo', { size: formatTokens(alternative) })}</span>
-                : model.defaultContextWindow !== undefined && model.defaultContextWindow < capacity
-                  ? <span style={modelRateStyle}>{t('contextDefault', { size: formatTokens(model.defaultContextWindow) })}</span>
-                  : null}
-            </span>
-          </div>
-        )
-      })}
+      {/*
+        * One line on what the checkboxes mean, only when they are rendered —
+        * a bare checkbox column with no explanation reads as selection, not
+        * visibility.
+        */}
+      {visibility === undefined ? null : <p style={bodyStyle}>{t('visibilityIntro')}</p>}
+      <div style={quotaGroupStyle}>
+        {rows.map(model => {
+          const capacity = model.contextWindow
+          // Only shown when the upstream declared a larger alternative, so the
+          // CN list (which declares none) is unchanged.
+          const alternative = capacity !== undefined && model.maxContextWindow !== undefined && model.maxContextWindow > capacity
+            ? model.maxContextWindow
+            : undefined
+          return (
+            <label key={model.id} style={quotaLabelStyle}>
+              <span style={contextRowMainStyle}>
+                {visibility === undefined ? null : (
+                  <input
+                    type="checkbox"
+                    checked={!hidden.has(model.id)}
+                    disabled={visibilityControlsDisabled || visibilityToggling.has(model.id)}
+                    onChange={event => { onVisibilityToggle?.(model.id, event.currentTarget.checked) }}
+                  />
+                )}
+                <span style={modelOfferStyle}>
+                  {/*
+                    * Promo badges ride the name line and wrap below it when
+                    * they do not fit, exactly as the discount list renders
+                    * them; the row stays one line per model.
+                    */}
+                  <span style={modelBadgeStyle}>
+                    <span>{model.name}</span>
+                    {model.badges?.map(badge => (
+                      <span key={badge} style={modelBadgeChipStyle}>{modelBadgeLabel(badge, t)}</span>
+                    ))}
+                    {model.free === true ? <span style={modelBadgeChipStyle}>{t('freeModel')}</span> : null}
+                  </span>
+                  {model.credits === undefined ? null
+                    : <span style={modelRateStyle}>{model.credits}</span>}
+                </span>
+              </span>
+              <span style={modelOfferStyle}>
+                {capacity === undefined
+                  ? <span style={modelRateStyle} aria-label={t('contextUnknown')}>—</span>
+                  : <span style={{ textAlign: 'right' }}>{formatTokens(capacity)}</span>}
+                {alternative !== undefined
+                  ? <span style={modelRateStyle}>{t('contextUpTo', { size: formatTokens(alternative) })}</span>
+                  : capacity !== undefined && model.defaultContextWindow !== undefined && model.defaultContextWindow < capacity
+                    ? <span style={modelRateStyle}>{t('contextDefault', { size: formatTokens(model.defaultContextWindow) })}</span>
+                    : null}
+              </span>
+            </label>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -432,8 +628,10 @@ function formatTokens(tokens: number): string {
  *   parameter ("this model does not check it"), never as a statement that a
  *   level is unsupported.
  */
-function ProbeSection({ probe, t, onDetect, onClear, busy }: {
+function ProbeSection({ probe, models, t, onDetect, onClear, busy }: {
   probe: WorkBuddyWebProbeSection
+  /** Catalog rows from the same status document, for candidate display names. */
+  models: readonly WorkBuddyWebModelBadge[] | undefined
   t: WorkBuddyPluginCardInjected['t']
   onDetect: (modelId: string) => void
   onClear: () => void
@@ -491,7 +689,10 @@ function ProbeSection({ probe, t, onDetect, onClear, busy }: {
           <div style={quotaGroupStyle}>
             {probe.candidates.map(id => {
               const result = probe.results.find(entry => entry.id === id)
-              const name = result?.name ?? id
+              // Display name: the catalog's own label first, then whatever the
+              // recorded probe stored, then the bare id. The *action* below
+              // keeps using the id regardless of what the name resolves to.
+              const name = models?.find(model => model.id === id)?.name ?? result?.name ?? id
               return (
                 <div key={id} style={modelOfferStyle}>
                   <div style={probeRowStyle}>
@@ -516,7 +717,7 @@ function ProbeSection({ probe, t, onDetect, onClear, busy }: {
                           * in-flight request, so it cannot pick the label.
                           */}
                         {runningModel === id
-                          ? t('probeRunning', { model: id })
+                          ? t('probeRunning', { model: name })
                           : t(result === undefined ? 'probeStart' : 'probeRedetect')}
                       </button>
                     </span>
@@ -597,6 +798,17 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
    */
   const [readFailure, setReadFailure] = useState<string>()
   const [busy, setBusy] = useState(false)
+  /**
+   * The model ids whose visibility writes are in flight, empty when none are.
+   * Deliberately NOT the card-wide `busy` (that flag drives the Refresh
+   * buttons' labels, which must not claim a refresh the user never pressed)
+   * and deliberately per-row rather than whole-list: a visibility write only
+   * adds or removes one model's id, so the rows are independent — locking
+   * every checkbox for one row's write made the whole list visibly blink for
+   * no correctness gain. A set, because two writes can be open at once when
+   * the user moves down the list; only the rows being written lock.
+   */
+  const [togglingModels, setTogglingModels] = useState<ReadonlySet<string>>(() => new Set())
   // Three tabs. Default is the live status plus the one action the card
   // carries; the two reference sets — context capacity, then rates and the
   // per-package breakdown — are deliberate visits, since neither changes while
@@ -763,15 +975,21 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
    * the host never accepts a prompt, a sentinel, or a model outside its own
    * catalog from here.
    */
-  const control = useCallback(async (action: { action: 'probe'; model: string } | { action: 'clear' } | { action: 'set-maximum-context-window'; enabled: boolean }): Promise<void> => {
+  const control = useCallback(async (action: { action: 'probe'; model: string } | { action: 'clear' } | { action: 'set-maximum-context-window'; enabled: boolean } | { action: 'set-model-visibility'; model: string; visible: boolean; account: string }): Promise<void> => {
     const key = status?.status === 'signed-in' ? status.probeKey : undefined
     if (key === undefined) return
-    setBusy(true)
+    // A visibility toggle runs on its own per-row in-flight set so the
+    // Refresh buttons keep their idle labels and the untouched rows stay
+    // clickable (see `togglingModels`); every other action keeps the card-wide
+    // `busy` those labels report.
+    const visibility = action.action === 'set-model-visibility'
+    if (visibility) setTogglingModels(previous => new Set(previous).add(action.model))
+    else setBusy(true)
     const controller = trackController()
     try {
       const response = await fetch(variant.probePath, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-WorkBuddy-Probe-Key': key },
+        headers: { 'Content-Type': 'application/json', 'X-Workbuddy-Probe-Key': key },
         credentials: 'same-origin',
         signal: controller.signal,
         body: JSON.stringify(action),
@@ -783,8 +1001,21 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
           : `HTTP ${response.status}`
         throw new Error(message)
       }
-      if (action.action === 'set-maximum-context-window'
+      // Preference writes must confirm themselves: a `failed` state here means
+      // the host did not persist the toggle, and the checkbox must not be left
+      // claiming it did — the thrown reason lands beside the list and the
+      // document's next read restores the honest state.
+      if ((action.action === 'set-maximum-context-window' || action.action === 'set-model-visibility')
         && (typeof value !== 'object' || value === null || (value as Record<string, unknown>)['state'] !== 'updated')) {
+        const state = typeof value === 'object' && value !== null ? (value as Record<string, unknown>)['state'] : undefined
+        // A stale write (the account switched under the open card) is its own
+        // outcome: explain it in the user's language and re-read now, so the
+        // checkboxes converge on the new account's section instead of waiting
+        // for the next poll while still showing the departed account's list.
+        if (action.action === 'set-model-visibility' && state === 'stale-account') {
+          await refresh(controller.signal)
+          throw new Error(t('visibilityStaleAccount'))
+        }
         const reason = typeof value === 'object' && value !== null && 'reason' in value
           ? String((value as Record<string, unknown>)['reason'])
           : t('requestFailed')
@@ -801,7 +1032,13 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
       }
     } finally {
       manualControllers.current.delete(controller)
-      if (mounted.current) setBusy(false)
+      if (!mounted.current) return
+      if (visibility) setTogglingModels(previous => {
+        const next = new Set(previous)
+        next.delete(action.model)
+        return next
+      })
+      else setBusy(false)
     }
   }, [refresh, status, t, trackController, variant.probePath])
 
@@ -814,6 +1051,16 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
   }, [control])
 
   const title = t(variant.titleKey)
+  /**
+   * The failure the assist block covers, when this document has one. Computed
+   * once so the block and the header's refresh button agree on whether the
+   * block owns the re-check action — showing both would put two buttons with
+   * the same effect side by side.
+   */
+  const assistCode = status?.status === 'signed-out' && isWorkBuddySignedOutReasonCode(status.reasonCode)
+    && ASSIST_REASON_CODES.includes(status.reasonCode)
+    ? status.reasonCode
+    : undefined
   /*
    * `undefined` is "not read yet" and gets its own copy. It is not signed-out:
    * claiming that would be false for a user who is in fact signed in.
@@ -827,7 +1074,12 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
         : t('signedOut')
 
   return (
-    <div style={cardStyle}>
+    // An <li>, matching both seats: DSH 0.1.5's Plugins tab renders slot
+    // entries directly inside its <ul>, so a div there would break list
+    // semantics; the 0.1.6+ configuration page below wraps the cards in its
+    // own <ul>. The cardStyle's `listStyle: 'none'` keeps either page free of
+    // stray list markers.
+    <li style={cardStyle}>
       <button
         type="button"
         style={headerStyle}
@@ -850,9 +1102,13 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                 <span aria-hidden="true" style={dotStyle(status === undefined ? 'loading' : status.status)} />
                 <span>{label}</span>
               </div>
-              <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void manualRefresh() }}>
-                {busy ? t('refreshing') : t('refresh')}
-              </button>
+              {/* The assist block carries the re-check in this state, so the
+                  header button steps aside rather than duplicating it. */}
+              {assistCode === undefined
+                ? <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void manualRefresh() }}>
+                    {busy ? t('refreshing') : t('refresh')}
+                  </button>
+                : null}
             </div>
             {/*
               * A failed read is reported beside the document still on screen,
@@ -953,6 +1209,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                       {status.probe === undefined ? null : (
                         <ProbeSection
                           probe={status.probe}
+                          models={status.models}
                           t={t}
                           busy={busy}
                           onDetect={confirmDetect}
@@ -962,14 +1219,38 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                     </div>
                   ) : tab === 'context' ? (
                     <div style={tabPanelStyle}>
+                      {/*
+                        * The document carries `useMaximumContextWindow` only
+                        * when the host can persist the preference, so its
+                        * presence is the capability signal: a 0.1.7 host (no
+                        * settings API) omits the field and this card renders
+                        * no preference control — not one whose click can only
+                        * report failure.
+                        */}
                       <ContextTable
                         models={status.models}
                         t={t}
-                        disabled={busy}
-                        {...status.useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: status.useMaximumContextWindow }}
-                        {...variant.id === AI_CARD_VARIANT.id
-                          ? { onUseMaximumContextWindow: (enabled: boolean) => { void control({ action: 'set-maximum-context-window', enabled }) } }
+                        contextPreferenceDisabled={busy}
+                        {...variant.id === AI_CARD_VARIANT.id && status.useMaximumContextWindow !== undefined
+                          ? {
+                            useMaximumContextWindow: status.useMaximumContextWindow,
+                            onUseMaximumContextWindow: (enabled: boolean) => { void control({ action: 'set-maximum-context-window', enabled }) },
+                          }
                           : {}}
+                        visibility={status.visibility}
+                        visibilityControlsDisabled={busy}
+                        visibilityToggling={togglingModels}
+                        onVisibilityToggle={(modelId, visible) => {
+                          // The expected-account guard: name the account these
+                          // checkboxes were rendered from, so a write that
+                          // races an account switch is refused host-side.
+                          void control({
+                            action: 'set-model-visibility',
+                            model: modelId,
+                            visible,
+                            account: status.visibility?.account ?? '',
+                          })
+                        }}
                       />
                     </div>
                   ) : (
@@ -1007,13 +1288,30 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
               // A mismatch explanation replaces the generic hint: telling a user
               // to "sign in" is wrong advice when a credential was found and
               // rejected for belonging to the other product.
-              ? <p style={status.reason === undefined ? bodyStyle : errorStyle}>
-                  {status.reason ?? t(variant.signedOutKey)}
-                </p>
+              ? <>
+                  <p style={status.reason === undefined ? bodyStyle : errorStyle}>
+                    {status.reason ?? t(variant.signedOutKey)}
+                  </p>
+                  {/*
+                    * The assist block appears only for the failures a search or
+                    * a configuration could fix. The code is narrowed here — the
+                    * wire value is not guaranteed to be in the enum — and the
+                    * decision is made on the code alone, never on `reason`.
+                    */}
+                  {assistCode === undefined
+                    ? null
+                    : <AssistBlock
+                        t={t}
+                        variant={variant}
+                        code={assistCode}
+                        busy={busy}
+                        onRecheck={() => { void manualRefresh() }}
+                      />}
+                </>
               : null}
             {status?.status === 'error' ? <p style={errorStyle}>{status.message}</p> : null}
           </div>
         : null}
-    </div>
+    </li>
   )
 }

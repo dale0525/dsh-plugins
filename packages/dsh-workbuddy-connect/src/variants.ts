@@ -44,6 +44,15 @@ export interface WorkBuddyVariant {
    * saved from one must never be served as the other's.
    */
   catalogFilename: string
+  /**
+   * Basename of the plugin-owned per-account model-visibility file under
+   * `$DSH_HOME`.
+   *
+   * One per variant, for the same reason as the catalogs and probe records:
+   * the two endpoints share model ids, so one variant's hidden list must never
+   * answer for the other's picker.
+   */
+  visibilityFilename: string
   /** Same-origin status route consumed by this variant's card. */
   statusPath: string
   /** Same-origin probe-control route consumed by this variant's card. */
@@ -62,6 +71,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     ownFilename: '.workbuddy-auth.json',
     probeFilename: '.workbuddy-probe.json',
     catalogFilename: '.workbuddy-catalog.json',
+    visibilityFilename: '.workbuddy-model-visibility.json',
     statusPath: WORKBUDDY_STATUS_PATH,
     probePath: WORKBUDDY_PROBE_PATH,
   },
@@ -75,6 +85,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     ownFilename: '.workbuddy-ai-auth.json',
     probeFilename: '.workbuddy-ai-probe.json',
     catalogFilename: '.workbuddy-ai-catalog.json',
+    visibilityFilename: '.workbuddy-ai-model-visibility.json',
     statusPath: WORKBUDDY_AI_STATUS_PATH,
     probePath: WORKBUDDY_AI_PROBE_PATH,
   },

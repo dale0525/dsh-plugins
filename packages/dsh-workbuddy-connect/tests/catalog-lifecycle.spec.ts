@@ -494,7 +494,12 @@ describe('identity changes during catalog loading', () => {
     await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-b'))
 
     await vi.waitFor(async () => {
-      expect(calls).toBe(2)
+      // One refresh is now two documents since the CN read joined
+      // /v3/config — the config call plus the best-effort console badge
+      // read — so account B's refresh lands on calls 2 and 3 after account
+      // A's aborted call 1. The exact total is an implementation detail of
+      // how many documents a refresh needs; only the abort invariant is pinned.
+      expect(calls).toBeGreaterThanOrEqual(3)
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['account-b-model'])
     })
     expect(aborted).toBe(true)

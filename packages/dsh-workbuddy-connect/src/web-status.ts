@@ -15,7 +15,7 @@ import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -38,8 +38,21 @@ export interface WorkBuddyStatusRouteOptions {
   catalog?: () => WorkBuddyWebCatalog | undefined
   /** In-process key authorizing probe control writes. */
   probeKey?: string
-  /** International-card preference selecting larger declared context windows. */
-  useMaximumContextWindow?: () => boolean
+  /**
+   * International-card preference selecting larger declared context windows.
+   * The getter may answer `undefined` when this host cannot persist the
+   * preference (a 0.1.7 settings service has no section API): the field then
+   * stays out of the document, and the card renders no control for it.
+   */
+  useMaximumContextWindow?: () => boolean | undefined
+  /**
+   * Per-account hidden-model state for the card's visibility controls.
+   * Undefined when the caller offers none (tests, headless profiles); a
+   * defined getter may still answer undefined — a signed-in account without a
+   * stable uid has no bucket to key preferences by, and the card then renders
+   * no visibility controls rather than a list every such account would share.
+   */
+  visibility?: () => WorkBuddyWebVisibilitySection | undefined
   /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
@@ -81,12 +94,20 @@ export async function workBuddyWebStatus(
 ): Promise<WorkBuddyWebStatus> {
   const authStatus = await deps.store.status()
   if (authStatus.state !== 'signed-in') {
-    // A diagnosable sign-out (a credential for the *other* product) keeps its
-    // explanation: falling back to the generic hint would tell the user to sign
-    // in when the real fix is to correct a path.
+    // A diagnosable sign-out (a credential for the *other* product, or an
+    // unusable key helper) keeps its explanation: falling back to the generic
+    // hint would tell the user to sign in when the real fix is to correct a
+    // path or point the plugin at the app. `reasonCode` rides along so the
+    // card can branch on the cause without reading the prose.
+    //
+    // This branch deliberately does not run `safeMessage`: the reason is
+    // produced by the store and is expected to be a short, path-only
+    // diagnosis, so any new failure path added here must keep credentials,
+    // payloads and subprocess output out of its own message.
     return {
       status: 'signed-out',
       ...authStatus.reason === undefined ? {} : { reason: authStatus.reason },
+      ...authStatus.reasonCode === undefined ? {} : { reasonCode: authStatus.reasonCode },
     }
   }
   const status: WorkBuddyWebStatus = {
@@ -147,21 +168,31 @@ export async function workBuddyWebStatus(
   // only way to tell a hidden group from a failed fetch.
   const catalog = deps.catalog?.()
   const withCatalog: WorkBuddyWebStatus = catalog === undefined ? status : { ...status, catalog }
+  // Visibility rides the document beside the model list it qualifies. Absent
+  // when no account-with-uid is in effect; the card keys its controls on the
+  // section's presence.
+  const visibility = deps.visibility?.()
+  const withVisibility: WorkBuddyWebStatus = visibility === undefined ? withCatalog : { ...withCatalog, visibility }
   const statusWithModels: WorkBuddyWebStatus = modelsField.length > 0
-    ? { ...withCatalog, models: modelsField }
-    : withCatalog
+    ? { ...withVisibility, models: modelsField }
+    : withVisibility
   // Probe state rides the signed-in document so the card can render the
   // consent switches and results without a second request. The control key
   // travels with it: this response already passed the loopback guard, and the
   // key authorizes only probe control, never credentials or completions.
-  const probed: WorkBuddyWebStatus = deps.probe === undefined
-    ? statusWithModels
-    : {
+  let probed: WorkBuddyWebStatus = statusWithModels
+  if (deps.probe !== undefined) {
+    // The preference is offered only when the getter can answer a value; a
+    // host that cannot persist it answers `undefined` and the field stays out
+    // of this document, which is the card's signal not to render the control.
+    const maximumContextWindow = deps.useMaximumContextWindow?.()
+    probed = {
       ...statusWithModels,
       probe: deps.probe(),
       ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
-      ...deps.useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: deps.useMaximumContextWindow() },
+      ...maximumContextWindow === undefined ? {} : { useMaximumContextWindow: maximumContextWindow },
     }
+  }
   try {
     const credential = await deps.store.current()
     if (credential !== undefined) {
