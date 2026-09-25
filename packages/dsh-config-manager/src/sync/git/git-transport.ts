@@ -9,6 +9,10 @@
  *   本地工作副本即远端镜像，不产生额外明文审计副本）。
  * - 命令执行走 node:child_process execFile（promise 封装，数组参数无 shell 注入），
  *   始终使用系统 PATH 中的 git（固定命令 'git'），可注入 exec 便于测试。
+ * - Windows 长路径：快照里的 plugin-files 分区会带出 deep 嵌套的插件配置路径，
+ *   $DSH_HOME/dsh-config-manager/sync/work/snapshots/<id>/… 很快超过 MAX_PATH(260)，
+ *   git 报 "error: cannot stat '<path>': Filename too long"。win32 下每条 git 命令注入
+ *   -c core.longpaths=true（不改用户全局配置），git 内部改用 \\?\ 前缀路径。
  * - 认证：token 仅从注入的 credentials provider 读取（每次网络操作时 getToken()），
  *   经 git credential helper（store --file=<临时文件>）传给 git —— token 不进入 argv、
  *   不进入 repoUrl、不写入任何同步内容/commit message/日志；临时凭据文件用后即删。
@@ -77,6 +81,8 @@ export interface GitTransportOptions {
   credentialUsername?: string;
   /** 消息翻译器（缺省 zh） */
   msg?: MsgFunc;
+  /** 平台（仅用于长路径开关判定；缺省 process.platform，测试可注入以覆盖 win32 语义） */
+  platform?: NodeJS.Platform;
 }
 
 export class GitTransportError extends Error {
@@ -95,6 +101,13 @@ const DEFAULT_AUTHOR: GitAuthor = { name: 'DSH Config Sync', email: 'sync@dsh.lo
 const DEFAULT_CREDENTIAL_USERNAME = 'oauth2';
 /** 快照 id 安全字符集：字母数字开头，仅 . _ -；防路径穿越与 commit message 注入 */
 const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * win32 长路径开关：git 在 Windows 上默认受 MAX_PATH(260) 限制，快照里 plugin-files 分区
+ * 会带出深层嵌套的插件配置路径（实测单条相对路径已 211 字符，加上 <DSH_HOME>/…/work/ 前缀即超限）。
+ * 每条命令带 -c core.longpaths=true（命令行 -c 优先于仓库/全局配置，不改用户环境）。
+ */
+const LONG_PATHS_ARGS: readonly string[] = ['-c', 'core.longpaths=true'];
 
 const defaultExec: GitExecFn = async (cmd, args, opts) => {
   try {
@@ -131,6 +144,7 @@ export class GitTransport implements SyncTransport {
     author: GitAuthor;
     credentialUsername: string;
     exec: GitExecFn;
+    longPaths: boolean;
   };
   private repoReady = false;
   private privateHint: boolean | null = null;
@@ -157,6 +171,7 @@ export class GitTransport implements SyncTransport {
       exec: options.exec ?? defaultExec,
       author: options.author ?? DEFAULT_AUTHOR,
       credentialUsername: options.credentialUsername ?? DEFAULT_CREDENTIAL_USERNAME,
+      longPaths: (options.platform ?? process.platform) === 'win32',
     };
   }
 
@@ -349,14 +364,29 @@ export class GitTransport implements SyncTransport {
     this.repoReady = true;
   }
 
-  /** pull --ff-only 同步远端；无本地提交（全新仓库）或无 upstream 时静默跳过 */
+  /**
+   * pull --ff-only 同步远端；无本地提交（全新仓库）或无 upstream 时静默跳过。
+   * 残留清理：本插件从不修改工作副本里的文件，快照目录内出现未跟踪文件 = 上次操作半途中断的残留
+   * （如 upload 覆盖同 id 快照时先删旧目录、随后被中断）。git 会因「untracked working tree files
+   * would be overwritten by merge」拒绝 pull，且该拒绝与 id 无关、永久锁死通道 —— 故 pull 前先清掉
+   * 快照目录内的未跟踪残留（只在本插件管理的两个快照目录内，不动仓库其它路径）。
+   */
   private async pullFromRemote(): Promise<void> {
     const head = await this.runGit(['rev-parse', '--verify', '--quiet', 'HEAD'], { allowNonZero: true });
     if (head.code !== 0) return; // 无本地提交 → 无可 pull
+    await this.clearUntrackedSnapshotFiles();
     const res = await this.runGit(['pull', '--ff-only'], { withCredential: true, allowNonZero: true });
     if (res.code === 0) return;
     if (/no tracking information/i.test(res.stderr)) return; // 无 upstream（初始状态）→ 跳过
     throw new GitTransportError(this.msg('sync.git.pullFailed', { err: this.mask(res.stderr, await this.readTokenOnce()) }));
+  }
+
+  /** 清理快照目录内未跟踪的残留（远端要写的文件被本地未跟踪文件占位 → pull 拒绝）。 */
+  private async clearUntrackedSnapshotFiles(): Promise<void> {
+    const res = await this.runGit(['clean', '-fd', '--', SNAPSHOTS_REL, SNAPSHOTS_ENCRYPTED_REL], { allowNonZero: true });
+    if (res.code !== 0) {
+      throw new GitTransportError(this.msg('sync.git.cleanFailed', { err: this.mask(res.stderr, await this.readTokenOnce()) }));
+    }
   }
 
   /** 执行 git 命令；withCredential=true 时注入 credential helper（token 不进 argv），失败时错误消息脱敏 */
@@ -365,12 +395,12 @@ export class GitTransport implements SyncTransport {
     opts: { cwd?: string; withCredential?: boolean; allowNonZero?: boolean } = {},
   ): Promise<GitExecResult> {
     const cwd = opts.cwd === undefined ? this.o.workDir : opts.cwd;
-    let extra: string[] = [];
+    let extra: string[] = this.o.longPaths ? [...LONG_PATHS_ARGS] : [];
     let token: string | null = null;
     let cleanup: (() => Promise<void>) | null = null;
     if (opts.withCredential) {
       const cred = await this.buildCredentialArgs();
-      extra = cred.extraArgs;
+      extra = [...extra, ...cred.extraArgs];
       token = cred.token;
       cleanup = cred.cleanup;
     }

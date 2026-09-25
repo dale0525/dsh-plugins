@@ -425,6 +425,43 @@ test('delete 加密快照：从 snapshots-encrypted 移除 + commit(delete) + pu
   assert.equal(joinedArgs(calls, 'commit').length, 1, '再次删除不产生 commit');
 });
 
+test('pull 前先清理快照目录内的未跟踪残留（clean -fd 只作用于 snapshots / snapshots-encrypted，且先于 pull）', async (t) => {
+  const dir = await makeGitWorkDir(t);
+  const calls: CallRecord[] = [];
+  const transport = new GitTransport(makeOptions({ workDir: dir, exec: mockExec(calls) }));
+  await transport.list();
+  const cleanIdx = calls.findIndex((c) => c.args.includes('clean'));
+  const pullIdx = calls.findIndex((c) => c.args.includes('pull'));
+  assert.ok(cleanIdx >= 0, `pull 前应执行 git clean: ${JSON.stringify(calls.map((c) => c.args.join(' ')))}`);
+  assert.ok(pullIdx > cleanIdx, 'clean 必须先于 pull');
+  const cleanArgs = calls[cleanIdx]!.args;
+  assert.ok(cleanArgs.includes('-fd'), '必须递归清理未跟踪目录');
+  assert.deepEqual(cleanArgs.slice(cleanArgs.indexOf('--')), ['--', 'snapshots', 'snapshots-encrypted'], '只清理本插件管理的两个快照目录');
+});
+
+test('win32 长路径：每条 git 命令注入 -c core.longpaths=true（含 clone 的凭据参数）；其它平台不注入', async (t) => {
+  // 非 win32：不得注入
+  const dirPosix = await makeGitWorkDir(t);
+  const callsPosix: CallRecord[] = [];
+  const posix = new GitTransport(makeOptions({ workDir: dirPosix, exec: mockExec(callsPosix), platform: 'linux' }));
+  await posix.upload(sampleSnapshot());
+  for (const c of callsPosix) assert.ok(!c.args.includes('core.longpaths=true'), `非 win32 不得注入 longpaths: ${c.args.join(' ')}`);
+
+  // win32：空目录 → 触发带凭据的 clone，逐条命令校验前缀与凭据参数共存
+  const dirWin = await makeTempDir(t);
+  const callsWin: CallRecord[] = [];
+  const win = new GitTransport(makeOptions({ workDir: dirWin, exec: mockExec(callsWin), platform: 'win32' }));
+  await win.list();
+  assert.ok(callsWin.length > 0, '应产生 git 调用');
+  for (const c of callsWin) {
+    assert.equal(c.args[0], '-c', `win32 每条命令应带 -c: ${c.args.join(' ')}`);
+    assert.equal(c.args[1], 'core.longpaths=true', `win32 每条命令应带 core.longpaths=true: ${c.args.join(' ')}`);
+  }
+  const cloneArgs = callsWin.find((c) => c.args.includes('clone'))!.args;
+  assert.ok(cloneArgs.some((a) => a.startsWith('credential.helper=')), 'clone 仍带 store credential helper');
+  for (const arg of cloneArgs) assert.ok(!arg.includes(TEST_TOKEN), `argv 泄漏 token: ${arg}`);
+});
+
 /* ---------------- 集成测试（真实 git，本地 bare repo） ---------------- */
 
 test('集成：upload → list → download → delete 端到端（真实 git + 本地 bare repo）', async (t) => {
@@ -670,4 +707,32 @@ test('集成：裁剪删除旧快照 → 每次 delete 独立 commit+push，add 
   // 已删除快照目录从工作副本移除
   const dirs = await fs.readdir(path.join(workDir, 'snapshots'));
   assert.deepEqual(dirs, ['snap-04']);
+});
+
+test('集成：工作副本残留未跟踪文件不再锁死 pull（untracked would be overwritten by merge）', async (t) => {
+  const bare = await makeBareRepo(t);
+  const workDirA = await makeTempDir(t);
+  const transportA = new GitTransport({ repoUrl: bare, workDir: workDirA, credentials: { getToken: async () => TEST_TOKEN } });
+  await transportA.upload(sampleSnapshot({ id: 'snap-001', createdAt: '2026-08-16T09:00:00.000Z' }));
+
+  // 机器 B：首次 list 触发 clone，看到 snap-001
+  const workDirB = await makeTempDir(t);
+  const transportB = new GitTransport({ repoUrl: bare, workDir: workDirB, credentials: { getToken: async () => TEST_TOKEN } });
+  assert.deepEqual((await transportB.list()).map((m) => m.id), ['snap-001']);
+
+  // A 再上传 snap-002（B 尚未同步）
+  await transportA.upload(sampleSnapshot({ id: 'snap-002', createdAt: '2026-08-16T10:00:00.000Z' }));
+
+  // B 侧残留：上次操作半途中断留下的未跟踪文件，路径正是远端即将写入的路径
+  const residual = path.join(workDirB, 'snapshots', 'snap-002', 'manifest.json');
+  await fs.mkdir(path.dirname(residual), { recursive: true });
+  await fs.writeFile(residual, '{ half }');
+  const tracked = await runRealGit(['ls-files', '--error-unmatch', 'snapshots/snap-002/manifest.json'], workDirB);
+  assert.notEqual(tracked.code, 0, '前置：残留文件必须是未跟踪状态（否则不构成该故障）');
+
+  // 修复后：pull 前清理残留 → list 正常看到两个快照，download 拿到远端内容
+  assert.deepEqual((await transportB.list()).map((m) => m.id), ['snap-001', 'snap-002']);
+  const roundtrip = await transportB.download('snap-002');
+  assert.equal(roundtrip.id, 'snap-002');
+  assert.deepEqual(roundtrip, sampleSnapshot({ id: 'snap-002', createdAt: '2026-08-16T10:00:00.000Z' }));
 });
