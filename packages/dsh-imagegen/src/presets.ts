@@ -8,7 +8,7 @@
  * Framework-free (pure data), safe for the host routes to serve directly.
  */
 
-import type { ModelMapping } from './protocol.ts'
+import { DEFAULT_SUBSCRIPTION_MODELS, type ModelMapping, type SubscriptionProvider } from './protocol.ts'
 
 /** One built-in provider the settings card can instantiate a channel from. */
 export interface PresetProvider {
@@ -22,6 +22,10 @@ export interface PresetProvider {
   hint: string
   /** Known model list prefilled into the channel's model catalog. */
   models: ModelMapping[]
+  /** Set for subscription-backed presets; fixed model, no API URL/key. */
+  subscription?: SubscriptionProvider
+  /** True when the subscription relies on an undocumented interface. */
+  experimental?: boolean
 }
 
 export const IMAGE_PRESETS: PresetProvider[] = [
@@ -87,6 +91,40 @@ export const IMAGE_PRESETS: PresetProvider[] = [
     models: [
       { alias: 'grok-imagine-image', id: 'grok-imagine-image' },
     ],
+  },
+  {
+    id: 'chatgpt-subscription',
+    name: 'ChatGPT 订阅（实验）',
+    apiUrl: '',
+    hint: '浏览器授权登录后使用 gpt-image-2.5-flare；非官方 Codex 图像接口',
+    models: [{ alias: DEFAULT_SUBSCRIPTION_MODELS['chatgpt-sub'], id: DEFAULT_SUBSCRIPTION_MODELS['chatgpt-sub'] }],
+    subscription: 'chatgpt-sub',
+    experimental: true,
+  },
+  {
+    id: 'grok-subscription',
+    name: 'Grok 订阅',
+    apiUrl: '',
+    hint: 'SuperGrok / X Premium 登录后使用 grok-imagine-image-2.0',
+    models: [{ alias: DEFAULT_SUBSCRIPTION_MODELS['grok-sub'], id: DEFAULT_SUBSCRIPTION_MODELS['grok-sub'] }],
+    subscription: 'grok-sub',
+  },
+  {
+    id: 'google-subscription',
+    name: 'Google 订阅（实验）',
+    apiUrl: '',
+    hint: 'Google 授权登录后使用 gemini-3-pro-image；非官方 Antigravity 接口',
+    models: [{ alias: DEFAULT_SUBSCRIPTION_MODELS['google-sub'], id: DEFAULT_SUBSCRIPTION_MODELS['google-sub'] }],
+    subscription: 'google-sub',
+    experimental: true,
+  },
+  {
+    id: 'openrouter-subscription',
+    name: 'OpenRouter 账号',
+    apiUrl: '',
+    hint: 'OpenRouter 官方 OAuth 登录，使用 google/gemini-3-pro-image',
+    models: [{ alias: DEFAULT_SUBSCRIPTION_MODELS['openrouter-sub'], id: DEFAULT_SUBSCRIPTION_MODELS['openrouter-sub'] }],
+    subscription: 'openrouter-sub',
   },
 ]
 
