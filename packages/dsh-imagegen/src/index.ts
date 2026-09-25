@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { installSettingsSectionCompat, settingsNamespaceCompat } from './settings-compat.ts'
-import z from 'schemastery'// Type-only: pulls the webServer Context merge (route registration).
+import z from '@deepseek-ai/schemastery'// Type-only: pulls the webServer Context merge (route registration).
 import type {} from '@deepseek-ai/dsh-host-webserver'
 // Type-only: pulls the systemPrompt Context merge (announcement section).
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -439,6 +439,7 @@ export const Config: z<Config> = z.object({
     preset: z.string().default(''),
     name: z.string().default(''),
     apiUrl: z.string().default(''),
+    apiUrlFull: z.boolean().default(false),
     models: z.array(z.object({
       alias: z.string(),
       id: z.string(),
@@ -522,6 +523,7 @@ function normalizeChannels(value: unknown): ChannelConfig[] {
       preset: typeof raw.preset === 'string' ? raw.preset : '',
       name: typeof raw.name === 'string' ? raw.name.trim() : '',
       apiUrl: typeof raw.apiUrl === 'string' ? raw.apiUrl.trim() : '',
+      apiUrlFull: false,
       models,
     })
   }
@@ -578,7 +580,7 @@ export function apply(ctx: Context, config?: Config): (() => void) | void {
           .map(model => ({ alias: model.trim(), id: model.trim() }))
         : []
       if (legacyUrl !== '' || legacyModels.length > 0) {
-        channels = [{ id: 'default', preset: '', name: '默认渠道', apiUrl: legacyUrl, models: legacyModels }]
+        channels = [{ id: 'default', preset: '', name: '默认渠道', apiUrl: legacyUrl, apiUrlFull: false, models: legacyModels }]
         const legacyKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : ''
         if (legacyKey !== '') secrets['default'] = legacyKey
       }
