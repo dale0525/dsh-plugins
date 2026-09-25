@@ -1255,7 +1255,16 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     const STIFFNESS = 170
     const DAMPING = 16
     const MASS = 0.5
-    const tiles = [...dock.querySelectorAll<HTMLElement>('[data-dock-item]')].map(el => ({ el, size: BASE, velocity: 0 }))
+    const MAX_FRAME_SECONDS = 0.034
+    const MAX_TILE_VELOCITY = 420
+    const MAX_OUTER_VELOCITY = 320
+    // Capture resting centers once. Reading an item's live center while its
+    // width is animating creates a layout feedback loop that can run away on
+    // slow frames; the resting anchor keeps the pointer target deterministic.
+    const tiles = [...dock.querySelectorAll<HTMLElement>('[data-dock-item]')].map(el => {
+      const rect = el.getBoundingClientRect()
+      return { el, size: BASE, velocity: 0, centerX: rect.left + Math.min(rect.width, BASE) / 2 }
+    })
     let outerSize = REST_HEIGHT
     let outerVelocity = 0
     let mouseX = Number.POSITIVE_INFINITY
@@ -1264,18 +1273,18 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
     let running = false
     let last = clockNow()
     const step = (now: number): void => {
-      const dt = Math.min(0.05, (now - last) / 1000)
+      const dt = Math.max(0, Math.min(MAX_FRAME_SECONDS, (now - last) / 1000))
       last = now
       let settled = true
       for (const tile of tiles) {
         let target = BASE
         if (hovered) {
-          const rect = tile.el.getBoundingClientRect()
-          const distance = Math.abs(mouseX - (rect.left + rect.width / 2))
+          const distance = Math.abs(mouseX - tile.centerX)
           target = BASE + (MAGNIFIED - BASE) * Math.max(0, 1 - distance / DISTANCE)
         }
         tile.velocity += ((STIFFNESS * (target - tile.size) - DAMPING * tile.velocity) / MASS) * dt
-        tile.size += tile.velocity * dt
+        tile.velocity = Math.max(-MAX_TILE_VELOCITY, Math.min(MAX_TILE_VELOCITY, tile.velocity))
+        tile.size = Math.max(BASE, Math.min(MAGNIFIED, tile.size + tile.velocity * dt))
         if (Math.abs(target - tile.size) > 0.15 || Math.abs(tile.velocity) > 2) settled = false
         else {
           tile.size = target
@@ -1286,7 +1295,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       }
       const outerTarget = hovered ? HOVER_HEIGHT : REST_HEIGHT
       outerVelocity += ((STIFFNESS * (outerTarget - outerSize) - DAMPING * outerVelocity) / MASS) * dt
-      outerSize += outerVelocity * dt
+      outerVelocity = Math.max(-MAX_OUTER_VELOCITY, Math.min(MAX_OUTER_VELOCITY, outerVelocity))
+      outerSize = Math.max(REST_HEIGHT, Math.min(HOVER_HEIGHT, outerSize + outerVelocity * dt))
       if (Math.abs(outerTarget - outerSize) > 0.25 || Math.abs(outerVelocity) > 3) settled = false
       else {
         outerSize = outerTarget
@@ -4290,6 +4300,8 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
       onMouseEnter={clearMenuCloseTimer}
       onMouseLeave={scheduleMenuClose}
     >
+      <button type="button" role="menuitem" data-active={backgroundMode === 'blank' ? '' : undefined} onClick={() => setBackgroundMode('blank')}>{tt('canvas.backgroundBlank')}</button>
+      <span className={css.backgroundMenuDivider} />
       {([
         ['dots', tt('canvas.backgroundDots')],
         ['lines', tt('canvas.backgroundLines')],
@@ -4303,7 +4315,6 @@ export function CanvasWorkspace(props: CanvasWorkspaceProps): React.JSX.Element 
         ['faultyTerminal', tt('canvas.backgroundFaultyTerminal')],
         ['silk', tt('canvas.backgroundSilk')],
         ['galaxy', tt('canvas.backgroundGalaxy')],
-        ['blank', tt('canvas.backgroundBlank')],
       ] as const).map(([mode, label]) => <button key={mode} type="button" role="menuitem" data-active={backgroundMode === mode ? '' : undefined} onClick={() => setBackgroundMode(mode)}>{label}</button>)}
       <span className={css.backgroundMenuDivider} />
       <button type="button" role="menuitem" data-active={backgroundMode === 'image' ? '' : undefined} onClick={() => backgroundFileRef.current?.click()}>{tt('canvas.backgroundUpload')}</button>

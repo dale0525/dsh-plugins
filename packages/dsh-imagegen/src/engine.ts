@@ -18,6 +18,8 @@ export interface UpstreamConfig {
   apiUrl: string
   /** Bearer API key. */
   apiKey: string
+  /** Use apiUrl verbatim as the generation endpoint instead of appending /images/*. */
+  apiUrlFull?: boolean
 }
 
 /** A generation failure with a user-presentable message. */
@@ -252,6 +254,11 @@ function isPresignedUrl(value: string): boolean {
   return params.has('signature') && (
     params.has('expires') || params.has('googleaccessid') || params.has('awsaccesskeyid')
   )
+}
+
+/** Resolve the request URL for a channel: base URL + path, or the exact URL. */
+function endpointUrl(upstream: UpstreamConfig, baseUrl: string, path: string): string {
+  return upstream.apiUrlFull === true ? baseUrl : `${baseUrl}${path}`
 }
 
 /**
@@ -679,7 +686,7 @@ async function requestOneImage(
       const endpoint = request.mode === 'edit' && !isSeedream(params.model)
         ? '/images/edits'
         : '/images/generations'
-      response = await fetch(`${baseUrl}${endpoint}`, {
+      response = await fetch(endpointUrl(upstream, baseUrl, endpoint), {
         method: 'POST',
         headers,
         body,
@@ -956,12 +963,17 @@ async function generateMiniMaxImage(
  */
 export async function generateImage(upstream: UpstreamConfig, request: GenerateRequest, options: { signal?: AbortSignal } = {}): Promise<GenerateResult> {
   const baseUrl = upstream.apiUrl.trim().replace(/\/+$/, '')
-  if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
-  if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 插件 → 可配置」中填写', 'config-missing')
-  if (isQwenImage(wireModel(request))) return generateQwenImage(baseUrl, upstream, request, options)
-  if (isMiniMaxImage(wireModel(request))) return generateMiniMaxImage(baseUrl, upstream, request, options)
-  if (request.mode === 'edit' && isZhipuImage(wireModel(request))) {
-    throw new ImageGenError('智谱 GLM-Image 当前仅支持文生图，请切换到文生图模式或选择支持图生图的模型', 'edit-unsupported')
+  if (baseUrl === '') throw new ImageGenError('api_url 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
+  if (upstream.apiKey.trim() === '') throw new ImageGenError('api_key 未配置：请先在「设置 → 生图配置」中填写', 'config-missing')
+  // A complete URL is an explicit escape hatch to the exact provider endpoint:
+  // use the generic OpenAI-compatible request shape instead of native family
+  // routing or appending another path.
+  if (upstream.apiUrlFull !== true) {
+    if (isQwenImage(wireModel(request))) return generateQwenImage(baseUrl, upstream, request, options)
+    if (isMiniMaxImage(wireModel(request))) return generateMiniMaxImage(baseUrl, upstream, request, options)
+    if (request.mode === 'edit' && isZhipuImage(wireModel(request))) {
+      throw new ImageGenError('智谱 GLM-Image 当前仅支持文生图，请切换到文生图模式或选择支持图生图的模型', 'edit-unsupported')
+    }
   }
   const params = effectiveParams(request)
   const count = effectiveCount(request)

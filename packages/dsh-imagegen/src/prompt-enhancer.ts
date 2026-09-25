@@ -147,7 +147,7 @@ export interface ChatOptions {
  */
 export async function chatComplete(config: PromptModelConfig, options: ChatOptions): Promise<string> {
   if (config.apiUrl.trim() === '' || config.model.trim() === '') {
-    throw new Error('chat model is not configured (Settings > Plugins > AI Image > Prompt enhancement)')
+    throw new Error('chat model is not configured (left sidebar > Image settings > Prompt enhancement)')
   }
   const response = await fetch(endpoint(config.apiUrl, '/chat/completions'), {
     method: 'POST',
