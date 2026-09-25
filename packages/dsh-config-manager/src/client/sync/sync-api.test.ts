@@ -183,23 +183,6 @@ test('S-09 api.githubCancel()：POST /sync/github/cancel 携带 flowId', async (
   const sent = JSON.parse(String(calls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
   assert.equal(sent['flowId'], 'flow-1');
 });
-
-test('S-16 api.history()：GET /sync/history，解析 { entries }（快照记录）', async () => {
-  const body = {
-    entries: [
-      { id: 'sync-2', createdAt: '2026-08-17T10:00:00.000Z', kind: 'apply', sectionCount: 3, reviewCount: 0 },
-      { id: 'sync-1', createdAt: '2026-08-17T09:00:00.000Z', kind: 'push', sectionCount: 2, reviewCount: 0, transport: 'git' },
-    ],
-  };
-  installFetchMock(() => jsonResponse(200, body));
-  const api = new SyncApi();
-  const result = await api.history();
-  assert.equal(result.entries.length, 2);
-  assert.equal(result.entries[0]?.kind, 'apply');
-  assert.equal(result.entries[1]?.kind, 'push');
-  assert.equal(result.entries[1]?.transport, 'git');
-});
-
 /* ------------------------------------------------ WebDAV 通道契约 */
 
 test('S-17 WebDAV 密码凭据引用名常量存在', () => {

@@ -66,7 +66,7 @@ v1（顶层单通道）→ **v2 按通道命名空间**：
 
 - 顶部 `modeTabs` 双子 tab：GitHub / WebDAV（复用「模式切换」现有 Pattern，非新样式；busy 时禁用切换防并发）。
 - 每个子 tab 内容 = 该通道的：配置表单（git：repoUrl/token/OAuth；webdav：url/username/password/预设）→ 同步状态卡 → 同步模式（默认/高级）→ 加密与密钥导出 → 解密密码 → 一键同步 + 推送/拉取 → 选择历史快照下拉（该通道远端快照）→ 自动同步（该通道开关/间隔/状态）。
-- 私有仓库提示 Banner 仅 git 子 tab 常驻；同步历史（`SyncHistoryView`）保持全局置于底部（记录两通道全部操作）。
+- 私有仓库提示 Banner 仅 git 子 tab 常驻。
 - 渲染模型纯函数新增（`sync-view.ts`）：`ChannelSyncState`（每通道状态）、`defaultChannelSyncState()`、`channelTabModels(active, busy)`。
 
 ### run-store 切片（`SyncStoreSlice`）

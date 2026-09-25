@@ -168,8 +168,11 @@ export interface SyncPullApplyReport {
  * 远端快照保留数量上限：每次 push 上传成功后对远端裁剪，
  * 保留最新 N 个（按 createdAt 升序的最末 N 个，含刚 push 的），更旧的逐个删除。
  * 只按数量裁剪，不按时间窗口。删除失败只告警（进 push 的 warnings），不上抛阻断主流程。
+ *
+ * N=1：同步是「整份覆盖」语义，pull 恒取最新一份，多留的历史快照没有任何入口能选中；
+ * 而每份快照都是完整的 2000+ 文件树，留在远端只会让仓库线性膨胀。
  */
-export const MAX_REMOTE_SNAPSHOTS = 10;
+export const MAX_REMOTE_SNAPSHOTS = 1;
 
 export class SyncEngine {
   private readonly ctx: HostContext;

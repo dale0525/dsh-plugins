@@ -799,7 +799,7 @@ function seedRemoteSnapshots(transport: MemSyncTransport, n: number): void {
   }
 }
 
-test('push: 远端快照数超过 MAX_REMOTE_SNAPSHOTS → 裁剪只保留最新 10 个（含刚 push 的）', async () => {
+test('push: 远端快照数超过 MAX_REMOTE_SNAPSHOTS → 裁剪只保留刚 push 的那 1 份', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-prune-'));
   try {
     const ctx = makeContext('win32', 'C:\\Users\\alice');
@@ -814,19 +814,17 @@ test('push: 远端快照数超过 MAX_REMOTE_SNAPSHOTS → 裁剪只保留最新
     assert.ok(transport.snapshots.has('sync-new'), '刚 push 的快照必须保留');
 
     const remaining = [...transport.snapshots.keys()];
-    // 保留 13 个预置里最新的 9 个（remote-05..remote-13）+ 本次 push 的 sync-new = 10
+    // sync-new 的 createdAt 是最新，list 升序后位于最末 → 它就是唯一保留集
     assert.equal(remaining.length, MAX_REMOTE_SNAPSHOTS, `裁剪后应恰剩 ${MAX_REMOTE_SNAPSHOTS} 个`);
-    // 最旧的 4 个（remote-01..remote-04）被删
-    for (let i = 1; i <= 4; i++) {
-      assert.ok(!transport.snapshots.has(`remote-0${i}`), `最旧的 remote-0${i} 应被裁剪`);
+    assert.deepEqual(remaining, ['sync-new'], '只应留下刚 push 的快照');
+    // 13 个预置旧快照全部被删
+    for (let i = 1; i <= 13; i++) {
+      const id = `remote-${String(i).padStart(2, '0')}`;
+      assert.ok(!transport.snapshots.has(id), `旧快照 ${id} 应被裁剪`);
     }
-    // 最新保留集含 5..13 与 sync-new
-    for (let i = 5; i <= 13; i++) {
-      assert.ok(transport.snapshots.has(`remote-${String(i).padStart(2, '0')}`), `最新的 remote-${i} 应保留`);
-    }
-    // 裁剪通过 transport.delete 逐个删除（删除调用次数 = 4）
-    assert.equal(transport.calls.filter((c) => c === 'delete').length, 4);
-    // 顺序：upload → list(裁剪) → delete×4 → recordBaseline（无本地裁剪）→ push 返回
+    // 裁剪通过 transport.delete 逐个删除（删除调用次数 = 13）
+    assert.equal(transport.calls.filter((c) => c === 'delete').length, 13);
+    // 顺序：upload → list(裁剪) → delete×13 → recordBaseline（无本地裁剪）→ push 返回
     // 断言 upload 在首次 delete 之前（保证新快照先推送成功再删旧的）
     assert.ok(transport.calls.indexOf('upload') < transport.calls.indexOf('delete'), '先 push 新快照再删旧的');
     // 无裁剪告警（push 会带若干基础导出告警，如未注册 namespace，但不应有裁剪告警）
@@ -842,13 +840,14 @@ test('push: 远端快照数未超上限 → 不触发任何删除', async () => 
     const ctx = makeContext('win32', 'C:\\Users\\alice');
     seedSource(ctx);
     const transport = new MemSyncTransport();
-    seedRemoteSnapshots(transport, 9); // 9 旧 + 本次 1 = 10，恰好达标不裁剪
+    // cap=1：远端为空时本次 push 后恰 1 份，未超上限
+    seedRemoteSnapshots(transport, 0);
     const engine = makeEngine({ ctx, transport, stateDir: tmp });
 
     const report = await engine.push({ snapshotId: 'sync-new' });
     assert.equal(report.ok, true);
     assert.equal(transport.calls.filter((c) => c === 'delete').length, 0, '未超上限不得删除');
-    assert.equal(transport.snapshots.size, 10);
+    assert.equal(transport.snapshots.size, 1);
     assert.ok(!report.warnings.some((w) => w.includes('裁剪')), '未超上限不应有裁剪告警');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });

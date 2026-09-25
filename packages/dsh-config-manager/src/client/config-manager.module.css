@@ -1119,7 +1119,6 @@ button.statCard:focus-visible {
 .reportScroll,
 .confirmScroll,
 .diffScroll,
-.historyScroll,
 .consultScroll {
   overflow: auto;
   max-height: 380px;
@@ -2582,46 +2581,6 @@ button.statCard:focus-visible {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
-}
-
-.historyGroup {
-  margin-bottom: 12px;
-}
-
-.historyRow {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 6px 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1) 55%, transparent);
-  font-size: 12px;
-}
-
-.historyRow:last-child {
-  border-bottom: none;
-}
-
-.historyRowMain {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.historySummary {
-  overflow-wrap: anywhere;
-  color: var(--dsw-alias-label-secondary);
-}
-
-.historyTime {
-  flex: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 10.5px;
-  color: var(--dsw-alias-label-tertiary);
-  padding-top: 1px;
-}
-
-.historySections {
-  font-size: 11px;
-  color: var(--dsw-alias-label-tertiary);
 }
 
 .profileRow {

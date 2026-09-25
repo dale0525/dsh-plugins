@@ -144,7 +144,7 @@ export const name = 'config-manager'
 export const inject = ['settings', 'credentials']
 
 /** Plugin version, kept in sync with package.json ("version"). */
-const PLUGIN_VERSION = '0.1.74'
+const PLUGIN_VERSION = '0.1.75'
 
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
@@ -213,8 +213,7 @@ const API = {
   syncGithubCancel: '/api/dsh-config-manager/sync/github/cancel',
   // m-sync-github-valid：校验已存 token 是否有效（决定「已登录」→ 隐藏登录区块）
   syncGithubValidate: '/api/dsh-config-manager/sync/github/validate',
-  // P2：同步历史 / 自动应用 / 一键回滚
-  syncHistory: '/api/dsh-config-manager/sync/history',
+  // P2：一键回滚
   syncRollback: '/api/dsh-config-manager/sync/rollback',
   // m-sync-config：同步通道配置保存（UI 表单自动保存 /「保存配置」按钮；凭据写 DSH credentials）
   syncConfig: '/api/dsh-config-manager/sync/config',
@@ -1837,46 +1836,6 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
           })
         } catch (error) {
           writeJson(res, 500, { error: redact(error instanceof Error ? error.message : String(error)) })
-        }
-      },
-    },
-    // ------------------------------------------------------ sync/history
-    // 列出本地快照目录的 manifest.json（id/createdAt/sectionHashes/transport）。
-    {
-      kind: 'exact',
-      path: API.syncHistory,
-      handler: async (req, res) => {
-        if (!guard(req, res, 'GET')) return
-        try {
-          const localDir = join(syncDir, 'snapshots')
-          const entries = await fs.readdir(localDir).catch(() => [])
-          const rows: Array<{ id: string; createdAt: string; sectionCount: number; reviewCount: number; transport?: string }> = []
-          for (const name of entries) {
-            const dir = join(localDir, name)
-            const stat = await fs.stat(dir).catch(() => null)
-            if (!stat?.isDirectory()) continue
-            const manifestPath = join(dir, 'manifest.json')
-            const raw = await fs.readFile(manifestPath, 'utf8').catch(() => null)
-            if (raw === null) continue
-            try {
-              const m = JSON.parse(raw) as { id?: unknown; createdAt?: unknown; sectionHashes?: unknown; manifest?: { transport?: unknown } }
-              if (typeof m.id !== 'string' || typeof m.createdAt !== 'string') continue
-              const sectionCount = m.sectionHashes && typeof m.sectionHashes === 'object'
-                ? Object.keys(m.sectionHashes as Record<string, unknown>).length
-                : 0
-              // 触发通道（push/apply 落盘时写入各快照 manifest.transport；旧快照为 undefined）
-              const transport = m.manifest && typeof m.manifest === 'object' && typeof m.manifest.transport === 'string'
-                ? m.manifest.transport
-                : undefined
-              rows.push({ id: m.id, createdAt: m.createdAt, sectionCount, reviewCount: 0, ...(transport !== undefined ? { transport } : {}) })
-            } catch { /* skip malformed */ }
-          }
-          // reviewCount 恒 0：待审队列（sync-review-queue.json）已随合并逻辑一并删除，
-          // 保留该字段仅为与客户端契约兼容。
-          rows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
-          writeJson(res, 200, { entries: rows.map((r) => ({ ...r, kind: 'apply' as const })) })
-        } catch (error) {
-          writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
         }
       },
     },

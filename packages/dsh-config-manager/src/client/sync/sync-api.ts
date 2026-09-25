@@ -38,7 +38,6 @@ export const SYNC_API = {
   githubPoll: '/api/dsh-config-manager/sync/github/poll',
   githubCancel: '/api/dsh-config-manager/sync/github/cancel',
   githubValidate: '/api/dsh-config-manager/sync/github/validate',
-  history: '/api/dsh-config-manager/sync/history',
   config: '/api/dsh-config-manager/sync/config',
   uiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
   rollback: '/api/dsh-config-manager/sync/rollback',
@@ -126,24 +125,6 @@ export interface SyncPushPayload {
 
 /** POST /sync/pull 响应：拉取并直接覆盖本地（含应用前的变更摘要与回滚入口）。 */
 export type SyncPullApplyResponse = SyncPullApplyReport;
-
-/* ---------------------------------------------------------------- 同步历史 */
-
-/** 同步历史条目（Host 端返回）。 */
-export interface SyncHistoryEntry {
-  id: string;
-  createdAt: string;
-  kind: 'push' | 'pull' | 'apply' | 'rollback';
-  sectionCount?: number;
-  reviewCount?: number;
-  /** 快照类条目的触发通道（git / webdav；旧快照缺省 undefined） */
-  transport?: string;
-}
-
-/** GET /sync/history 响应：{ entries }。 */
-export interface SyncHistoryResponse {
-  entries: SyncHistoryEntry[];
-}
 
 /* ---------------------------------------------------------------- GitHub OAuth device flow */
 
@@ -293,12 +274,6 @@ export class SyncApi {
    *  Host 侧无 trusted snapshot 的 incident 只能走这条；成功后 SAFE MODE 自动解除。 */
   async dismissRecovery(operationId: string): Promise<RecoveryDismissResult> {
     return postJson<RecoveryDismissResult>(SYNC_API.recoveryDismiss, { operationId }, this.t);
-  }
-
-  /** 同步历史：列出本地祖先快照（按 createdAt 倒序）。 */
-  async history(): Promise<SyncHistoryResponse> {
-    const response = await fetch(SYNC_API.history);
-    return readJson<SyncHistoryResponse>(response, this.t);
   }
 
   /** 保存同步通道配置（POST /sync/config）：url/username/password（git: repoUrl/token）持久化。

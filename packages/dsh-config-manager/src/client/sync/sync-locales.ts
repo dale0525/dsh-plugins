@@ -65,22 +65,6 @@ export const zh = {
   'scope.title': '同步范围',
   'scope.hint': '推送与拉取恒同步全部支持的分区（settings、providers、plugins、prompts、skills、mcp、credentials 等），无需配置。',
   'scope.excludedHint': 'workspaces（含本机绝对路径）与 sessions（历史会话，体积大且含敏感内容）不参与同步。快照为明文，仅同步到你自己配置的私有通道。',
-  'history.title': '同步历史',
-  'history.empty': '尚无同步历史',
-  'history.emptyHint': '完成首次推送或拉取后，这里会显示记录。',
-  'history.colTime': '时间',
-  'history.colKind': '类型',
-  'history.colDetail': '详情',
-  'history.kindSnapshot': '快照',
-  'history.sectionCount': '分区',
-  'history.column.snapshot': '快照',
-  // 触发通道（同步历史「由哪个通道触发」）
-  'history.channelGit': 'GitHub',
-  'history.channelWebdav': 'WebDAV',
-  // 列表头部统计摘要（需求 4F）
-  'history.stats.total': '共 {count} 条',
-  'history.stats.snapshots': '快照 {count}',
-  'history.stats.summary': '同步历史统计',
   // —— Toast 操作回执（R-20：按动作分文案） ——
   // 原先 10+ 个动作的失败共用同一个 state.error；机械替换成 Toast 后，同 kind+text
   // 会被 store 的去重逻辑合并（互相顶掉），故此处为每个动作单独给出可区分文案。
@@ -167,22 +151,6 @@ export const en: Record<keyof typeof zh, string> = {
   'scope.title': 'Sync Scope',
   'scope.hint': 'Push and pull always sync every supported section (settings, providers, plugins, prompts, skills, mcp, credentials, etc.) — no configuration needed.',
   'scope.excludedHint': 'workspaces (contain absolute local paths) and sessions (chat history: large and sensitive) are excluded. Snapshots are plaintext and go only to the private channel you configure.',
-  'history.title': 'Sync History',
-  'history.empty': 'No sync history yet',
-  'history.emptyHint': 'Records appear here after your first push or pull.',
-  'history.colTime': 'Time',
-  'history.colKind': 'Kind',
-  'history.colDetail': 'Detail',
-  'history.kindSnapshot': 'Snapshot',
-  'history.sectionCount': 'sections',
-  'history.column.snapshot': 'Snapshot',
-  // Trigger channel (which channel triggered this history entry)
-  'history.channelGit': 'GitHub',
-  'history.channelWebdav': 'WebDAV',
-  // List header stats summary (requirement 4F)
-  'history.stats.total': '{count} total',
-  'history.stats.snapshots': '{count} snapshots',
-  'history.stats.summary': 'Sync history statistics',
   // Toast receipts (R-20: per-action wording; identical kind+text would be de-duplicated)
   'toast.configSaveFailed': 'Failed to save channel config',
   'toast.configSaved': 'Channel config saved',

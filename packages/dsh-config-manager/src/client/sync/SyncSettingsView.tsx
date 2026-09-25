@@ -51,7 +51,6 @@ import {
 import type {
   GithubLoginPhase, SyncChannel,
 } from './sync-view.ts'
-import { SyncHistoryView } from './SyncHistoryView.tsx'
 import css from '../config-manager.module.css'
 
 export interface SyncSettingsViewProps {
@@ -1011,8 +1010,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
               </Button>
             </div>
           )}
-
-          <SyncHistoryView api={api} t={t} />
 
           {/* 撤销本次覆盖的二次确认（DESIGN.md §6：回滚恒 danger + 二次确认） */}
           <Modal

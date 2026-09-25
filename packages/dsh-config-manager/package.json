@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-config-manager",
-  "version": "0.1.74",
+  "version": "0.1.75",
   "license": "MIT",
   "description": "Sync your DeepSeek Harness (DSH) configuration between machines over a private git or WebDAV channel: settings, plugins, MCP servers, skills, agent presets and provider credentials. DSH 配置远程同步插件（私有通道，明文自用）。",
   "keywords": [
