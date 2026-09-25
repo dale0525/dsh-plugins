@@ -88,6 +88,12 @@ export async function listSnapshotFiles(fsx: SnapshotFs, dir: string): Promise<s
 /**
  * 将快照写入散文件目录。
  * 非法输入（不支持的子分区 / 穿越路径）在任何写入发生前抛错，不留半成品目录。
+ *
+ * 写序与 durability：内容先写、**manifest.json 最后写**——manifest 是「本快照完整可用」的唯一标记，
+ * 读回端（readSnapshotFromDir / GitTransport.list）都以它为准，故它落盘之前的中断只会留下一个
+ * 被读回端跳过的目录，而不是一个「看起来有效、下载时才失败」的半成品。
+ * 内容写入用非原子批量写（{ atomic: false }）：逐文件 tmp+fsync+rename 不提供目录级原子性
+ * （目录级语义由上面的写序承担），只把成本放大近 20 倍。
  */
 export async function writeSnapshotToDir(
   snapshot: SyncSnapshot,
@@ -117,13 +123,6 @@ export async function writeSnapshotToDir(
   }
 
   await fsx.mkdir(dir);
-  const manifest: SnapshotDirManifest = {
-    id: snapshot.id,
-    createdAt: snapshot.createdAt,
-    manifest: snapshot.manifest,
-    sectionHashes,
-  };
-  await fsx.writeFile(joinFs(dir, SNAPSHOT_MANIFEST_FILE), new TextEncoder().encode(stringifyJsonSafe(manifest, { space: 2 })));
 
   // JSON 分区：按 SECTION_JSON_PATHS 平铺
   for (const [sid, rel] of Object.entries(SECTION_JSON_PATHS)) {
@@ -131,7 +130,7 @@ export async function writeSnapshotToDir(
     if (data === undefined) continue;
     const abs = joinFs(dir, rel);
     await fsx.mkdir(path.dirname(abs));
-    await fsx.writeFile(abs, new TextEncoder().encode(stringifyJsonSafe(data, { space: 2 })));
+    await fsx.writeFile(abs, new TextEncoder().encode(stringifyJsonSafe(data, { space: 2 })), { atomic: false });
   }
 
   // 文件类分区：目录前缀 + 真实文件
@@ -143,9 +142,18 @@ export async function writeSnapshotToDir(
     for (const file of data.files) {
       const abs = joinFs(baseAbs, file.relativePath);
       await fsx.mkdir(path.dirname(abs));
-      await fsx.writeFile(abs, file.data);
+      await fsx.writeFile(abs, file.data, { atomic: false });
     }
   }
+
+  // manifest 最后写：它是「内容已完整落盘」的标记（原子写，单文件成本可忽略）
+  const manifest: SnapshotDirManifest = {
+    id: snapshot.id,
+    createdAt: snapshot.createdAt,
+    manifest: snapshot.manifest,
+    sectionHashes,
+  };
+  await fsx.writeFile(joinFs(dir, SNAPSHOT_MANIFEST_FILE), new TextEncoder().encode(stringifyJsonSafe(manifest, { space: 2 })));
   return manifest;
 }
 

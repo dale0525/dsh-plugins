@@ -279,16 +279,14 @@ export class SyncEngine {
       sections: plainSections,
     };
 
-    // ① 本地散文件快照副本（审计；复用 t2 layout，不写 ZIP）
-    if (this.localSnapshotsDir !== undefined) {
-      await writeSnapshotToDir(snapshot, joinFs(this.localSnapshotsDir, id), this.fsx);
-    }
-    // ② 上传远端（传输通道负责散文件落盘 + 提交推送）
+    // ① 上传远端（传输通道负责散文件落盘 + 提交推送）
     await this.transport.upload(snapshot);
-    // ②·1 裁剪远端快照：保留最新 MAX_REMOTE_SNAPSHOTS 个（含刚 push 的）。
+    // ①·1 裁剪远端快照：保留最新 MAX_REMOTE_SNAPSHOTS 个（含刚 push 的）。
     //      删除失败只告警（进 warnings），不上抛 —— 不阻断 push 主流程。
     await this.pruneRemoteSnapshots(id, warnings);
-    // ③ 记录基线：写 sync-state（lastSnapshotId + 每分区 hash/updatedAt + lastSyncAt + transport）
+    // ② 记录基线：写本地散文件副本 + sync-state（lastSnapshotId + 每分区 hash/updatedAt
+    //    + lastSyncAt + transport）。本地副本只在这里落一次盘 —— 快照树是 2000+ 文件的
+    //    大目录，写两遍等于把 push 的本地 I/O 翻倍，而两份内容逐字节相同。
     await this.recordBaseline(id, plainSections, nowIso);
 
     return { ok: true, snapshotId: id, sections: Object.keys(plainSections) as SectionId[], warnings };
@@ -431,6 +429,7 @@ export class SyncEngine {
         sections: plain,
       };
       await writeSnapshotToDir(snapshot, joinFs(this.localSnapshotsDir, snapshotId), this.fsx);
+      await this.pruneLocalSnapshots(snapshotId);
     }
     const state = await loadSyncState(this.stateDir, this.fsx, this.msg);
     state.lastSnapshotId = snapshotId;
@@ -440,6 +439,44 @@ export class SyncEngine {
       state.sections[sid as SectionId] = { hash: hashSection(data as SectionData), updatedAt: ts };
     }
     await saveSyncState(this.stateDir, state, this.fsx);
+  }
+
+  /**
+   * 本地散文件快照只保留最新 1 份（**只删本引擎自己的审计副本**）。
+   *
+   * 该目录里的审计副本每份都是完整快照树（实测 62MB / 2155 文件），只增不减会线性吃满磁盘。
+   * 保留策略取「只留最新」而不是远端那样的 N 份：真正的历史在远端。
+   *
+   * ⚠️ 这个目录**不是本引擎独占**：生产接线里 `localSnapshotsDir = <syncDir>/snapshots`，
+   * 而 `rollbackSnapshotsDir` 缺省值是 `<stateDir>/snapshots`，`stateDir` 正是 `syncDir` ——
+   * 两者**是同一个目录**。applyItems 会先往这里落「应用前兜底快照」，紧接着成功分支调
+   * recordBaseline → 本方法。若按「除 keepId 外全删」执行，就会把刚拿到的 restoreId
+   * 删掉，UI 的「撤销本次覆盖」必然以 ENOENT 失败（已复现）。
+   *
+   * 两种快照靠格式区分，不靠目录名：FileSnapshotStore 的快照根下有 `snapshot.json`
+   * （readiness 生命周期标记），本引擎的散文件快照没有。据此跳过全部回滚快照。
+   *
+   * 新快照写完后才裁剪：任何时刻至少留 1 份完整快照，不存在空窗。
+   * 删除失败只告警不上抛 —— 清不掉旧副本不该让一次成功的 push 变成失败。
+   */
+  private async pruneLocalSnapshots(keepId: string): Promise<void> {
+    if (this.localSnapshotsDir === undefined) return;
+    // readdir 契约：目录不存在 → []（默认实现自行吞掉 IO 错误）。调用点不重复兜底。
+    const names = await this.fsx.readdir(this.localSnapshotsDir);
+    for (const name of names) {
+      if (name === keepId) continue;
+      const dir = joinFs(this.localSnapshotsDir, name);
+      // 回滚快照（FileSnapshotStore 格式）绝不参与本地保留裁剪：它是「撤销本次覆盖」的唯一依据
+      if (await this.fsx.exists(joinFs(dir, 'snapshot.json'))) continue;
+      try {
+        await this.fsx.remove(dir);
+      } catch (err) {
+        this.ctx.log.warn(this.msg('sync.localSnapshotPruneFailed', {
+          id: name,
+          reason: err instanceof Error ? err.message : String(err),
+        }));
+      }
+    }
   }
 
   /**

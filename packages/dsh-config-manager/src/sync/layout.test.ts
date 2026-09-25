@@ -251,6 +251,49 @@ test('注入验证：内存 SnapshotFs 驱动同一往返逻辑', async () => {
   assert.equal(hashSection(backPlain['skills']!), manifest.sectionHashes['skills']);
 });
 
+test('writeSnapshotToDir: manifest.json 最后写（写序即完成语义），内容走非原子批量写', async () => {
+  // 为什么钉这两条：manifest 是「本快照完整可用」的唯一标记（readSnapshotFromDir 与
+  // GitTransport.list 都以它为准）。它若先落盘，中断会留下一个「看起来有效、下载时才失败」
+  // 的半成品目录。同时 2000+ 文件的快照树若逐文件 tmp+fsync+rename，成本放大近 20 倍
+  // （实测 21.1s → 1.1s），而目录级原子性本来就不由逐文件 fsync 提供。
+  const mem: Map<string, Uint8Array> = new Map();
+  const writes: string[] = [];
+  const atomicFlags: Array<boolean | undefined> = [];
+  const memFs: SnapshotFs = {
+    async readFile(p) { const v = mem.get(p); if (!v) throw new Error(`ENOENT: ${p}`); return v; },
+    async writeFile(p, d, opts) { writes.push(p); atomicFlags.push(opts?.atomic); mem.set(p, new Uint8Array(d)); },
+    async mkdir(p) { mem.set(p + '/.dir', new Uint8Array()); },
+    async readdir(p) {
+      const prefix = p.endsWith('/') ? p : p + '/';
+      const out = new Set<string>();
+      for (const k of mem.keys()) {
+        if (!k.startsWith(prefix)) continue;
+        const rest = k.slice(prefix.length);
+        if (rest === '' || rest === '.dir') continue;
+        out.add(rest.split('/')[0]!);
+      }
+      return [...out];
+    },
+    async isDir(p) {
+      if (mem.has(p + '/.dir')) return true;
+      for (const k of mem.keys()) if (k.startsWith(p + '/')) return true;
+      return false;
+    },
+    async exists(p) { return mem.has(p) || mem.has(p + '/.dir'); },
+    async remove(p) {
+      const prefix = p.endsWith('/') ? p : p + '/';
+      for (const k of [...mem.keys()]) if (k === p || k.startsWith(prefix)) mem.delete(k);
+    },
+  };
+  await writeSnapshotToDir(sampleSnapshot(), 'snap/001', memFs);
+  assert.equal(writes[writes.length - 1], 'snap/001/manifest.json',
+    `manifest 必须是最后一个写入: ${writes.join(', ')}`);
+  // manifest 自身用原子写（单文件，成本可忽略）；内容条目全部非原子批量写
+  assert.equal(atomicFlags[atomicFlags.length - 1], undefined, 'manifest 走默认原子写');
+  assert.ok(atomicFlags.slice(0, -1).every((f) => f === false),
+    `内容条目必须全部非原子写: ${JSON.stringify(atomicFlags)}`);
+});
+
 test('createSnapshotFs: 默认 node:fs 适配器可用（真实临时目录）', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-layout-adapter-'));
   try {

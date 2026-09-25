@@ -4,7 +4,6 @@
  * 宽读法改造：仅保留 sync 相关状态。
  * PanelId 收敛为 'sync'。
  */
-import type { SyncPushReport, SyncPullApplyReport } from '../sync/sync-engine.ts'
 import type { SyncChannel } from './sync/sync-view.ts'
 import type { ConfigManagerApi } from './api.ts'
 
@@ -33,8 +32,7 @@ export interface SyncStoreSlice {
   webdavPassword: string
   busy: SyncBusyState
   savingConfig: boolean
-  pushReport: SyncPushReport | null
-  pullReport: SyncPullApplyReport | null
+  /** 最近一次拉取的回滚快照 id（同步页「撤销本次覆盖」入口；无则 null） */
   lastRestoreId: string | null
   error: string | null
   loadError: string | null
@@ -71,8 +69,6 @@ export function defaultSyncStoreSlice(): SyncStoreSlice {
     webdavPassword: '',
     busy: null,
     savingConfig: false,
-    pushReport: null,
-    pullReport: null,
     lastRestoreId: null,
     error: null,
     loadError: null,
@@ -97,8 +93,6 @@ export function toSyncStoreSlice(s: SyncStoreSlice): SyncStoreSlice {
     webdavPassword: s.webdavPassword,
     busy: s.busy,
     savingConfig: s.savingConfig,
-    pushReport: s.pushReport,
-    pullReport: s.pullReport,
     lastRestoreId: s.lastRestoreId,
     error: s.error,
     loadError: s.loadError,
@@ -116,8 +110,6 @@ export function toPersistedState(state: StoreState): PersistedState {
       repoUrl: s.repoUrl,
       webdavUrl: s.webdavUrl,
       webdavUsername: s.webdavUsername,
-      pushReport: s.pushReport,
-      pullReport: s.pullReport,
       lastRestoreId: s.lastRestoreId,
       error: s.error,
       loadError: s.loadError,
@@ -141,8 +133,6 @@ export function parsePersistedState(raw: string): PersistedState | null {
         repoUrl: typeof parsedSync['repoUrl'] === 'string' ? parsedSync['repoUrl'] : '',
         webdavUrl: typeof parsedSync['webdavUrl'] === 'string' ? parsedSync['webdavUrl'] : '',
         webdavUsername: typeof parsedSync['webdavUsername'] === 'string' ? parsedSync['webdavUsername'] : '',
-        pushReport: (parsedSync['pushReport'] as any) ?? null,
-        pullReport: (parsedSync['pullReport'] as any) ?? null,
         lastRestoreId: typeof parsedSync['lastRestoreId'] === 'string' ? parsedSync['lastRestoreId'] : null,
         error: typeof parsedSync['error'] === 'string' ? parsedSync['error'] : null,
         loadError: typeof parsedSync['loadError'] === 'string' ? parsedSync['loadError'] : null,

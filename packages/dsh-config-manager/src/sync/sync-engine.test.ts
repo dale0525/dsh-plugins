@@ -14,6 +14,8 @@ import path from 'node:path';
 
 import { SyncEngine, MAX_REMOTE_SNAPSHOTS, EXCLUDED_SYNC_SECTIONS, sectionsCarrySecrets } from './sync-engine.ts';
 import { hashSection, loadSyncState, SYNC_STATE_FILE } from './sync-state.ts';
+import { createSnapshotFs } from './fs.ts';
+import type { SnapshotFs } from './fs.ts';
 import { encryptSectionsPayload } from '../../tests/fixtures/legacy-snapshot-crypto.ts';
 import { computeSnapshotMeta } from './transport.ts';
 import type { SyncSnapshot, SyncSnapshotMeta, SyncTransport } from './transport.ts';
@@ -22,6 +24,7 @@ import type { WebDavRequestFn } from './webdav/webdav-transport.ts';
 import { createAdapters } from '../adapters/index.ts';
 import { makeContext, MemSnapshotStore } from '../adapters/test-helpers.ts';
 import { Importer } from '../core/importer.ts';
+import { FileSnapshotStore } from '../core/backup.ts';
 import type { SectionId } from '../schema/types.ts';
 import type { SectionData } from '../schema/types.ts';
 import type { ImportPlan } from '../core/types.ts';
@@ -152,6 +155,77 @@ test('push: 收集 portable 分区 → 上传快照 → 更新 sync-state → �
     assert.equal(await fs.readFile(path.join(local, 'sync-001', 'custom', 'skills', 'coding.md'), 'utf8'), '# Coding\n');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('push: 本地快照只写一遍（recordBaseline 是唯一写入者），且旧副本被裁剪到只剩最新 1 份', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-local-snap-'));
+  try {
+    const ctx = makeContext('win32', 'C:\\Users\\alice');
+    seedSource(ctx);
+    await ctx.fs.writeFile('skills/coding.md', Buffer.from('# Coding\n', 'utf8'));
+    const transport = new MemSyncTransport();
+    const local = path.join(tmp, 'local-snapshots');
+    // 计数注入：push 曾把同一份快照写两遍（push 的审计副本 + recordBaseline 重写），
+    // 快照树是 2000+ 文件的大目录，写两遍等于把本地 I/O 翻倍。
+    const inner = createSnapshotFs();
+    const written: string[] = [];
+    const countingFsx: SnapshotFs = { ...inner, async writeFile(p, d, opts) { written.push(p); await inner.writeFile(p, d, opts); } };
+
+    const engine = makeEngine({ ctx, transport, stateDir: tmp, localSnapshotsDir: local, extra: { fsx: countingFsx } as never });
+    await engine.push({ snapshotId: 'sync-a' });
+    const firstPass = written.filter((p) => p.startsWith(local));
+    assert.equal(
+      firstPass.filter((p) => p.endsWith('/manifest.json')).length, 1,
+      `manifest.json 每次 push 只应写 1 次: ${firstPass.filter((p) => p.endsWith('manifest.json')).join(', ')}`,
+    );
+    assert.equal(
+      firstPass.length, new Set(firstPass).size,
+      `同一路径在一次 push 内不得写两遍: ${firstPass.join(', ')}`,
+    );
+    assert.ok((await fs.stat(path.join(local, 'sync-a', 'manifest.json'))).isFile());
+
+    // 第二次 push：新副本落盘后，旧副本必须被裁掉（本地只留最新 1 份）
+    await engine.push({ snapshotId: 'sync-b' });
+    assert.deepEqual(await fs.readdir(local), ['sync-b'], '本地快照只保留最新 1 份');
+    // 保留的那份是完整快照（裁剪绝不能动到新副本）
+    assert.ok((await fs.stat(path.join(local, 'sync-b', 'config', 'settings.json'))).isFile());
+    assert.equal(await fs.readFile(path.join(local, 'sync-b', 'custom', 'skills', 'coding.md'), 'utf8'), '# Coding\n');
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('回归：本地保留裁剪不得删掉同目录下的回滚快照（生产接线两者同目录）', async () => {
+  // 生产接线：stateDir = syncDir，localSnapshotsDir = <syncDir>/snapshots，
+  // 而 rollbackSnapshotsDir 缺省 = <stateDir>/snapshots —— 两者是同一个目录。
+  // applyItems 先往这里落「应用前兜底快照」，紧接着成功分支 recordBaseline 写审计副本并裁剪；
+  // 若裁剪按「除最新外全删」执行，就会删掉刚返回给 UI 的 restoreId，
+  // 「撤销本次覆盖」必然以 ENOENT 失败（本用例即该缺陷的复现）。
+  const syncDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-engine-keeprollback-'));
+  try {
+    const ctx = makeContext('darwin', '/Users/alice');
+    seedSource(ctx);
+    const transport = new MemSyncTransport();
+    const localSnapshotsDir = path.join(syncDir, 'snapshots');
+    const engine = makeEngine({ ctx, transport, stateDir: syncDir, localSnapshotsDir });
+
+    // ① 按 FileSnapshotStore 的真实格式落一份「应用前回滚快照」
+    const store = new FileSnapshotStore({ dir: localSnapshotsDir });
+    const restoreId = await store.save({
+      id: 'restore-uuid-1', createdAt: '2026-09-26T00:00:00.000Z', entries: [],
+    } as never, new Map());
+
+    // ② recordBaseline 写审计副本 + 裁剪
+    await engine.recordBaseline('remote-snap-1', { settings: { version: 1, namespaces: {} } } as never);
+
+    const after = await fs.readdir(localSnapshotsDir);
+    assert.ok(after.includes(restoreId), `回滚快照 ${restoreId} 必须保留，实际: ${after.join(', ')}`);
+    assert.ok(after.includes('remote-snap-1'), '本次审计副本必须落盘');
+    // 回滚快照的内容也未被破坏（裁剪只该跳过，不该改写）
+    assert.equal((await store.load(restoreId)).id, restoreId);
+  } finally {
+    await fs.rm(syncDir, { recursive: true, force: true });
   }
 });
 

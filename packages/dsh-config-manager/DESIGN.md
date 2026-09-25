@@ -123,7 +123,7 @@ Shell（`ConfigManagerSection`）：导航条 + 页面内容 + 状态栏。
   `Modal.Footer`。Radix Content 用 `.dialogContentCenter` 自居中（Portal 下与 Overlay 平级）；
   旧 `.dialogMask/.dialogCard` 类保留供未迁移弹窗兼容。busy 时守卫 `onOpenChange` +
   `onEscapeKeyDown/onPointerDownOutside/onInteractOutside` 双保险禁闭。
-  **当前弹窗**：`SyncSettingsView` 的 3 类弹窗（通道配置 / 推送结果 / 拉取结果）
+  **当前弹窗**：`SyncSettingsView` 的 2 类弹窗（通道配置 / 撤销本次覆盖的二次确认）
   均走 `<Modal>`，自定义宽度用 `cardStyle`、限高用 `Modal.Body style`。全仓无手写 `dialogMask+dialogCard` 弹窗。
 - **构建接线**：`tsdown.config.ts` 的 `deps.alwaysBundle: [/^lucide-react(\/.*)?$/, /^@radix-ui\//]`
   强制把二者打进单文件 cjs（否则被当 dependencies 外部化 → 运行时 `require` 命中 DSH loader
@@ -187,8 +187,11 @@ flex-direction:column }` 让内部 input 拉满。
 - **同步页**：通道子 tab（Git / WebDAV）→ 远端地址与凭据卡 → 同步范围卡（默认 / 高级 + 分区勾选）
   → 推送 / 拉取动作行 → 同步历史。
   两个按钮都不弹确认：推送直接覆盖远端，拉取直接覆盖本地（应用前落回滚快照）。
-  拉取结果弹窗内提供「撤销本次覆盖」（danger + 二次确认，用该回滚快照恢复）——这是拉取的退路，
-  故该弹窗关闭即放弃撤销入口（快照 id 随 `lastRestoreId` 持久化，撤销成功后清空）。
+  **同步完成不弹结果弹窗**：推送与拉取结束只在 Toast 里给回执（带快照 id 与分区数，
+  分区告警另起一条 warn Toast）。
+  「撤销本次覆盖」（danger + 二次确认，用该回滚快照恢复）是拉取的退路，入口**常驻同步页**
+  （同步按钮下方，仅当上一次拉取真的写入了本地时出现）——不能随结果弹窗一起消失。
+  快照 id 随 `lastRestoreId` 持久化，撤销成功后清空，入口随之关闭。
 
 ---
 

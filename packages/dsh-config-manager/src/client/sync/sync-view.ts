@@ -5,8 +5,6 @@
  * 状态行写什么 / 私有仓库提示怎么展示」做成无副作用纯函数，node --test 直接测，
  * React 组件只做装配。文案直接用中文（项目源语言），组件不重复造。
  */
-import type { PlanItem, PlanItemKind } from '../../core/types.ts';
-import type { PullChange, SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts';
 import type { GithubPollResponse, SyncStatusResponse } from './sync-api.ts';
 import type { RecoveryIncident, RecoveryLockStatus } from '../../ui/types.ts';
 import { zhUiT, type UiT } from '../../ui/i18n.ts';
@@ -77,65 +75,6 @@ export function lockPanelModel(
  */
 export function privateRepoHint(t: UiT = zhUiT): string {
   return t('sync.privateRepoHint');
-}
-
-/* ---------------------------------------------------------------- 变更摘要 */
-
-/** 需要人工决策的 PlanItem 类型（与 SyncEngine.pull 的 needsReview 判定一致）。
- * 注意：'Install' 不在此列 —— 插件安装随同步自动采用（product requirement）。 */
-const REVIEW_KINDS: ReadonlySet<PlanItemKind> = new Set([
-  'Conflict', 'MissingSecret', 'MissingDependency', 'Error',
-]);
-
-export interface PullChangeSummary {
-  total: number;
-  info: number;
-  warning: number;
-  error: number;
-  /** 是否包含需要人工决策的项（冲突/密钥/依赖/安装/错误） */
-  needsReview: boolean;
-  items: PullChange[];
-}
-
-/** 差异摘要：按 severity 计数 + 需人工决策标记（UI 统计徽章与警示横幅的数据源） */
-export function summarizePullChanges(changes: readonly PullChange[]): PullChangeSummary {
-  let info = 0;
-  let warning = 0;
-  let error = 0;
-  let needsReview = false;
-  for (const c of changes) {
-    if (c.severity === 'error') error += 1;
-    else if (c.severity === 'warning') warning += 1;
-    else info += 1;
-    if (REVIEW_KINDS.has(c.kind)) needsReview = true;
-  }
-  return { total: changes.length, info, warning, error, needsReview, items: [...changes] };
-}
-
-/** PlanItemKind → 短标签（列表徽章） */
-export function kindLabel(kind: PlanItemKind, t: UiT = zhUiT): string {
-  switch (kind) {
-    case 'Create': return t('sync.kind.create');
-    case 'Update': return t('sync.kind.update');
-    case 'Skip': return t('sync.kind.skip');
-    case 'Conflict': return t('sync.kind.conflict');
-    case 'Install': return t('sync.kind.install');
-    case 'MissingSecret': return t('sync.kind.missingSecret');
-    case 'MissingDependency': return t('sync.kind.missingDependency');
-    case 'PathMapping': return t('sync.kind.pathMapping');
-    case 'Warning': return t('sync.kind.warning');
-    case 'Error': return t('sync.kind.error');
-    default: return kind;
-  }
-}
-
-/** severity → 短标签 */
-export function severityLabel(severity: PlanItem['severity'], t: UiT = zhUiT): string {
-  switch (severity) {
-    case 'error': return t('sync.severity.error');
-    case 'warning': return t('sync.severity.warning');
-    default: return t('sync.severity.info');
-  }
 }
 
 /* ---------------------------------------------------------------- 按钮状态 */
@@ -322,75 +261,6 @@ export function formatDateTime(iso: string): string {
 export function formatLastSync(iso: string | undefined, t: UiT = zhUiT): string {
   if (iso === undefined || iso === '') return t('sync.neverSyncedShort');
   return formatDateTime(iso);
-}
-
-/* ---------------------------------------------------------------- 报告渲染模型 */
-
-export interface PushReportView {
-  kind: 'ok' | 'error';
-  headline: string;
-  sections: string[];
-  warnings: string[];
-}
-
-/** push 报告 → 渲染模型（ok 头部带快照 id；失败显示引擎 message；分区与告警透传） */
-export function pushReportView(report: SyncPushReport | null, t: UiT = zhUiT): PushReportView | null {
-  if (report === null) return null;
-  if (!report.ok) {
-    return { kind: 'error', headline: report.message ?? t('sync.pushFailed'), sections: report.sections, warnings: report.warnings };
-  }
-  return {
-    kind: 'ok',
-    headline: t('sync.pushOk', { id: report.snapshotId }),
-    sections: report.sections,
-    warnings: report.warnings,
-  };
-}
-
-export interface PullReportView {
-  kind: 'ok' | 'empty' | 'error';
-  headline: string;
-  /** 本次实际写入本地的分区（ok 时非空） */
-  applied: string[];
-  /** 远端快照相对本地的变更摘要（应用前计算；仅展示） */
-  summary: PullChangeSummary | null;
-  /** 失败时是否已整体回滚 */
-  rolledBack: boolean;
-  /** 回滚入口提示（restoreId 非空时展示） */
-  restoreHint: string;
-}
-
-/** 拉取结果 → 渲染模型（直接覆盖本地：applied = 写入了什么；失败显示是否已回滚） */
-export function pullApplyReportView(report: SyncPullApplyReport | null, t: UiT = zhUiT): PullReportView | null {
-  if (report === null) return null;
-  if (!report.ok) {
-    return {
-      kind: 'error',
-      headline: report.message ?? t('sync.pullFailed'),
-      applied: [],
-      summary: report.changes.length > 0 ? summarizePullChanges(report.changes) : null,
-      rolledBack: report.rolledBack,
-      restoreHint: '',
-    };
-  }
-  if (report.applied.length === 0) {
-    return {
-      kind: 'empty',
-      headline: report.message ?? t('sync.pullEmpty'),
-      applied: [],
-      summary: report.changes.length > 0 ? summarizePullChanges(report.changes) : null,
-      rolledBack: false,
-      restoreHint: '',
-    };
-  }
-  return {
-    kind: 'ok',
-    headline: t('sync.pullOk', { id: report.snapshotId, count: String(report.applied.length) }),
-    applied: report.applied,
-    summary: summarizePullChanges(report.changes),
-    rolledBack: false,
-    restoreHint: report.restoreId !== '' ? t('sync.pullRestoreHint') : '',
-  };
 }
 
 /* ---------------------------------------------------------------- GitHub 登录视图模型 */

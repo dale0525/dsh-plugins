@@ -1,19 +1,17 @@
 /**
  * m-sync-ui：远程同步区块渲染模型单测（纯函数，node 可测，无需 DOM）。
- * 覆盖验收：报告渲染（push/pull）、按钮状态、私有仓库提示、状态行。
+ * 覆盖验收：按钮状态、私有仓库提示、状态行、残留锁面板。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import type { PullChange, SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts'
 import type { GithubPollResponse, SyncStatusResponse } from './sync-api.ts'
 import { zhUiT } from '../../ui/i18n.ts'
 import {
   channelTabModels, computeGithubLoginView, computeRemoteReady, computeSyncButtons, computeSyncStatus,
-  formatDateTime, formatLastSync, githubPollMessage, kindLabel, lockPanelModel,
-  privateRepoHint, pullApplyReportView, pushReportView, presetById, presetIdForUrl, readStoredChannel,
-  recoveryPanelModel,
-  severityLabel, summarizePullChanges, WEBDAV_PRESETS, writeStoredChannel,
+  formatDateTime, formatLastSync, githubPollMessage, lockPanelModel,
+  privateRepoHint, presetById, presetIdForUrl, readStoredChannel,
+  recoveryPanelModel, WEBDAV_PRESETS, writeStoredChannel,
 } from './sync-view.ts'
 
 /* ---------------------------------------------------------------- 私有仓库提示 */
@@ -109,129 +107,6 @@ test('sync-view: computeRemoteReady 按活动通道判断地址就绪（git=repo
   assert.equal(computeRemoteReady('webdav', '', 'https://dav.example.com/dav'), true)
   assert.equal(computeRemoteReady('webdav', 'https://github.com/u/r.git', ''), false, 'webdav 通道不看 git 地址')
   assert.equal(computeRemoteReady('webdav', '', '   '), false)
-})
-
-/* ---------------------------------------------------------------- 变更摘要 */
-
-function change(overrides: Partial<PullChange>): PullChange {
-  return { id: 'x', adapter: 'settings', kind: 'Update', description: 'd', severity: 'info', ...overrides }
-}
-
-test('sync-view: summarizePullChanges 按 severity 计数', () => {
-  const summary = summarizePullChanges([
-    change({ severity: 'info' }),
-    change({ severity: 'info' }),
-    change({ severity: 'warning' }),
-    change({ severity: 'error' }),
-  ])
-  assert.equal(summary.total, 4)
-  assert.equal(summary.info, 2)
-  assert.equal(summary.warning, 1)
-  assert.equal(summary.error, 1)
-  assert.equal(summary.needsReview, false)
-})
-
-test('sync-view: summarizePullChanges 对冲突/密钥/依赖项标记 needsReview（安装插件不算）', () => {
-  // 插件安装随同步自动采用（product requirement），不标记 needsReview
-  const summary = summarizePullChanges([
-    change({ kind: 'Conflict' }),
-    change({ kind: 'Install' }),
-    change({ kind: 'Install' }),
-  ])
-  assert.equal(summary.needsReview, true)
-  // 仅 Install 项 → 不作为需人工决策项
-  const onlyInstall = summarizePullChanges([change({ kind: 'Install' })])
-  assert.equal(onlyInstall.needsReview, false)
-})
-
-test('sync-view: summarizePullChanges 空数组 → total 0 且不需决策', () => {
-  const summary = summarizePullChanges([])
-  assert.equal(summary.total, 0)
-  assert.equal(summary.needsReview, false)
-})
-
-test('sync-view: kindLabel / severityLabel 覆盖关键类型', () => {
-  assert.equal(kindLabel('Conflict'), '冲突')
-  assert.equal(kindLabel('Install'), '安装')
-  assert.equal(kindLabel('MissingSecret'), '缺密钥')
-  assert.equal(severityLabel('error'), '错误')
-  assert.equal(severityLabel('warning'), '警告')
-  assert.equal(severityLabel('info'), '信息')
-})
-
-/* ---------------------------------------------------------------- push 报告渲染 */
-
-test('sync-view: push 成功报告 → ok 头部含快照 id + 分区透传', () => {
-  const report: SyncPushReport = { ok: true, snapshotId: 'sync-1', sections: ['settings', 'plugins'], warnings: [] }
-  const view = pushReportView(report)
-  assert.notEqual(view, null)
-  assert.equal(view?.kind, 'ok')
-  assert.match(view?.headline ?? '', /sync-1/)
-  assert.deepEqual(view?.sections, ['settings', 'plugins'])
-})
-
-test('sync-view: push 失败报告 → error 显示引擎 message', () => {
-  const report: SyncPushReport = { ok: false, snapshotId: '', sections: [], warnings: [], message: '全部导出失败' }
-  const view = pushReportView(report)
-  assert.equal(view?.kind, 'error')
-  assert.equal(view?.headline, '全部导出失败')
-})
-
-test('sync-view: null 报告 → null（不渲染卡片）', () => {
-  assert.equal(pushReportView(null), null)
-  assert.equal(pullApplyReportView(null), null)
-})
-
-/* ---------------------------------------------------------------- pull 报告渲染 */
-
-/** 拉取结果报告构造（直接覆盖语义）。 */
-function pullReport(overrides: Partial<SyncPullApplyReport> = {}): SyncPullApplyReport {
-  return {
-    ok: true,
-    snapshotId: 'sync-1',
-    applied: [],
-    changes: [],
-    restoreId: '',
-    rolledBack: false,
-    warnings: [],
-    failed: [],
-    needsRestart: false,
-    ...overrides,
-  }
-}
-
-test('sync-view: pull 未写入任何分区 → empty 渲染', () => {
-  const view = pullApplyReportView(pullReport())
-  assert.equal(view?.kind, 'empty')
-  assert.equal(view?.summary, null)
-  assert.deepEqual(view?.applied, [])
-})
-
-test('sync-view: pull 覆盖成功 → ok + 写入分区 + 变更摘要 + 回滚入口提示', () => {
-  const report = pullReport({
-    snapshotId: 'sync-9',
-    applied: ['settings', 'plugins'],
-    restoreId: 'restore-42',
-    changes: [
-      change({ id: 'settings:a', kind: 'Update', description: '更新设置 a', severity: 'info' }),
-      change({ id: 'plugin:x', kind: 'Conflict', adapter: 'plugins', description: '插件 x 冲突', severity: 'warning' }),
-    ],
-  })
-  const view = pullApplyReportView(report)
-  assert.equal(view?.kind, 'ok')
-  assert.match(view?.headline ?? '', /sync-9/)
-  assert.deepEqual(view?.applied, ['settings', 'plugins'])
-  assert.equal(view?.summary?.total, 2)
-  assert.equal(view?.summary?.items[0]?.description, '更新设置 a')
-  assert.equal(view?.summary?.items[1]?.kind, 'Conflict')
-  assert.notEqual(view?.restoreHint, '', 'restoreId 非空 → 给出回滚入口提示')
-})
-
-test('sync-view: pull 失败 → error 渲染（含是否已整体回滚）', () => {
-  const view = pullApplyReportView(pullReport({ ok: false, message: '认证失败', rolledBack: true }))
-  assert.equal(view?.kind, 'error')
-  assert.equal(view?.headline, '认证失败')
-  assert.equal(view?.rolledBack, true)
 })
 
 /* ---------------------------------------------------------------- 状态行 */

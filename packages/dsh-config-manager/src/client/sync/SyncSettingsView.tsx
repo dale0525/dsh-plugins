@@ -44,9 +44,9 @@ import type {
 } from './sync-api.ts'
 import {
   channelTabModels, computeGithubLoginView, computeRemoteReady, computeSyncButtons,
-  githubPollMessage, kindLabel, lockPanelModel, presetById, recoveryPanelModel,
-  presetIdForUrl, privateRepoHint, pullApplyReportView, pushReportView, readStoredChannel,
-  severityLabel, WEBDAV_PRESETS, writeStoredChannel,
+  githubPollMessage, lockPanelModel, presetById, recoveryPanelModel,
+  presetIdForUrl, privateRepoHint, readStoredChannel,
+  WEBDAV_PRESETS, writeStoredChannel,
 } from './sync-view.ts'
 import type {
   GithubLoginPhase, SyncChannel,
@@ -77,9 +77,7 @@ interface SyncUiState {
   /** 通道配置保存中（「保存配置」按钮 spinner；自动保存同用） */
   savingConfig: boolean
   busy: 'push' | 'pull' | 'rollback' | null
-  pushReport: SyncPushReport | null
-  pullReport: SyncPullApplyReport | null
-  /** 最近一次拉取执行的回滚快照 id（回滚入口；成功且实际写入时非空） */
+  /** 最近一次拉取执行的回滚快照 id（页面级「撤销本次覆盖」入口；成功且实际写入时非空） */
   lastRestoreId: string | null
   /**
    * 动作失败文案（R-20 后**不再作为展示通道**）。
@@ -130,8 +128,6 @@ const initial: SyncUiState = {
   webdavPassword: '',
   savingConfig: false,
   busy: null,
-  pushReport: null,
-  pullReport: null,
   lastRestoreId: null,
   error: null,
   github: initialGithub,
@@ -162,8 +158,6 @@ function initFromStore(): SyncUiState {
     webdavPassword: s.webdavPassword,
     busy: s.busy,
     savingConfig: s.savingConfig,
-    pushReport: s.pushReport,
-    pullReport: s.pullReport,
     lastRestoreId: s.lastRestoreId,
     error: s.error,
     loadError: s.loadError,
@@ -488,21 +482,33 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     setChannelOpen(false)
   }
 
+  /**
+   * 完成回执：同步**不弹结果弹窗**，成功只给一条带结论的 Toast。
+   * 文案必须自己带上「这次同步成了什么」，因为弹窗没了之后 Toast 是唯一的回执通道
+   * （推送：快照 id + 分区数；拉取：快照 id + 写入分区数 + 需注意项数）。
+   */
+  const pushDoneText = (report: SyncPushReport): string =>
+    t('toast.pushDone', { id: report.snapshotId, count: String(report.sections.length) })
+  const pullDoneText = (report: SyncPullApplyReport): string => {
+    const tpl = report.applied.length === 0 ? 'toast.pullEmpty' : 'toast.pullDone'
+    return t(tpl, { id: report.snapshotId, count: String(report.applied.length) })
+  }
+
   /** 推送：直接覆盖远端（无预览、无确认）。 */
   const runPush = async (): Promise<void> => {
-    patch({ busy: 'push', pushReport: null, pullReport: null })
+    patch({ busy: 'push' })
     try {
       const report = await api.push(payload())
       // 成功即清空 token/webdavPassword（已安全使用完；绝不持久化）；失败保留以便重试
-      patch({
-        busy: null, pushReport: report,
-        ...(report.ok ? { token: '', webdavPassword: '' } : {}),
-      })
+      patch({ busy: null, ...(report.ok ? { token: '', webdavPassword: '' } : {}) })
       if (report.ok) {
-        toast.ok(t('toast.pushDone'))
+        toast.ok(pushDoneText(report))
+        // 分区级告警（单项导出失败等）不阻断推送，但必须让用户看见
+        if (report.warnings.length > 0) toast.warn(t('toast.pushWarnings', { count: String(report.warnings.length) }))
       } else {
-        // 失败保留结果弹窗（含告警明细）；同时给出不依赖弹窗的回执
-        toast.error(t('toast.pushFailed'))
+        toast.error(report.message !== undefined && report.message !== ''
+          ? `${t('toast.pushFailed')}：${redact(report.message)}`
+          : t('toast.pushFailed'))
       }
     } catch (err) {
       patch({ busy: null })
@@ -512,15 +518,21 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
 
   /** 拉取：直接覆盖本地（宿主应用前已落回滚快照；失败整体回滚）。 */
   const runPull = async (): Promise<void> => {
-    patch({ busy: 'pull', pullReport: null, pushReport: null })
+    patch({ busy: 'pull' })
     try {
       const report = await api.pull({ ...payload() })
       patch({
-        busy: null, pullReport: report, token: '', webdavPassword: '',
+        busy: null, token: '', webdavPassword: '',
         lastRestoreId: report.restoreId !== '' ? report.restoreId : null,
       })
-      if (report.ok) toast.ok(t('toast.pullDone'))
-      else toast.error(t('toast.pullFailed'))
+      if (report.ok) {
+        toast.ok(pullDoneText(report))
+        if (report.warnings.length > 0) toast.warn(t('toast.pullWarnings', { count: String(report.warnings.length) }))
+      } else {
+        toast.error(report.message !== undefined && report.message !== ''
+          ? `${t('toast.pullFailed')}：${redact(report.message)}`
+          : t('toast.pullFailed'))
+      }
     } catch (err) {
       patch({ busy: null })
       toast.error(`${t('toast.pullFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
@@ -529,7 +541,8 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
 
   /**
    * 撤销本次覆盖：用拉取前落下的回滚快照（lastRestoreId）恢复本地。
-   * 危险操作 —— 入口在拉取结果弹窗内，先经二次确认弹窗（DESIGN.md §6）。
+   * 危险操作 —— 入口常驻在同步页（仅在上一次拉取真的写入了本地时出现），
+   * 点击后先经二次确认弹窗（DESIGN.md §6）。
    */
   const runRollback = async (): Promise<void> => {
     const restoreId = stateRef.current.lastRestoreId
@@ -539,7 +552,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     try {
       const report = await api.rollback({ restoreId })
       // 已恢复 → 快照消费完毕，入口关闭（避免对同一快照重复撤销）
-      patch({ busy: null, pullReport: null, lastRestoreId: null })
+      patch({ busy: null, lastRestoreId: null })
       if (report.full) toast.ok(t('toast.rollbackDone'))
       else toast.warn(t('toast.rollbackPartial'))
     } catch (err) {
@@ -606,8 +619,6 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
   /** 活动通道的远端地址是否就绪（git=repoUrl 非空；webdav=webdavUrl 非空） */
   const remoteReady = computeRemoteReady(state.channel, state.repoUrl, state.webdavUrl)
   const buttons = computeSyncButtons(state.busy, remoteReady, uiT)
-  const pushView = pushReportView(state.pushReport, uiT)
-  const pullView = pullApplyReportView(state.pullReport, uiT)
   const githubView = computeGithubLoginView(
     state.github.phase, state.github.userCode, state.github.verificationUri, state.github.error, uiT,
   )
@@ -990,107 +1001,18 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             </Button>
           </div>
 
-          <SyncHistoryView api={api} t={t} />
-          <Modal
-            open={state.pushReport !== null && pushView !== null}
-            onClose={() => { patch({ pushReport: null }) }}
-            title={t('push.title')}
-            cardStyle={{ width: 'min(640px, 100%)', maxHeight: '85vh' }}
-          >
-            <Modal.Header
-              title={t('push.title')}
-              onClose={() => { patch({ pushReport: null }) }}
-            />
-            <Modal.Body scroll style={{ maxHeight: '70vh' }}>
-              {pushView !== null && (<>
-                <Banner kind={pushView.kind === 'ok' ? 'ok' : 'error'}>{pushView.headline}</Banner>
-                {pushView.sections.length > 0 && (
-                  <div>
-                    <span className={css.fieldLabel}>{t('sections.title')}</span>
-                    <div className={css.statRow}>
-                      {pushView.sections.map((s) => <Badge key={s} kind="info">{s}</Badge>)}
-                    </div>
-                  </div>
-                )}
-                {pushView.warnings.length > 0 && (
-                  <div>
-                    <span className={css.fieldLabel}>{t('warnings.title')}</span>
-                    <ul className={css.warnList}>
-                      {pushView.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                    </ul>
-                  </div>
-                )}
-              </>)}
-            </Modal.Body>
-            <Modal.Footer>
-              <Button variant="primary" onClick={() => { patch({ pushReport: null }) }}>
-                {t('common.close')}
+          {/* 撤销本次覆盖：仅当上一次拉取真的写入了本地时出现（lastRestoreId 由宿主落回滚快照后返回）。
+              入口从结果弹窗移到页面上 —— 同步不再弹结果弹窗，一键撤销不能跟着消失。
+              危险操作：点击后仍需二次确认（DESIGN.md §6）。 */}
+          {state.lastRestoreId !== null && (
+            <div className={css.actionRow}>
+              <Button variant="danger" disabled={state.busy !== null} onClick={() => { setRollbackOpen(true) }}>
+                {t('pull.undo')}
               </Button>
-            </Modal.Footer>
-          </Modal>
+            </div>
+          )}
 
-          {/* 拉取结果弹窗（Radix Modal）：本次覆盖写入了哪些分区 + 回滚入口 */}
-          <Modal
-            open={state.pullReport !== null && pullView !== null}
-            onClose={() => { patch({ pullReport: null }) }}
-            title={t('pull.title')}
-            cardStyle={{ width: 'min(720px, 100%)', maxHeight: '85vh' }}
-          >
-            <Modal.Header
-              title={t('pull.title')}
-              onClose={() => { patch({ pullReport: null }) }}
-            />
-            <Modal.Body scroll style={{ maxHeight: '70vh' }}>
-              {pullView !== null && (<>
-                <Banner kind={pullView.kind === 'ok' ? 'ok' : pullView.kind === 'empty' ? 'info' : 'error'}>
-                  {pullView.headline}
-                </Banner>
-                {pullView.rolledBack && <Banner kind="warn">{t('pull.rolledBack')}</Banner>}
-                {pullView.applied.length > 0 && (
-                  <div>
-                    <span className={css.fieldLabel}>{t('sections.title')}</span>
-                    <div className={css.statRow}>
-                      {pullView.applied.map((s) => <Badge key={s} kind="info">{s}</Badge>)}
-                    </div>
-                  </div>
-                )}
-                {pullView.summary !== null && pullView.summary.items.length > 0 && (
-                  <>
-                    <div className={css.statRow}>
-                      <Badge kind="info">{t('change.total', { total: pullView.summary.total })}</Badge>
-                      {pullView.summary.error > 0 && <Badge kind="error">{severityLabel('error', uiT)} × {pullView.summary.error}</Badge>}
-                      {pullView.summary.warning > 0 && <Badge kind="warn">{severityLabel('warning', uiT)} × {pullView.summary.warning}</Badge>}
-                      {pullView.summary.info > 0 && <Badge kind="info">{severityLabel('info', uiT)} × {pullView.summary.info}</Badge>}
-                    </div>
-                    <div className={css.pullScroll}>
-                      <div className={css.reportList}>
-                        {pullView.summary.items.map((c) => (
-                          <div key={c.id} className={css.statRow}>
-                            <span className={css.kindTag}>{kindLabel(c.kind, uiT)}</span>
-                            <Badge kind={c.severity === 'error' ? 'error' : c.severity === 'warning' ? 'warn' : 'info'}>
-                              {severityLabel(c.severity, uiT)}
-                            </Badge>
-                            <span>{c.description}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-                {pullView.restoreHint !== '' && <Banner kind="info">{pullView.restoreHint}</Banner>}
-              </>)}
-            </Modal.Body>
-            <Modal.Footer>
-              {state.lastRestoreId !== null && (
-                <Button variant="danger" disabled={state.busy !== null} onClick={() => { setRollbackOpen(true) }}>
-                  {t('pull.undo')}
-                </Button>
-              )}
-              <Button variant="primary" onClick={() => { patch({ pullReport: null }) }}>
-                {t('common.close')}
-              </Button>
-            </Modal.Footer>
-          </Modal>
+          <SyncHistoryView api={api} t={t} />
 
           {/* 撤销本次覆盖的二次确认（DESIGN.md §6：回滚恒 danger + 二次确认） */}
           <Modal

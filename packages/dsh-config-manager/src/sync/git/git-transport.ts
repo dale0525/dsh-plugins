@@ -21,7 +21,7 @@
  * - 契约：同 id 重复 upload = 覆盖（幂等友好：内容无变化时不产生 commit）；download 不存在抛错；
  *   delete 不存在视为成功。
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -148,6 +148,8 @@ export class GitTransport implements SyncTransport {
   };
   private repoReady = false;
   private privateHint: boolean | null = null;
+  /** gc 已在后台跑（并发触发无意义且会互相争抢仓库锁） */
+  private gcRunning = false;
   private readonly msg: MsgFunc;
 
   constructor(options: GitTransportOptions) {
@@ -267,6 +269,7 @@ export class GitTransport implements SyncTransport {
       await this.runGit(['commit', '-m', `sync: ${verb} snapshot ${snapshot.id}`]);
       await this.runGit(['push', '-u', 'origin', 'HEAD'], { withCredential: true });
     }
+    this.scheduleGc();
     return computeSnapshotMeta(snapshot);
   }
 
@@ -321,6 +324,33 @@ export class GitTransport implements SyncTransport {
       await this.runGit(['commit', '-m', `sync: delete snapshot ${id}`]);
       await this.runGit(['push', '-u', 'origin', 'HEAD'], { withCredential: true });
     }
+    this.scheduleGc();
+  }
+
+  /**
+   * 后台触发 `git gc --auto`：**绝不在请求路径上等它**。
+   *
+   * 每次 upload 都会新建一棵 2000+ 文件的快照树并提交，git 因此持续产生松散对象 ——
+   * 实测工作副本 .git 累积到 216MB / 20644 个松散对象，而 gc 从未跑过（仓库与全局都没设
+   * gc.auto，git 默认的 auto 阈值（6700 松散对象）在我们的提交模式下也没被触发）。
+   * 手动 `git gc --quiet` 要 64s 才把 .git 压回 137MB —— 放在同步请求里等于让用户多等一分钟。
+   *
+   * 因此：非阻塞 spawn + 单飞标志。gc 只在**网络与落盘都已成功**后触发。
+   */
+  private scheduleGc(): void {
+    if (this.gcRunning) return;
+    this.gcRunning = true;
+    // detached：不占住本进程的事件循环，宿主退出也不因此挂住
+    const child = spawn(this.o.gitBin, ['gc', '--auto', '--quiet'], {
+      cwd: this.o.workDir,
+      detached: true,
+      stdio: 'ignore',
+    });
+    // 失败不额外上报：gc 是机会性维护，清不掉松散对象不影响任何已完成的同步；
+    // git 自己会把 gc 失败写进 <workDir>/.git/gc.log，真需要排查时那里有原始记录。
+    child.on('error', () => { this.gcRunning = false; });
+    child.on('exit', () => { this.gcRunning = false; });
+    child.unref();
   }
 
   /**

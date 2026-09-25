@@ -73,4 +73,4 @@ npm run bundle      # client bundle 重建成功
 - SyncConfirmView 的**逐项采纳/冲突决策**是子组件内自持，恢复会话时重置为默认采纳（避免把用户决策序列化进 sessionStorage 的复杂度）；会话本身与 items 列表恢复，用户重新做决策即可；
 - GitHub OAuth device flow（userCode / verificationUri）不进切片：一次性授权码短生命周期，切 tab 重置为 idle 可接受；
 - 自动同步开关与间隔由宿主持久化并在 `loadStatus` 回填，不进切片（避免双源漂移）；
-- **异步操作（push/pull/sync/下载/确认导入/执行恢复）在组件卸载期间的完成回调**：`commit` 的 store 写照常执行（`mountedRef` 只守卫 setState）——切走 tab 后完成的结果（pushReport / pullReport / confirmSession / detail / importResult / plan / report）仍落库，切回恢复；请求永不完成（网络挂起）时 busy 保留为进行中，刷新则清空。
+- **异步操作（push/pull/sync/下载/确认导入/执行恢复）在组件卸载期间的完成回调**：`commit` 的 store 写照常执行（`mountedRef` 只守卫 setState）——切走 tab 后完成的结果（confirmSession / detail / importResult / plan / report）仍落库，切回恢复；请求永不完成（网络挂起）时 busy 保留为进行中，刷新则清空。推送/拉取不落结果快照：完成只发 Toast，拉取另把 `lastRestoreId` 持久化以保住「撤销本次覆盖」入口。

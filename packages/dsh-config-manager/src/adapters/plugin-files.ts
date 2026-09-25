@@ -54,6 +54,11 @@ export const PLUGIN_FILES_EXCLUDED_DIRS: readonly (readonly string[])[] = [
   ['.gemini', 'antigravity-cli', 'updater'],
   // ① 可再生：MCP 工具清单（126 个 .json，含本机路径），下次启动按当前环境重写
   ['.gemini', 'antigravity-cli', 'mcp'],
+  // ① 可再生：agy 自带的辅助可执行文件（实测本机三份 webm_encoder 各 12.78 MB，
+  //    合计 37 MB —— 占整个 pluginFiles 分区 50.9 MB 的 73%）。它们由 CLI 自更新重装，
+  //    且**每次内容都不同**（同尺寸不同哈希），因此每份快照都把这 37 MB 重传一遍，
+  //    既撑大快照又让分区 hash 恒变（分区级变更检测永远判定「有变化」）。
+  ['.gemini', 'antigravity-cli', 'bin'],
   // ② 不可再生：agy 的会话历史与工作现场（合计约 1.4 GB）—— 排除即丢失，报告必须如实说明
   ['.gemini', 'antigravity-cli', 'conversations'],
   ['.gemini', 'antigravity-cli', 'brain'],

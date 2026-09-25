@@ -1118,7 +1118,6 @@ button.statCard:focus-visible {
 /* —— 限高滚动容器（大报告/列表通用） —— */
 .reportScroll,
 .confirmScroll,
-.pullScroll,
 .diffScroll,
 .historyScroll,
 .consultScroll {
@@ -2169,13 +2168,6 @@ button.statCard:focus-visible {
   margin: 6px 0 10px;
 }
 
-.warnList {
-  margin: 4px 0 0;
-  padding-left: 18px;
-  font-size: 11.5px;
-  color: var(--dsw-alias-label-secondary);
-}
-
 .wizardCard {
   margin: 0 0 10px;
 }
@@ -2442,11 +2434,6 @@ button.statCard:focus-visible {
   margin-bottom: 10px;
 }
 
-.reportList {
-  display: flex;
-  flex-direction: column;
-}
-
 .reportText {
   font-size: 12px;
   color: var(--dsw-alias-label-secondary);
@@ -2512,19 +2499,6 @@ button.statCard:focus-visible {
 /* 恢复计划 / 差异查看 */
 .inspectGroup {
   margin-bottom: 10px;
-}
-
-.kindTag {
-  display: inline-flex;
-  align-items: center;
-  height: 16px;
-  padding: 0 6px;
-  border-radius: 4px;
-  background: var(--dsw-alias-interactive-bg-hover);
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-secondary);
-  white-space: nowrap;
 }
 
 .kindTagOk {

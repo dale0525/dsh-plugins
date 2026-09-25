@@ -35,7 +35,7 @@
 
 | 概念 | 实际形态 | 取证 |
 |---|---|---|
-| sync 通道的「散文件快照目录」 | 目录（非 ZIP），根 `manifest.json` 是 **`SnapshotDirManifest`**（`{id, createdAt, manifest, sectionHashes}`），**不是** bundle manifest | `src/sync/layout.ts:18-40`、`src/sync/layout.ts:120-148` |
+| sync 通道的「散文件快照目录」 | 目录（非 ZIP），根 `manifest.json` 是 **`SnapshotDirManifest`**（`{id, createdAt, manifest, sectionHashes}`），**不是** bundle manifest | `src/sync/layout.ts:18-40`、`src/sync/layout.ts:125-157` |
 | 配置市场条目 | `items/<id>/manifest.json`（**`MarketItemManifest`**）+ `config.zip`（**其内部才是本规格的 bundle**） | `src/market/types.ts:99-120` |
 | 插件自身运行数据 | `$DSH_HOME/dsh-config-manager/` 下的快照/历史/缓存，不入 bundle | `src/adapters/self.ts:10-11` |
 

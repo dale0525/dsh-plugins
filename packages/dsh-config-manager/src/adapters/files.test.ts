@@ -4,10 +4,14 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { SkillsAdapter } from './skills.ts';
 import { AgentPresetsAdapter } from './agent-presets.ts';
 import { AgentInstructionsAdapter } from './agent-instructions.ts';
 import { PluginFilesAdapter, PLUGIN_FILES_EXCLUDED_DIRS, PLUGIN_FILES_EXCLUDED_FILE_SUFFIXES } from './plugin-files.ts';
+import { listRecursiveFollowingLinks } from '../utils/recursive-walk.ts';
 import type { RecursiveWalkOptions } from '../utils/recursive-walk.ts';
 import { SessionsAdapter } from './sessions.ts';
 import { SelfAdapter } from './self.ts';
@@ -198,6 +202,9 @@ test('pluginFiles: 剪枝清单覆盖已知运行时缓存，且是路径形状�
   assert.ok(flat.includes('.gemini/antigravity-cli/conversations'));
   assert.ok(flat.includes('.gemini/antigravity-cli/scratch'));
   assert.ok(flat.includes('.gemini/antigravity-cli/brain'));
+  // 实测：本机三份 webm_encoder（各 12.78 MB）占 pluginFiles 分区 50.9 MB 的 73%，
+  // 且每次自更新后内容都变 → 不剪则每份快照都白带 37 MB。
+  assert.ok(flat.includes('.gemini/antigravity-cli/bin'), `缺 antigravity-cli/bin: ${flat.join(', ')}`);
   assert.ok(flat.includes('.npm'));
   // 实测来源：agy 账号下的依赖内容寻址仓库占 1.0 GB，重新安装依赖即恢复
   assert.ok(flat.includes('Library/pnpm'), `缺 Library/pnpm: ${flat.join(', ')}`);
@@ -215,6 +222,44 @@ test('pluginFiles: 剪枝清单覆盖已知运行时缓存，且是路径形状�
         `单段剪枝项未获显式批准（会误伤任意分区下的同名业务目录）: ${p[0]}`,
       );
     }
+  }
+});
+
+test('pluginFiles: 剪枝清单真的剪掉 agy 可再生二进制目录，且不误伤账号身份', async (t) => {
+  // 用真实目录 + 真实遍历内核验证「清单 → 真的不进备份」，而不是只断言清单里有这一项：
+  // 清单写对却没接进遍历、或形状写错（写成目录名而非路径形状）时，本测试必须红。
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'dshcm-plugin-files-'));
+  t.after(async () => { await fs.rm(home, { recursive: true, force: true }); });
+  const agy = 'plugin-config/agy-link/env/acc_primary/.gemini/antigravity-cli';
+  // 可再生：自更新重装的辅助可执行文件（实测 12.78 MB/份，内容每次自更新都变）
+  await fs.mkdir(path.join(home, agy, 'bin'), { recursive: true });
+  await fs.writeFile(path.join(home, agy, 'bin/webm_encoder'), Buffer.alloc(1024));
+  // 账号身份：必须保留，否则另一台机器拿到的是个空壳账号
+  await fs.writeFile(path.join(home, agy, 'antigravity-oauth-token'), 'token');
+  await fs.writeFile(path.join(home, agy, 'settings.json'), '{}');
+  // 同名的业务目录（另一账号）：剪枝按路径形状匹配，同样要剪掉
+  const other = 'plugin-config/other-account/.gemini/antigravity-cli';
+  await fs.mkdir(path.join(home, other, 'bin'), { recursive: true });
+  await fs.writeFile(path.join(home, other, 'bin/webm_encoder'), Buffer.alloc(2048));
+
+  const listing = await listRecursiveFollowingLinks(path.join(home, 'plugin-config'), home, {
+    excludeDirs: PLUGIN_FILES_EXCLUDED_DIRS,
+    excludeFileSuffixes: PLUGIN_FILES_EXCLUDED_FILE_SUFFIXES,
+  });
+
+  assert.ok(
+    !listing.paths.some((rel) => rel.endsWith('webm_encoder')),
+    `bin/ 下的二进制不得进备份: ${listing.paths.join(', ')}`,
+  );
+  assert.deepEqual(listing.excludedDirs, [
+    `${agy}/bin`,
+    `${other}/bin`,
+  ].sort(), '被剪目录必须如实留痕（报告据此说明内容不全）');
+  for (const keep of ['antigravity-oauth-token', 'settings.json']) {
+    assert.ok(
+      listing.paths.includes(`${agy}/${keep}`),
+      `账号身份 ${keep} 必须保留: ${listing.paths.join(', ')}`,
+    );
   }
 });
 
