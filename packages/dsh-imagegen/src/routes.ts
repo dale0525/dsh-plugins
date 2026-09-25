@@ -14,6 +14,7 @@ import path from 'node:path'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
+import type { SubscriptionManager } from './subscription/manager.ts'
 import type { UpstreamConfig } from './engine.ts'
 import { enhancePrompt, listImageModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
 import { analyzeLayers, MAX_LAYER_IMAGE_BYTES } from './layer-analyzer.ts'
@@ -28,7 +29,7 @@ import { addTemplateFavorite, listTemplateFavorites, removeTemplateFavorite } fr
 import { testStorage, type StorageSyncConfig } from './storage-sync.ts'
 import { checkForUpdate, CURRENT_VERSION, installUpdate } from './updater.ts'
 import { IMAGE_PRESETS } from './presets.ts'
-import { AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
+import { AGENT_IMAGE_API, CANVAS_API, CANVAS_SKILL_API, CONVERSATION_IMAGE_API, DATA_FOLDER_API, DEFAULT_TEMPLATE_SOURCE_ID, GALLERY_API, GENERATE_API, HISTORY_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, STORAGE_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, TEMPLATE_FAVORITES_API, TEMPLATES_API, UPDATE_API, USAGE_API, isChannelProtocolPreference, isTemplateSourceId, type CanvasAssetRef, type CanvasDocument, type CanvasSkillCatalog, type CanvasSkillConfigApplyRequest, type CanvasSkillConfigApplyResult, type CanvasSkillConfigSaveRequest, type CanvasSkillConfigSaveResult, type CanvasSkillInstallRequest, type CanvasSkillInstallResult, type CanvasSkillLibrary, type CanvasSkillRemoveResult, type CanvasSkillRunRequest, type CanvasSkillTask, type GeneratedImage, type GenerateRequest, type HistoryEntry, type HistoryEntryInput, type ModelMapping, type PresetProviderView, type TemplateFavorite, type TemplateListResult, type TemplateRefreshResult, type TemplateSample } from './protocol.ts'
 
 /** Cap on JSON request bodies (settings ops and generate payloads are small). */
 const MAX_JSON_BODY_BYTES = 24 * 1024 * 1024
@@ -84,6 +85,8 @@ export interface SettingsSeam {
 export interface ImageGenRoutesDeps {
   /** The settings seam (namespace storage). */
   settings: SettingsSeam
+  /** Internal namespace when the host entry differs from the bridge alias. */
+  settingsNamespace?: string
   /** Resolve the current upstream config (legacy single-endpoint path). */
   resolve: () => UpstreamConfig
   /** Resolve the current channel view (the channel-aware path). */
@@ -137,6 +140,8 @@ export interface ImageGenRoutesDeps {
   resolveStorage?: () => StorageSyncConfig
   /** Shared host queue, used by Agent tools and browser task endpoints. */
   runtime?: ImageGenerationRuntime
+  /** Subscription login/status manager; absent on hosts without Credentials. */
+  subscriptions?: SubscriptionManager
   /**
    * Canvas skill runner. Absent when the host skill registry or agent runtime
    * never mounted (deployments without them): the canvas then offers its
@@ -461,9 +466,9 @@ function imageDataUrl(value: string): { mediaType: ImageMediaType; data: Uint8Ar
 }
 
 /** Project one settings descriptor onto the bridge wire view. */
-function toView(descriptor: SettingsDescriptor): Record<string, unknown> {
+function toView(descriptor: SettingsDescriptor, namespace = String(descriptor.ns)): Record<string, unknown> {
   return {
-    ns: String(descriptor.ns),
+    ns: namespace,
     schema: descriptor.schema,
     value: descriptor.value,
     ...descriptor.base === undefined ? {} : { base: descriptor.base },
@@ -473,6 +478,14 @@ function toView(descriptor: SettingsDescriptor): Record<string, unknown> {
     },
     revision: descriptor.revision,
   }
+}
+
+/** Map a subscription provider to its manager vendor id. */
+function vendorOfSubscription(provider: typeof SUBSCRIPTION_PROVIDERS[number]): 'codex' | 'grok' | 'antigravity' | 'openrouter' {
+  if (provider === 'chatgpt-sub') return 'codex'
+  if (provider === 'google-sub') return 'antigravity'
+  if (provider === 'openrouter-sub') return 'openrouter'
+  return 'grok'
 }
 
 /** Map a seam failure onto the bridge refusal envelope. */
@@ -519,6 +532,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   }
   const resolvePrompt = deps.resolvePrompt ?? (() => ({ apiUrl: '', apiKey: '', model: '' }))
   const resolveImageModels = deps.resolveImageModels ?? (() => normalizeImageModels(undefined))
+  const settingsNamespace = deps.settingsNamespace ?? IMAGEGEN_SETTINGS_NAMESPACE
 
   /** The current channel view: the channel-aware resolver, or a synthesized
    *  single default channel from the legacy flat upstream config (tests and
@@ -529,7 +543,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     const models: ModelMapping[] = normalizeImageModels(resolveImageModels()).map(id => ({ alias: id, id }))
     if (upstream.apiUrl.trim() === '' && models.length === 0) return { channels: [], defaultChannelId: '' }
     return {
-      channels: [{ id: 'default', preset: '', name: '默认渠道', apiUrl: upstream.apiUrl, apiKey: upstream.apiKey, models }],
+      channels: [{ id: 'default', preset: '', name: '默认渠道', apiUrl: upstream.apiUrl, apiUrlFull: false, apiKey: upstream.apiKey, models }],
       defaultChannelId: 'default',
     }
   }
@@ -541,7 +555,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
   const resolveChannelRequest = (request: GenerateRequest): { ok: true; request: GenerateRequest } | { ok: false; code: string; message: string } => {
     const view = channelViewOf()
     if (view.channels.length === 0) {
-      return { ok: false, code: 'no-channels', message: '尚未配置任何渠道：请先在「设置 → 插件 → AI 生图」添加渠道并填写 API 地址与密钥' }
+      return { ok: false, code: 'no-channels', message: '尚未配置任何渠道：请先打开「设置 → 生图配置」添加渠道并填写 API 地址与密钥' }
     }
     const explicit = view.channels.find(candidate => candidate.id === request.channelId)
     const defaults = view.channels.find(candidate => candidate.id === view.defaultChannelId) ?? view.channels[0]
@@ -650,9 +664,14 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         const stored = view.channels.find(candidate => candidate.id === (typeof body?.channelId === 'string' ? body.channelId : undefined))
           ?? view.channels.find(candidate => candidate.id === view.defaultChannelId)
           ?? view.channels[0]
+        const protocol = isChannelProtocolPreference(body?.protocol)
+          ? body.protocol
+          : stored?.protocol
         const upstream: UpstreamConfig = {
           apiUrl: typeof body?.apiUrl === 'string' && body.apiUrl.trim() !== '' ? body.apiUrl.trim() : (stored?.apiUrl ?? ''),
           apiKey: typeof body?.apiKey === 'string' && body.apiKey.trim() !== '' ? body.apiKey.trim() : (stored?.apiKey ?? ''),
+          apiUrlFull: typeof body?.apiUrlFull === 'boolean' ? body.apiUrlFull : stored?.apiUrlFull === true,
+          ...protocol === undefined ? {} : { protocol },
         }
         try {
           writeJson(res, 200, { ok: true, models: await listImageModels(upstream) })
@@ -673,6 +692,8 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           apiUrl: preset.apiUrl,
           hint: preset.hint,
           models: preset.models,
+          ...preset.subscription === undefined ? {} : { subscription: preset.subscription },
+          ...preset.experimental === undefined ? {} : { experimental: preset.experimental },
         }))
         writeJson(res, 200, { ok: true, presets })
       },
@@ -739,11 +760,11 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
         const descriptor = deps.settings.describe({ redactSecrets: true })
-          .find(candidate => String(candidate.ns) === IMAGEGEN_SETTINGS_NAMESPACE)
+          .find(candidate => String(candidate.ns) === settingsNamespace)
         writeJson(res, 200, {
           ok: true,
           value: {
-            namespaces: descriptor === undefined ? [] : [toView(descriptor)],
+            namespaces: descriptor === undefined ? [] : [toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE)],
             writable: deps.settings.writable !== false,
           },
         })
@@ -767,20 +788,20 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         }
         const expectedRevision = typeof body.expectedRevision === 'number' ? body.expectedRevision : undefined
         try {
-          // The alpha.2 settings package no longer exports settingsNamespace;
-          // the bridge already checked this value against our fixed namespace.
-          await deps.settings.mutate(ns, body.ops, expectedRevision)
+          // The bridge accepts its stable public alias; managed-form hosts
+          // map that alias to their profile entry id for the actual write.
+          await deps.settings.mutate(settingsNamespace, body.ops, expectedRevision)
         } catch (error) {
           writeJson(res, 200, failureOf(error))
           return
         }
         const descriptor = deps.settings.describe({ redactSecrets: true })
-          .find(candidate => String(candidate.ns) === ns)
+          .find(candidate => String(candidate.ns) === settingsNamespace)
         if (descriptor === undefined) {
-          writeJson(res, 200, { ok: false, code: 'internal', message: `settings namespace "${ns}" was disposed after the mutate` })
+          writeJson(res, 200, { ok: false, code: 'internal', message: `settings namespace "${settingsNamespace}" was disposed after the mutate` })
           return
         }
-        writeJson(res, 200, { ok: true, value: toView(descriptor) })
+        writeJson(res, 200, { ok: true, value: toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE) })
       },
     },
     // ----------------------------------------------------------- generate
@@ -829,7 +850,17 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     },
     {
       kind: 'exact', path: TASK_API.list,
-      handler: async (req, res) => { if (!guard(req, res, 'POST')) return; writeJson(res, 200, { ok: true, tasks: runtime.queue.list() }) },
+      handler: async (req, res) => { if (!guard(req, res, 'POST')) return; writeJson(res, 200, { ok: true, tasks: runtime.queue.summaries() }) },
+    },
+    {
+      kind: 'exact', path: TASK_API.get,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const task = typeof body?.id === 'string' ? runtime.queue.get(body.id) : undefined
+        if (task === undefined) { writeJson(res, 200, { ok: false, code: 'not-found', message: 'task not found' }); return }
+        writeJson(res, 200, { ok: true, task })
+      },
     },
     {
       kind: 'exact', path: TASK_API.cancel,
@@ -889,6 +920,53 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         }
       },
     },
+    // ------------------------------------------------ subscription status
+    ...(deps.subscriptions === undefined ? [] : [{
+      kind: 'exact' as const,
+      path: SUBSCRIPTION_API.status,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (!guard(req, res, 'POST')) return
+        const statuses: Record<string, { state: string; email?: string }> = {}
+        for (const provider of SUBSCRIPTION_PROVIDERS) {
+          const vendor = vendorOfSubscription(provider)
+          const status = await deps.subscriptions!.loginStatus(vendor)
+          const error = deps.subscriptions!.lastLoginError(vendor)
+          statuses[provider] = status.state === 'logged-in'
+            ? { state: status.state, email: status.email }
+            : { state: status.state, ...error === undefined ? {} : { error } }
+        }
+        writeJson(res, 200, { ok: true, statuses })
+      },
+    }, {
+      kind: 'exact' as const,
+      path: SUBSCRIPTION_API.login,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        const provider = typeof body?.provider === 'string' ? body.provider : ''
+        if (!(SUBSCRIPTION_PROVIDERS as readonly string[]).includes(provider)) {
+          writeJson(res, 200, { ok: false, code: 'invalid-provider', message: 'unknown subscription provider' })
+          return
+        }
+        const vendor = vendorOfSubscription(provider as typeof SUBSCRIPTION_PROVIDERS[number])
+        try {
+          if (body?.action === 'logout') {
+            await deps.subscriptions!.logout(vendor)
+            writeJson(res, 200, { ok: true })
+            return
+          }
+          if (body?.action === 'complete') {
+            const input = typeof body.input === 'string' ? body.input : ''
+            await deps.subscriptions!.completeLogin(vendor, input)
+            writeJson(res, 200, { ok: true })
+            return
+          }
+          writeJson(res, 200, { ok: true, ...await deps.subscriptions!.beginLogin(vendor) })
+        } catch (error) {
+          writeJson(res, 200, { ok: false, code: 'subscription-login-failed', message: messageOf(error) })
+        }
+      },
+    }] ),
     // ----------------------------------------------------- history list
     {
       kind: 'exact',

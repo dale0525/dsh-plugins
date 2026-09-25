@@ -11,8 +11,8 @@
     "id": "imagegen",
     "url": "https://github.com/dickpy/dsh-imagegen",
     "prefix": "packages/dsh-imagegen",
-    "baseline": "v1.5.13",
-    "baselineCommit": "5b492f9ce0e2ba7dd804bb19fe48ba1aeea4b0cf"
+    "baseline": "v1.6.4",
+    "baselineCommit": "a08c84856d84f3c062f36002f12efb0d9aa7b5f8"
   },
   "owned": [
     ".gitignore",
@@ -24,6 +24,7 @@
     "src/client/SettingsCard.tsx",
     "src/client/index.ts",
     "src/client/locales.ts",
+    "src/index.ts",
     "src/protocol.ts",
     "src/updater.ts",
     "tsdown.config.ts"
@@ -39,6 +40,7 @@
     "docs/images/image-generation-studio-three-column.png",
     "docs/images/imagegen-overview.png",
     "docs/images/infinite-canvas-demo.gif",
+    "docs/images/infinite-canvas-multi-reference.png",
     "docs/images/infinite-canvas.png",
     "docs/images/multi-model-comparison.png",
     "docs/images/plugin-settings.png",
@@ -46,7 +48,8 @@
     "docs/videos/agent-chat-edit.gif",
     "docs/videos/agent-chat-edit.mp4",
     "dsh-plugin-sync.ps1",
-    "pnpm-lock.yaml"
+    "pnpm-lock.yaml",
+    "src/client/config-entry.tsx"
   ],
   "added": []
 }

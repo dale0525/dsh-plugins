@@ -13,7 +13,7 @@
  */
 
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import type { ChannelConfig, ModelMapping } from '../protocol.ts'
+import type { ChannelConfig, ChannelProtocolPreference, ModelMapping, SubscriptionProvider } from '../protocol.ts'
 import type { ImageGenScope, SettingsOp } from './settings-scope.ts'
 
 /** One channel as the editor stages it (secrets never travel here). */
@@ -22,6 +22,10 @@ export interface ChannelDraft {
   preset: string
   name: string
   apiUrl: string
+  apiUrlFull: boolean
+  protocol?: ChannelProtocolPreference
+  auth?: 'api-key' | 'subscription'
+  subscription?: SubscriptionProvider
   models: ModelMapping[]
 }
 
@@ -36,6 +40,8 @@ export interface ChannelsFormState {
   keySet: Record<string, boolean>
   /** The effective default channel id. */
   defaultChannelId: string
+  /** The effective default image-model alias (first model when unset). */
+  defaultModel: string
   /** Whether a save would write anything. */
   dirty: boolean
   /** Whether the document accepts writes. */
@@ -54,6 +60,8 @@ export interface ChannelsFormActions {
   setChannelKey: (id: string, value: string | undefined) => void
   /** Stage the default-channel flag. */
   setDefaultChannel: (id: string) => void
+  /** Stage the default image-model alias. */
+  setDefaultModel: (model: string) => void
   /** Write every staged edit, then re-seed from what the Host accepted. */
   commit: () => Promise<void>
   /** Drop every staged edit. */
@@ -85,6 +93,10 @@ function stripChannel(channel: ChannelDraft): ChannelDraft {
     preset: channel.preset,
     name: channel.name.trim(),
     apiUrl: channel.apiUrl.trim(),
+    apiUrlFull: channel.apiUrlFull === true,
+    ...channel.protocol === undefined ? {} : { protocol: channel.protocol },
+    ...channel.auth === undefined ? {} : { auth: channel.auth },
+    ...channel.subscription === undefined ? {} : { subscription: channel.subscription },
     models: [...new Map(models.map(model => [model.alias, model])).values()],
   }
 }
@@ -93,6 +105,7 @@ export class ChannelsForm {
   private stagedChannels: ChannelDraft[] | null = null
   private readonly stagedKeys = new Map<string, KeyEdit>()
   private stagedDefault: string | null = null
+  private stagedDefaultModel: string | null = null
   private readonly listeners = new Set<() => void>()
   private saving = false
   private failed = false
@@ -136,13 +149,30 @@ export class ChannelsForm {
     return channels[0]?.id ?? ''
   }
 
+  private modelAliases(): string[] {
+    return [...new Set(this.channelsValue().flatMap(channel => channel.models.map(model => model.alias)).filter(alias => alias !== ''))]
+  }
+
+  private defaultModelValue(): string {
+    if (this.stagedDefaultModel !== null) return this.stagedDefaultModel
+    const models = this.modelAliases()
+    const view = this.scope.getSnapshot().value as { defaultModel?: string } | undefined
+    if (typeof view?.defaultModel === 'string' && models.includes(view.defaultModel)) return view.defaultModel
+    return models[0] ?? ''
+  }
+
   private dirtyValue(): boolean {
     const channels = this.channelsValue()
     const stagedChanged = this.stagedChannels !== null && !deepEqualJson(this.stagedChannels, scopeChannelsOf(this.scope))
-    const scopeView = this.scope.getSnapshot().value as { defaultChannelId?: string } | undefined
+    const scopeView = this.scope.getSnapshot().value as { defaultChannelId?: string; defaultModel?: string } | undefined
     const scopeDefault = scopeView?.defaultChannelId ?? channels[0]?.id ?? ''
     const defaultChanged = this.stagedDefault !== null && this.stagedDefault !== scopeDefault
-    return stagedChanged || defaultChanged || this.stagedKeys.size > 0
+    const models = this.modelAliases()
+    const storedModel = typeof scopeView?.defaultModel === 'string' && models.includes(scopeView.defaultModel)
+      ? scopeView.defaultModel
+      : models[0] ?? ''
+    const modelChanged = this.stagedDefaultModel !== null && this.stagedDefaultModel !== storedModel
+    return stagedChanged || defaultChanged || modelChanged || this.stagedKeys.size > 0
   }
 
   /** The card-facing snapshot. */
@@ -154,6 +184,7 @@ export class ChannelsForm {
       channels,
       keySet,
       defaultChannelId: this.defaultValue(),
+      defaultModel: this.defaultModelValue(),
       dirty: this.dirtyValue(),
       writable: this.scope.getSnapshot().writable !== false,
       saving: this.saving,
@@ -167,12 +198,14 @@ export class ChannelsForm {
       setChannels: (channels) => { this.stageChannels(channels) },
       setChannelKey: (id, value) => { this.stageKey(id, value) },
       setDefaultChannel: (id) => { this.stagedDefault = id; this.failed = false; this.publish() },
+      setDefaultModel: (model) => { this.stagedDefaultModel = model; this.failed = false; this.publish() },
       commit: () => this.commit(),
       discard: () => {
-        if (this.stagedChannels === null && this.stagedKeys.size === 0 && this.stagedDefault === null && !this.failed) return
+        if (this.stagedChannels === null && this.stagedKeys.size === 0 && this.stagedDefault === null && this.stagedDefaultModel === null && !this.failed) return
         this.stagedChannels = null
         this.stagedKeys.clear()
         this.stagedDefault = null
+        this.stagedDefaultModel = null
         this.failed = false
         this.publish()
       },
@@ -218,6 +251,11 @@ export class ChannelsForm {
     if (this.stagedDefault !== null) {
       ops.push({ op: 'set', path: ['defaultChannelId'], value: this.stagedDefault })
     }
+    if (this.stagedDefaultModel !== null) {
+      ops.push(this.stagedDefaultModel === ''
+        ? { op: 'unset', path: ['defaultModel'] }
+        : { op: 'set', path: ['defaultModel'], value: this.stagedDefaultModel })
+    }
     return ops
   }
 
@@ -237,6 +275,7 @@ export class ChannelsForm {
       this.stagedChannels = null
       this.stagedKeys.clear()
       this.stagedDefault = null
+      this.stagedDefaultModel = null
       this.failed = false
     } catch {
       this.failed = true
@@ -253,7 +292,7 @@ export class ChannelsForm {
 
 /** Project a stored channel into a draft (secrets never travel in channels). */
 function toDraft(channel: ChannelConfig): ChannelDraft {
-  return { id: channel.id, preset: channel.preset, name: channel.name, apiUrl: channel.apiUrl, models: channel.models.map(model => ({ ...model })) }
+  return { id: channel.id, preset: channel.preset, name: channel.name, apiUrl: channel.apiUrl, apiUrlFull: channel.apiUrlFull === true, ...channel.protocol === undefined ? {} : { protocol: channel.protocol }, ...channel.auth === undefined ? {} : { auth: channel.auth }, ...channel.subscription === undefined ? {} : { subscription: channel.subscription }, models: channel.models.map(model => ({ ...model })) }
 }
 
 /** The scope's current channels value (a plain array), for change detection. */
