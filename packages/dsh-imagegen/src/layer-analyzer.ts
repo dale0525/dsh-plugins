@@ -135,7 +135,7 @@ export function normalizeLayerPlan(value: unknown): CanvasLayerPlan | undefined 
  */
 export async function analyzeLayers(config: PromptModelConfig, image: string): Promise<CanvasLayerPlan> {
   if (config.apiUrl.trim() === '' || config.model.trim() === '') {
-    throw new Error('图层拆分需要先在「设置 → 插件 → AI 生图 → 提示词增强」配置一个支持视觉的聊天模型（API 地址 + 模型）')
+    throw new Error('图层拆分需要先在左侧「生图配置」的「提示词增强」中配置一个支持视觉的聊天模型（API 地址 + 模型）')
   }
   const response = await fetch(`${config.apiUrl.replace(/\/+$/, '')}/chat/completions`, {
     method: 'POST',

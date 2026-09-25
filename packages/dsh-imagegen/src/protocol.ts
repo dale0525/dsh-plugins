@@ -16,6 +16,68 @@ export const SETTINGS_API = {
   mutate: '/api/dsh-imagegen/settings/mutate',
 } as const
 
+/** Subscription account login and status routes. */
+export const SUBSCRIPTION_API = {
+  status: '/api/dsh-imagegen/subscription/status',
+  login: '/api/dsh-imagegen/subscription/login',
+} as const
+
+/** Official/subscription-backed image providers. */
+export const SUBSCRIPTION_PROVIDERS = ['chatgpt-sub', 'grok-sub', 'google-sub', 'openrouter-sub'] as const
+export type SubscriptionProvider = typeof SUBSCRIPTION_PROVIDERS[number]
+
+/** Transport protocol a channel uses to reach its gateway. */
+export type ChannelProtocol = 'images' | 'chat-completions'
+
+/** Stored preference: auto keeps old channels on images unless the URL is explicit. */
+export type ChannelProtocolPreference = 'auto' | ChannelProtocol
+
+/** Whether an endpoint URL explicitly names an OpenAI-compatible chat route. */
+export function isChatCompletionsUrl(value: string): boolean {
+  const trimmed = value.trim()
+  if (trimmed === '') return false
+  try {
+    return /\/chat\/completions\/?$/.test(new URL(trimmed).pathname)
+  } catch {
+    return /\/chat\/completions\/?$/.test(trimmed.split(/[?#]/, 1)[0] ?? '')
+  }
+}
+
+/** Whether a stored value is one of the accepted protocol preferences. */
+export function isChannelProtocolPreference(value: unknown): value is ChannelProtocolPreference {
+  return value === 'auto' || value === 'images' || value === 'chat-completions'
+}
+
+/** Resolve a channel preference without changing legacy behavior by default. */
+export function resolveChannelProtocol(apiUrl: string, preference: ChannelProtocolPreference | undefined = 'auto'): ChannelProtocol {
+  if (preference === 'images' || preference === 'chat-completions') return preference
+  return isChatCompletionsUrl(apiUrl) ? 'chat-completions' : 'images'
+}
+
+/** Subscription channels with a fixed image model. */
+export const DEFAULT_SUBSCRIPTION_MODELS: Record<SubscriptionProvider, string> = {
+  'chatgpt-sub': 'gpt-image-2.5-flare',
+  'grok-sub': 'grok-imagine-image-2.0',
+  'google-sub': 'gemini-3-pro-image',
+  'openrouter-sub': 'google/gemini-3-pro-image',
+}
+
+/** Human-facing provider names used in status and errors. */
+export const SUBSCRIPTION_PROVIDER_DISPLAY_NAMES: Record<SubscriptionProvider, string> = {
+  'chatgpt-sub': 'ChatGPT 订阅',
+  'grok-sub': 'Grok 订阅',
+  'google-sub': 'Google 订阅',
+  'openrouter-sub': 'OpenRouter 账号',
+}
+
+/** Interfaces that are supported experimentally and should be labelled in the UI. */
+export const EXPERIMENTAL_SUBSCRIPTION_PROVIDERS: ReadonlySet<SubscriptionProvider> = new Set(['chatgpt-sub', 'google-sub'])
+
+/** Whether a raw string names one of the subscription providers. */
+export function isSubscriptionProvider(value: unknown): value is SubscriptionProvider {
+  return typeof value === 'string' && (SUBSCRIPTION_PROVIDERS as readonly string[]).includes(value)
+}
+
 /** The image-generation proxy route. */
 export const GENERATE_API = '/api/dsh-imagegen/generate'
 
@@ -50,6 +112,7 @@ export const USAGE_API = '/api/dsh-imagegen/usage' as const
 export const TASK_API = {
   submit: '/api/dsh-imagegen/tasks/submit',
   list: '/api/dsh-imagegen/tasks/list',
+  get: '/api/dsh-imagegen/tasks/get',
   cancel: '/api/dsh-imagegen/tasks/cancel',
   retry: '/api/dsh-imagegen/tasks/retry',
 } as const
@@ -719,6 +782,8 @@ export interface CanvasNodeMetadata {
   /** Config/image nodes: generation settings. */
   prompt?: string
   model?: string
+  /** Channel selected alongside the model; omitted means the default channel. */
+  channelId?: string
   size?: string
   quality?: string
   /** Config nodes: how many images to generate (1-4). */
@@ -940,8 +1005,16 @@ export interface ChannelConfig {
   preset: string
   /** Display name shown in the list, the panel, and Agent guidance. */
   name: string
-  /** OpenAI-compatible base URL. */
+  /** OpenAI-compatible base URL, or the exact generation URL when apiUrlFull is true. */
   apiUrl: string
+  /** Use apiUrl verbatim instead of appending /images/generations or /images/edits. */
+  apiUrlFull: boolean
+  /** Request protocol; 'auto' infers chat-completions from an exact chat URL. */
+  protocol?: ChannelProtocolPreference
+  /** Authentication source; absent means the legacy API-key path. */
+  auth?: 'api-key' | 'subscription'
+  /** Subscription provider when auth is subscription. */
+  subscription?: SubscriptionProvider
   /** The channel's model catalog (alias → upstream id). */
   models: ModelMapping[]
 }
@@ -953,6 +1026,10 @@ export interface PresetProviderView {
   apiUrl: string
   hint: string
   models: ModelMapping[]
+  /** Set for subscription-backed presets. */
+  subscription?: SubscriptionProvider
+  /** True when the subscription relies on an undocumented interface. */
+  experimental?: boolean
 }
 
 export type GenerationTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -968,6 +1045,13 @@ export interface GenerationTask extends EcommerceTaskMeta {
   error?: string
 }
 
+/**
+ * Wire shape for the queue poll. Reference-image and result payloads stay
+ * host-side; the client hydrates a completed task once through TASK_API.get.
+ */
+export interface GenerationTaskSummary extends Omit<GenerationTask, 'result'> {
+  resultAvailable: boolean
+}
 /** GitHub Release update information shown by the client. */
 export interface UpdateInfo {
   currentVersion: string
@@ -975,6 +1059,8 @@ export interface UpdateInfo {
   updateAvailable: boolean
   releaseUrl: string
   publishedAt?: string
+  /** Markdown release body shown in the update popover. */
+  releaseNotes?: string
 }
 
 /** One history image reference as the browser consumes it (a served URL). */
