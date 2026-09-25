@@ -257,23 +257,35 @@ export function normalizeCredits(credits: string | undefined): string | undefine
   return bare === '' ? undefined : bare
 }
 
-/** Parse the upstream `tags` / `credits` fields into billing metadata. */
-function resolveUpstreamBilling(wrapped: Record<string, unknown>): { billing: WorkBuddyModelBilling } {
+/**
+ * Parse the upstream `tags` / `credits` fields into billing metadata.
+ *
+ * @param wrapped - one catalog row.
+ * @param extraTags - badge tags recovered from another document, merged in
+ * after the row's own. The `/v3/config` product document carries the roster
+ * but no `badge:*` tags; those live only in the console catalog, so the CN
+ * refresh reads both and joins them here (see `fetchPromoBadges`).
+ */
+function resolveUpstreamBilling(
+  wrapped: Record<string, unknown>,
+  extraTags?: readonly string[],
+): { billing: WorkBuddyModelBilling } {
   const rawCredits = wrapped['credits']
   const credits = typeof rawCredits === 'string' && rawCredits.trim() !== '' ? rawCredits.trim() : undefined
   const badges: string[] = []
-  const rawTags = wrapped['tags']
-  if (Array.isArray(rawTags)) {
-    for (const tag of rawTags) {
-      if (typeof tag !== 'string') continue
-      const lowered = tag.toLowerCase()
-      if (!lowered.startsWith(BADGE_PREFIX)) continue
-      const label = tag.slice(BADGE_PREFIX.length).split(':')[0] ?? tag.slice(BADGE_PREFIX.length)
-      if (label !== '') badges.push(label)
-    }
+  const rawTags: readonly unknown[] = [...Array.isArray(wrapped['tags']) ? wrapped['tags'] : [], ...extraTags ?? []]
+  for (const tag of rawTags) {
+    if (typeof tag !== 'string') continue
+    const lowered = tag.toLowerCase()
+    if (!lowered.startsWith(BADGE_PREFIX)) continue
+    const label = tag.slice(BADGE_PREFIX.length).split(':')[0] ?? tag.slice(BADGE_PREFIX.length)
+    if (label !== '' && !badges.includes(label)) badges.push(label)
   }
-  // A `x0.00` multiplier means the model is currently free.
-  const free = credits !== undefined && /^x?0\.0+$/u.test(credits)
+  // A `x0.00` multiplier means the model is currently free. Judge from the
+  // normalized multiplier: the raw string may carry a trailing unit word
+  // (`x0.00 credits`) that a bare-multiplier match would never see.
+  const multiplier = normalizeCredits(credits)
+  const free = multiplier !== undefined && /^x?0\.0+$/u.test(multiplier)
   return {
     billing: {
       ...credits === undefined ? {} : { credits },
@@ -614,16 +626,28 @@ export class WorkBuddyUpstreamClient {
   /**
    * GET the personal model catalog.
    *
-   * Two upstream documents feed this, one per variant:
+   * Both variants read `/v3/config`, the product document the desktop product
+   * itself fetches. CN used to read `/console/enterprises/personal/models`
+   * (the console catalog) instead, and that was why its model list drifted
+   * from the desktop App's selector: the console document lags the product
+   * one, and the product roster itself churns day to day (`auto`,
+   * `kimi-k3-1`, `minimax-m3` have each appeared and disappeared within a
+   * week).
    *
-   * - CN (`workbuddy`): `/console/enterprises/personal/models`, the document
-   *   the official CLI itself consumes. Unchanged behaviour.
-   * - International (`workbuddy-ai`): `/v3/config`, the product document the
-   *   App's main process fetches. The gateway splits it by User-Agent, so this
-   *   request carries the App-shaped UA while every other request keeps the
-   *   CLI UA it has always sent.
+   * What distinguishes the two variants here is the User-Agent, not the path:
+   * the gateway splits `/v3/config` by client identity, and the split is
+   * load-bearing. A CLI-shaped UA yields the CLI's roster — the chat models
+   * this plugin serves — while an App-shaped UA yields the App's internal
+   * roster. CN keeps the CLI UA it sends for chat, so the catalog it
+   * advertises is exactly the one its own requests can use. The international
+   * variant has no CLI identity, so it keeps the App-shaped UA.
    *
-   * Both are unwrapped and classified the same way — `readEnvelope` plus
+   * Membership is the `cli` roster intersected with the usable rows (see
+   * {@link parseModelCatalog}); the promo badges the product document does
+   * not carry are merged in from a best-effort console read — see
+   * {@link fetchPromoBadges}.
+   *
+   * Responses are unwrapped and classified the same way — `readEnvelope` plus
    * `envelopeError` — so an expired session or exhausted credit is reported as
    * such rather than as a generic catalog failure.
    */
@@ -633,7 +657,7 @@ export class WorkBuddyUpstreamClient {
     // injects a resolver so tests never read the real filesystem, and calling
     // the module function directly made that seam inert.
     const appVersion = international ? await this.resolveAppVersion() : undefined
-    const response = await fetch(`${chatBase(credential)}${international ? '/v3/config' : '/console/enterprises/personal/models'}`, {
+    const response = await fetch(`${chatBase(credential)}/v3/config`, {
       headers: {
         Authorization: `Bearer ${credential.accessToken}`,
         Accept: 'application/json',
@@ -648,23 +672,79 @@ export class WorkBuddyUpstreamClient {
     })
     const envelope = await readEnvelope(response)
     if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
-    // Two catalog shapes share this path. The CN endpoint always answers with
-    // the `{code,msg,data}` wrapper; `/v3/config` has also been observed
-    // answering with the product document bare at the top level (no wrapper at
-    // all). Treating a missing `data` as an empty document turned that second
-    // shape into a spurious "no cli agent models", so a body that itself looks
-    // like a catalog (it carries models or agents) is used as the answer. A body
-    // with neither shape still falls through to the empty-parse error below.
+    // Two catalog shapes share this path. The endpoints wrap their answer in
+    // `{code,msg,data}`, but `/v3/config` has also been observed answering with
+    // the product document bare at the top level (no wrapper at all). Treating
+    // a missing `data` as an empty document turned that second shape into a
+    // spurious "no cli agent models", so a body that itself looks like a
+    // catalog (it carries models or agents) is used as the answer. A body with
+    // neither shape still falls through to the empty-parse error below.
     const data = isObject(envelope.data) ? envelope.data
       : 'models' in envelope.document || 'agents' in envelope.document ? envelope.document
       : {}
-    const models = parseModelCatalog(data, international)
+    // Promo badges exist only in the console document, so CN merges them in.
+    // The read is best-effort and separate: its failure costs the badges and
+    // never the catalog.
+    const promoBadges = international ? undefined : await this.fetchPromoBadges(credential, signal)
+    const models = parseModelCatalog(data, international, promoBadges)
     this.lastCatalog = {
       fetchedAtMs: Date.now(),
       source: international ? 'workbuddy-ai:app' : 'workbuddy:cli',
       ...appVersion === undefined ? {} : { appVersion },
     }
     return models
+  }
+
+  /**
+   * Read the console catalog's promotional tags, by model id.
+   *
+   * `/v3/config` carries no `badge:<label>:<color>` tags — the discount labels
+   * the cards render (`限时免费`, `夜间折扣`, …) live only in
+   * `/console/enterprises/personal/models`. Since the roster now comes from
+   * the product document, those tags are read from the console one in a
+   * second request and merged by id.
+   *
+   * Best-effort by construction: a badge is a label on a price, so failing to
+   * read this document must not fail a catalog refresh. Every failure —
+   * network, envelope, an unreadable body — returns undefined, and the models
+   * simply ship without badges.
+   */
+  private async fetchPromoBadges(
+    credential: WorkBuddyCredential,
+    signal?: AbortSignal,
+  ): Promise<ReadonlyMap<string, readonly string[]> | undefined> {
+    try {
+      const response = await fetch(`${chatBase(credential)}/console/enterprises/personal/models`, {
+        headers: {
+          Authorization: `Bearer ${credential.accessToken}`,
+          Accept: 'application/json',
+          Origin: originReferer(credential),
+          Referer: `${originReferer(credential)}/`,
+          'User-Agent': CLIENT_UA,
+        },
+        signal: signal === undefined
+          ? AbortSignal.timeout(JSON_TIMEOUT_MS)
+          : AbortSignal.any([signal, AbortSignal.timeout(JSON_TIMEOUT_MS)]),
+      })
+      if (!response.ok) return undefined
+      const envelope = await readEnvelope(response)
+      const data = isObject(envelope.data) ? envelope.data : envelope.document
+      const rawModels = Array.isArray(data['models']) ? data['models'] : []
+      const badges = new Map<string, readonly string[]>()
+      for (const model of rawModels) {
+        if (!isObject(model)) continue
+        const id = typeof model['id'] === 'string' ? model['id'] : ''
+        if (id === '') continue
+        const tags = Array.isArray(model['tags'])
+          ? model['tags'].filter((tag): tag is string =>
+            typeof tag === 'string' && tag.toLowerCase().startsWith(BADGE_PREFIX))
+          : []
+        if (tags.length > 0) badges.set(id, tags)
+      }
+      return badges.size === 0 ? undefined : badges
+    } catch {
+      return undefined
+    }
   }
 
   /**
@@ -956,8 +1036,27 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function positive(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
-/** Parse either response shape after its envelope has been checked. */
-export function parseModelCatalog(data: Record<string, unknown>, international = false): readonly WorkBuddyUpstreamModel[] {
+/**
+ * Parse either response shape after its envelope has been checked.
+ *
+ * Membership is the `cli` agent's roster, intersected with the rows that are
+ * usable: the roster is what the client identity this plugin presents is
+ * allowed to chat with, and joining rather than trusting it outright drops
+ * both ids the roster has retired and rows the document lists but cannot
+ * serve (no row, `disabled: true`, or non-positive caps all drop out here —
+ * a published-but-unservable id must never reach the picker).
+ *
+ * @param data - the unwrapped catalog/product document.
+ * @param international - whether it is the international product document, whose
+ * rows carry window objects and promotions.
+ * @param promoBadges - badge tags by model id, read from the console document,
+ * which is the only one that carries them.
+ */
+export function parseModelCatalog(
+  data: Record<string, unknown>,
+  international = false,
+  promoBadges?: ReadonlyMap<string, readonly string[]>,
+): readonly WorkBuddyUpstreamModel[] {
     const rawModels = Array.isArray(data['models']) ? data['models'] : []
     const agents = Array.isArray(data['agents']) ? data['agents'] : []
     let cliIds: readonly string[] | undefined
@@ -998,7 +1097,7 @@ export function parseModelCatalog(data: Record<string, unknown>, international =
         maxTokens: output,
         supportsImages: wrapped['supportsImages'] === true && wrapped['disabledMultimodal'] !== true,
         ...resolveUpstreamReasoning(wrapped),
-        ...resolveUpstreamBilling(wrapped),
+        ...resolveUpstreamBilling(wrapped, promoBadges?.get(id)),
       })
     }
     const models = cliIds
@@ -1145,13 +1244,43 @@ export function prepareInternationalChatBody(source: string): string {
     return prepared
   }
   if (!isObject(body)) return prepared
+  // Region-scoped strip, deliberately *after* the shared `prepareChatBody`:
+  // the CN variant keeps its existing request behaviour — `reasoning_effort`
+  // is passed through verbatim there, including the adapter's own `off`
+  // spelling. See `dropUnsupportedEffort` below for why only this region drops it.
+  dropUnsupportedEffort(body)
   const messages = body['messages']
-  if (!Array.isArray(messages)) return prepared
+  if (!Array.isArray(messages)) return JSON.stringify(body)
   const first = messages[0]
-  if (isObject(first) && first['role'] === 'system') return prepared
+  if (isObject(first) && first['role'] === 'system') return JSON.stringify(body)
   // Unshift, so every caller-supplied message keeps its position and content.
   messages.unshift({ role: 'system', content: INTERNATIONAL_SYSTEM_PROMPT })
   return JSON.stringify(body)
+}
+
+/**
+ * Remove the adapter's own `off` effort spelling from the **international** wire.
+ *
+ * `thinkingLevelMap.off` is pinned to the literal `'off'` for models that
+ * declare `canDisableThinking`, so that the level stays selectable. pi-ai
+ * sends that value for any request carrying no explicit level, and the
+ * international endpoint rejects it on the GPT family with HTTP 400 `11133` /
+ * `extError.param === 'reasoning.effort'` (issue #49). Omission is the only
+ * form measured good on every such model; a literal `'none'` is *not* a safe
+ * substitute — accepted by the GPT-5.6 family and GLM, rejected by
+ * `gpt-6-astra`.
+ *
+ * Consequences, stated honestly: the international picker still offers Off,
+ * but selecting it now means "the field is omitted" — the model's actual
+ * behaviour is decided upstream and is *not* guaranteed to disable thinking
+ * or to match the catalog's `defaultEffort`. Declared spellings
+ * (`low`/`medium`/`high`/`xhigh`/`max`) and an explicit `none` pass through
+ * untouched. The CN variant is deliberately unaffected: its endpoint has
+ * accepted this spelling in every measurement so far, and keeping its wire
+ * unchanged is a scope decision, not a claim about that endpoint's future.
+ */
+function dropUnsupportedEffort(obj: Record<string, unknown>): void {
+  if (obj['reasoning_effort'] === 'off') delete obj['reasoning_effort']
 }
 
 /**

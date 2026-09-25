@@ -12,7 +12,7 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
 import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import type { LlmModelInfo, LlmResolvedModelInfo } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
-import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
+import type { PiAiAdapterOptions, ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
@@ -61,6 +61,52 @@ const INERT_AUTH: { credentials: CredentialStore; authContext: AuthContext } = {
 
 /** No per-token pricing is knowable for a subscription quota; report zero. */
 const NO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const
+
+/**
+ * Translate the request-image contract across the two attachment-service
+ * generations a link-installed plugin can straddle.
+ *
+ * A `link:` install resolves its platform imports from the *repository's*
+ * node_modules (Node follows the symlink's real path), so this adapter always
+ * runs against the pi-ai it was built with — while the attachment service
+ * comes from the host. Those two generations disagree on what
+ * `readImageRequest(ref, policyOrTarget)` receives:
+ *
+ * - dsh-attachment-local ≤0.1.5: a route policy `{ maxPixels, maxBytes }`,
+ *   and `validatePolicy` throws `Image request maxPixels must be a positive
+ *   integer.` when `maxPixels` is missing.
+ * - 0.1.6+: a per-image target `{ width, height, maxBytes }` with no
+ *   `maxPixels` at all, validated by `validateTarget`.
+ *
+ * A 0.1.6-built pi-ai on a 0.1.5 host therefore hands the old store a target
+ * the old store rejects, and every image-bearing request fails before it is
+ * sent. The wrapper below fills the route's own pixel budget into a target
+ * that lacks it: the 0.1.5 store then computes the same dimensions pi-ai's
+ * budget already chose, and a 0.1.6 store ignores the extra key.
+ */
+function withLegacyImageBudget(store: AttachmentStore): AttachmentStore {
+  return new Proxy(store, {
+    get(target, property, receiver) {
+      if (property === 'imageHostPath') {
+        // The access resolver calls through this proxy; keep the concrete
+        // store as `this` for implementations that use private fields.
+        return target.imageHostPath.bind(target)
+      }
+      if (property !== 'readImageRequest') return Reflect.get(target, property, receiver)
+      return (...args: Parameters<AttachmentStore['readImageRequest']>) => {
+        const [ref, policy, signal] = args
+        // The ≤0.1.5 store's own validity rule is "safe integer AND positive";
+        // a present-but-non-positive maxPixels would pass an isSafeInteger-only
+        // check and still be rejected there, so it is replaced too.
+        const present = (policy as { maxPixels?: number } | undefined)?.maxPixels
+        const withPixels = Number.isSafeInteger(present) && (present as number) > 0
+          ? policy
+          : { ...policy, maxPixels: REQUEST_IMAGE_BUDGETS.requestImagePixelBudget } as typeof policy
+        return target.readImageRequest(ref, withPixels, signal)
+      }
+    },
+  })
+}
 
 /**
  * The suffix appended to a model's display name so its billing rate is visible
@@ -119,11 +165,24 @@ export interface WorkBuddyAdapterOptions {
   catalog: WorkBuddyCatalog
   /** Resolve the durable attachment service at request time, when present. */
   resolveAttachments?: () => AttachmentStore | undefined
+  /** Resolve one image's path in the current model-tool execution world. */
+  resolveImageAccess?: NonNullable<PiAiAdapterOptions['resolveImageAccess']>
   /**
    * Look up a local probe observation for a model. Consulted only for rows the
    * upstream left undeclared; absent means declared-set-only behavior.
    */
   observe?: (modelId: string) => WorkBuddyProbeRecord | undefined
+  /**
+   * Model ids the current account has hidden from the picker, resolved per
+   * read so an account switch is honored without rebuilding the adapter.
+   *
+   * Hiding is a *listing* concern only: `buildModels()` keeps serving the full
+   * catalog because pi-ai's `resolveModel`/`prepareCall` resolve from the same
+   * snapshot `listModels` reads — filtering the descriptors there would make a
+   * hidden model unresolvable and break sessions already using it. The filter
+   * therefore lives in this adapter's `listModels` override alone.
+   */
+  hidden?: () => readonly string[]
 }
 
 /** What {@link createWorkBuddyAdapter} hands back. */
@@ -231,7 +290,7 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, observed?: WorkBud
  * `modelErrors` since 0.1.5-alpha.2 (#12).
  */
 export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBuddyAdapter {
-  const { shim, store, catalog, resolveAttachments, observe } = options
+  const { shim, store, catalog, resolveAttachments, resolveImageAccess, observe, hidden } = options
   const providerId = options.providerId ?? WORKBUDDY_PROVIDER
   const displayName = options.displayName ?? 'WorkBuddy'
 
@@ -280,7 +339,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
 
   let profiles = new Map<string, ResolvedPiAiProviderProfile>([[providerId, profile]])
 
-  const adapter = new WorkBuddyPiAiAdapter(catalog, {
+  const adapter = new WorkBuddyPiAiAdapter(catalog, hidden ?? (() => []), {
     profiles: () => profiles,
     auth: INERT_AUTH,
     // Resolve the shim's per-process shared secret as the OpenAI apiKey so
@@ -288,7 +347,18 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     // validates this before forwarding and resolves the real WorkBuddy token
     // itself via the store, so the secret never reaches upstream.
     resolveApiKey: async () => shim.token(),
-    ...resolveAttachments === undefined ? {} : { resolveAttachments },
+    // Every store the adapter hands to pi-ai passes the legacy-budget wrapper:
+    // see withLegacyImageBudget — the mismatch it heals depends on which host
+    // generation owns the attachment service, not on anything observable here.
+    ...resolveAttachments === undefined
+      ? {}
+      : {
+        resolveAttachments: () => {
+          const store = resolveAttachments()
+          return store === undefined ? undefined : withLegacyImageBudget(store)
+        },
+      },
+    ...(resolveImageAccess === undefined ? {} : { resolveImageAccess }),
   })
 
   return {
@@ -318,6 +388,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
 class WorkBuddyPiAiAdapter extends PiAiAdapter {
   constructor(
     private readonly catalog: WorkBuddyCatalog,
+    private readonly hidden: () => readonly string[],
     options: ConstructorParameters<typeof PiAiAdapter>[0],
   ) {
     super(options)
@@ -330,10 +401,17 @@ class WorkBuddyPiAiAdapter extends PiAiAdapter {
 
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const models = await super.listModels(provider)
-    return models.map(model => {
+    // Resolved fresh per call: the picker reads this after every
+    // `llm/adapters-updated`, so an account switch or a toggle takes effect on
+    // the next read without rebuilding anything.
+    const hidden = new Set(this.hidden())
+    return models.flatMap(model => {
+      // Selectability only — `resolveModel` below deliberately does not apply
+      // this filter, so a session already using a hidden model keeps working.
+      if (hidden.has(model.id)) return []
       const info = this.infoFor(model.id)
-      if (info === undefined) return model
-      return { ...model, name: withCatalogDisplay(model.name, info) }
+      if (info === undefined) return [model]
+      return [{ ...model, name: withCatalogDisplay(model.name, info) }]
     })
   }
 
