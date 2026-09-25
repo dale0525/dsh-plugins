@@ -708,6 +708,43 @@
   color: var(--dsw-alias-label-error);
 }
 
+.defaultModelRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.defaultModelRow label {
+  flex: 1;
+  min-width: 0;
+}
+
+.defaultModelRow strong,
+.defaultModelRow small {
+  display: block;
+}
+
+.defaultModelRow strong {
+  color: var(--dsw-alias-label-primary);
+  font-size: 12px;
+}
+
+.defaultModelRow small {
+  margin-top: 3px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.defaultModelRow select {
+  width: min(260px, 48%);
+}
+
 .channelAddRow {
   display: flex;
   gap: 8px;
@@ -799,6 +836,25 @@
   flex-direction: column;
   gap: 6px;
   padding: 12px 0 0;
+}
+
+.checkboxRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.checkboxRow input { margin: 0; }
+
+.fieldHint {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 .editorDivider {
@@ -1020,4 +1076,418 @@
   font-size: 12px;
   line-height: 1.5;
   color: var(--dsw-alias-label-secondary);
+}
+
+
+/* --- grouped settings and compact overview ----------------------------------------- */
+
+.overview {
+  margin: 12px 0 14px;
+  padding: 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.overviewHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.overviewTitle {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.overviewHint {
+  margin: 4px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.healthBadge,
+.sectionSummary {
+  flex: none;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 17px;
+  white-space: nowrap;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.healthBadge[data-state='ready'],
+.sectionSummary[data-tone='ready'] {
+  color: var(--dsw-color-success, var(--dsw-alias-label-secondary));
+}
+
+.healthBadge[data-state='attention'],
+.sectionSummary[data-tone='attention'] {
+  color: var(--dsw-alias-label-error);
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.summaryCard {
+  appearance: none;
+  min-width: 0;
+  min-height: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s;
+}
+
+.summaryCard:hover,
+.summaryCard[data-active] {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.summaryCard[data-tone='ready'] {
+  background: color-mix(in srgb, var(--dsw-color-success, var(--dsw-alias-brand-primary)) 7%, var(--dsw-alias-bg-layer-2));
+}
+
+.summaryCard[data-tone='attention'] {
+  background: color-mix(in srgb, var(--dsw-alias-label-error) 6%, var(--dsw-alias-bg-layer-2));
+}
+
+.summaryLabel {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.summaryValue {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsSection {
+  margin-top: 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-3);
+  overflow: clip;
+}
+
+.settingsSection[data-open] {
+  border-color: var(--dsw-alias-label-dimmed);
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.sectionToggle {
+  appearance: none;
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  padding: 12px 13px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sectionToggle:hover {
+  background: color-mix(in srgb, var(--dsw-alias-bg-module-platform) 45%, transparent);
+}
+
+.sectionToggle:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: -2px;
+}
+
+.sectionToggleText {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sectionToggleTitle {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.sectionToggleHint {
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sectionChevron {
+  flex: none;
+  width: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  text-align: center;
+}
+
+.sectionContent {
+  padding: 0 13px 13px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+/* Keep the commit controls visible while long panels scroll. */
+.footer {
+  position: sticky;
+  z-index: 4;
+  bottom: -8px;
+  margin: 14px -16px 0;
+  padding: 12px 16px 10px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-2) 94%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+/* --- provider picker modal ---------------------------------------------------------- */
+
+.pickerOverlay {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(0 0 0 / 0.42);
+}
+
+.pickerDialog {
+  width: min(540px, calc(100vw - 32px));
+  max-height: min(720px, 84vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 14px;
+  background: var(--dsw-alias-bg-layer-2);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.35);
+  padding: 16px;
+}
+
+.pickerHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.pickerTitle {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.pickerHint {
+  margin: 4px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pickerSearch {
+  flex: none;
+  height: 34px;
+  margin: 12px 0 10px;
+  padding: 0 11px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.pickerSearch:focus-visible {
+  border-color: var(--dsw-alias-brand-primary);
+}
+
+.pickerList {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 2px 4px;
+}
+
+.pickerList .presetRow {
+  flex: none;
+  min-height: 54px;
+}
+
+.pickerEmpty {
+  margin: 16px 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+@media (max-width: 520px) {
+  .overviewHead {
+    flex-direction: column;
+  }
+
+  .sectionToggle {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .sectionToggle .sectionSummary {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .summaryGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+
+/* --- subscription account editor ---------------------------------------------------- */
+
+.subscriptionBox {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 11px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.subscriptionAccount {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.subscriptionAccount > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.subscriptionAccount strong {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.subscriptionAccount small {
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subscriptionDot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.subscriptionDot[data-state='logged-in'] {
+  background: var(--dsw-color-success, #3fb950);
+}
+
+.subscriptionDot[data-state='logged-out'] {
+  background: var(--dsw-alias-label-error);
+}
+
+.subscriptionWarning {
+  margin: 9px 0 0;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--dsw-alias-label-error) 7%, transparent);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+
+.pickerTabs {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 12px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.pickerTabs button {
+  appearance: none;
+  min-height: 30px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pickerTabs button[data-active] {
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+
+
+.presetAction {
+  margin-left: auto;
+  flex: none;
+  color: var(--dsw-alias-brand-primary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+
+.subscriptionManual {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--dsw-alias-border-l2);
 }

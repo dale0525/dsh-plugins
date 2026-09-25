@@ -826,6 +826,7 @@ function newChannelDraft(preset: PresetProviderView | undefined): ChannelDraft {
     preset: preset?.id ?? '',
     name: preset?.name ?? '',
     apiUrl: preset?.apiUrl ?? '',
+      apiUrlFull: false,
     models: (preset?.models ?? []).map(model => ({ ...model })),
   }
 }
