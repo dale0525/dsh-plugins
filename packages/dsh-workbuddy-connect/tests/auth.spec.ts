@@ -336,18 +336,16 @@ describe('WSL default desktop path probing', () => {
     env?: Partial<Record<'APPDATA' | 'LOCALAPPDATA' | 'USERPROFILE', string>>
   }, run: () => Promise<T>): Promise<T> {
     const savedPlatform = process.platform
-    const savedEnv = Object.fromEntries(
-      ['APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'WSL_DISTRO_NAME', 'WSL_INTEROP']
-        .map(name => [name, process.env[name]]),
-    )
+    // XDG_CONFIG_HOME / XDG_DATA_HOME belong here for the same reason asLinux
+    // manages them: the WSL candidate list ends in the Linux XDG fallbacks, and
+    // a runner that exports either one would otherwise leak the runner's home
+    // into the expected paths.
+    const managed = ['APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'WSL_DISTRO_NAME', 'WSL_INTEROP', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']
+    const savedEnv = Object.fromEntries(managed.map(name => [name, process.env[name]]))
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
     fakeOs.home = options.home
     fakeOs.release = '6.6.87.2-microsoft-standard-WSL2'
-    delete process.env['APPDATA']
-    delete process.env['LOCALAPPDATA']
-    delete process.env['USERPROFILE']
-    delete process.env['WSL_DISTRO_NAME']
-    delete process.env['WSL_INTEROP']
+    for (const name of managed) delete process.env[name]
     Object.assign(process.env, options.env)
     try {
       return await run()

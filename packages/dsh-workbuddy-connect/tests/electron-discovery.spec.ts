@@ -55,13 +55,24 @@ function counting<T extends (...args: never[]) => unknown>(fn: T, calls: string[
 let root: string
 const cleanups: (() => Promise<void>)[] = []
 
+/**
+ * Every case here drives the macOS discovery ladder through injected tools, so
+ * none of them needs a real Mac -- but `resolveElectronPath` still refuses
+ * outright on a non-darwin host, which would leave the whole ladder
+ * unobservable on a Linux CI runner. Pin the platform so this suite means the
+ * same thing on the runner as on the maintainer's machine.
+ */
+const hostPlatform = process.platform
+
 beforeEach(async () => {
+  Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true })
   root = await mkdtemp(join(tmpdir(), 'wb-electron-discovery-'))
   cleanups.push(async () => { await rm(root, { recursive: true, force: true }) })
 })
 
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map(clean => clean()))
+  Object.defineProperty(process, 'platform', { value: hostPlatform, configurable: true })
   vi.unstubAllEnvs()
 })
 
