@@ -16,6 +16,16 @@ import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { SETTINGS_API, type ChannelConfig } from '../protocol.ts'
 
+/** One cascading-picker group: a configured channel and its model aliases. */
+export interface ImageModelGroup {
+  /** Stable channel id; '' is the legacy single-channel fallback. */
+  id: string
+  /** Display name shown in the cascading model picker. */
+  name: string
+  /** Model aliases configured on this channel, in display order. */
+  models: string[]
+}
+
 /** The fields this plugin's settings card edits. */
 export interface ImageGenConfig {
   enabled?: boolean
@@ -28,6 +38,8 @@ export interface ImageGenConfig {
   channelSecrets?: Record<string, string>
   /** Channel used when a request does not name one. */
   defaultChannelId?: string
+  /** Model alias selected by default in the GUI. Empty uses the first option. */
+  defaultModel?: string
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string
@@ -274,29 +286,62 @@ export function bindImageGenScope(fetchFn: typeof fetch = fetch): ImageGenScope 
 }
 
 /**
- * Flatten the configured channels into the model options the panel lists
- * (aliases; the default channel's models first) plus the default channel id.
- * Falls back to the legacy flat allow-list while no channels exist (upgrade
- * path). Pure projection — no host calls.
+ * Project the configured channels into cascading model-picker groups. The
+ * flat `models` list remains for history filters and compatibility, while
+ * `groups` preserves which channel owns each alias (aliases may repeat across
+ * channels). Falls back to the legacy flat allow-list while no channels exist.
+ * Pure projection — no host calls.
  */
-export function imageModelOptions(config: ImageGenConfig | undefined): { models: string[]; defaultChannelId?: string } {
+export function imageModelOptions(config: ImageGenConfig | undefined): {
+  models: string[]
+  groups: ImageModelGroup[]
+  defaultChannelId?: string
+  defaultModel?: string
+} {
   const channels = config?.channels ?? []
   if (channels.length === 0) {
     const legacy = Array.isArray(config?.imageModels)
       ? config.imageModels.filter((model): model is string => typeof model === 'string' && model.trim() !== '')
       : []
-    return { models: legacy }
+    const defaultModel = typeof config?.defaultModel === 'string' && legacy.includes(config.defaultModel)
+      ? config.defaultModel
+      : undefined
+    const ordered = defaultModel === undefined ? legacy : [defaultModel, ...legacy.filter(model => model !== defaultModel)]
+    return {
+      models: ordered,
+      groups: ordered.length === 0 ? [] : [{ id: '', name: '', models: ordered }],
+      ...defaultModel === undefined ? {} : { defaultModel },
+    }
   }
+
   const defaultId = config?.defaultChannelId !== undefined && channels.some(channel => channel.id === config.defaultChannelId)
     ? config.defaultChannelId
     : channels[0]!.id
-  const ordered = [defaultId, ...channels.filter(channel => channel.id !== defaultId).map(channel => channel.id)]
-  const models: string[] = []
-  for (const id of ordered) {
-    const channel = channels.find(candidate => candidate.id === id)!
-    for (const model of channel.models) {
-      if (model.alias !== '' && !models.includes(model.alias)) models.push(model.alias)
+  const orderedChannels = [
+    channels.find(channel => channel.id === defaultId)!,
+    ...channels.filter(channel => channel.id !== defaultId),
+  ]
+  const groups: ImageModelGroup[] = orderedChannels.flatMap(channel => {
+    const models = channel.models
+      .map(model => model.alias.trim())
+      .filter((alias, index, all) => alias !== '' && all.indexOf(alias) === index)
+    return models.length === 0 ? [] : [{ id: channel.id, name: channel.name.trim() || channel.id, models }]
+  })
+
+  const aliases: string[] = []
+  for (const group of groups) {
+    for (const alias of group.models) {
+      if (!aliases.includes(alias)) aliases.push(alias)
     }
   }
-  return models.length > 0 ? { models, defaultChannelId: defaultId } : { models: [], defaultChannelId: defaultId }
+  const defaultModel = typeof config?.defaultModel === 'string' && aliases.includes(config.defaultModel)
+    ? config.defaultModel
+    : undefined
+  const models = defaultModel === undefined ? aliases : [defaultModel, ...aliases.filter(model => model !== defaultModel)]
+  return {
+    models,
+    groups,
+    defaultChannelId: defaultId,
+    ...defaultModel === undefined ? {} : { defaultModel },
+  }
 }
