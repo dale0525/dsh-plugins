@@ -44,7 +44,7 @@ docs/spec/     对外契约（写给第三方实现者）
 
 - 容器：`src/client/index.ts`（`plugins.row.config` 槽位注册，key = `<bundle 包名>#config-manager`）
   + `ConfigManagerSection.tsx`。落在 bundle 详情页里**本插件自己那一行**的配置入口，不是 bundle 级配置
-- 同步页：`src/client/sync/SyncSettingsView.tsx`（+ `SyncHistoryView` / `sync-view`）
+- 同步页：`src/client/sync/SyncSettingsView.tsx`（+ `sync-view`）
 - 共享原语：`src/client/common/ui.tsx`（Button/Badge/Banner/Card/Spinner/Field/Checkbox 等）
   + `ErrorBanner.tsx` / `Modal.tsx` / `Icon.tsx` / `ToastViewport.tsx`
 - 状态中枢：`run-store.ts`（模块级单例 + sessionStorage 白名单）
