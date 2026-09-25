@@ -48,7 +48,8 @@
     "docs/videos/agent-chat-edit.gif",
     "docs/videos/agent-chat-edit.mp4",
     "dsh-plugin-sync.ps1",
-    "pnpm-lock.yaml"
+    "pnpm-lock.yaml",
+    "src/client/config-entry.tsx"
   ],
   "added": []
 }
