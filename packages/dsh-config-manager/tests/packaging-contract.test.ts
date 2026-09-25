@@ -100,6 +100,21 @@ test('P-2: files 仍包含 lib、src、cordis.patch.yml', () => {
   );
 });
 
+/* ------------------------------------------------------ 版本三处同步（AGENTS.md） */
+
+test('V-01: package.json.version ≡ src/index.ts 的 PLUGIN_VERSION', () => {
+  // AGENTS.md §版本三处同步：bump 漏改 PLUGIN_VERSION 时，status() 报的 pluginVersion /
+  // lockVersion 与真实发布版本脱节（0.1.72 实际发布时就漏改过，靠人记不可靠）。
+  const src = readFileSync(path.join(repoRoot, 'src', 'index.ts'), 'utf8');
+  const match = /const PLUGIN_VERSION = '([^']+)'/.exec(src);
+  assert.ok(match !== null, 'src/index.ts 必须定义 PLUGIN_VERSION 字面量');
+  assert.equal(
+    match[1],
+    (pkg as PackageJson & { version: string }).version,
+    'package.json.version 与 PLUGIN_VERSION 必须一致（bump 时两处同改）',
+  );
+});
+
 /* ------------------------------------------------- exports["./schema"] 指向 */
 
 test('exports["./schema"] 指向 lib/schema/index.{js,d.ts}（而非纯类型产物 types.js）', () => {
