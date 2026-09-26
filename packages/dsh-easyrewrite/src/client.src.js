@@ -83,7 +83,7 @@ window.__ModuleLoader__.load({
     function recallVisualMode() { return getSetting(SETTING_KEYS.visualMode, "simple"); }
     function showOriginalImages() { return getBool("dsh-easyrewrite:showOriginalImages", true); }
     // 行为开关（设置页控制）
-    function rewriteOnClick() { return getBool("dsh-easyrewrite:rewriteOnClick", true); }
+    function rewriteOnClick() { return getBool("dsh-easyrewrite:rewriteOnClick", false); }
     function editOffShowRecall() { return getBool("dsh-easyrewrite:editOffShowRecall", true); }
     function recallConfirmEnabled() { return getBool("dsh-easyrewrite:recallConfirm", true); }
 
@@ -3849,7 +3849,7 @@ window.__ModuleLoader__.load({
           ),
           React.createElement(
             "div", { style: actionsStyle },
-            actionButton("撤回", "撤回", function (e) {
+            actionButton(L.sectionRecall, L.sectionRecall, function (e) {
               e.stopPropagation();
               // 编辑态直接转撤回：丢弃编辑草稿 → 确认胶囊（首条消息同样走确认，确定后重置对话）
               if (isEditPending) writePending(sessionId, null);
@@ -3879,7 +3879,7 @@ window.__ModuleLoader__.load({
         "div", { style: rowStyle, "data-dsh-easyrewrite": "user", "data-time-hover-root": true },
         renderMessageImagesCompat(msgImages, props),
         React.createElement(
-          "div", { className: "dsh-easyrewrite-bubble", style: bubbleStyle, onClick: onBubbleClick, title: L.clickEdit },
+          "div", { className: "dsh-easyrewrite-bubble", style: bubbleStyle, onClick: onBubbleClick, title: rewriteOnClick() ? L.clickEdit : undefined },
           text || L.emptyMsg
         ),
         confirming
@@ -3946,7 +3946,7 @@ window.__ModuleLoader__.load({
               // 撤回键：rewrite 关闭且二级「关闭时显示撤回键」也关闭 → 隐藏
               (!rewriteOnClick() && !editOffShowRecall())
                 ? null
-                : actionButton("撤回", "撤回", function (e) {
+                : actionButton(L.sectionRecall, L.sectionRecall, function (e) {
                     e.stopPropagation();
                     if (pending && pending.type === "recall") {
                       log("warn", "recall", "已有待处理撤回（单待定约束）");
@@ -3977,7 +3977,7 @@ window.__ModuleLoader__.load({
                     }
                   }, iconImg(ICONS.recall, L.recall), "recall-key"),
               // 编辑键：rewrite 关闭时显示（与撤回键同时）
-              rewriteOnClick() ? null : actionButton("编辑", "编辑", function (e) {
+              rewriteOnClick() ? null : actionButton(L.sectionEdit, L.sectionEdit, function (e) {
                 e.stopPropagation();
                 enterEdit(e.currentTarget ? e.currentTarget.offsetWidth : 0);
               }, iconImg(ICONS.edit, "编辑")),

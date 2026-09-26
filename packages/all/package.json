@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.43",
+  "version": "0.5.44",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -24,7 +24,7 @@
     "@logictan/dsh-browser-agent": "^0.2.0",
     "@logictan/dsh-config-manager": "^0.1.75",
     "@logictan/dsh-desktop-agent": "^0.1.3",
-    "@logictan/dsh-easyrewrite": "^2.6.0",
+    "@logictan/dsh-easyrewrite": "^2.7.0",
     "@logictan/dsh-fakeip-fetch": "^0.1.0",
     "@logictan/dsh-imagegen": "^1.5.13",
     "@logictan/dsh-loop-guard": "^1.1.5",
