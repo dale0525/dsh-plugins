@@ -17,7 +17,7 @@ dsh-plugins/
 │   ├── dsh-agy-link/           # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-easyrewrite/        # 衍生自上游，已去 fork 化 → 不参与同步
-│   ├── dsh-imagegen/           # 有上游 → git subtree fork
+│   ├── dsh-imagegen/           # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-workbuddy-connect/  # 有上游 → git subtree fork
 │   └── <pkg>/upstream.json     # 该 fork 的上游身份（仅 fork 有）
 ├── scripts/
