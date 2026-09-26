@@ -196,6 +196,13 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
       const sessions = ctx.get('sessions') as { get(id: unknown): { header?: { cwd?: string } } | undefined } | undefined
       return sessions?.get(sessionId)?.header?.cwd
     },
+    sessionHeader: (sessionId) => {
+      const sessions = ctx.get('sessions') as {
+        get(id: unknown): { header?: { origin?: string; delegationDepth?: number } } | undefined
+      } | undefined
+      const header = sessions?.get(sessionId)?.header
+      return header === undefined ? undefined : { origin: header.origin, delegationDepth: header.delegationDepth }
+    },
     onRun: (info) => {
       lastRun = info
     },

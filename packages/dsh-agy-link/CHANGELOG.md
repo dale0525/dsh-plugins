@@ -1,5 +1,96 @@
 # Changelog
 
+## 0.6.0 (2026-09-26)
+
+### English
+
+**Changes**
+
+- **The managed HOME no longer carries a global rules file, so a subagent stops inheriting DSH's
+  global AGENTS.md.** Earlier versions materialized DSH's global AGENTS.md into the managed HOME's
+  `GEMINI.md`. Measured against the real CLI, agy auto-discovers `GEMINI.md` from **both**
+  `$HOME/.gemini` and `$HOME/.gemini/config`, and that discovery applies to every run — including a
+  subagent run. The file is now deleted on sync and never regenerated. A file restored by a config
+  snapshot is removed again on the next spawn, which runs `syncAgyEnv` unconditionally.
+
+- **A root run receives DSH's global AGENTS.md as an in-band injection.** agy has no include
+  mechanism that survives a relocated HOME, so the adapted text travels in the root run's
+  `PreInvocation` payload, handed over in `DSH_AGY_RULES`. The guard injects only on the first
+  invocation of a fresh conversation, so a continuation turn does not repeat it. Deleting the file
+  alone would have dropped requirement 2 on the floor: nothing else would reach agy. Both numbers
+  the guard matches are delimiter-anchored and tolerate a spaced value: an unanchored
+  `"initialNumSteps":1` also matches `10` and `199`, which would re-inject the rules into a
+  continuation.
+
+- **A subagent run carries no agents.md at all and may no longer delegate.** DSH's delegation-depth
+  cap cannot reach agy's own `invoke_subagent` — agy resolves its subagents internally — which is
+  why a depth of 1 did not hold before. The managed HOME now installs a `PreToolUse` hook that
+  denies `invoke_subagent` / `define_subagent` / `manage_subagents` unless the spawn env carries
+  `DSH_AGY_ALLOW_SUBAGENTS=1`, which only a root run exports. A session whose header cannot be
+  resolved is treated as root, keeping the previous behaviour for callers that do not report one.
+
+- **DSH's in-band instruction message no longer reaches agy on any run.** DSH hands its global
+  AGENTS.md to the model as a host-injected user message carrying the **raw file** (measured at 6751
+  bytes on this machine). That raw copy is now filtered out of the prompt and digest for every run:
+  for a subagent it would be the agents.md the previous point forbids, and for a root run it would
+  arrive next to the adapted copy and re-introduce exactly the DSH-only surfaces `adaptAgentsMd`
+  strips — agy would read instructions for tools it does not have. A root run therefore sees the
+  adapted text only.
+
+  The gate answers with an explicit `{"decision":"allow"}` on the permitted branch. An empty object
+  is **not** a grant: agy reads it as a denial, so a root run would lose its own delegation.
+
+**Tests**
+
+- `syncAgyEnv` no longer asserts a rules file exists; it asserts neither `GEMINI.md` path does, that
+  the hooks match `agyHooks()`, and that the existing mtime-stability check still holds.
+- New cases: both legacy rules files are deleted on sync; `agyHooks` carries both the allow and
+  deny branches and its injection guard stays delimiter-anchored; `rootRulesPayload` adapts DSH's
+  AGENTS.md and is empty without one.
+- New adapter cases: a root run exports the flag and the payload while its prompt carries the
+  adapted text but not the raw in-band copy; a subagent run exports neither and its prompt contains
+  no host-injected instruction text.
+
+### 中文 (Chinese)
+
+**变更**
+
+- **受管 HOME 不再携带全局规范文件，子代理不再继承 DSH 的全局 AGENTS.md。** 旧版本把 DSH 的
+  全局 AGENTS.md 落成受管 HOME 里的 `GEMINI.md`。对真实 CLI 实测：agy 会**同时**从
+  `$HOME/.gemini` 与 `$HOME/.gemini/config` 自动发现 `GEMINI.md`，且该发现对**每一次**运行
+  生效——包括子代理运行。现在该文件在同步时被删除且不再生成；被配置快照还原回来的副本会在
+  下一次启动时再次删除（每次启动都会无条件执行 `syncAgyEnv`）。
+
+- **root 运行以带内注入的方式收到 DSH 的全局 AGENTS.md。** agy 没有能在 HOME 被迁移后依然生效的
+  include 机制，因此改写后的文本通过 root 运行的 `PreInvocation` 载荷、经 `DSH_AGY_RULES`
+  传入。守卫使其只在全新会话的首次调用注入，续聊轮次不会重复注入。只删文件会把需求 2 一并丢掉：
+  那样就没有任何东西能到达 agy。守卫匹配的两个数字都做了分隔符锚定并容忍值前空格：未锚定的
+  `"initialNumSteps":1` 也会命中 `10` 与 `199`，从而把规范重复注入到续聊轮次。
+
+- **子代理运行完全不携带 agents.md，且不能再自行分配子代理。** DSH 的子代理深度上限够不到 agy
+  自己的 `invoke_subagent`——agy 在自己的进程内解析子代理——这正是此前深度 1 不生效的原因。
+  现在受管 HOME 会安装一个 `PreToolUse` 钩子，除非启动环境带有 `DSH_AGY_ALLOW_SUBAGENTS=1`
+  （只有 root 运行会导出），否则拒绝 `invoke_subagent` / `define_subagent` /
+  `manage_subagents`。会话头无法解析时按 root 处理，使不上报会话头的调用方保持原有行为。
+
+- **DSH 的带内规范消息不再抵达 agy（任何运行）。** DSH 把全局 AGENTS.md 以宿主注入的 user
+  消息交给模型，内容是**原始文件**（本机实测 6751 字节）。现在这条原始副本在每次运行时都会从
+  prompt 与 digest 中过滤掉：对子代理而言，它就是上一条所禁止的 agents.md；对 root 而言，它会
+  与改写后的副本同时抵达，把 `adaptAgentsMd` 刚剥掉的 DSH 专属条目重新带回来——agy 会因此读到
+  它并不具备的工具的说明。因此 root 运行只会看到改写后的文本。
+
+  放行分支必须显式回答 `{"decision":"allow"}`：空对象**不是**放行——agy 会将其读作拒绝，
+  root 运行会因此失去自己的委派能力。
+
+**测试**
+
+- `syncAgyEnv` 不再断言规范文件存在，改为断言两条 `GEMINI.md` 路径都不存在、钩子等于
+  `agyHooks()`，并保留原有的 mtime 稳定性检查。
+- 新增用例：两处旧规范文件在同步时都被删除；`agyHooks` 同时携带放行与拒绝分支，且其注入守卫
+  保持分隔符锚定；`rootRulesPayload` 会改写 DSH 的 AGENTS.md，且在缺失该文件时返回空。
+- 新增 adapter 用例：root 运行导出标志与载荷，且其 prompt 只含改写后的文本、不含带内的原始副本；
+  子代理运行两者都不导出，其 prompt 不含 DSH 宿主注入的规范文本。
+
 ## 0.5.9 (2026-09-24)
 
 ### English

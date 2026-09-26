@@ -2,8 +2,8 @@ import { strict as assert } from 'node:assert'
 import { test } from 'node:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
-import { GENERATED_HEADER, adaptAgentsMd, agyHomeFor, seedAgyHome, syncAgyEnv } from '../src/host/agy-env.ts'
+import { dirname, join, sep } from 'node:path'
+import { GENERATED_HEADER, adaptAgentsMd, agyHooks, agyHomeFor, rootRulesPayload, seedAgyHome, syncAgyEnv } from '../src/host/agy-env.ts'
 import { defaultPoolDir } from '../src/host/pool.ts'
 import type { ManagedAccount } from '../src/common/pool-types.ts'
 import type { McpBridge } from '../src/host/mcp-bridge.ts'
@@ -137,7 +137,7 @@ test('seedAgyHome copies the system credential once and never overwrites it', ()
   }
 })
 
-test('syncAgyEnv writes rules, skills and the MCP config, then leaves them untouched', () => {
+test('syncAgyEnv writes hooks, skills and the MCP config, then leaves them untouched', () => {
   const root = tempDir('agy-env-')
   const home = join(root, 'agy-home')
   try {
@@ -152,13 +152,14 @@ test('syncAgyEnv writes rules, skills and the MCP config, then leaves them untou
       const opts = { bridge, sourceHome: join(root, 'no-such-home') }
       assert.equal(syncAgyEnv(acc, opts), home)
 
-      const rulesFile = join(home, '.gemini', 'GEMINI.md')
       const skillFile = join(home, '.gemini', 'config', 'skills', 'alpha', 'SKILL.md')
       const mcpFile = join(home, '.gemini', 'config', 'mcp_config.json')
-      const rules = readFileSync(rulesFile, 'utf8')
-      assert.ok(rules.startsWith(GENERATED_HEADER))
-      assert.ok(rules.includes('keep this.'))
-      assert.ok(!rules.includes('run_code'))
+      const hooksFile = join(home, '.gemini', 'config', 'hooks.json')
+      // No global rules file may exist anywhere agy auto-discovers one: either
+      // path would apply to subagent runs too.
+      assert.equal(existsSync(join(home, '.gemini', 'GEMINI.md')), false)
+      assert.equal(existsSync(join(home, '.gemini', 'config', 'GEMINI.md')), false)
+      assert.deepEqual(JSON.parse(readFileSync(hooksFile, 'utf8')), agyHooks())
       assert.equal(readFileSync(skillFile, 'utf8'), '# alpha' + NL)
       assert.equal(existsSync(join(home, '.gemini', 'config', 'skills', 'not-a-skill')), false)
       const mcp = JSON.parse(readFileSync(mcpFile, 'utf8')) as {
@@ -173,10 +174,84 @@ test('syncAgyEnv writes rules, skills and the MCP config, then leaves them untou
       }
       assert.deepEqual(settings.permissions?.allow, ['mcp(dsh-tools)'])
 
-      const stamps = [rulesFile, skillFile, mcpFile, settingsFile].map((f) => statSync(f).mtimeMs)
+      const stamps = [hooksFile, skillFile, mcpFile, settingsFile].map((f) => statSync(f).mtimeMs)
       syncAgyEnv(acc, opts)
-      assert.deepEqual([rulesFile, skillFile, mcpFile, settingsFile].map((f) => statSync(f).mtimeMs), stamps)
-      assert.equal(readFileSync(rulesFile, 'utf8'), rules)
+      assert.deepEqual([hooksFile, skillFile, mcpFile, settingsFile].map((f) => statSync(f).mtimeMs), stamps)
+      assert.deepEqual(JSON.parse(readFileSync(hooksFile, 'utf8')), agyHooks())
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('syncAgyEnv deletes the global rules file older plugin versions generated', () => {
+  const root = tempDir('agy-env-legacy-rules-')
+  const home = join(root, 'agy-home')
+  try {
+    withDshDirs(root, (dsh) => {
+      mkdirSync(dsh, { recursive: true })
+      writeFileSync(join(dsh, 'AGENTS.md'), '# rules' + NL)
+      // Both discovery paths, since a snapshot restored from another device can
+      // land on either one.
+      const legacy = join(home, '.gemini', 'GEMINI.md')
+      const configRules = join(home, '.gemini', 'config', 'GEMINI.md')
+      for (const file of [legacy, configRules]) {
+        mkdirSync(dirname(file), { recursive: true })
+        writeFileSync(file, GENERATED_HEADER + NL + NL + '1. stale rule.' + NL)
+      }
+
+      syncAgyEnv(account({ dir: home }), { sourceHome: join(root, 'no-such-home') })
+
+      // Both must be gone from disk so they also disappear from any
+      // config-manager snapshot taken afterwards.
+      assert.equal(existsSync(legacy), false)
+      assert.equal(existsSync(configRules), false)
+    })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('agyHooks denies agy-internal delegation unless the run is allowed to delegate', () => {
+  const hooks = agyHooks() as {
+    'dsh-agy-link': { PreToolUse: { matcher: string; hooks: { command: string }[] }[]; PreInvocation: { command: string }[] }
+  }
+  const gate = hooks['dsh-agy-link'].PreToolUse[0]!
+  assert.match(gate.matcher, /invoke_subagent/)
+  assert.match(gate.matcher, /define_subagent/)
+  const command = gate.hooks[0]!.command
+  // The allow branch must answer with an explicit grant: an empty object is
+  // not an allow decision, and a root run would lose its own delegation.
+  assert.ok(command.includes('{"decision":"allow"}'))
+  assert.ok(command.includes('"decision":"deny"'))
+  assert.ok(command.includes('DSH_AGY_ALLOW_SUBAGENTS'))
+})
+
+test('the PreInvocation guard only injects on a fresh conversation', () => {
+  const hooks = agyHooks() as { 'dsh-agy-link': { PreInvocation: { command: string }[] } }
+  const inject = hooks['dsh-agy-link'].PreInvocation[0]!.command
+  // Both numbers must be delimiter-anchored. An unanchored "initialNumSteps":1
+  // also matches 10 and 199, which would re-inject the rules into a
+  // continuation turn — the exact case this guard exists to prevent.
+  assert.ok(inject.includes(String.raw`"initialNumSteps" *: *1([,}])`), inject)
+  assert.ok(inject.includes(String.raw`"invocationNum" *: *0([,}])`), inject)
+  // The value separator must stay optional: agy's protojson is compact today,
+  // but a pretty-printed payload must not silently skip the injection.
+  assert.ok(inject.includes('[ -n "$DSH_AGY_RULES" ]'))
+})
+
+test('rootRulesPayload adapts the DSH global AGENTS.md and is empty without one', () => {
+  const root = tempDir('agy-env-root-rules-')
+  try {
+    withDshDirs(root, (dsh) => {
+      assert.equal(rootRulesPayload(), '')
+      mkdirSync(dsh, { recursive: true })
+      writeFileSync(join(dsh, 'AGENTS.md'), '# rules' + NL + NL + '1. keep this.' + NL + '2. use ' + BT + 'run_code' + BT + '.' + NL)
+      const payload = JSON.parse(rootRulesPayload()) as { injectSteps: { ephemeralMessage: string }[] }
+      const text = payload.injectSteps[0]!.ephemeralMessage
+      assert.ok(text.startsWith(GENERATED_HEADER))
+      assert.ok(text.includes('keep this.'))
+      assert.ok(!text.includes('run_code'))
     })
   } finally {
     rmSync(root, { recursive: true, force: true })

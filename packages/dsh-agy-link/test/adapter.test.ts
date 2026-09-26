@@ -4,7 +4,7 @@
 // argv assembly.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { GenerateOptions, Message, StreamChunk } from '@deepseek-ai/dsh-llm'
@@ -17,6 +17,7 @@ import { defineAgyMirrorTool, parseMirrorInvocation } from '../src/host/mirror-t
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import { defaultConfig, Err, type PluginConfig } from '../src/common/types.ts'
 
+const NL = '\n'
 const fakeBin = join(import.meta.dirname, 'fake-agy.mjs')
 const workDir = mkdtempSync(join(tmpdir(), 'agy-adapter-'))
 process.env.DSH_AGY_CONVERSATIONS_DIR = join(workDir, 'convs')
@@ -964,6 +965,113 @@ test('a system-HOME account is spawned with the managed HOME before the pool per
     restoreEnv('DSH_HOME', saved.DSH_HOME)
     restoreEnv('DSH_STATE_DIR', saved.DSH_STATE_DIR)
     restoreEnv('FAKE_AGY_HOME_FILE', saved.FAKE_AGY_HOME_FILE)
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+})
+
+// The rules payload and the delegation flag are decided per run from the DSH
+// session header: a root conversation gets both, a subagent gets neither.
+test('a root run carries the DSH global rules and may delegate', async () => {
+  const sandbox = mkdtempSync(join(tmpdir(), 'agy-root-rules-'))
+  const envFile = join(sandbox, 'env.json')
+  const argsFile = join(sandbox, 'args.json')
+  const saved = { DSH_HOME: process.env.DSH_HOME, DSH_STATE_DIR: process.env.DSH_STATE_DIR, FAKE_AGY_ENV_FILE: process.env.FAKE_AGY_ENV_FILE, FAKE_AGY_ARGS_FILE: process.env.FAKE_AGY_ARGS_FILE }
+  const restoreEnv = (key: string, value: string | undefined): void => {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  process.env.DSH_HOME = join(sandbox, 'dsh')
+  process.env.DSH_STATE_DIR = join(sandbox, 'state')
+  process.env.FAKE_AGY_ENV_FILE = envFile
+  process.env.FAKE_AGY_ARGS_FILE = argsFile
+  mkdirSync(process.env.DSH_HOME, { recursive: true })
+  writeFileSync(join(process.env.DSH_HOME, 'AGENTS.md'), '# rules' + NL + NL + '1. keep this.' + NL)
+  try {
+    const { adapter } = makeAdapter({}, { sessionHeader: () => ({ origin: undefined, delegationDepth: 0 }) })
+    process.env.FAKE_AGY_MODE = 'ok'
+    // DSH delivers its global AGENTS.md in-band as well; the raw copy must not
+    // reach the prompt, because agy would then read the unadapted text too.
+    const instr = {
+      role: 'user',
+      content: [{ type: 'text', text: 'INSTRUCTION-RAW-MARKER' }],
+      source: { kind: 'agent-instructions', form: 'instructions', changes: [] },
+    } as unknown as Message
+    await collect(adapter.stream(opts([instr, msg('user', 'hi')], { sessionId: 'sess-root' as never })))
+    const seen = JSON.parse(readFileSync(envFile, 'utf8')) as { allowSubagents: string | null; rules: string | null }
+    assert.equal(seen.allowSubagents, '1')
+    const payload = JSON.parse(seen.rules ?? '{}') as { injectSteps: { ephemeralMessage: string }[] }
+    assert.ok(payload.injectSteps[0]!.ephemeralMessage.includes('keep this.'))
+    const argv = JSON.parse(readFileSync(argsFile, 'utf8')) as string[]
+    const prompt = argv[argv.indexOf('-p') + 1] ?? ''
+    assert.ok(prompt.includes('hi'), prompt)
+    assert.ok(!prompt.includes('INSTRUCTION-RAW-MARKER'), prompt)
+  } finally {
+    restoreEnv('DSH_HOME', saved.DSH_HOME)
+    restoreEnv('DSH_STATE_DIR', saved.DSH_STATE_DIR)
+    restoreEnv('FAKE_AGY_ENV_FILE', saved.FAKE_AGY_ENV_FILE)
+    restoreEnv('FAKE_AGY_ARGS_FILE', saved.FAKE_AGY_ARGS_FILE)
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+})
+
+test('a subagent run carries no rules and may not delegate', async () => {
+  const sandbox = mkdtempSync(join(tmpdir(), 'agy-sub-rules-'))
+  const envFile = join(sandbox, 'env.json')
+  const saved = { DSH_HOME: process.env.DSH_HOME, DSH_STATE_DIR: process.env.DSH_STATE_DIR, FAKE_AGY_ENV_FILE: process.env.FAKE_AGY_ENV_FILE }
+  const restoreEnv = (key: string, value: string | undefined): void => {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  process.env.DSH_HOME = join(sandbox, 'dsh')
+  process.env.DSH_STATE_DIR = join(sandbox, 'state')
+  process.env.FAKE_AGY_ENV_FILE = envFile
+  mkdirSync(process.env.DSH_HOME, { recursive: true })
+  writeFileSync(join(process.env.DSH_HOME, 'AGENTS.md'), '# rules' + NL + NL + '1. keep this.' + NL)
+  try {
+    const { adapter } = makeAdapter({}, { sessionHeader: () => ({ origin: 'subagent', delegationDepth: 1 }) })
+    process.env.FAKE_AGY_MODE = 'ok'
+    await collect(adapter.stream(opts([msg('user', 'hi')], { sessionId: 'sess-sub' as never })))
+    const seen = JSON.parse(readFileSync(envFile, 'utf8')) as { allowSubagents: string | null; rules: string | null }
+    // Absent entirely: the hook treats a missing flag as "no delegation", and a
+    // missing payload as "inject nothing".
+    assert.equal(seen.allowSubagents, null)
+    assert.equal(seen.rules, null)
+  } finally {
+    restoreEnv('DSH_HOME', saved.DSH_HOME)
+    restoreEnv('DSH_STATE_DIR', saved.DSH_STATE_DIR)
+    restoreEnv('FAKE_AGY_ENV_FILE', saved.FAKE_AGY_ENV_FILE)
+    rmSync(sandbox, { recursive: true, force: true })
+  }
+})
+
+test('a subagent prompt carries none of DSH host-injected instructions', async () => {
+  const sandbox = mkdtempSync(join(tmpdir(), 'agy-sub-digest-'))
+  const argsFile = join(sandbox, 'args.json')
+  const saved = { DSH_HOME: process.env.DSH_HOME, DSH_STATE_DIR: process.env.DSH_STATE_DIR, FAKE_AGY_ARGS_FILE: process.env.FAKE_AGY_ARGS_FILE }
+  const restoreEnv = (key: string, value: string | undefined): void => {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  process.env.DSH_HOME = join(sandbox, 'dsh')
+  process.env.DSH_STATE_DIR = join(sandbox, 'state')
+  process.env.FAKE_AGY_ARGS_FILE = argsFile
+  try {
+    const instr = {
+      role: 'user',
+      content: [{ type: 'text', text: 'INSTRUCTION-LEAK-MARKER' }],
+      source: { kind: 'agent-instructions', form: 'instructions', changes: [] },
+    } as unknown as Message
+    const { adapter } = makeAdapter({}, { sessionHeader: () => ({ origin: 'subagent', delegationDepth: 1 }) })
+    process.env.FAKE_AGY_MODE = 'ok'
+    await collect(adapter.stream(opts([instr, msg('user', 'do the work')], { sessionId: 'sess-sub-digest' as never })))
+    const argv = JSON.parse(readFileSync(argsFile, 'utf8')) as string[]
+    const prompt = argv[argv.indexOf('-p') + 1] ?? ''
+    assert.ok(prompt.includes('do the work'), prompt)
+    assert.ok(!prompt.includes('INSTRUCTION-LEAK-MARKER'), prompt)
+  } finally {
+    restoreEnv('DSH_HOME', saved.DSH_HOME)
+    restoreEnv('DSH_STATE_DIR', saved.DSH_STATE_DIR)
+    restoreEnv('FAKE_AGY_ARGS_FILE', saved.FAKE_AGY_ARGS_FILE)
     rmSync(sandbox, { recursive: true, force: true })
   }
 })

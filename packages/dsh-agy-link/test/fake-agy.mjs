@@ -28,6 +28,16 @@ if (process.env.FAKE_AGY_HOME_FILE) {
 if (process.env.FAKE_AGY_SESSION_FILE) {
   try { writeFileSync(process.env.FAKE_AGY_SESSION_FILE, process.env.DSH_AGY_SESSION ?? '') } catch {}
 }
+// The rules/subagent gate rides the spawn env, so record which of them this
+// run actually received (absent means the key was never exported).
+if (process.env.FAKE_AGY_ENV_FILE) {
+  try {
+    writeFileSync(process.env.FAKE_AGY_ENV_FILE, JSON.stringify({
+      allowSubagents: process.env.DSH_AGY_ALLOW_SUBAGENTS ?? null,
+      rules: process.env.DSH_AGY_RULES ?? null,
+    }))
+  } catch {}
+}
 // Capture stdin for long-prompt transport tests (issue #14/#11).
 if (process.env.FAKE_AGY_STDIN_FILE) {
   let buf = ''

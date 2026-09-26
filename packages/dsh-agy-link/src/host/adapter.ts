@@ -21,10 +21,21 @@ import { stateDir } from '../common/config.ts'
 import type { SessionStore } from './sessions.ts'
 import { readFullToolArgs, readStepThoughts, clearAgyDbCache } from './agy-db.ts'
 import { getGitHeadContent } from './mirror-tool.ts'
-import { syncAgyEnv } from './agy-env.ts'
+import { rootRulesPayload, syncAgyEnv } from './agy-env.ts'
 import type { McpBridge } from './mcp-bridge.ts'
 
 type ForeignSource = { source?: { kind?: string; provider?: string } }
+
+/** The slice of a DSH session header that decides root vs subagent. */
+export interface SessionHeaderLike {
+  origin?: string
+  delegationDepth?: number
+}
+
+/** A subagent conversation: DSH marks it, and depth is 0 only for a root. */
+export function isSubagentSession(header: SessionHeaderLike | undefined): boolean {
+  return header?.origin === 'subagent' || (header?.delegationDepth ?? 0) > 0
+}
 
 function textOf(m: Message): string {
   const parts: string[] = []
@@ -32,6 +43,12 @@ function textOf(m: Message): string {
     if (b.type === 'text') parts.push(b.text)
   }
   return parts.filter((s) => s !== '').join('\n')
+}
+
+/** DSH's own host-injected instruction message (global and/or workspace AGENTS.md). */
+function isAgentInstructions(m: Message): boolean {
+  const src = (m as unknown as ForeignSource).source
+  return src?.kind === 'agent-instructions'
 }
 
 function isForeignAssistant(m: Message): boolean {
@@ -78,6 +95,12 @@ export interface AgyAdapterDeps {
    * Explicit config `workspaceRoot` still wins over this value.
    */
   sessionCwd?: (sessionId: string) => string | undefined
+  /**
+   * Resolve the DSH session header, used to tell a root conversation from a
+   * subagent one. A subagent run gets no DSH rules and may not delegate
+   * further; an unresolvable header is treated as root.
+   */
+  sessionHeader?: (sessionId: string) => SessionHeaderLike | undefined
   /** Last-run telemetry surfaced by /agy status. Process completion and tool failures are distinct. */
   onRun?: (info: { processOk: boolean; processCode: string; toolErrors: readonly string[]; durationMs: number; model: string }) => void
   /** Reads image bytes from DSH attachment storage (multimodal staging). */
@@ -399,7 +422,20 @@ export class AgyAdapter extends LlmAdapter {
     }
 
     // ---- prompt assembly (ADR-7) ----
-    const messages = options.messages
+    const sessionHeader = sessionKey !== '' ? this.deps.sessionHeader?.(sessionKey) : undefined
+    const subagent = isSubagentSession(sessionHeader)
+    // Built once per spawn; empty when DSH has no global AGENTS.md. Auxiliary
+    // calls (compaction, session title) share the root session's id but are not
+    // conversation turns, and a rules payload there would be charged to a title
+    // and folded into a summary.
+    const rulesPayload = subagent || isAux ? '' : rootRulesPayload()
+    // DSH hands its global AGENTS.md in-band as a host-injected instruction
+    // message. It is dropped for every run: a subagent must carry no agents.md
+    // at all, and a root run gets the adapted text instead (see rulesPayload).
+    // Leaving it in would deliver the raw file, whose DSH-only surfaces agy
+    // cannot act on, alongside the adapted copy. Filtering only the digest would
+    // still leak it: on first contact the trailing user run IS that message.
+    const messages = options.messages.filter((m) => !isAgentInstructions(m))
     let lastAssistantIdx = -1
     for (let i = messages.length - 1; i >= 0; i--) {
       const mm = messages[i]
@@ -647,6 +683,11 @@ export class AgyAdapter extends LlmAdapter {
       // — without rewriting the per-account mcp_config, which concurrent runs
       // of the same account share.
       ...(sessionKey !== '' ? { DSH_AGY_SESSION: sessionKey } : {}),
+      // Root-only rules + delegation. agy resolves its own subagents, so DSH's
+      // depth cap cannot reach them: the managed HOME's PreToolUse hook reads
+      // this flag, and only a root run may delegate. A subagent gets neither the
+      // flag nor a rules payload, so it carries no agents.md at all.
+      ...(subagent ? {} : { DSH_AGY_ALLOW_SUBAGENTS: '1', ...(rulesPayload !== '' ? { DSH_AGY_RULES: rulesPayload } : {}) }),
       ...(account?.proxyUrl
         ? {
             ALL_PROXY: account.proxyUrl,
