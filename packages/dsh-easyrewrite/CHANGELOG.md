@@ -19,6 +19,12 @@
     - 翻页器版本切换 `goToVersion` 全面接入 `safeOpenSession` 多通道安全降级网，并在 0.1.7 下通过 `retainedBy.mainView` 精准识别激活会话，杜绝历史版本切换时抛错或静默归档超时。
   - **版本兼容上限标称推高**：
     - 将插件内部已验证上限常量 `MAX_TESTED_DSH_VERSION` 同步推高至 `0.1.7-rc.2`，消除在 0.1.5~0.1.7 区间内设置卡片误报“较新，适配评估中”的提示。
+  - **修复 `conversation` / `uiConversation` 服务引用永不赋值**：
+    - 两处弱引用此前只声明不赋值，导致图片附件重建链路（`createDraftImages` / `resolveImage` / `imageUrl`）恒走 `null` 分支；现已恢复在 `apply` 中注入。
+  - **版本恢复后的会话切换统一走 `safeOpenSession`**：
+    - 该处原先直调 `props.openSession`（0.1.7 下即已移除的 `ctx.sessions.open`），绕过全部降级通道；现改走多通道安全降级网。
+  - **生命周期日志时点修正**：
+    - `client half active` 原先在全部 `slots.register` 之前输出，槽位渲染崩溃时它照样打印，易被误读为「UI 正常」；现移至注册完成后并改名为 `client half registered`，只证明注册跑完。
 
 ### 致谢
 - ❤️ 特别感谢 **@StoneFancyX** 提交的高质量 PR #12 以及详尽严密的 0.1.7 接口核查文档，为本次 0.1.7 的平滑适配奠定了最坚实的基础！

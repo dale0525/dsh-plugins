@@ -16,7 +16,7 @@ dsh-plugins/
 │   ├── dsh-fakeip-fetch/       # 自制（无上游）→ 不 fork
 │   ├── dsh-agy-link/           # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
-│   ├── dsh-easyrewrite/        # 有上游 → git subtree fork
+│   ├── dsh-easyrewrite/        # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-imagegen/           # 有上游 → git subtree fork
 │   ├── dsh-workbuddy-connect/  # 有上游 → git subtree fork
 │   └── <pkg>/upstream.json     # 该 fork 的上游身份（仅 fork 有）
@@ -45,7 +45,8 @@ dsh-plugins/
 
 判断有无上游：该插件是否发布自、或改造自一个**独立的外部仓库**。有则走 fork，没有则走自制。
 
-**已去 fork 化的包是第三种状态**：衍生自上游、但主体已重写且同步从未跑过（继续 fork 只会让每次人工重拷丢失改造），
+**已去 fork 化的包是第三种状态**：衍生自上游、但主体已重写，且同步已无法安全承载我方改造（同步从未跑过；
+或同步会静默丢弃上游改动），继续 fork 只会让每次人工重拷继续丢失改造，
 经裁定后按自制形态维护 —— 不建 `upstream.json`、不参与同步，**保留** LICENSE 与来源记录、不重写历史。
 
 **fork 的判据**（自制插件不适用；fork 场景下空输出即未收养，**不要继续下一步**）：

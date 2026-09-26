@@ -11,6 +11,31 @@ window.__ModuleLoader__.load({
     var React = require("react");
     var Primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 
+    /**
+     * 取第一个可用的图标导出。
+     *
+     * dsh 0.1.7 重排了图标导出名：名字里的数字从**尺寸**改成了**字重**
+     * （IconCheckOutline16 → IconCheckOutlineRegular；尺寸仍由 size prop 控制，
+     * 各字形的默认绘制尺寸没变）。旧名在新版解析为 undefined，而
+     * React.createElement(undefined) 会抛 #130 —— 崩的是整个
+     * conversation.chat.node 槽条目，不是"少一个图标"：撤回按钮会连同气泡一起消失。
+     *
+     * 所以两种写法都取：先旧名，保住 0.1.5 及以下；再新名，让 0.1.7 起恢复。
+     * 都取不到时退回空组件而不是 undefined —— 图标缺失只该少一个 glyph，
+     * 不该把整个气泡拖崩。
+     */
+    function pickIcon() {
+      for (var i = 0; i < arguments.length; i++) {
+        if (arguments[i]) return arguments[i];
+      }
+      return function EmptyIcon() { return null; };
+    }
+
+    var IconCheckOutline = pickIcon(Primitives.IconCheckOutline16, Primitives.IconCheckOutlineRegular);
+    var IconCopyOutline = pickIcon(Primitives.IconCopyOutline16, Primitives.IconCopyOutlineRegular);
+    var IconChevronLeftOutline = pickIcon(Primitives.IconChevronLeftOutline14, Primitives.IconChevronLeftOutlineRegular);
+    var IconChevronRightOutline = pickIcon(Primitives.IconChevronRightOutline14, Primitives.IconChevronRightOutlineRegular);
+
     var NS = "dsh-easyrewrite";
 
     /** 统一日志：默认静默（仅上报 host 落盘）；调试模式（localStorage dsh-easyrewrite:debug=1）时打印控制台。 */
@@ -422,7 +447,7 @@ window.__ModuleLoader__.load({
 
     // ---------- dsh 宿主版本比较（v2.4.0） ----------
     var MIN_DSH_VERSION = "0.1.2-rc.1";
-    var MAX_TESTED_DSH_VERSION = "0.1.2-rc.1";
+    var MAX_TESTED_DSH_VERSION = "0.1.7-rc.2";
     function dshVerRank(v) {
       var m = String(v || "").trim().match(/^(\d+)\.(\d+)\.(\d+)(?:-(alpha|rc)\.(\d+))?$/);
       if (!m) return null;
@@ -560,22 +585,31 @@ window.__ModuleLoader__.load({
 
     /** 安全打开会话：多重降级通道，确保可靠切换会话 */
     function safeOpenSession(targetId, props) {
+      if (props && typeof props.openSession === "function") {
+        try {
+          var r1 = props.openSession(targetId);
+          if (r1 !== false) return true;
+        } catch (e1) {
+          log("warn", "session", "props.openSession 失败，尝试降级通道", { targetId: targetId, err: String(e1 && e1.message ? e1.message : e1) });
+        }
+      }
       try {
-        if (props && typeof props.openSession === "function") {
-          props.openSession(targetId);
-          return true;
-        }
-        if (props && props.ctxSessions && typeof props.ctxSessions.open === "function") {
-          props.ctxSessions.open(targetId);
-          return true;
-        }
         if (ctxUiWorkspaceRef && typeof ctxUiWorkspaceRef.openSession === "function") {
           ctxUiWorkspaceRef.openSession(targetId);
           return true;
         }
-      } catch (e) {
-        log("error", "session", "切换会话异常", { targetId: targetId, err: String(e && e.message ? e.message : e) });
+      } catch (e2) {
+        log("warn", "session", "ctxUiWorkspaceRef.openSession 失败", { targetId: targetId, err: String(e2 && e2.message ? e2.message : e2) });
       }
+      try {
+        if (props && props.ctxSessions && typeof props.ctxSessions.open === "function") {
+          props.ctxSessions.open(targetId);
+          return true;
+        }
+      } catch (e3) {
+        log("warn", "session", "ctxSessions.open 失败", { targetId: targetId, err: String(e3 && e3.message ? e3.message : e3) });
+      }
+      log("error", "session", "所有切换会话通道均不可用", { targetId: targetId });
       return false;
     }
 
@@ -1506,7 +1540,6 @@ window.__ModuleLoader__.load({
       zh: {
         title: "EasyRewrite",
         subtitle: "简单易用的撤回重编辑",
-        cardSummary: "撤回、重编辑与版本历史",
         expand: "展开",
         collapse: "收起",
         rewrite: "气泡框编辑（点击气泡原位修改）",
@@ -1600,7 +1633,6 @@ window.__ModuleLoader__.load({
       en: {
         title: "EasyRewrite",
         subtitle: "Simple & easy recall and re-edit",
-        cardSummary: "Recall, re-edit and version history",
         expand: "Expand",
         collapse: "Collapse",
         rewrite: "Bubble edit (click bubble to edit in place)",
@@ -1694,7 +1726,6 @@ window.__ModuleLoader__.load({
       ja: {
         title: "EasyRewrite",
         subtitle: "簡単で使いやすい撤回・再編集",
-        cardSummary: "撤回・再編集とバージョン履歴",
         expand: "展開",
         collapse: "折りたたむ",
         rewrite: "バブル編集（クリックでその場編集）",
@@ -1820,9 +1851,17 @@ window.__ModuleLoader__.load({
     /** 设置卡片：注册进 plugins.row.config（设置 → 插件 → 插件配置）。
      *  插件页对每个配置项渲染两次：view==='summary' 取行标题下的一行摘要，view==='page' 取完整表单。 */
     function EasyRewriteSettingsCard(props) {
+      /**
+       * 是否由外部容器提供卡片外壳。
+       *
+       * 0.1.7 的插件页（plugins.item）自己画行外壳、标题取自插槽 label，卡片再画一层头部
+       * 就成了嵌套折叠；旧插槽 settings.plugin.item 没有外壳，卡片必须自画。由挂载方经
+       * inject 面传入，默认 false，保持旧行为。
+       */
+      var embedded = !!(props && props.embedded);
       var L = useUILocaleDict();
-      if (props && props.view === "summary") return L.cardSummary;
-      var openState = React.useState(false);
+      // embedded 时头部不渲染，但「展开时检查更新」这类 side effect 仍要照跑，故初始即展开。
+      var openState = React.useState(embedded);
       var open = openState[0];
       var setOpen = openState[1];
       // 控件状态（初始化自 localStorage）
@@ -2084,7 +2123,7 @@ window.__ModuleLoader__.load({
             "aria-disabled": disabled || undefined,
             style: Object.assign({}, checkStyle, disabled ? { cursor: "not-allowed" } : null),
             onClick: function (e) { e.stopPropagation(); if (disabled) return; onChange(!value); }
-          }, value ? React.createElement(Primitives.IconCheckOutline16, null) : null)
+          }, value ? React.createElement(IconCheckOutline, null) : null)
         );
       }
       // Apple 风格分段控件：灰色药丸长条 + 白色小药丸高亮当前项（滑动过渡，主题自适应）
@@ -2140,22 +2179,13 @@ window.__ModuleLoader__.load({
         );
       }
 
-      return React.createElement("li", { style: Object.assign({}, cardStyle, open ? cardOpenStyle : null), "data-dsh-easyrewrite": "settings-card" },
-        React.createElement("button", {
-          type: "button",
-          style: headStyle,
-          "aria-expanded": open,
-          "aria-label": (open ? L.collapse : L.expand) + ": " + L.title,
-          onClick: function () { setOpen(!open); }
-        },
-          React.createElement("span", { style: headTextStyle },
-            React.createElement("span", { style: titleStyle }, L.title),
-            React.createElement("span", { style: subStyle }, L.subtitle)
-          ),
-          React.createElement("svg", { width: "18", height: "18", viewBox: "0 0 24 24", style: Object.assign({}, chevronStyle, open ? chevronOpenStyle : null) },
-            React.createElement("path", { d: "M9 6l6 6-6 6", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }))
-        ),
-        open ? React.createElement("div", { style: bodyStyle },
+      // 配置主体：两种挂法共用。
+      //
+      // 0.1.7 起卡片挂进 plugins.item，页面已经给了行外壳（标题来自插槽 label、描述、
+      // 展开由页面管），卡片只该交出主体。自带 <li> + 可点头部会变成页面里多出来的一层
+      // 折叠 —— 列表上一个下拉，点进去还有一个。旧插槽 settings.plugin.item 没有外壳，
+      // 那种挂法仍旧要卡片自画，所以分流在函数末尾按 embedded 做。
+      var cardBody = React.createElement("div", { style: bodyStyle },
           // —— 编辑 ——
           React.createElement("div", { style: sectionStyle },
             React.createElement("span", { style: groupTitleStyle }, L.sectionEdit),
@@ -2304,7 +2334,9 @@ window.__ModuleLoader__.load({
                                 body: JSON.stringify({ sessionId: vid }),
                                 keepalive: true
                               }).then(function () {
-                                if (typeof props.openSession === "function") props.openSession(vid);
+                                // 恢复后切会话必须走 safeOpenSession：props.openSession 在 0.1.7 上
+                                // 就是 ctx.sessions.open（已移除），直调等于没有降级通道。
+                                safeOpenSession(vid, props);
                               }).catch(function () { /* ignore */ });
                             }
                           }, L.versionRestoreOpen)
@@ -2384,7 +2416,28 @@ window.__ModuleLoader__.load({
             )
           ),
           React.createElement("span", { style: hintStyle }, L.instant)
-        ) : null
+      );
+      // plugins.item（0.1.7 起）：页面把同一个组件按 view 渲染两次 —— summary 当列表行与
+      // 详情页的一行描述，page 当配置主体。图标、标题（取自插槽 label）、启用开关与详情页
+      // 外壳都由页面提供，所以这里两者都不画头部。
+      if (embedded) return props.view === "summary" ? L.subtitle : cardBody;
+      // settings.plugin.item（0.1.5 及以下）：插槽不提供外壳，卡片自画可点头部。
+      return React.createElement("li", { style: Object.assign({}, cardStyle, open ? cardOpenStyle : null), "data-dsh-easyrewrite": "settings-card" },
+        React.createElement("button", {
+          type: "button",
+          style: headStyle,
+          "aria-expanded": open,
+          "aria-label": (open ? L.collapse : L.expand) + ": " + L.title,
+          onClick: function () { setOpen(!open); }
+        },
+          React.createElement("span", { style: headTextStyle },
+            React.createElement("span", { style: titleStyle }, L.title),
+            React.createElement("span", { style: subStyle }, L.subtitle)
+          ),
+          React.createElement("svg", { width: "18", height: "18", viewBox: "0 0 24 24", style: Object.assign({}, chevronStyle, open ? chevronOpenStyle : null) },
+            React.createElement("path", { d: "M9 6l6 6-6 6", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }))
+        ),
+        open ? cardBody : null
       );
     }
 
@@ -2396,7 +2449,7 @@ window.__ModuleLoader__.load({
       log("info", "pager", "切换版本", { from: sessionId, to: next, index: nextIndex + 1, count: fam.versions.length });
       // 历史版本都是归档会话（无痕替换副作用），先恢复再打开；恢复失败也照常打开（幂等）
       var doOpen = function () {
-        if (typeof props.openSession === "function") props.openSession(next);
+        safeOpenSession(next, props);
         // 等当前会话确认为 next（轮询 current，不猜时间）后，归档家族其余版本——列表只保留目标一个。
         // open 未确认（超时 8s）则放弃归档，绝不误伤任何会话。
         if (cleanupRef.current !== null) { clearInterval(cleanupRef.current); cleanupRef.current = null; }
@@ -2604,7 +2657,7 @@ window.__ModuleLoader__.load({
           disabled: atFirst,
           "aria-label": L.pagerPrev,
           onClick: function () { go(-1); }
-        }, React.createElement(Primitives.IconChevronLeftOutline14, null)),
+        }, React.createElement(IconChevronLeftOutline, null)),
         React.createElement("span", { style: { padding: "0 4px", fontSize: "14px", whiteSpace: "nowrap" } }, (index + 1) + "/" + count),
         React.createElement("button", {
           type: "button",
@@ -2613,7 +2666,7 @@ window.__ModuleLoader__.load({
           disabled: atLast,
           "aria-label": L.pagerNext,
           onClick: function () { go(1); }
-        }, React.createElement(Primitives.IconChevronRightOutline14, null))
+        }, React.createElement(IconChevronRightOutline, null))
       );
     }
 
@@ -2650,8 +2703,8 @@ window.__ModuleLoader__.load({
         onMouseLeave: function (e) { e.currentTarget.style.background = "transparent"; },
         onClick: function (e) { e.stopPropagation(); copy(); }
       }, copied
-        ? React.createElement(Primitives.IconCheckOutline16, { size: 14 })
-        : React.createElement(Primitives.IconCopyOutline16, { size: 14 }));
+        ? React.createElement(IconCheckOutline, { size: 14 })
+        : React.createElement(IconCopyOutline, { size: 14 }));
     }
 
     /** clipboard API 不可用时的回退复制。 */
@@ -3344,8 +3397,8 @@ window.__ModuleLoader__.load({
         padding: "8px 14px",
         whiteSpace: "pre-wrap",
         wordBreak: "break-word",
-        fontSize: "14px",
-        lineHeight: "22px",
+        fontSize: "var(--dsh-content-font-size, 14px)",
+        lineHeight: "calc(22px + var(--dsh-content-font-delta, 0px))",
         color: "var(--dsw-alias-label-primary, inherit)"
       };
       var actionsStyle = { display: "flex", gap: "2px", alignItems: "center" };
@@ -3362,8 +3415,8 @@ window.__ModuleLoader__.load({
           background: "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.10))",
           borderRadius: "14px",
           padding: "8px 14px",
-          fontSize: "14px",
-          lineHeight: "22px",
+          fontSize: "var(--dsh-content-font-size, 14px)",
+          lineHeight: "calc(22px + var(--dsh-content-font-delta, 0px))",
           cursor: "pointer",
           color: "var(--dsw-alias-label-tertiary)",
           whiteSpace: "pre-wrap",
@@ -3401,6 +3454,7 @@ window.__ModuleLoader__.load({
           showPreview ? origImages : null,
           showPreview ? React.createElement(
             "div", {
+              className: "dsh-easyrewrite-bubble",
               style: grayBubbleStyle,
               title: L.collapse,
               onClick: togglePreview
@@ -3408,6 +3462,7 @@ window.__ModuleLoader__.load({
             text || L.emptyMsg
           ) : React.createElement(
             "div", {
+              className: "dsh-easyrewrite-bubble",
               style: grayBubbleStyle,
               title: L.viewOriginal,
               onClick: togglePreview
@@ -3618,8 +3673,8 @@ window.__ModuleLoader__.load({
           background: "transparent",
           resize: "none",
           font: "inherit",
-          fontSize: "14px",
-          lineHeight: "22px",
+          fontSize: "var(--dsh-content-font-size, 14px)",
+          lineHeight: "calc(22px + var(--dsh-content-font-delta, 0px))",
           color: "var(--dsw-alias-label-primary)",
           whiteSpace: "pre-wrap",
           wordBreak: "break-word",
@@ -3826,7 +3881,7 @@ window.__ModuleLoader__.load({
         "div", { style: rowStyle, "data-dsh-easyrewrite": "user", "data-time-hover-root": true },
         renderMessageImagesCompat(msgImages, props),
         React.createElement(
-          "div", { style: bubbleStyle, onClick: onBubbleClick, title: L.clickEdit },
+          "div", { className: "dsh-easyrewrite-bubble", style: bubbleStyle, onClick: onBubbleClick, title: L.clickEdit },
           text || L.emptyMsg
         ),
         confirming
@@ -3956,7 +4011,6 @@ window.__ModuleLoader__.load({
         var disposers = [];
         var styleTag = injectThemeStyle();
         try { if (typeof ctx.locale === "object" && ctx.locale !== null && typeof ctx.locale.register === "function") ctx.locale.register(NS, {}); } catch (e) { /* ignore */ }
-        log("info", "lifecycle", "client half active");
         // 调试 API：撤回条实时调参（调试模式门控：localStorage dsh-easyrewrite:debug=1；set/get/diagnose/export）
         try {
           var wRef = (typeof window !== "undefined") ? window : null;
@@ -4035,7 +4089,42 @@ window.__ModuleLoader__.load({
         } catch (eDbg) { /* ignore */ }
         try { ctxConversationRef = ctx.conversation; } catch (e) { ctxConversationRef = null; }
         try { ctxUiConversationRef = (typeof ctx.get === "function") ? (ctx.get("uiConversation") || null) : null; } catch (eUic) { ctxUiConversationRef = null; }
-        try { ctxUiWorkspaceRef = (typeof ctx.get === "function") ? (ctx.get("uiWorkspace") || null) : null; } catch (eUiw) { ctxUiWorkspaceRef = null; }
+        try { ctxUiWorkspaceRef = ctx.uiWorkspace || ((typeof ctx.get === "function") ? (ctx.get("uiWorkspace") || null) : null); } catch (eUiw) { ctxUiWorkspaceRef = null; }
+        function invokeOpenSession(id) {
+          try {
+            if (ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function") {
+              ctx.uiWorkspace.openSession(id);
+              return true;
+            }
+          } catch (e1) {}
+          try {
+            var uiW = (typeof ctx.get === "function") ? ctx.get("uiWorkspace") : null;
+            if (uiW && typeof uiW.openSession === "function") {
+              uiW.openSession(id);
+              return true;
+            }
+          } catch (e2) {}
+          try {
+            if (ctxUiWorkspaceRef && typeof ctxUiWorkspaceRef.openSession === "function") {
+              ctxUiWorkspaceRef.openSession(id);
+              return true;
+            }
+          } catch (e3) {}
+          try {
+            if (ctx.sessions && typeof ctx.sessions.open === "function") {
+              ctx.sessions.open(id);
+              return true;
+            }
+          } catch (e4) {}
+          try {
+            if (ctx.workspaces && typeof ctx.workspaces.openSession === "function") {
+              ctx.workspaces.openSession(id);
+              return true;
+            }
+          } catch (e5) {}
+          log("error", "session", "所有 openSession 途径均不可用", { id: id });
+          return false;
+        }
           // 陈旧版本树键清扫（review #6：lineage 已接管；旧 localStorage 键为死数据，启动时一次清掉）
           try {
             var stale = [];
@@ -4124,7 +4213,7 @@ window.__ModuleLoader__.load({
                 }
               } catch (eSh2) { inputShell2 = null; }
               return {
-                openSession: function (id) { ctx.sessions.open(id); },
+                openSession: invokeOpenSession,
                 ctxWorkspaces: ctx.workspaces,
                 ctxSessions: ctx.sessions,
                 modelSel: modelSel,
@@ -4167,7 +4256,7 @@ window.__ModuleLoader__.load({
               } catch (eShell) { inputShell = null; }
               return {
                 sessionId: sessionId,
-                openSession: function (id) { ctx.sessions.open(id); },
+                openSession: invokeOpenSession,
                 ctxWorkspaces: ctx.workspaces,
                 ctxSessions: ctx.sessions,
                 updateQueue: function (itemId, action) {
@@ -4203,26 +4292,38 @@ window.__ModuleLoader__.load({
           }, RecallBanner);
         });
         if (typeof d3 === "function") disposers.push(d3);
-        // 设置卡片（设置 → 插件 → 插件配置）：plugins.row.config 按 `<bundle 包名>#<行 id>` 分派。
-        // 行 id 等于宿主半边 export const name；bundle 包名随安装形态而变——经本仓库聚合包安装时
-        // 是聚合包，独立安装时是本包。两个 key 都注册：未安装的那个 bundle 不会被页面分派。
-        var ROW_ID = "dsh-easyrewrite";
-        var BUNDLE_NAMES = ["@logictan/dsh-plugins-all", "@logictan/dsh-easyrewrite"];
-        var d4s = BUNDLE_NAMES.map(function (bundle) {
-          return ctx.slots.inject("plugins.row.config", function () {
-            return ctx.slots.register({
-              name: "plugins.row.config",
-              key: bundle + "#" + ROW_ID,
+        // 设置卡片。两种挂载方式各注册一次：
+        //
+        //   ≤0.1.5  keyed 插槽 settings.plugin.item（按命名空间分发），插槽不给外壳，
+        //           卡片自画可点头部。
+        //   0.1.7+  改用插件页。第三方 bundle 的配置属于它自己那一行，走
+        //           plugins.row.config，key 为 `<包名>#<行 id>`；页面因此会给该行一个
+        //           Configure 控件，打开它自己的配置页。
+        //
+        // 行 id 等于宿主半边 export const name；bundle 包名随安装形态而变——经本仓库聚合包
+        // 安装时是聚合包，独立安装时是本包。两个 bundle 名都注册，页面只会分派已安装的那个。
+        function registerSettingsCard(slotName, kind, embedded) {
+          return ctx.slots.inject(slotName, function () {
+            return ctx.slots.register(Object.assign({
+              name: slotName,
               inject: function () {
                 return {
-                  openSession: function (id) { ctx.sessions.open(id); },
-                  ctxSessions: ctx.sessions
+                  openSession: invokeOpenSession,
+                  ctxSessions: ctx.sessions,
+                  // 页面提供行外壳的挂法，卡片只交出配置主体（见组件里的 embedded）。
+                  embedded: !!embedded
                 };
               }
-            }, EasyRewriteSettingsCard);
+            }, kind), EasyRewriteSettingsCard);
           });
+        }
+        var ROW_ID = "dsh-easyrewrite";
+        var BUNDLE_NAMES = ["@logictan/dsh-plugins-all", "@logictan/dsh-easyrewrite"];
+        var d4 = [registerSettingsCard("settings.plugin.item", { key: ROW_ID })];
+        BUNDLE_NAMES.forEach(function (bundle) {
+          d4.push(registerSettingsCard("plugins.row.config", { key: bundle + "#" + ROW_ID }, true));
         });
-        d4s.forEach(function (d) { if (typeof d === "function") disposers.push(d); });
+        d4.forEach(function (d) { if (typeof d === "function") disposers.push(d); });
         // 版本翻页器 < X >：assistant 消息操作区（最后回答底部）
         var d5 = ctx.slots.inject("conversation.chat.assistant-actions", function () {
           return ctx.slots.register({
@@ -4231,7 +4332,7 @@ window.__ModuleLoader__.load({
             order: 10,
             inject: function () {
               return {
-                openSession: function (id) { ctx.sessions.open(id); },
+                openSession: invokeOpenSession,
                 ctxSessions: ctx.sessions,
                 archiveSession: function (id) {
                   // review #5：官方 archiveSession 幂等且 sessionKnown 接受归档会话（dsh-workspace L424/L439）——
@@ -4250,7 +4351,18 @@ window.__ModuleLoader__.load({
                   }
                 },
                 currentSessionId: function () {
-                  try { var s = ctx.sessions.list.getSnapshot(); return s ? s.current : null; } catch (e) { return null; }
+                  try {
+                    var s = ctx.sessions.list.getSnapshot();
+                    if (!s) return null;
+                    if (s.current) return s.current;
+                    if (s.byId) {
+                      var found = Object.values(s.byId).find(function (r) {
+                        return r && r.retainedBy && (r.retainedBy.mainView > 0);
+                      });
+                      if (found && found.id) return found.id;
+                    }
+                    return null;
+                  } catch (e) { return null; }
                 },
                 restoreSession: function (id) {
                   return fetch("/bubble/unarchive", {
@@ -4268,6 +4380,9 @@ window.__ModuleLoader__.load({
           }, VersionPager);
         });
         if (typeof d5 === "function") disposers.push(d5);
+        // 这行必须在全部 slots.register 之后：旧位置在注册之前，槽位渲染崩溃时它照样输出，
+        // 让人误以为「日志正常 = UI 正常」。现在它只证明注册跑完，不证明槽位渲染成功。
+        log("info", "lifecycle", "client half registered", { disposers: disposers.length });
         return function () {
           for (var i = 0; i < disposers.length; i++) disposers[i]();
           if (styleTag !== null) styleTag.remove();
