@@ -34,9 +34,13 @@ dsh-plugins/
 行 id 唯一性（只校验 `deps` 重复包名）—— 新增子插件时须人工比对。
 
 **构建产物不入版本控制**：每个 `packages/<name>/lib/` 由各自 `.gitignore` 忽略，由该包自己的构建脚本生成。
-各包的触发时机**不统一**：多数用 `prepare`（`pnpm install` 即构建），`dsh-imagegen` 只有 `build`、
+各包的触发时机**不统一**：多数用 `prepare`（`pnpm install` 即构建），`dsh-imagegen` 用 `prepack`、
 `dsh-workbuddy-connect` 只有 `prepack`——**别假设 `pnpm install` 之后每个包的 `lib/` 都已就绪**，
 用某个包的产物前先确认它的 `scripts` 里哪个钩子会构建（`node -p "require('./packages/<name>/package.json').scripts"`）。
+
+**可发布的包必须有一个发布期构建钩子**（`prepack` 或 `prepare`）：CI 只跑 `pnpm install` + typecheck + test，
+不单独构建；包只有 `build` 时 `npm publish` 会把 `files` 里不存在的 `lib/` 静默丢掉，
+发出一个「装得上、加载不了」的空包（`dsh-imagegen` 2.0.0 就这样发过一次）。
 
 **子插件的来源决定它要不要 fork**：`packages/<name>/` 有两种合法形态，选哪种由**它有没有上游**决定。
 

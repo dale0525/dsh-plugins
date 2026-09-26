@@ -39,7 +39,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-fakeip-fetch
       '@logictan/dsh-imagegen':
-        specifier: ^2.0.0
+        specifier: ^2.0.1
         version: link:../dsh-imagegen
       '@logictan/dsh-loop-guard':
         specifier: ^1.1.5
