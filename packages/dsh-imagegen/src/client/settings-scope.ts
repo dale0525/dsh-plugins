@@ -14,7 +14,7 @@ import {
 } from '@deepseek-ai/dsh-client-store'
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
-import { SETTINGS_API, type ChannelConfig } from '../protocol.ts'
+import { IMAGEGEN_SETTINGS_NAMESPACE, SETTINGS_API, type ChannelConfig } from '../protocol.ts'
 
 /** One cascading-picker group: a configured channel and its model aliases. */
 export interface ImageModelGroup {
@@ -279,7 +279,10 @@ export interface ImageGenScope extends SettingsScope<ImageGenConfig> {
  */
 export function bindImageGenScope(fetchFn: typeof fetch = fetch): ImageGenScope {
   const controller = new BridgeScopeController<ImageGenConfig>(createBridgeApi(fetchFn).settings, {
-    namespace: 'dsh-imagegen',
+    // The host keys a plugin's settings descriptor by its loader entry id,
+    // which is the host half's `export const name` — the same value the
+    // bundle patch row uses.
+    namespace: IMAGEGEN_SETTINGS_NAMESPACE,
   })
   void controller.load()
   return controller

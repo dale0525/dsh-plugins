@@ -7,7 +7,6 @@ import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-conversation/clie
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { useEffect, useMemo, useState } from 'react'
 import { AGENT_IMAGE_API } from '../protocol.ts'
-import { CHAT_IMAGE_EVENT } from './conversation-sync.ts'
 import css from './image-toolview.module.css'
 
 /** Owner props supplied by the host's keyed tool-call slot. */
@@ -135,16 +134,6 @@ export function registerImageToolviews(ctx: ClientContext): void {
     const refs = useMemo(() => imageRefsOf(props.block), [props.block])
     const { status, message } = resultInfo(props.block)
     const { images, error } = useAttachmentImages(props.sessionId, refs, load)
-
-    useEffect(() => {
-      if (images.length === 0) return
-      document.dispatchEvent(new CustomEvent(CHAT_IMAGE_EVENT, {
-        detail: {
-          sessionId: props.sessionId,
-          refs: images.map(image => image.ref),
-        },
-      }))
-    }, [images, props.sessionId])
 
     return <section className={css.root} data-state={status} data-tool={props.toolName}>
       <header className={css.header}>

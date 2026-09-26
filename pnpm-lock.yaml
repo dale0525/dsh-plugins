@@ -39,7 +39,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-fakeip-fetch
       '@logictan/dsh-imagegen':
-        specifier: ^1.5.13
+        specifier: ^2.0.0
         version: link:../dsh-imagegen
       '@logictan/dsh-loop-guard':
         specifier: ^1.1.5
@@ -325,9 +325,6 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.4
         version: 3.18.4
-      lucide-react:
-        specifier: ^1.41.0
-        version: 1.47.0(react@18.3.1)
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.2

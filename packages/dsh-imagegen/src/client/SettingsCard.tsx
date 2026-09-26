@@ -14,12 +14,12 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { CardForm, booleanField, secretField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import { ChannelsForm, type ChannelDraft, type ChannelsFormActions, type ChannelsFormState } from './channels-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel } from '../model-catalog.ts'
-import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, USAGE_API, CANVAS_SKILL_API, type ModelMapping, type PresetProviderView } from '../protocol.ts'
+import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, type ModelMapping, type PresetProviderView } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
 import { tt, type TranslateValues } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
@@ -33,21 +33,6 @@ export interface ImageGenSettings {
   promptApiUrl?: string
   promptApiKey?: string
   promptModel?: string
-  localStoragePath?: string
-  storageEnabled?: boolean
-  storageEndpoint?: string
-  storageRegion?: string
-  storagePrefix?: string
-  storageAccessKey?: string
-  storageSecretKey?: string
-  storageSyncGallery?: boolean
-  storageSyncHistory?: boolean
-  skillsEnabled?: boolean
-  allowHeavySkills?: boolean
-  skillAllowlist?: string
-  skillOutputDir?: string
-  skillHeavyTimeoutMinutes?: number
-  skillAgentPreset?: string
 }
 
 /** What the card renders. */
@@ -62,36 +47,12 @@ export interface ImageGenSettingsCardState extends CardShell {
   promptApiUrl: CardFieldState
   promptApiKey: CardFieldState
   promptModel: CardFieldState
-  localStoragePath: CardFieldState
-  storageEnabled: CardFieldState
-  storageEndpoint: CardFieldState
-  storageRegion: CardFieldState
-  storagePrefix: CardFieldState
-  storageAccessKey: CardFieldState
-  storageSecretKey: CardFieldState
-  storageSyncGallery: CardFieldState
-  storageSyncHistory: CardFieldState
-  skillsEnabled: CardFieldState
-  allowHeavySkills: CardFieldState
-  skillAllowlist: CardFieldState
-  skillOutputDir: CardFieldState
-  skillHeavyTimeoutMinutes: CardFieldState
-  skillAgentPreset: CardFieldState
-}
-
-/** Result of probing the configured object storage from the card. */
-export interface StorageTestOutcome {
-  ok: boolean
-  ms?: number
-  message?: string
 }
 
 /** The registration-side face the card's slot entry injects. */
 export interface ImageGenSettingsCardFace extends CardActions {
   /** Channel staging actions (committed together with the card's save). */
   channels: ChannelsFormActions
-  /** Save staged edits, then upload a probe object to the configured store. */
-  storageTest: () => Promise<StorageTestOutcome>
   hooks: {
     /** Card snapshot bound by the renderer as useImageGenSettingsCard. */
     imageGenSettingsCard: SnapshotStore<ImageGenSettingsCardState>
@@ -112,21 +73,6 @@ export class ImageGenSettingsCardController {
       textField('promptApiUrl'),
       secretField('promptApiKey'),
       textField('promptModel'),
-      textField('localStoragePath'),
-      booleanField('storageEnabled'),
-      textField('storageEndpoint'),
-      textField('storageRegion'),
-      textField('storagePrefix'),
-      textField('storageAccessKey'),
-      secretField('storageSecretKey'),
-      booleanField('storageSyncGallery'),
-      booleanField('storageSyncHistory'),
-      booleanField('skillsEnabled'),
-      booleanField('allowHeavySkills'),
-      textField('skillAllowlist'),
-      textField('skillOutputDir'),
-      textField('skillHeavyTimeoutMinutes'),
-      textField('skillAgentPreset'),
     ], {
       secretSettled: (field) => this.scope.getSecretSetSnapshot(field),
     })
@@ -145,21 +91,6 @@ export class ImageGenSettingsCardController {
       promptApiUrl: this.form.field('promptApiUrl'),
       promptApiKey: this.form.field('promptApiKey'),
       promptModel: this.form.field('promptModel'),
-      localStoragePath: this.form.field('localStoragePath'),
-      storageEnabled: this.form.field('storageEnabled'),
-      storageEndpoint: this.form.field('storageEndpoint'),
-      storageRegion: this.form.field('storageRegion'),
-      storagePrefix: this.form.field('storagePrefix'),
-      storageAccessKey: this.form.field('storageAccessKey'),
-      storageSecretKey: this.form.field('storageSecretKey'),
-      storageSyncGallery: this.form.field('storageSyncGallery'),
-      storageSyncHistory: this.form.field('storageSyncHistory'),
-      skillsEnabled: this.form.field('skillsEnabled'),
-      allowHeavySkills: this.form.field('allowHeavySkills'),
-      skillAllowlist: this.form.field('skillAllowlist'),
-      skillOutputDir: this.form.field('skillOutputDir'),
-      skillHeavyTimeoutMinutes: this.form.field('skillHeavyTimeoutMinutes'),
-      skillAgentPreset: this.form.field('skillAgentPreset'),
     }
   }
 
@@ -175,19 +106,6 @@ export class ImageGenSettingsCardController {
         imageGenSettingsCard: cardStore,
       },
       channels: this.channelsForm.actions(),
-      // The probe needs the values the user is looking at, so staged edits are
-      // committed first; the host route then resolves the saved config itself.
-      storageTest: async (): Promise<StorageTestOutcome> => {
-        await this.form.save()
-        try {
-          const response = await fetch('/api/dsh-imagegen/storage/test', { method: 'POST' })
-          const body = await response.json() as { ok?: unknown; ms?: unknown; message?: unknown }
-          if (body.ok === true) return { ok: true, ms: typeof body.ms === 'number' ? body.ms : undefined }
-          return { ok: false, message: typeof body.message === 'string' ? body.message : `HTTP ${response.status}` }
-        } catch (error) {
-          return { ok: false, message: error instanceof Error ? error.message : String(error) }
-        }
-      },
       ...this.form.actions(),
     }
   }
@@ -198,12 +116,6 @@ export type ImageGenSettingsCardProps =
   PropsRuntime<'plugins.row.config'>
   & PropsLocale<'dsh-imagegen'>
   & InjectFace<ImageGenSettingsCardFace>
-
-/** Host-computed usage counters (generation-count badges). */
-interface UsageCounters {
-  byChannel: Record<string, Record<string, number>>
-  totals: Record<string, number>
-}
 
 /**
  * Render the card.
@@ -239,29 +151,13 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
   const [manualPromptModel, setManualPromptModel] = useState('')
   const [enhancementOpen, setEnhancementOpen] = useState(false)
   const [promptApiOpen, setPromptApiOpen] = useState(false)
-  const [storageOpen, setStorageOpen] = useState(false)
-  const [storageTesting, setStorageTesting] = useState(false)
-  const [storageTestResult, setStorageTestResult] = useState<string | null>(null)
-  const [skillProbing, setSkillProbing] = useState(false)
-  const [skillProbeResult, setSkillProbeResult] = useState<string | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
   // Channel list local states.
   const [editingId, setEditingId] = useState<string | null>(null)
   const [presetPickerOpen, setPresetPickerOpen] = useState(false)
   const [presets, setPresets] = useState<PresetProviderView[]>([])
   const [presetError, setPresetError] = useState<string | null>(null)
-  const [usage, setUsage] = useState<UsageCounters | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
-
-  // Usage counters: refreshed once per card open (and after a successful save).
-  useEffect(() => {
-    if (!state.exposed) return
-    let alive = true
-    void fetch(USAGE_API, { method: 'POST' })
-      .then(async response => { const body = await response.json() as { ok?: boolean; usage?: UsageCounters }; if (alive && body.ok === true && body.usage !== undefined) setUsage(body.usage) })
-      .catch(() => { /* counters are best-effort */ })
-    return () => { alive = false }
-  }, [state.exposed])
 
   if (!state.available) return null
   const title = t('settings.title')
@@ -513,223 +409,6 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
             </div> : null}
             </section> : null}
 
-            <button type="button" className={css.disclosure} aria-expanded={storageOpen} onClick={() => { setStorageOpen(open => !open) }}>
-              <span>{t('settings.storageTitle')}</span>
-              <span aria-hidden="true">{storageOpen ? '⌃' : '⌄'}</span>
-            </button>
-            {storageOpen ? <div className={css.optionalContent}>
-            <ValueField
-              id="dsh-imagegen-settings-local-storage-path"
-              label={t('settings.localStoragePath')}
-              hint={t('settings.localStoragePathHint')}
-              placeholder="E:\\dsh-imagegen-data"
-              {...fieldProps}
-              {...state.localStoragePath}
-              onEdit={(text) => { props.edit('localStoragePath', text) }}
-              onReset={() => { props.resetField('localStoragePath') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-storage-enabled"
-              label={t('settings.storageEnabled')}
-              hint={t('settings.storageHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.storageEnabled}
-              onEdit={(text) => { props.edit('storageEnabled', text) }}
-              onReset={() => { props.resetField('storageEnabled') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-endpoint"
-              label={t('settings.storageEndpoint')}
-              hint={t('settings.storageEndpointHint')}
-              placeholder="https://bucket-appid.cos.ap-guangzhou.myqcloud.com"
-              {...fieldProps}
-              {...state.storageEndpoint}
-              onEdit={(text) => { props.edit('storageEndpoint', text) }}
-              onReset={() => { props.resetField('storageEndpoint') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-region"
-              label={t('settings.storageRegion')}
-              hint={t('settings.storageRegionHint')}
-              placeholder="ap-guangzhou"
-              {...fieldProps}
-              {...state.storageRegion}
-              onEdit={(text) => { props.edit('storageRegion', text) }}
-              onReset={() => { props.resetField('storageRegion') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-prefix"
-              label={t('settings.storagePrefix')}
-              hint={t('settings.storagePrefixHint')}
-              placeholder="dsh-imagegen"
-              {...fieldProps}
-              {...state.storagePrefix}
-              onEdit={(text) => { props.edit('storagePrefix', text) }}
-              onReset={() => { props.resetField('storagePrefix') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-accesskey"
-              label={t('settings.storageAccessKey')}
-              hint={t('settings.storageAccessKeyHint')}
-              placeholder="AKID…"
-              {...fieldProps}
-              {...state.storageAccessKey}
-              onEdit={(text) => { props.edit('storageAccessKey', text) }}
-              onReset={() => { props.resetField('storageAccessKey') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-storage-secretkey"
-              label={t('settings.storageSecretKey')}
-              hint={t('settings.storageSecretKeyHint')}
-              placeholder="…"
-              secret
-              {...fieldProps}
-              {...state.storageSecretKey}
-              overridden={false}
-              onEdit={(text) => { props.edit('storageSecretKey', text) }}
-              onReset={() => { props.resetField('storageSecretKey') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-storage-gallery"
-              label={t('settings.storageSyncGallery')}
-              hint={t('settings.storageSyncGalleryHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.storageSyncGallery}
-              onEdit={(text) => { props.edit('storageSyncGallery', text) }}
-              onReset={() => { props.resetField('storageSyncGallery') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-storage-history"
-              label={t('settings.storageSyncHistory')}
-              hint={t('settings.storageSyncHistoryHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.storageSyncHistory}
-              onEdit={(text) => { props.edit('storageSyncHistory', text) }}
-              onReset={() => { props.resetField('storageSyncHistory') }}
-            />
-            <div className={css.modelSummary}>
-              <button
-                type="button"
-                className={css.addModel}
-                disabled={disabled || storageTesting}
-                onClick={() => {
-                  setStorageTesting(true)
-                  setStorageTestResult(null)
-                  void props.storageTest().then(outcome => {
-                    setStorageTestResult(outcome.ok
-                      ? t('settings.storageTestOk', { ms: outcome.ms ?? 0 })
-                      : t('settings.storageTestFailed', { error: outcome.message ?? 'error' }))
-                  }).finally(() => { setStorageTesting(false) })
-                }}
-              >
-                {storageTesting ? t('settings.storageTesting') : t('settings.storageTest')}
-              </button>
-              {storageTestResult !== null ? <p className={css.failed} role="status">{storageTestResult}</p> : null}
-            </div>
-            <p className={css.hint}>{t('settings.storageKeyHint')}</p>
-            </div> : null}
-
-            {/* ---------- infinite-canvas skills ---------- */}
-            <BooleanField
-              id="dsh-imagegen-settings-skills-enabled"
-              label={t('settings.skillsEnabled')}
-              hint={t('settings.skillsEnabledHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.skillsEnabled}
-              onEdit={(text) => { props.edit('skillsEnabled', text) }}
-              onReset={() => { props.resetField('skillsEnabled') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-skills-heavy"
-              label={t('settings.allowHeavySkills')}
-              hint={t('settings.allowHeavySkillsHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.allowHeavySkills}
-              onEdit={(text) => { props.edit('allowHeavySkills', text) }}
-              onReset={() => { props.resetField('allowHeavySkills') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-allowlist"
-              label={t('settings.skillAllowlist')}
-              hint={t('settings.skillAllowlistHint')}
-              placeholder="extract-content, image-to-editable-ppt"
-              {...fieldProps}
-              {...state.skillAllowlist}
-              onEdit={(text) => { props.edit('skillAllowlist', text) }}
-              onReset={() => { props.resetField('skillAllowlist') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-output"
-              label={t('settings.skillOutputDir')}
-              hint={t('settings.skillOutputDirHint')}
-              placeholder=""
-              {...fieldProps}
-              {...state.skillOutputDir}
-              onEdit={(text) => { props.edit('skillOutputDir', text) }}
-              onReset={() => { props.resetField('skillOutputDir') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-timeout"
-              label={t('settings.skillHeavyTimeout')}
-              hint={t('settings.skillHeavyTimeoutHint')}
-              placeholder="20"
-              {...fieldProps}
-              {...state.skillHeavyTimeoutMinutes}
-              onEdit={(text) => { props.edit('skillHeavyTimeoutMinutes', text) }}
-              onReset={() => { props.resetField('skillHeavyTimeoutMinutes') }}
-            />
-            <ValueField
-              id="dsh-imagegen-settings-skills-preset"
-              label={t('settings.skillAgentPreset')}
-              hint={t('settings.skillAgentPresetHint')}
-              placeholder=""
-              {...fieldProps}
-              {...state.skillAgentPreset}
-              onEdit={(text) => { props.edit('skillAgentPreset', text) }}
-              onReset={() => { props.resetField('skillAgentPreset') }}
-            />
-            <div className={css.modelSummary}>
-              <button
-                type="button"
-                className={css.addModel}
-                disabled={disabled || skillProbing}
-                onClick={() => {
-                  setSkillProbing(true)
-                  setSkillProbeResult(null)
-                  void fetch(CANVAS_SKILL_API.list, { method: 'POST' })
-                    .then(async response => await response.json() as { ok?: boolean; skills?: unknown[]; agentAvailable?: boolean; registryAvailable?: boolean })
-                    .then(body => {
-                      const total = Array.isArray(body.skills) ? body.skills.length : 0
-                      setSkillProbeResult(t('settings.skillProbeOk', {
-                        count: total,
-                        agent: body.agentAvailable === true ? t('settings.skillProbeAgentOn') : t('settings.skillProbeAgentOff'),
-                      }))
-                    })
-                    .catch(caught => { setSkillProbeResult(t('settings.storageTestFailed', { error: caught instanceof Error ? caught.message : String(caught) })) })
-                    .finally(() => { setSkillProbing(false) })
-                }}
-              >
-                {skillProbing ? t('settings.skillProbing') : t('settings.skillProbe')}
-              </button>
-              {skillProbeResult !== null ? <p className={css.hint} role="status">{skillProbeResult}</p> : null}
-            </div>
-            <p className={css.hint}>{t('settings.skillsHint')}</p>
-
             <button type="button" className={css.disclosure} aria-expanded={moreOpen} onClick={() => { setMoreOpen(open => !open) }}>
               <span>{t('settings.moreOptions')}</span>
               <span aria-hidden="true">{moreOpen ? '⌃' : '⌄'}</span>
@@ -801,7 +480,6 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
           t={t}
           channel={editing}
           keyHeld={state.channels.keySet[editing.id] === true}
-          usage={usage}
           otherChannels={channels.filter(channel => channel.id !== editing.id)}
           isDefault={editing.id === state.channels.defaultChannelId}
           writable={state.writable}
@@ -896,7 +574,6 @@ function ChannelEditor(props: {
   t: (key: ImageGenKey, params?: Record<string, string | number>) => string
   channel: ChannelDraft
   keyHeld: boolean
-  usage: UsageCounters | null
   otherChannels: ChannelDraft[]
   isDefault: boolean
   writable: boolean
@@ -915,12 +592,6 @@ function ChannelEditor(props: {
   const [manualId, setManualId] = useState('')
   const [removeOpen, setRemoveOpen] = useState(false)
   const [copyFrom, setCopyFrom] = useState('')
-
-  const generatedCount = (alias: string): number => {
-    if (props.usage === null) return 0
-    const channelBucket = props.usage.byChannel[channel.id] ?? props.usage.byChannel[`name:${channel.name}`] ?? {}
-    return channelBucket[alias] ?? props.usage.totals[alias] ?? 0
-  }
 
   const detect = (): void => {
     setDetecting(true)
@@ -1031,7 +702,6 @@ function ChannelEditor(props: {
             <ul className={css.modelRows}>
               {channel.models.map((model, index) => {
                 const entry = describeModel(model.id || model.alias)
-                const generated = generatedCount(model.alias)
                 return (
                   <li key={`${model.alias}-${index}`} className={css.modelRow}>
                     <div className={css.modelRowInputs}>
@@ -1049,7 +719,6 @@ function ChannelEditor(props: {
                     </div>
                     <div className={css.modelRowBadges}>
                       <span className={css.modelBadge}>{entry.labelZh}{entry.known ? '' : ` · ${t('channels.unknownProtocol')}`}</span>
-                      {generated > 0 ? <span className={css.modelBadge} data-verified>{t('channels.generated', { n: generated })}</span> : null}
                       <button type="button" className={css.modelRowRemove} disabled={!props.writable} aria-label={`${t('channels.removeModel')}: ${model.alias}`} onClick={() => { props.onSetModels(channel.models.filter((_, i) => i !== index)) }}>×</button>
                     </div>
                   </li>

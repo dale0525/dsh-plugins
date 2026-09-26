@@ -1,35 +1,25 @@
 /**
- * Browser-half entry for the dsh-imagegen plugin — runs inside the dsh web
- * GUI.
+ * Browser-half entry for the dsh-imagegen plugin — runs inside the dsh web GUI.
  *
- * Registers the dsh-imagegen locale dictionaries, binds the plugin's own
- * settings scope (its bridge routes serve the namespace the official rc.6
- * allowlist would refuse), registers the row's configuration entry onto the
- * Plugins page's per-row configuration slot, and mounts the two DOM surfaces:
- * the sidebar entry row (toggles the panel) and the generation studio in the
- * center column. Failure policy:
- * DOM mounting problems are logged, never thrown — the web shell fails the
- * whole boot when a plugin apply throws, and an external plugin must not take
- * the GUI down.
+ * Registers the locale dictionaries, binds the plugin's own settings scope (its
+ * bridge routes serve the namespace), registers the row's configuration entry
+ * onto the Plugins page's per-row configuration slot, and registers the inline
+ * image renderer for image-generation tool results. Failure policy: mounting
+ * problems are logged, never thrown — the web shell fails the whole boot when a
+ * plugin apply throws, and an external plugin must not take the GUI down.
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only: pulls the LocaleNamespaceMap merge table.
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
-import { ImageGenApi } from './api.ts'
-import { ImageGenController } from './controller.ts'
-import { tt, applyHostLocale } from './helpers.ts'
+import { applyHostLocale } from './helpers.ts'
 import { en, ru, zh, type ImageGenKey } from './locales.ts'
-import { mountPanel } from './mount.tsx'
-import { mountSidebarEntry } from './sidebar-entry.ts'
 import { ImageGenSettingsCard, ImageGenSettingsCardController } from './SettingsCard.tsx'
 import { bindImageGenScope, type ImageGenScope } from './settings-scope.ts'
 import { registerImageToolviews, type ImageToolViewOwnerProps } from './image-toolview.tsx'
-import type { ConversationService } from './conversation-sync.ts'
 
 /** Locale namespace this plugin owns. */
 const NS = 'dsh-imagegen'
@@ -87,15 +77,10 @@ export interface ImageGenPluginConfigOwnerProps {
 }
 
 /** Required services (fiber inject waiting — the runtime must be up first). */
-export const inject = ['slots', 'locale', 'connection', 'sessions', 'conversation']
-
-// Internals re-exported for the standalone smoke test (the browser bundle is
-// the only place these are reachable from Node); not part of the contract.
-export { autoRemoveBackground, compositeAnnotatedResult, containRect, cropRaster, drawAnnotation, rectBetween, rectToPixels, removeBackground, transparencyRatio } from './image-ops.ts'
-export { addConversationAttachments, conversationInput, createConversationDrafts, releaseConversationDrafts, removeConversationAttachment } from './conversation-sync.ts'
+export const inject = ['slots', 'locale', 'connection']
 
 /**
- * Mount the studio, its sidebar entry, and the settings card.
+ * Mount the settings card and the inline image renderer.
  * @param ctx - client root context (services: slots, locale, connection).
  */
 export function apply(ctx: ClientContext): void {
@@ -151,9 +136,9 @@ export function apply(ctx: ClientContext): void {
     return () => { for (const dispose of disposers) dispose() }
   }, 'dsh-imagegen: settings scope invalidation')
 
-  // Plugin configuration entry: one staged form over the `dsh-imagegen` scope,
-  // registered onto the Plugins page's per-row configuration slot. One entry
-  // per bundle that can declare this row; the slot is key-dispatched by
+  // Plugin configuration entry: one staged form over the plugin's settings
+  // scope, registered onto the Plugins page's per-row configuration slot. One
+  // entry per bundle that can declare this row; the slot is key-dispatched by
   // `<bundle>#<row id>`, so both keys are registered and the bundle that is not
   // installed simply never dispatches its key.
   const settingsCard = new ImageGenSettingsCardController(scope)
@@ -165,64 +150,4 @@ export function apply(ctx: ClientContext): void {
       inject: () => settingsCard.inject(),
     }, ImageGenSettingsCard))
   }
-
-  // The sidebar entry and studio mount once the settings scope settles; while
-  // the scope is still loading, the composition default is unknown, so nothing
-  // mounts yet. Only an unavailable scope falls back to the default (enabled).
-  let uiDisposer: (() => void) | undefined
-  const mountUi = (): void => {
-    if (uiDisposer !== undefined) return
-    const controller = new ImageGenController()
-    const api = new ImageGenApi()
-    const sessions = ctx.get('sessions') as ISessions | undefined
-    const conversation = ctx.get('conversation') as ConversationService | undefined
-    const disposers: Array<() => void> = []
-    try {
-      disposers.push(mountSidebarEntry(
-        controller,
-        tt('entry.newSession'),
-        tt('entry.newSessionTooltip'),
-        tt('entry.image'),
-        tt('entry.tooltip'),
-      ))
-      disposers.push(mountPanel(controller, api, scope, { sessions, conversation }))
-      // The imperative sidebar tabs render their labels once; relabel them on
-      // every DSH language switch so the entry follows the interface too.
-      disposers.push(ctx.locale.subscribe(() => {
-        const root = document.querySelector('[data-dsh-imagegen-sidebar-root]')
-        if (root === null) return
-        const labels: Array<[string, string, string]> = [
-          ['new-session', tt('entry.newSession'), tt('entry.newSessionTooltip')],
-          ['image', tt('entry.image'), tt('entry.tooltip')],
-        ]
-        for (const [tab, label, tooltip] of labels) {
-          const button = root.querySelector<HTMLButtonElement>(`[data-dsh-imagegen-tab="${tab}"]`)
-          if (button === null) continue
-          button.setAttribute('aria-label', label)
-          button.setAttribute('title', tooltip)
-          const labelSpan = button.querySelector('span:nth-child(2)')
-          if (labelSpan !== null) labelSpan.textContent = label
-        }
-        const tablist = root.querySelector<HTMLDivElement>('[role="tablist"][data-dsh-imagegen-session-tabs]')
-        tablist?.setAttribute('aria-label', tt('entry.tooltip'))
-      }))
-    } catch (error) {
-      // DOM failures degrade the studio, never the GUI.
-      console.warn('[dsh-imagegen] mount failed:', error)
-    }
-    uiDisposer = () => {
-      for (const dispose of disposers.splice(0)) dispose()
-      uiDisposer = undefined
-    }
-  }
-  const syncEnabled = (): void => {
-    const snapshot = scope.getSnapshot()
-    const enabled = snapshot.status === 'ready'
-      ? snapshot.value?.enabled ?? true
-      : snapshot.status === 'unavailable'
-    if (enabled) mountUi()
-    else uiDisposer?.()
-  }
-  scope.subscribe(syncEnabled)
-  syncEnabled()
 }

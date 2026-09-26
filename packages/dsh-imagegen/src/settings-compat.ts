@@ -77,28 +77,6 @@ export function settingsNamespaceCompat(value: string): SettingsNamespace {
 }
 
 /**
- * Resolve the namespace the settings bridge must read and write.
- *
- * Older settings providers register a caller-chosen namespace through the
- * module helper or `provider.installSection`. The managed-forms provider used
- * by DSH 0.1.7 derives forms from the plugin's profile entry instead, so its
- * namespace is the entry id (`imagegen`) rather than the legacy display id
- * (`dsh-imagegen`). The bridge keeps the legacy id on its public wire contract
- * and translates it to this internal namespace.
- */
-export function resolveSettingsNamespaceCompat(
-  ctx: Context,
-  provider: unknown,
-  fallback: SettingsNamespace,
-): SettingsNamespace {
-  if (compatModule.installSettingsSection !== undefined) return fallback
-  const candidate = provider as SettingsProviderCompat
-  if (candidate.installSection !== undefined) return fallback
-  if (candidate.configure !== undefined) return entryNamespaceOf(ctx) ?? fallback
-  return fallback
-}
-
-/**
  * Register an optional settings section across the rc.7, alpha.2 and managed
  * forms APIs. The first two expose an installer; 0.1.7 derives forms directly
  * from the plugin's volatile Config and only needs the custom-page policy.

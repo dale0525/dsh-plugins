@@ -1,7 +1,7 @@
 {
   "name": "@logictan/dsh-imagegen",
-  "description": "AI image generation plugin for the dsh web GUI: text-to-image and image-to-image through configurable provider channels (gpt-image-2 / grok-imagine-image / nanobanana series / seedream-5.0-pro / dall-e-3, with native xAI Grok Imagine, Google Nano Banana and ByteDance Seedream request shaping), per-channel model catalogs, a three-column studio beside the native conversation, an infinite canvas with node-graph workflows (annotation boxes with attached prompt cards, local background removal, AI layer split, per-node model choice, file nodes with any-file upload, and a canvas skill system covering skill-driven next steps on every node: text polish, image description, content extraction, and long-running headless-agent pipelines such as image-to-editable-ppt, with a local skill library that installs and removes skills from URLs or uploaded archives), an ecommerce product-set mode and a prompt template library.",
-  "version": "1.5.13",
+  "description": "Chat-invoked AI image generation for the dsh web GUI: text-to-image and image-to-image through configurable provider channels (gpt-image-2 / grok-imagine-image / nanobanana series / seedream-5.0-pro / dall-e-3, with native xAI Grok Imagine, Google Nano Banana and ByteDance Seedream request shaping) and per-channel model catalogs.",
+  "version": "2.0.0",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -29,7 +29,6 @@
     }
   },
   "dependencies": {
-    "lucide-react": "^1.41.0",
     "@deepseek-ai/schemastery": "^3.18.4"
   },
   "devDependencies": {
@@ -65,9 +64,7 @@
   },
   "files": [
     "lib",
-    "src/templates",
     "cordis.patch.yml",
-    "docs/skill-config.md",
     "README.md"
   ],
   "license": "Apache-2.0",
@@ -79,7 +76,6 @@
   "scripts": {
     "build": "tsdown",
     "watch": "tsdown --watch",
-    "typecheck": "tsc --noEmit",
-    "fetch-templates": "node scripts/fetch-templates.mjs"
+    "typecheck": "tsc --noEmit"
   }
 }
