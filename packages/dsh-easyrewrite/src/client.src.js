@@ -1592,7 +1592,7 @@ window.__ModuleLoader__.load({
         errNoBoundary: "该消息之前没有可截断的闭合回合边界（截断/首条消息无法撤回或编辑）",
         errTurnOpen: "该消息所在回合尚未结束，请等待回复完成后再操作",
         errGeneric: "操作失败，请重试",
-        resetNotice: "对话处于半截状态，已重置——正在回到上一次模型回复处（或空白新对话）",
+        resetNotice: "该消息之前没有可保留的历史，已重置——修改后的内容将作为新对话的第一条发出",
         turnOpenNotice: "回复仍在生成中，请等待回复完成后再撤回。",
         sectionUpdate: "更新",
         currentVersion: "当前版本",
@@ -1685,7 +1685,7 @@ window.__ModuleLoader__.load({
         errNoBoundary: "No truncation boundary before this message (first/truncated message cannot be recalled or edited)",
         errTurnOpen: "This message's turn is still running; wait for the reply to finish",
         errGeneric: "Operation failed, please retry",
-        resetNotice: "The conversation was in a truncated state and has been reset — returning to the last model reply (or a blank conversation)",
+        resetNotice: "There is no earlier history to keep, so the conversation was reset — your edit will be sent as the first message of a new conversation",
         turnOpenNotice: "A reply is still being generated. Please wait for it to finish before recalling.",
         sectionUpdate: "Update",
         currentVersion: "Current version",
@@ -1778,7 +1778,7 @@ window.__ModuleLoader__.load({
         errNoBoundary: "このメッセージの前に切り詰め境界がありません（切り詰め後・最初のメッセージは撤回/編集できません）",
         errTurnOpen: "このメッセージのターンはまだ終了していません。返信完了後にお試しください",
         errGeneric: "操作に失敗しました。もう一度お試しください",
-        resetNotice: "会話が途中で切れた状態のためリセットしました——最後のモデル返信（または空白の会話）に戻ります",
+        resetNotice: "このメッセージより前の履歴がないためリセットしました——編集内容は新しい会話の最初のメッセージとして送信されます",
         turnOpenNotice: "返信がまだ生成中です。返信が完了してから取り消してください",
         sectionUpdate: "更新",
         currentVersion: "現在のバージョン",
@@ -2498,20 +2498,19 @@ window.__ModuleLoader__.load({
     }
 
     /** 极限场景重置（首条消息/截断会话首条，无前置闭合边界，无法 fork）：
-     * - 家族会话（截断/分叉产物，版本 ≥2）：归档当前 → 恢复并打开**父版本**（上一次模型回复处）重新开始；
-     *   编辑模式经 resume 机制把修改文本带到父版本自动重发。
-     * - 全新会话首条（无家族）：归档当前 → 回到空白新对话（官方 project() 检测归档即回 hero）。
+     * 归档当前会话 → 在所属工作区打开空白新会话；编辑模式经 resume 机制把修改后的文本
+     * 作为新会话的**第一条**自动发出（DESIGN §2.3：目标消息之前没有历史，新对话即修改稿本身）。
      * @param mode - "recall" | "edit"
      * @param text - edit 模式的修改后文本
      * @param props - 组件 inject 面
      */
     function resetConversation(sessionId, mode, text, props, imageIds, selOverride, stagedDraft) {
       log("info", "reset", "首条消息重置对话", { sessionId: sessionId, mode: mode });
-      // v2.1.1：目标会话（父版本或空白新会话）发送前需要恢复当前模型/挡位
+      // v2.1.1：新会话发送前需要恢复当前模型/挡位
       // v2.2：气泡编辑 chip 的本地选择优先（selOverride），撤回键路径不传 → 原语义
       var msel = selOverride || (props.modelSel ? props.modelSel.capture(sessionId) : null);
       writePending(sessionId, null);
-      // 1) 归档当前会话（两种场景都需要；project() 检测 current 归档 → 自动回 hero/父版本打开后列表更新）
+      // 1) 归档当前会话（project() 检测 current 归档 → 自动回 hero；新会话随后被打开）
       try {
         var archiver = typeof props.archiveSession === "function"
           ? props.archiveSession
@@ -2524,26 +2523,10 @@ window.__ModuleLoader__.load({
           log("warn", "reset", "归档能力不可用", { sessionId: sessionId });
         }
       } catch (e) { /* ignore */ }
-      // 2) 场景 2：家族父版本（截断/分叉会话 → 回到上一次模型回复）
-      try {
-        var fam = familyOfSession(sessionId, props.ctxSessions);
-        log("info", "reset", "场景2家族判定", { sessionId: sessionId, found: !!fam, verLen: fam ? fam.versions.length : -1, index: fam ? fam.index : -1 });
-        var parentId = fam && fam.versions.length >= 2 && fam.index > 0 ? fam.versions[fam.index - 1] : null;
-        if (parentId) {
-          if (mode === "edit" && typeof text === "string") {
-            try { localStorage.setItem("dsh-easyrewrite:resume-send:" + parentId, JSON.stringify({ draftText: text, t: Date.now(), imageIds: imageIds || [], sel: msel, stagedDraft: stagedDraft || null })); } catch (e) { /* ignore */ }
-          }
-          var doOpenParent = function () {
-            safeOpenSession(parentId, props);
-          };
-          if (typeof props.restoreSession === "function") {
-            try { props.restoreSession(parentId).then(doOpenParent, doOpenParent); return; } catch (e) { /* fallthrough */ }
-          }
-          doOpenParent();
-          return;
-        }
-      } catch (e) { /* ignore */ }
-      // 3) 场景 1：全新会话首条 → 无缝打开空白新会话（编辑模式经 resume 自动发送编辑文本）
+      // 2) 打开空白新会话（编辑模式经 resume 自动发送编辑文本）
+      //    目标消息之前没有任何历史 → 新对话 = 修改后的消息本身（DESIGN §2.3）。
+      //    此前这里先走「家族父版本」分支，把修改后的文本**追加到父版本历史末尾**：
+      //    首条消息的编辑于是变成「整段旧历史 + 修改稿」，与 §2.3 的截断语义相反。
       try {
         var wsId = null;
         if (props.ctxWorkspaces && typeof props.ctxWorkspaces.list === "object" && typeof props.ctxWorkspaces.list.getSnapshot === "function") {
@@ -2557,7 +2540,7 @@ window.__ModuleLoader__.load({
             }
           }
         }
-          log("info", "reset", "场景1工作区定位", { sessionId: sessionId, wsId: wsId, hasConnect: !!(props.ctxWorkspaces && typeof props.ctxWorkspaces.connectWorkspace === "function") });
+          log("info", "reset", "空白新会话：工作区定位", { sessionId: sessionId, wsId: wsId, hasConnect: !!(ctxUiWorkspaceRef && typeof ctxUiWorkspaceRef.connectWorkspace === "function") });
         var wsConnector = (ctxUiWorkspaceRef && typeof ctxUiWorkspaceRef.connectWorkspace === "function") ? ctxUiWorkspaceRef : ((props.ctxWorkspaces && typeof props.ctxWorkspaces.connectWorkspace === "function") ? props.ctxWorkspaces : null);
         if (wsId && wsConnector) {
           wsConnector.connectWorkspace(wsId).then(function (newId) {
@@ -2572,7 +2555,7 @@ window.__ModuleLoader__.load({
         }
       } catch (e) { /* ignore */ }
       // 兜底：归档已生效，官方自动回 hero
-      log("info", "reset", "重置完成（兜底路径）", { sessionId: sessionId, mode: mode });
+      log("warn", "reset", "无可用的空白新会话通道（已归档，回 hero）", { sessionId: sessionId, mode: mode, wsId: wsId });
     }
 
     /** 版本翻页器 < X >：撤回/编辑重发产生的版本家族切换（官方 assistant-actions 操作区）。
@@ -4087,7 +4070,10 @@ window.__ModuleLoader__.load({
         } catch (eDbg) { /* ignore */ }
         try { ctxConversationRef = ctx.conversation; } catch (e) { ctxConversationRef = null; }
         try { ctxUiConversationRef = (typeof ctx.get === "function") ? (ctx.get("uiConversation") || null) : null; } catch (eUic) { ctxUiConversationRef = null; }
-        try { ctxUiWorkspaceRef = ctx.uiWorkspace || ((typeof ctx.get === "function") ? (ctx.get("uiWorkspace") || null) : null); } catch (eUiw) { ctxUiWorkspaceRef = null; }
+        // 注意：uiWorkspace 不在本插件的 inject 清单内，`ctx.uiWorkspace` 抛错（见下方
+        // invokeOpenSession 的 try/catch）；此前把它放在 || 左侧，抛错被 catch 吞掉，导致
+        // ctx.get("uiWorkspace") 永远不可达、ctxUiWorkspaceRef 恒为 null（空白新会话通道自 2.6.0 起失效）。
+        try { ctxUiWorkspaceRef = (typeof ctx.get === "function") ? (ctx.get("uiWorkspace") || null) : null; } catch (eUiw) { ctxUiWorkspaceRef = null; }
         function invokeOpenSession(id) {
           try {
             if (ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function") {
