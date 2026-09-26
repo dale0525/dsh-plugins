@@ -21,8 +21,6 @@
     - 将插件内部已验证上限常量 `MAX_TESTED_DSH_VERSION` 同步推高至 `0.1.7-rc.2`，消除在 0.1.5~0.1.7 区间内设置卡片误报“较新，适配评估中”的提示。
   - **修复 `conversation` / `uiConversation` 服务引用永不赋值**：
     - 两处弱引用此前只声明不赋值，导致图片附件重建链路（`createDraftImages` / `resolveImage` / `imageUrl`）恒走 `null` 分支；现已恢复在 `apply` 中注入。
-  - **版本恢复后的会话切换统一走 `safeOpenSession`**：
-    - 该处原先直调 `props.openSession`（0.1.7 下即已移除的 `ctx.sessions.open`），绕过全部降级通道；现改走多通道安全降级网。
   - **生命周期日志时点修正**：
     - `client half active` 原先在全部 `slots.register` 之前输出，槽位渲染崩溃时它照样打印，易被误读为「UI 正常」；现移至注册完成后并改名为 `client half registered`，只证明注册跑完。
 

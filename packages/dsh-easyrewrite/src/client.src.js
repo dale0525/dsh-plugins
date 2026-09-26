@@ -2334,9 +2334,7 @@ window.__ModuleLoader__.load({
                                 body: JSON.stringify({ sessionId: vid }),
                                 keepalive: true
                               }).then(function () {
-                                // 恢复后切会话必须走 safeOpenSession：props.openSession 在 0.1.7 上
-                                // 就是 ctx.sessions.open（已移除），直调等于没有降级通道。
-                                safeOpenSession(vid, props);
+                                if (typeof props.openSession === "function") props.openSession(vid);
                               }).catch(function () { /* ignore */ });
                             }
                           }, L.versionRestoreOpen)
