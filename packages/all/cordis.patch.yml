@@ -224,3 +224,21 @@
 - insert:
     - id: dsh-better-reasoning-effort
       name: '@logictan/dsh-better-reasoning-effort'
+
+# from ../dsh-todo-goal
+# dsh-todo-goal bundle patch layer.
+#
+# One bare plugin row. The package has a host half only: it registers no tool
+# and no client surface, it listens on the host's `tools/post-execute` seam and
+# writes through `ctx.goals`.
+#
+# Row id `todo-goal` equals the host half's `export const name` in src/index.js.
+# It is checked by hand against every other row id in this repository;
+# `aggregate.mjs --check` does not validate id uniqueness.
+#
+# This plugin owns no configuration: the "more than three tasks" boundary is the
+# rule it exists to enforce, so it is a constant in the source rather than a
+# setting that can drift away from the rule.
+- insert:
+    - id: todo-goal
+      name: '@logictan/dsh-todo-goal'

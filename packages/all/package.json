@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.49",
+  "version": "0.5.50",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -29,6 +29,7 @@
     "@logictan/dsh-imagegen": "^2.0.1",
     "@logictan/dsh-loop-guard": "^1.1.5",
     "@logictan/dsh-openviking": "^0.4.5",
+    "@logictan/dsh-todo-goal": "^0.1.0",
     "@logictan/dsh-workbuddy-connect": "^0.6.2"
   }
 }

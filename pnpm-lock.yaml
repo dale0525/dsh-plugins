@@ -47,6 +47,9 @@ importers:
       '@logictan/dsh-openviking':
         specifier: ^0.4.5
         version: link:../dsh-openviking
+      '@logictan/dsh-todo-goal':
+        specifier: ^0.1.0
+        version: link:../dsh-todo-goal
       '@logictan/dsh-workbuddy-connect':
         specifier: ^0.6.2
         version: link:../dsh-workbuddy-connect
@@ -456,6 +459,8 @@ importers:
       semver:
         specifier: 7.8.5
         version: 7.8.5
+
+  packages/dsh-todo-goal: {}
 
   packages/dsh-workbuddy-connect:
     devDependencies:
