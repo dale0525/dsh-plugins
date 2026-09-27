@@ -1,0 +1,45 @@
+{
+  "name": "@logictan/dsh-todo-goal",
+  "version": "0.1.0",
+  "description": "DSH plugin that creates an armed session goal as soon as a session records more than three open tasks. DSH 会话自动目标子插件。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "build": "node build.mjs",
+    "prepare": "node build.mjs",
+    "prepack": "node build.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "goal",
+    "todo",
+    "session"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-todo-goal"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  }
+}
