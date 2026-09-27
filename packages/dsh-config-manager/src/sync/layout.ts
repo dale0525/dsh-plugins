@@ -94,11 +94,21 @@ export async function listSnapshotFiles(fsx: SnapshotFs, dir: string): Promise<s
  * 被读回端跳过的目录，而不是一个「看起来有效、下载时才失败」的半成品。
  * 内容写入用非原子批量写（{ atomic: false }）：逐文件 tmp+fsync+rename 不提供目录级原子性
  * （目录级语义由上面的写序承担），只把成本放大近 20 倍。
+ *
+ * opts.inPlace：目录里已有一份旧快照，本次是**原地更新**（git 固定路径布局）。
+ * 两个语义与「写全新目录」不同：
+ * - **内容未变化的文件不重写**——重写只改 mtime，git 便无法靠 stat 缓存跳过，实测 2000 文件
+ *   的 git add 从 0.08s 退化到 0.46s，且写盘本身要 1.4s；
+ * - **清理旧快照留下的陈旧文件**——固定路径下旧文件不会被新快照覆盖，不清理就会永久残留
+ *   并进入 git 提交。
+ * 空文件类分区的占位文件（.gitkeep）也在这里落盘，因此它同样算作「期望路径」——分区由空变
+ * 非空时占位文件会被清理，不会成为残留。
  */
 export async function writeSnapshotToDir(
   snapshot: SyncSnapshot,
   dir: string,
   fsx: SnapshotFs = createSnapshotFs(),
+  opts: { inPlace?: boolean } = {},
 ): Promise<SnapshotDirManifest> {
   // 加密快照不写散文件目录（本地不落盘：密文/明文都不落；远端已存密文）
   if (isEncryptedSections(snapshot.sections)) {
@@ -124,13 +134,24 @@ export async function writeSnapshotToDir(
 
   await fsx.mkdir(dir);
 
+  // 本次快照期望存在的全部相对路径（inPlace 清理陈旧文件的判据）
+  const expected = new Set<string>();
+  const writeIfChanged = async (abs: string, rel: string, data: Uint8Array): Promise<void> => {
+    expected.add(rel);
+    if (opts.inPlace === true && await fsx.exists(abs)) {
+      const current = await fsx.readFile(abs);
+      if (current.length === data.length && Buffer.from(current).equals(Buffer.from(data))) return;
+    }
+    await fsx.writeFile(abs, data, { atomic: false });
+  };
+
   // JSON 分区：按 SECTION_JSON_PATHS 平铺
   for (const [sid, rel] of Object.entries(SECTION_JSON_PATHS)) {
     const data = snapshot.sections[sid as SectionId];
     if (data === undefined) continue;
     const abs = joinFs(dir, rel);
     await fsx.mkdir(path.dirname(abs));
-    await fsx.writeFile(abs, new TextEncoder().encode(stringifyJsonSafe(data, { space: 2 })), { atomic: false });
+    await writeIfChanged(abs, rel, new TextEncoder().encode(stringifyJsonSafe(data, { space: 2 })));
   }
 
   // 文件类分区：目录前缀 + 真实文件
@@ -142,7 +163,24 @@ export async function writeSnapshotToDir(
     for (const file of data.files) {
       const abs = joinFs(baseAbs, file.relativePath);
       await fsx.mkdir(path.dirname(abs));
-      await fsx.writeFile(abs, file.data, { atomic: false });
+      await writeIfChanged(abs, `${prefix}${file.relativePath}`, file.data);
+    }
+    // git 不跟踪空目录：空文件类分区写占位文件，保证远端保留该目录（读回时按名+内容过滤）。
+    // 放在布局层而非各传输实现，是为了让 inPlace 清理把它算进「期望路径」——
+    // 否则分区由空变非空后，占位文件会成为无人清理的残留。
+    if (data.files.length === 0) {
+      await writeIfChanged(joinFs(baseAbs, SNAPSHOT_KEEP_FILE), `${prefix}${SNAPSHOT_KEEP_FILE}`, new TextEncoder().encode(SNAPSHOT_KEEP_CONTENT));
+    }
+  }
+
+  // inPlace：删除旧快照遗留、本次不再存在的文件（固定路径下它们不会被覆盖，只会永久残留）。
+  // manifest.json 算作期望路径：它是「本快照完整可用」的标记，先删再写会留下一段没有标记的空窗，
+  // 而它马上会被原子重写，保留旧标记直到新标记落盘更安全。
+  expected.add(SNAPSHOT_MANIFEST_FILE);
+  if (opts.inPlace === true) {
+    for (const rel of await listSnapshotFiles(fsx, dir)) {
+      if (expected.has(rel)) continue;
+      await fsx.remove(joinFs(dir, rel));
     }
   }
 

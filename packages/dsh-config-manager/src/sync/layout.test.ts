@@ -311,3 +311,103 @@ test('createSnapshotFs: 默认 node:fs 适配器可用（真实临时目录）',
     await fs.rm(tmp, { recursive: true, force: true });
   }
 });
+
+/* ---------------- 增量写入（方案 A）：跳过未变化内容 + 原地清理陈旧文件 ---------------- */
+
+/** 记录 writeFile 调用的 fsx 包装（其余操作透传），用于断言「未变化的文件不被重写」 */
+function recordingFsx(real: SnapshotFs, writes: string[]): SnapshotFs {
+  return {
+    ...real,
+    async writeFile(p, d, opts) { writes.push(p); await real.writeFile(p, d, opts); },
+  };
+}
+
+test('writeSnapshotToDir(inPlace): 内容未变化 → 除 manifest 外零写入（不重写整棵快照树）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-inplace-noop-'));
+  try {
+    const real = createSnapshotFs();
+    const snap = sampleSnapshot();
+    await writeSnapshotToDir(snap, tmp, real);
+    const writes: string[] = [];
+    await writeSnapshotToDir(snap, tmp, recordingFsx(real, writes), { inPlace: true });
+    assert.equal(writes.length, 1, `未变化不得重写内容文件: ${writes.join(', ')}`);
+    assert.ok(writes[0]!.endsWith(SNAPSHOT_MANIFEST_FILE), '唯一写入应是 manifest.json');
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('writeSnapshotToDir(inPlace): 只重写内容变化的文件', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-inplace-diff-'));
+  try {
+    const real = createSnapshotFs();
+    await writeSnapshotToDir(sampleSnapshot(), tmp, real);
+    const snap2 = sampleSnapshot();
+    snap2.sections['skills'] = {
+      version: 1,
+      files: [
+        { relativePath: 'coding.md', data: new TextEncoder().encode('# Coding v2\n'), contentHash: 'x' },
+        { relativePath: 'nested/tool.md', data: new TextEncoder().encode('# Tool\n'), contentHash: 'y' },
+      ],
+    };
+    const writes: string[] = [];
+    await writeSnapshotToDir(snap2, tmp, recordingFsx(real, writes), { inPlace: true });
+    assert.deepEqual(
+      writes.map((p) => p.slice(tmp.length + 1)).sort(),
+      ['custom/skills/coding.md', SNAPSHOT_MANIFEST_FILE],
+      `只应重写变化的文件与 manifest: ${writes.join(', ')}`,
+    );
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('writeSnapshotToDir(inPlace): 删除新快照中已不存在的陈旧文件', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-inplace-prune-'));
+  try {
+    const real = createSnapshotFs();
+    await writeSnapshotToDir(sampleSnapshot(), tmp, real);
+    const snap2 = sampleSnapshot();
+    snap2.sections['skills'] = {
+      version: 1,
+      files: [{ relativePath: 'coding.md', data: new TextEncoder().encode('# Coding\n'), contentHash: 'x' }],
+    };
+    await writeSnapshotToDir(snap2, tmp, real, { inPlace: true });
+    assert.equal(await real.exists(path.join(tmp, 'custom/skills/nested/tool.md')), false, '陈旧文件应被删除');
+    assert.equal(await real.exists(path.join(tmp, 'custom/skills/coding.md')), true, '保留的文件不得被删');
+    const back = (await readSnapshotFromDir(tmp)) as unknown as PlainSnapshot;
+    const skills = back.sections['skills'] as { files: { relativePath: string }[] };
+    assert.deepEqual(skills.files.map((f) => f.relativePath), ['coding.md']);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('writeSnapshotToDir(inPlace): 整个文件类分区从新快照消失 → 其下文件全部清理', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-inplace-prune-section-'));
+  try {
+    const real = createSnapshotFs();
+    await writeSnapshotToDir(sampleSnapshot(), tmp, real);
+    const snap2 = sampleSnapshot();
+    delete snap2.sections['pluginFiles'];
+    await writeSnapshotToDir(snap2, tmp, real, { inPlace: true });
+    assert.equal(await real.exists(path.join(tmp, 'plugin-files/dsh-ssh/main.js')), false, '消失分区的文件应被清理');
+    assert.equal(await real.exists(path.join(tmp, 'custom/skills/coding.md')), true, '仍在的分区不受影响');
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('writeSnapshotToDir(默认): 不清理既有文件（非 inPlace 语义不变）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-inplace-default-'));
+  try {
+    const real = createSnapshotFs();
+    await writeSnapshotToDir(sampleSnapshot(), tmp, real);
+    const snap2 = sampleSnapshot();
+    snap2.sections['skills'] = { version: 1, files: [] };
+    await writeSnapshotToDir(snap2, tmp, real);
+    assert.equal(await real.exists(path.join(tmp, 'custom/skills/nested/tool.md')), true, '默认不得删除既有文件');
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
