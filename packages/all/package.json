@@ -30,6 +30,6 @@
     "@logictan/dsh-loop-guard": "^1.1.5",
     "@logictan/dsh-openviking": "^0.4.5",
     "@logictan/dsh-todo-goal": "^0.1.0",
-    "@logictan/dsh-workbuddy-connect": "^0.6.2"
+    "@logictan/dsh-workbuddy-connect": "^0.6.4"
   }
 }
