@@ -1,8 +1,9 @@
 /**
  * Wire-surface types the browser half consumes: the settings Remote faces and
  * the pure seam the effort editor needs. The compilation baseline is the
- * 0.1.6-alpha.2 kernel line (a downgrade retry for older kernels' narrower
- * compat schema is kept as a safety net):
+ * 0.1.7-alpha.1 kernel line, whose settings shell exposes the form under the
+ * entry id (the 0.1.6 `settingsScope` binder is gone); an absent shell costs
+ * this plugin its mirror shortcut and nothing else:
  * the browser talks to the generated Typert
  * `ctx.remote.settings` stub — `describe()` takes no argument, `mutate` takes
  * positional `(ns, ops, expectedRevision)`, and every answer is the envelope

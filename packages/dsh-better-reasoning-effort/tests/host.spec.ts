@@ -16,9 +16,11 @@ type HostCtx = Parameters<typeof import('../src/index.js').apply>[0]
 function fakeSettings(providers: Record<string, unknown> | undefined) {
   let revision = 3
   let current = providers
+  let describeCalls = 0
   const updates: Array<{ patch: object; expectedRevision: number | undefined }> = []
   return {
     describe(): Array<{ ns: string; revision: number; value?: unknown; user?: unknown }> {
+      describeCalls += 1
       // Active entries only: before llm-pi-ai is up, the list is empty. There is
       // no `get(namespace)` any more — the descriptor IS the read, and it carries
       // the raw USER layer too (the autofill builds its patch from it, never from
@@ -35,6 +37,7 @@ function fakeSettings(providers: Record<string, unknown> | undefined) {
       revision += 1
     },
     updates,
+    describeCalls: () => describeCalls,
     register(namespace: string, next?: Record<string, unknown>): void {
       void namespace
       if (next !== undefined) current = next
@@ -87,7 +90,7 @@ function fakeHost(
       }
     },
     on(event: string, cb: (ns: unknown) => void): void {
-      if (event === 'settings/updated') listeners.push(cb)
+      if (event === 'settings/document-updated') listeners.push(cb)
     },
     get(name: string): unknown {
       return name === 'credentials' ? options?.credentials : undefined
@@ -144,7 +147,7 @@ describe('apply() autofill', () => {
     expect(settings.updates).toHaveLength(0)
   })
 
-  it('never re-fills on a settings/updated commit: the running fill is the browser half\'s', async () => {
+  it('never re-fills on a settings/document-updated commit: the running fill is the browser half\'s', async () => {
     // Issue #7: a fill the moment a commit lands rides the official card's own
     // frozen revision baseline, so the user's NEXT save in that card is refused
     // with `settings/conflict` and their edit reads as lost. The browser half
@@ -192,7 +195,7 @@ describe('apply() autofill', () => {
 
   it('fills every undeclared model in the one boot pass, and only there', async () => {
     // The running complement moved to the browser half (issue #7 -- see the
-    // "never re-fills on a settings/updated commit" case above). What stays
+    // "never re-fills on a settings/document-updated commit" case above). What stays
     // here: one boot write carries the whole document, and a deliberate unset
     // is still respected.
     const settings = fakeSettings({
@@ -847,6 +850,36 @@ describe('apply() default-guard', () => {
     })
     llm.svc.stream({ provider: 'suiyue', model: 'glm-5.3-flash', maxTokens: 16, messages: [] })
     expect(llm.streamed[0]).toMatchObject({ reasoningEffort: 'max' })
+  })
+
+  it('reads SettingsForms once until a document update invalidates the cache', async () => {
+    const settings = fakeSettings(GUARD_PROVIDERS)
+    const llm = fakeLlm()
+    const { ctx, emitUpdated } = fakeHost(settings, { llm: llm.svc })
+    const { apply } = await import('../src/index.js')
+    apply(ctx, configRefs({ autofill: false }))
+
+    await llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash' })
+    await llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash' })
+    expect(settings.describeCalls()).toBe(1)
+
+    emitUpdated('llm-pi-ai')
+    await llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash' })
+    expect(settings.describeCalls()).toBe(2)
+  })
+
+  it('fails open when SettingsForms.describe throws', async () => {
+    const settings = fakeSettings(GUARD_PROVIDERS)
+    settings.describe = () => {
+      throw new Error('settings unavailable')
+    }
+    const llm = fakeLlm()
+    const { ctx } = fakeHost(settings, { llm: llm.svc })
+    const { apply } = await import('../src/index.js')
+    apply(ctx, configRefs({ autofill: false }))
+
+    await expect(llm.svc.prepareCall({ provider: 'suiyue', model: 'glm-5.3-flash' })).resolves.toBeDefined()
+    expect('reasoningEffort' in llm.prepared[0]!).toBe(false)
   })
 
   it('leaves explicit selections and off-capable ladders alone', async () => {

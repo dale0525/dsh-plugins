@@ -15,12 +15,10 @@
 ![Version](https://img.shields.io/badge/version-0.4.1-4d6bfe)
 ![Docs](https://img.shields.io/badge/docs-EN%20%7C%20ZH-4d6bfe)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
-[![Commit activity](https://img.shields.io/github/commit-activity/t/HaoyueQin/dsh-better-reasoning-effort)](https://github.com/HaoyueQin/dsh-better-reasoning-effort/graphs/commit-activity)
-[![Last commit](https://img.shields.io/github/last-commit/HaoyueQin/dsh-better-reasoning-effort)](https://github.com/HaoyueQin/dsh-better-reasoning-effort/commits)
 
 **English** | [中文](README.zh.md)
 
-Reasoning-effort **and input-modality** editing for **third-party models** in DeepSeek Harness — thinking levels and image-input support declared per model, auto-adapted from a model knowledge base + wire-protocol inference, edited right inside the official Models page card. Plus a **quick reasoning-effort slider inside the official model menu** (white round thumb, integrated from HanaAyane's dsh-reasoning-effort — see [Acknowledgements](#acknowledgements)) — the composer's official bottom-right *model · effort* display is left untouched.
+Reasoning-effort **and input-modality** editing for **third-party models** in DeepSeek Harness, edited right inside the official Models page card — plus a quick reasoning-effort slider inside the official composer model menu (adapted from [HanaAyane's dsh-reasoning-effort](https://github.com/HanaAyane/dsh-reasoning-effort), see [Acknowledgements](#acknowledgements)).
 
 <p align="center">
   <img src="docs/demo.svg" alt="demo" width="640">
@@ -32,14 +30,7 @@ Reasoning-effort **and input-modality** editing for **third-party models** in De
 
 ## Why
 
-The `llm-pi-ai` adapter of DeepSeek Harness natively supports per-model `reasoningEfforts` declarations (which thinking levels a model accepts, and the exact string to send on the wire for each). But the official Models page editor **deliberately keeps this field out of reach** — the official notes say it is a per-model capability and a provider-level knob would break some models. As a result:
-
-- Third-party models get **no thinking-level picker** in the composer (`getSupportedThinkingLevels` short-circuits to `["off"]`);
-- Only the official DeepSeek API (the built-in catalog) can set reasoning effort;
-- Setting levels for a third-party model meant hand-writing the `reasoningEfforts` / `compat` blocks in `settings.yaml`.
-- Hand-declared third-party models are treated as **text-only** (`input` defaults to `["text"]`): image attachments are refused before they are sent, the read-image tool refuses, and every gateway path in between gates on the same flag. The core already accepts a per-model `input: ["text", "image"]` declaration — the official page just does not expose it either.
-
-This plugin brings both configuration surfaces back into the UI: **edit right inside the official model editor card**, plus **one-click auto-adapt**.
+The `llm-pi-ai` adapter natively supports per-model `reasoningEfforts` and `input` declarations, but the official Models page editor deliberately keeps both fields out of reach. As a result, third-party models get **no thinking-level picker** in the composer, only the official DeepSeek API can set reasoning effort, hand-declared models are treated as **text-only**, and configuring any of this meant hand-writing `settings.yaml` blocks. This plugin brings both configuration surfaces back into the UI: edit inside the official model editor card, plus one-click auto-adapt.
 
 ## Features
 
@@ -56,8 +47,13 @@ This plugin brings both configuration surfaces back into the UI: **edit right in
 - **Composer model search (unconditional)**: while the official model menu shows its model list, a search box is injected above the list. It filters the official rows by provider name, model name and model id (space-separated tokens, case-insensitive), hides provider groups with no match, and shows an empty state when nothing matches. `↓` from the input jumps to the first match, `Esc` clears the query, and while a query is active the arrow keys move between the **visible** rows only. It sits above the official list but below the official load notices, and it never touches the menu's own size or scrolling. Unlike the slider it is **not** behind the settings toggle: it is injected whenever the plugin is active.
 - **Per-model default effort (issue #4)**: each model row's editor gains a "Default effort" picker — the level every new session starts this model at. It is stored on the model row in the settings document (so it survives restarts and follows the deployment, not the browser) and outranks the remembered levels across sessions; within a session your hand always wins — a level you picked (or an explicit "follow the provider default") is never overridden by any automatic mechanism. The picker lists exactly the model's own declared levels; clearing it restores the memory chain, and an empty pick is simply absent from the document (no marker needed — nothing auto-fills it).
 - **Models-page toggle**: the "Reasoning effort slider" switch moved out of the general settings and onto the **Models** settings page, below the *Add provider* / *Add custom provider* actions, inside a boxed container (same item form as the upstream plugin). The toggle rides the official `settings.models.footer` slot, which it takes unconditionally.
+- **Request headers & `user-agent`**: a provider-card section edits the official `headers` field (masked, path-merged, Save-gated), and the plugin performs the `user-agent` override at the fetch layer per origin, because the official adapter reserves that name; same-origin `/models` probes are covered, conflicts are reported rather than guessed.
 - **Defensive injection**: the injector keys off the official page's DOM (aria-labels / classes). If an official upgrade changes the structure, injection simply stops and the official page is untouched; the next scan re-injects once the structure is back.
 - Bilingual copy (中文 / English).
+
+## Supported models
+
+The auto-adapt knowledge base carries **65 curated entries across 15 vendors** (DeepSeek, OpenAI, Anthropic Claude, Gemini, Grok, Qwen, GLM, Kimi, Mistral, MiniMax, MiMo, Doubao, Hunyuan, Step, ERNIE — re-verified against official docs 2026-08/09, including vision-capable variants and no-effort-control families). The full table — match patterns, level → wire-spelling ladders, defaults, modalities, reference capacities — lives in **[docs/supported-models.md](docs/supported-models.md)** (generated from [`src/knowledge.ts`](src/knowledge.ts), the authoritative source). Unlisted models fall back to protocol inference + generic levels, adjustable by hand.
 
 ## Install
 
@@ -78,64 +74,49 @@ A further source re-check across `0.1.6-alpha.1` → `0.1.6-alpha.2` found exact
 ### From npm
 
 ```bash
-# under the dsh web profile
+# from npm, under the dsh web profile
 dsh plugin --profile web add dsh-better-reasoning-effort
-```
 
-### From GitHub
-
-```bash
-# under the dsh web profile
+# or from GitHub (source install; `lib/` builds via the prepare hook — the
+# installer prints the `allowBuilds` key it needs, follow that and re-add)
 dsh plugin --profile web add github:HaoyueQin/dsh-better-reasoning-effort
-```
 
-The `github:` source only pulls source; `lib/` is built by the package's `prepare` hook. pnpm does not run build scripts of git dependencies by default — the installer prints the `allowBuilds` key it needs; follow that and `add` again.
-
-### Local development
-
-```bash
+# or link a local checkout for development
 npm install && npm run build
 dsh plugin --profile web add link:D:/Project/dsh-better-reasoning-effort
 ```
 
-Restart `dsh web`, hard-refresh the browser. Each model row's disclosure on the official Models page now carries a "Reasoning effort" block.
+Restart `dsh web` and hard-refresh the browser.
 
 ## Usage
 
 1. Configure a third-party provider (API key etc.) on the official Models page.
 2. Expand a model row: the editor block sits under the official capacity fields.
    - Check levels (off / minimal / low / medium / high / xhigh / max) and fill the wire values (e.g. give `high` the spelling `ultra`, and the gateway receives `ultra` when you pick High in the composer);
-   - Toggle **Image input** under *Input modalities* to declare what the model accepts (unchecked with no declaration = inherit the provider default, usually text-only);
-   - Click **Auto-adapt** to fill recommended levels and modalities from the knowledge base / protocol / endpoint listing — reference capacities show up as read-only hints you can copy into the official fields yourself;
-   - Any change you make is **pending**: the block says so, and those changes land when you press the card's own **Save**. Press **Cancel** (or reload the page) and they are discarded along with the card's own fields.
-3. On a compatible protocol, the *Endpoint compatibility* section appears at the bottom — set the thinking budget field / vLLM priority on `openai-completions`, and `max_output_tokens` handling on `openai-responses`.
-4. All levels off + Save = unset the declaration; only `off` checked + Save = disable reasoning (`false`); *Clear declaration* on the modality row + Save = back to inheriting the provider default.
+   - Toggle **Image input** under *Input modalities* to declare what the model accepts;
+   - Click **Auto-adapt** to fill recommended levels and modalities — reference capacities show up as read-only hints you copy into the official fields yourself;
+   - Any change is **pending** and lands when you press the card's own **Save**; **Cancel** (or a reload) discards it with the card's fields.
+3. On a compatible protocol, the *Endpoint compatibility* section appears at the bottom — thinking budget field / vLLM priority on `openai-completions`, `max_output_tokens` handling on `openai-responses`.
+4. All levels off + Save = unset the declaration; only `off` checked + Save = disable reasoning (`false`); *Clear declaration* + Save = back to inheriting the provider default.
 
-Declared models are immediately selectable for reasoning effort in the composer's model picker, and image-declared models accept attachments end to end.
+Declared models are immediately selectable for reasoning effort in the composer, and image-declared models accept attachments end to end.
 
 ## Configuration
 
-The host half accepts optional configuration on its profile row (the values below are the defaults):
+Optional on the plugin's profile row (values shown are the defaults):
 
 ```yaml
 - insert:
     - id: dsh-better-reasoning-effort
       name: dsh-better-reasoning-effort
       config:
-        # Auto-fill undeclared models on boot (the browser half fills session
-        # additions once you leave the editing card).
-        autofill: true
-        # Whether the auto-fill above also fills input-modality declarations.
-        modalityAutofill: true
-        # Upstream /models probe fetch timeout, in milliseconds.
-        probeTimeoutMs: 15000
-        # Boot-fill retry backoff schedule; [] means "try exactly once".
+        autofill: true          # auto-fill undeclared models at boot
+        modalityAutofill: true  # whether the boot fill also covers modalities
+        probeTimeoutMs: 15000   # /models probe fetch timeout
         bootRetryDelaysMs: [1000, 2000, 4000, 8000, 16000, 30000]
-        # Map effort-less calls on forced-thinking ladders to the vendor default.
-        defaultGuard: true
+        defaultGuard: true      # map effort-less calls on forced-thinking
+                                # ladders to the vendor default
 ```
-
-Set `autofill: false` to disable the silent auto-fill entirely (both the boot pass and the browser half's running complement) — the browser-side **Auto-adapt** button keeps working.
 
 ## How it works
 
@@ -156,10 +137,9 @@ Browser (lib/client.js)                  Host (lib/index.js)
 │   └─ writes settings.mutate (llm-pi-ai)
 ```
 
-- **Knowledge base + protocol inference**: `suggestEfforts()` in `src/knowledge.ts`, a pure function shared by host and browser — fusing endpoint signals, curated entries (levels, modalities, reference capacities), a name heuristic, and protocol inference.
-- **DOM injection**: `reconcile()` in `src/client/injection/models-page-editor.ts` locates model rows by the official button aria-label (the `modelAdvanced` dictionary value: `Capacities`/`容量` on `0.1.6-alpha.1`, `Model options`/`模型选项` from `0.1.6-alpha.2`) and mounts the editor into the capacity disclosure. The browser half's assembly layer is `src/client/index.ts`; each injection seam lives in `src/client/injection/`.
-- **Writing**: `createEditorApi()` in `src/client/ops.ts` rewrites `providers.<route>.models[i].reasoningEfforts` — and, when an intent travels, `.input` — via `settings.mutate`, preserving every other row field; on a revision conflict it re-reads and retries once (the same recovery the official settings form uses).
-- **Shared constants**: `src/constants.ts` carries the plugin id, settings namespace, and DOM marker used by both halves.
+- `suggestEfforts()` in `src/knowledge.ts` is the knowledge base + inference engine — a pure function shared by host and browser.
+- `reconcile()` in `src/client/injection/models-page-editor.ts` locates model rows and mounts the editor; `src/client/index.ts` assembles the browser half, one module per seam in `src/client/injection/`.
+- `createEditorApi()` in `src/client/ops.ts` writes the declarations via `settings.mutate`, preserving every other row field and retrying once on a revision conflict.
 
 ## Development
 
@@ -174,36 +154,22 @@ Runtime re-check against the `0.1.5-rc.1` kernel (2026-09): the settings Remote'
 
 ## Known limitations
 
-- Injection depends on the official Models page's current DOM (aria-label/class). If an official upgrade changes the structure, injection pauses until adapted; the official page is unaffected meanwhile.
-- The official model menu's Arrow-key roving focus walks its own (hidden) root cells, which is a no-op on display:none nodes — keyboard users reach the replica via Tab, and the replica row's Enter opens the official model list.
-- The auto-adapt probe route answers **loopback and IP-literal Hosts only** — the core `/api` fence's Host-allowlist discipline without its `trustedHosts` escape hatch (a rebound page always names the attacker's *domain* in Host, so named hosts are refused outright). LAN deployments serving the GUI under a domain name get a 403 from this one route (IP-literal LAN hosts keep working); every other feature is unaffected.
-- The auto-adapt probe **never follows a redirect** (`redirect: 'error'`): it carries your stored credential, and a cross-origin hop would not strip the custom authentication headers it composes — so only the address named in the profile may receive it. The cost is bounded: a gateway that lists its models only behind a 30x yields no endpoint evidence, and Auto-adapt falls back to the knowledge base / protocol inference, the same path every unanswerable endpoint takes.
-- `reasoningEfforts` declarations are suggestions: which levels/spellings an endpoint actually accepts is up to its docs — tweak each in the UI.
-- The knowledge base is not exhaustive — spellings drift as vendors ship models, and families without an effort ladder carry no entry at all; unlisted models fall back to protocol inference + generic levels and can be adjusted by hand.
-- Endpoint-compatibility switches are never auto-filled, by design: `supportsMaxOutputTokens` and `vllmPriority` describe a gateway's behavior rather than a model's capability, so no model entry carries them. The safe default (unset) sends the field the protocol normally sends; flip the switch only for a gateway that has actually refused it.
-- The modality vocabulary follows pi-ai's core (`text` / `image` today). Wider support some gateways serve (PDF, audio, video) is recorded per family until the core vocabulary grows — declaring them is impossible today by design, not oversight.
-- For a model declared image-capable, how an over-budget image request fails depends on the kernel: `0.1.6` fails with `IMAGE_OFFLOAD_REQUIRED` and lets the compaction side choose which images to offload, where `0.1.5` silently replaced the oldest images with placeholder text. The declaration and the editor are unchanged — this only affects the shape of an over-budget request's failure.
-- Name-heuristic modality advice (vision-flavored ids like `*-vl*` / `*vision*` / `gpt-4o`) is deliberately low-confidence and labeled as such — verify before relying on it.
-- Self-hosted relays: auto-fill and Auto-adapt pin `supportsDeveloperRole: false` on `openai-completions` routes no official host claims, so the system prompt keeps the `system` role (some upstreams reject `developer` with 角色信息不正确). Explicit values are never overwritten — the one exception being the endpoint-compatibility pickers: choosing "Unset" for one and saving the card is how you revoke it, and the editor only ever deletes a field it showed. Uncheck every level + Save clears a declaration back to bare provider-default requests, which is the compatibility mode for relays that reject thinking parameters.
-- Forced-thinking models (ladders without `off`, e.g. GLM-5.3): provider tests and Default calls would otherwise send `thinking: disabled` and fail (e.g. 1210) — the host maps them to the ladder's vendor default instead. Set `defaultGuard: false` to restore the old behavior.
+- Injection depends on the official Models page's DOM (aria-label/class); an official upgrade may pause injection until adapted — the official page is unaffected meanwhile.
+- The auto-adapt probe route answers **loopback and IP-literal hosts only** (the core `/api` Host-allowlist discipline without `trustedHosts`), and **never follows redirects** — a gateway listing its models only behind a 30x simply yields no endpoint evidence; Auto-adapt falls back to the knowledge base and protocol inference.
+- `reasoningEfforts` declarations are suggestions — what an endpoint actually accepts is up to its docs; tweak in the UI. The knowledge base is not exhaustive; families without an effort ladder carry no entry at all.
+- Endpoint-compatibility switches are never auto-filled by design: they describe a gateway, not a model.
+- The modality vocabulary follows pi-ai's core (`text` / `image` today); wider gateway support (PDF, audio, video) is recorded per family until the core vocabulary grows.
+- Name-heuristic modality advice (vision-flavored ids) is deliberately low-confidence and labeled as such.
+- Self-hosted relays: auto-fill pins `supportsDeveloperRole: false` on routes no official host claims (some upstreams reject the `developer` role); explicit values are never overwritten.
+- Forced-thinking models (ladders without `off`, e.g. GLM-5.3): effort-less calls map to the vendor default instead of sending `thinking: disabled` — set `defaultGuard: false` to restore raw behavior.
+- **Credentials inside `headers` are not redacted on disk**: the read-only view masks them, but the settings document still holds them in clear text — treat it like an API key.
+- **The request-header section's edit-state detection reads an unofficial signal** (the official row exposes no data attribute for its editor state); if an official build renames that class root, the section stops appearing — never breaking the page.
+- **Only one `user-agent` rewrite should be active**: sibling header plugins land on the same layer; the plugin detects and reports known ones, but the last writer on the wire wins.
+- The request-layer takeover relies on the official adapter creating a fresh SDK client per request — guarded by an end-to-end test that fails loudly if that changes.
 
 ## Acknowledgements
 
-The composer reasoning-effort slider is **adapted from [dsh-reasoning-effort](https://github.com/HanaAyane/dsh-reasoning-effort) by [HanaAyane](https://github.com/HanaAyane)** (MIT license) — thank you for the original work and the codex-style effort control idea.
-
-What this plugin took from it:
-
-- the session model-selection contract it rides (per-session model directory → adapter-advertised effort ladder → `selectModel` submit, with optimistic snap and rollback on refusal);
-- the slider interaction shape (drag / keyboard, level label next to the thumb).
-
-What was deliberately **changed** in this integration:
-
-- **White round thumb only.** The chibi-runner "big fish" knob is not carried over (it swaps the thumb for the fish sprite); everything else is upstream verbatim — the gradient pill track, the left-clipped radiation canvas effect and the flare glow, the drag/keyboard contract, the optimistic commit with rollback.
-- **The official model seat is never replaced.** The upstream plugin shadows the whole seat (its own trigger + menu); here the official bottom-right *model · effort* display stays untouched, and the slider is injected into the top of the official menu when it opens.
-- **Different placement / fewer settings.** The upstream "推理强度滑块 / 大肥鱼滑块" items lived in the general settings page; here only the *Reasoning effort slider* toggle remains, in a boxed container on the **Models** page below the add-provider actions. The "大肥鱼滑块" item is dropped together with the feature.
-- **Maintained on the `0.1.5-alpha` line and later** (compiled and gated against `0.1.6-alpha.2`). This is a reduced re-implementation over the harness wire contract (not a fork of the upstream bundle): it runs on `0.1.5-alpha.1` and later kernels (see the compatibility note above) without the upstream's `0.1.0-rc.6` pins, and the whole mount/unmount lifetime is managed by this plugin's DOM injector. If the upstream project resumes publishing, keep both in mind: running both plugins doubles up — the upstream shadows the official seat again, so the official trigger would disappear once more.
-
-If you used the upstream plugin before, remove it to avoid two effort controls on the same seat:
+The composer slider is **adapted from [dsh-reasoning-effort](https://github.com/HanaAyane/dsh-reasoning-effort) by [HanaAyane](https://github.com/HanaAyane)** (MIT) — thank you for the original work and the codex-style effort control idea. This integration keeps the upstream session-selection contract and slider interaction, with deliberate changes: a white round thumb only (no chibi-runner knob), the official model seat never replaced, and placement on the `0.1.5-alpha`+ line as a reduced re-implementation over the harness wire contract. If you used the upstream plugin, remove it to avoid two effort controls on the same seat:
 
 ```bash
 dsh plugin --profile web remove dsh-reasoning-effort
@@ -211,7 +177,7 @@ dsh plugin --profile web remove dsh-reasoning-effort
 
 ## Activity
 
-[![HaoyueQin/dsh-better-reasoning-effort GitStock K-Line Chart](https://gitstock.org/HaoyueQin/dsh-better-reasoning-effort/stock.svg)](https://gitstock.org/HaoyueQin/dsh-better-reasoning-effort)
+[![HaoyueQin/dsh-better-reasoning-effort GitStock K-Line Chart](https://gitstock.org/HaoyueQin/dsh-better-reasoning-effort/stock.svg)](https://gitstock.org/HaoyueQin/dsh-better-reasoning-effort/stock.svg)
 
 ## License
 

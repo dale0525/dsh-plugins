@@ -15,31 +15,22 @@
 ![Version](https://img.shields.io/badge/version-0.4.1-4d6bfe)
 ![Docs](https://img.shields.io/badge/docs-EN%20%7C%20ZH-4d6bfe)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
-[![Commit activity](https://img.shields.io/github/commit-activity/t/HaoyueQin/dsh-better-reasoning-effort)](https://github.com/HaoyueQin/dsh-better-reasoning-effort/graphs/commit-activity)
-[![Last commit](https://img.shields.io/github/last-commit/HaoyueQin/dsh-better-reasoning-effort)](https://github.com/HaoyueQin/dsh-better-reasoning-effort/commits)
 
 [English](README.md) | **中文**
 
-给 DeepSeek Harness 的**第三方模型**（pi-ai 手工声明路由）提供思考强度（reasoning effort）与**输入模态**（图片输入支持）设置的插件——直接在官方「模型」页的模型行里编辑，带知识库 + 协议推断的自动适配；另附**官方模型菜单内的快捷思考强度滑块**（白色圆形滑块，集成自 HanaAyane 的 dsh-reasoning-effort，见[致谢](#致谢)）——Composer 右下角的官方*模型 · 思考强度*显示形式保持不变。
+在 DeepSeek Harness 中为**第三方模型**编辑思考强度**与输入模态**——直接在官方「模型」页的编辑卡内完成；另有一个 Composer 官方模型菜单内的思考强度快捷滑块（改编自 [HanaAyane 的 dsh-reasoning-effort](https://github.com/HanaAyane/dsh-reasoning-effort)，见[致谢](#致谢)）。
 
 <p align="center">
-  <img src="docs/demo-zh.svg" alt="demo" width="640">
+  <img src="docs/demo-zh.svg" alt="演示" width="640">
 </p>
 
 <p align="center">
-  <img src="assets/models-page-effort-editor.png" alt="官方「模型」页模型行内的思考强度编辑器" width="720">
+  <img src="assets/models-page-effort-editor.png" alt="官方「模型」页模型行展开区内注入的思考强度编辑器" width="720">
 </p>
 
 ## 为什么需要它
 
-DeepSeek Harness 的 `llm-pi-ai` 适配器原生支持每个模型声明 `reasoningEfforts`（接受哪些思考档位 + 每个档位发往端点的确切取值），但官方「模型」页的编辑卡**刻意不暴露这个字段**——官方注释明说它是 per-model 能力、provider 级旋钮会弄坏部分模型。于是：
-
-- 第三方模型在 Composer 的模型选择器里**没有思考档位选择**（`getSupportedThinkingLevels` 短路成 `["off"]`）；
-- 只有官方 DeepSeek API（内置 catalog）能设思考强度；
-- 想给第三方模型设档位，只能手写 `settings.yaml` 的 `reasoningEfforts` / `compat` 块。
-- 手工声明的第三方模型默认被当作**纯文本**（`input` 缺省为 `["text"]`）：图片附件在发送前就被拒绝，read-image 工具拒绝工作，中间每一层网关路径都读同一个标志。核心本来就接受每模型的 `input: ["text", "image"]` 声明——只是官方页同样不暴露。
-
-本插件把这两份配置能力都搬回 UI：**官方模型编辑卡内直接编辑**，加**自动适配**。
+`llm-pi-ai` 适配器原生支持每模型声明 `reasoningEfforts` 与 `input`，但官方「模型」页编辑卡刻意不暴露这两个字段。于是第三方模型在 Composer 里**没有思考档位选择器**，只有官方 DeepSeek API 能设思考强度，手工声明的模型被当作**纯文本**，想配置只能手写 `settings.yaml` 块。本插件把这两份配置能力都搬回 UI：官方模型编辑卡内直接编辑，加一键自动适配。
 
 ## 特性
 
@@ -56,8 +47,13 @@ DeepSeek Harness 的 `llm-pi-ai` 适配器原生支持每个模型声明 `reason
 - **Composer 模型搜索（无条件注入）**：官方模型菜单处于**模型列表**面板时，列表上方注入一个搜索框。它按供应商名、模型名与模型 ID 过滤官方行（空格分词、大小写不敏感），隐藏无命中的分组，无结果时显示空态提示。输入框内 `↓` 跳到第一个命中项，`Esc` 清空查询；查询生效期间方向键**只在可见行之间**移动（不会落到被隐藏的行上）。搜索框位于官方列表之上、官方加载提示条之下，且**不改动菜单自身的尺寸与滚动**。与滑块不同，它**不受设置页开关控制**：只要插件生效就会注入。
 - **每个模型的默认思考强度（issue #4）**：模型行编辑器新增「默认思考强度」选择器——每个新会话打开该模型时使用的档位。它存储在设置文档的模型行上（随部署走、跨设备一致、重启不丢），跨会话优先于记住的上次档位；会话内手动选择始终最高——你选过的档位（或显式的「跟随提供方默认」）不会被任何自动机制覆盖。选择器的候选就是该模型自己声明的档位；清除后回到记忆链，留空的模型文档上不写任何字段（无需标记——没有自动填充会去填它）。
 - **模型页开关**：「推理强度滑块」开关从通用设置移出，放到**「模型」**设置页“添加提供方 / 添加自定义提供方”的下方，置于一个带边框的容器内（设置项形式与上游插件一致）。该开关无条件占据官方 `settings.models.footer` slot。
+- **请求头与 User-Agent**：提供商卡片内编辑官方的 `headers` 字段（掩码显示、路径合并、随卡片保存），并在 fetch 层按 origin 精确接管 `user-agent` 的覆盖（官方适配器保留该名称）；同源 `/models` 探测一并覆盖，冲突时提示而不猜。
 - **防御式注入**：注入依赖官方页 DOM 结构（aria-label / class），一旦官方升级改变结构，注入器自动停用、官方页不受影响；结构恢复后下次扫描自动重新注入。
 - 双语文案（中文 / English）。
+
+## 支持的模型
+
+自动适配知识库内置 **15 家厂商 65 个条目**（DeepSeek、OpenAI、Anthropic Claude、Gemini、Grok、Qwen、GLM、Kimi、Mistral、MiniMax、MiMo、豆包、混元、阶跃、文心——2026-08/09 逐条对照官方文档复核，含视觉变体与无档位控制家族）。完整表格——匹配写法、档位 → 线上取值阶梯、默认档、模态、参考容量——见 **[docs/supported-models.md](docs/supported-models.md)**（由 [`src/knowledge.ts`](src/knowledge.ts) 生成，代码是权威数据源）。未列出的模型回退到协议推断 + 通用档位，可手动调整。
 
 ## 安装
 
@@ -78,63 +74,48 @@ DeepSeek Harness 的 `llm-pi-ai` 适配器原生支持每个模型声明 `reason
 ### 从 npm
 
 ```bash
-# 在 dsh 的 web profile 下
+# npm 安装（dsh 的 web profile 下）
 dsh plugin --profile web add dsh-better-reasoning-effort
-```
 
-### 从 GitHub
-
-```bash
-# 在 dsh 的 web profile 下
+# 或从 GitHub（源码安装；`lib/` 由 prepare 钩子构建——安装器会打印需要的
+# `allowBuilds` 键，照做后重新 add）
 dsh plugin --profile web add github:HaoyueQin/dsh-better-reasoning-effort
-```
 
-`github:` 源只拉源码，`lib/` 由包的 `prepare` 钩子构建；pnpm 默认不跑 git 依赖的构建脚本，安装器会打印需要加入 `allowBuilds` 的密钥，照做后重新 `add`。
-
-### 本地开发
-
-```bash
+# 或链接本地检出做开发
 npm install && npm run build
 dsh plugin --profile web add link:D:/Project/dsh-better-reasoning-effort
 ```
 
-重启 `dsh web`，硬刷新浏览器。官方「模型」页每行模型的展开区多了一块「思考强度」。
+重启 `dsh web` 并强制刷新浏览器。
 
 ## 使用
 
 1. 在官方「模型」页配置第三方供应商（API Key 等）。
 2. 展开某个模型行：官方容量字段下方是编辑块。
    - 勾选档位（off / minimal / low / medium / high / xhigh / max），填线上取值（如给 `high` 填 `ultra`，Composer 选 High 时网关收到 `ultra`）；
-   - 在「输入模态」区勾选**图片输入**，声明模型接受什么（不勾且无声明 = 继承提供方默认，通常纯文本）；
-   - 点「自动适配」按知识库/协议/端点列表填推荐档位与模态——参考容量会以只读提示出现，可自行照抄进官方输入框；
-   - 改动**即时进入待写入**（编辑块会这样提示），点卡片自身的**「保存」**时一并落盘；点**「取消」**或刷新页面则与卡片自带字段一起丢弃。
+   - 在「输入模态」区勾选**图片输入**，声明模型接受什么；
+   - 点「自动适配」填推荐档位与模态——参考容量以只读提示出现，可自行照抄进官方输入框；
+   - 改动**即时进入待写入**，点卡片自身的**「保存」**时一并落盘；**「取消」**（或刷新）则与卡片字段一起丢弃。
 3. 协议兼容时，底部会出现「端点兼容」分区——`openai-completions` 上设思考预算字段 / vLLM 优先级，`openai-responses` 上设 `max_output_tokens` 的处理方式。
 4. 全不勾 + 保存 = 取消声明（回到继承）；只勾 off + 保存 = 禁用推理（`false`）；模态行「清除声明」+ 保存 = 回到继承提供方默认。
 
-声明后的模型在 Composer 模型选择器里立即可选思考强度；声明了图片输入的模型可以端到端传附件。
+声明后的模型在 Composer 里立即可选思考强度；声明了图片输入的模型可以端到端传附件。
 
 ## 配置
 
-host 侧接受可选的配置项（以下是默认值）：
+host 侧接受可选配置项（以下为默认值）：
 
 ```yaml
 - insert:
     - id: dsh-better-reasoning-effort
       name: dsh-better-reasoning-effort
       config:
-        # 启动时自动填充未声明的模型（运行中的补全由浏览器侧在你退出编辑卡片后进行）。
-        autofill: true
-        # 上述自动填充是否连带补写输入模态声明。
-        modalityAutofill: true
-        # 上游 /models 探测请求超时，单位毫秒。
-        probeTimeoutMs: 15000
-        # 启动填充的重试退避表；[] 表示只尝试一次。
+        autofill: true          # 启动时自动填充未声明的模型
+        modalityAutofill: true  # 上述填充是否连带输入模态声明
+        probeTimeoutMs: 15000   # /models 探测请求超时（毫秒）
         bootRetryDelaysMs: [1000, 2000, 4000, 8000, 16000, 30000]
-        # 无档位调用在强制思考梯子上自动落厂商默认档。
-        defaultGuard: true
+        defaultGuard: true      # 强制思考梯子上的无档位调用落厂商默认档
 ```
-
-设 `autofill: false` 可完全关闭静默自动填充（启动填充与浏览器侧的运行中补全一并关闭）——**Auto-adapt（自动适配）** 按钮不受影响。
 
 ## 工作方式（架构）
 
@@ -154,17 +135,16 @@ host 侧接受可选的配置项（以下是默认值）：
 │   └─ 写 settings.mutate（llm-pi-ai）
 ```
 
-- **知识库 + 协议推断**：`src/knowledge.ts` 的 `suggestEfforts()`，纯函数，host 与浏览器共用——融合端点信号、精选条目（档位、模态、参考容量）、命名启发式与协议推断。
-- **DOM 注入**：`src/client/injection/models-page-editor.ts` 的 `reconcile()`，按官方按钮 aria-label（`modelAdvanced` 字典值：`0.1.6-alpha.1` 为 `Capacities`/`容量`，`0.1.6-alpha.2` 起为 `Model options`/`模型选项`）定位模型行，把编辑器挂进容量折叠区。浏览器侧的装配层是 `src/client/index.ts`；每条注入接缝位于 `src/client/injection/` 下的独立模块。
-- **写入**：`src/client/ops.ts` 的 `createEditorApi()`，`settings.mutate` 按路径改写 `providers.<route>.models[i].reasoningEfforts`——有模态意图时一并改写 `.input`——保留行内其他字段；冲突时自动重读重试一次（与官方设置表单相同的恢复策略）。
-- **共享常量**：`src/constants.ts` 承载插件 id、设置命名空间、DOM 标记，host 与浏览器共用。
+- `src/knowledge.ts` 的 `suggestEfforts()` 是知识库 + 推断引擎——host 与浏览器共用的纯函数。
+- `src/client/injection/models-page-editor.ts` 的 `reconcile()` 定位模型行并挂载编辑器；浏览器侧由 `src/client/index.ts` 组装，每个注入缝一个模块（`src/client/injection/`）。
+- `src/client/ops.ts` 的 `createEditorApi()` 经 `settings.mutate` 写声明，保留行上其他字段，版本冲突时重读并重试一次。
 
 ## 开发
 
 ```bash
-npm run typecheck   # tsc 严格检查 src
-npm test            # vitest：知识库 / 推断 / autofill / DOM 注入 / 写入
-npm run build       # lib/*.js + lib/client.js（模块加载器 bundle）
+npm run typecheck   # tsc 严格检查
+npm test            # vitest：知识库 / 推断 / 自动填充 / DOM 注入 / 写入
+npm run build       # lib/*.js + lib/client.js（module-loader bundle）
 ```
 
 契约版本：`@deepseek-ai/dsh-api-remotes@0.1.7-alpha.1`（client 契约类型，peer 范围 `^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1`）；开发依赖已统一到已发布的 `0.1.7-alpha.1` 各包与 Cordis `4.0.3`，typecheck（0 错误）、测试套件（20 文件 / 400 测试全通过）与完整构建均针对该版本执行；运行时实测基线为 `0.1.5-rc.1`——`0.1.6-alpha.1` 至 `0.1.7-alpha.1` 目前完成的是源码/包契约门禁，实机复核未做。测试套件钉住 composer 菜单发现（portal 与内联双形态），`0.1.2-rc.1` 降级重试路径保留为安全网。
@@ -172,36 +152,22 @@ npm run build       # lib/*.js + lib/client.js（模块加载器 bundle）
 
 ## 已知限制
 
-- 注入依赖官方 Models 页当前 DOM（aria-label/class）。官方升级若改结构，注入自动停用，需要跟进适配；停用期间官方页不受影响。
-- 官方模型菜单的箭头键焦点漫游遍历的是它自己（已被隐藏）的根单元格——对 display:none 节点 focus() 是空操作；键盘用户经 Tab 到达复刻体，复刻行的 Enter 可打开官方模型列表。
-- 「自动适配」的探测路由只应答 **loopback 与 IP 字面量 Host**——采用核心 `/api` 栅栏同款 Host 白名单纪律，但暂无其 `trustedHosts` 出口（DNS rebinding 页面的 Host 必然是攻击者域名，因此域名宿主一律拒绝）。以域名对外提供 GUI 的局域网部署，仅此一条探测路由会得到 403（IP 字面量宿主不受影响），其余功能照常。
-- 「自动适配」的探测请求**不跟随重定向**（`redirect: 'error'`）：它带着你存储的凭据，而跨源跳转并不会剥离它自己组装的鉴权头——因此只有 profile 里写明的那个地址能收到它。代价是有界的：仅在 30x 之后才列出模型的网关拿不到端点证据，自动适配退回知识库／协议推断，与端点无应答时同一条降级路径。
-- `reasoningEfforts` 声明是建议值：网关实际接受哪些档位/取值以端点文档为准，可在 UI 里逐个修改。
-- 知识库覆盖面有限——各家上新后拼写会漂移，不吃 effort 档的家族则完全无条目；未收录的模型走协议推断 + 通用档位，可手动调整。
-- 端点兼容开关刻意不做自动填充：`supportsMaxOutputTokens` 与 `vllmPriority` 描述的是网关行为而不是模型能力，因此没有模型条目携带它们。安全默认（未设置）会按协议常规发送该字段；只有当网关确实拒收时才需要改。
-- 模态词表跟随 pi-ai 核心（当前为 `text` / `image`）。部分网关支持的更宽能力（PDF、音频、视频）已按家族记录在案，等核心词表扩充后再开放声明——今天声明不了是设计使然，不是疏漏。
-- 声明了图片能力的模型，在请求图片超出内核/端点预算时的失败模式随内核而变：`0.1.6` 起内核抛 `IMAGE_OFFLOAD_REQUIRED`，由 compaction 侧决定卸载哪几张图（`0.1.5` 是把最旧的图片静默换成占位文本）。声明与编辑器行为不变，这条只影响超预算请求的表现。
-- 名字启发式的模态建议（`*-vl*` / `*vision*` / `gpt-4o` 一类视觉味 id）刻意标注为低置信度——使用前请核对。
-- 自建中转：自动填充与自动适配会在无法归属官方的 `openai-completions` 路由上钉死 `supportsDeveloperRole: false`，系统提示保持 `system`（部分上游拒绝 `developer`，报角色信息不正确）。已有显式值永不覆盖——唯一的例外是端点兼容区那几个下拉框：把某一项选回"未设置"再保存卡片，就是要撤回那次设置，编辑器只会删除它自己展示过的字段。全部取消勾选 + 保存可清除声明回到裸请求（提供方默认），即中转兼容模式。
-- 强制思考模型（无 `off` 档的梯子，如 GLM-5.3）：提供商测试与 Default 调用原本会发送 `thinking: disabled` 而失败（如 1210）——host 侧会将其映射到梯子的厂商默认档。设 `defaultGuard: false` 可恢复旧行为。
+- 注入依赖官方「模型」页的 DOM（aria-label / class）；官方升级可能让注入暂停直至适配——期间官方页不受影响。
+- 自动适配探测路由只应答**回环与 IP 字面量 host**（核心 `/api` 的 Host 白名单纪律、无 `trustedHosts` 旁路），且**从不跟随重定向**——只在 30x 后面列模型的网关拿不到端点证据，自动适配回退到知识库与协议推断。
+- `reasoningEfforts` 声明是建议——端点真正接受什么以它的文档为准，请在 UI 里微调；知识库不追求穷尽，没有档位阶梯的家族不设条目。
+- 端点兼容开关刻意永不自动填充：它们描述的是网关行为而非模型能力。
+- 模态词汇跟随 pi-ai 核心（当前 `text` / `image`）；更宽的网关支持（PDF / 音频 / 视频）按家族记录在案，核心词汇扩充前声明不了是设计使然。
+- 命名启发式的模态建议（视觉风味 id）刻意标注低置信度，使用前请核对。
+- 自建中转：对没有官方 host 认领的路由，自动填充会钉 `supportsDeveloperRole: false`（部分上游拒绝 `developer` 角色）；显式值永不被覆盖。
+- 强制思考模型（无 `off` 的梯子，如 GLM-5.3）：无档位调用自动落厂商默认档而不是发 `thinking: disabled`——设 `defaultGuard: false` 可恢复原行为。
+- **`headers` 中的凭据在磁盘上不脱敏**：只读视图会掩码，但设置文档仍明文保存——请当 API key 对待。
+- **请求头区域的编辑态检测读取非官方信号**（官方行没有编辑器状态的 data 属性）；官方若改名该类词根，区域会停止出现——绝不弄坏页面。
+- **同一时间只应有一个 `user-agent` 改写器**：同类 header 插件落在同一层，后写者赢；插件会检测并提示已知同类，但不覆盖未知情况。
+- 请求层接管依赖官方适配器每请求新建 SDK 客户端——有端到端测试守护该边界，变化时会响亮地失败而不是静默失效。
 
 ## 致谢
 
-Composer 思考强度滑块**改编自 [dsh-reasoning-effort](https://github.com/HanaAyane/dsh-reasoning-effort)（作者 [HanaAyane](https://github.com/HanaAyane)，MIT 许可）**——感谢原作者与 codex 风格思考强度控制的思路。
-
-本插件取自它的部分：
-
-- 其依托的 session 模型选择契约（按会话的模型目录 → 适配器播报的档位阶梯 → `selectModel` 提交，乐观快照 + 被拒回滚）；
-- 滑块交互形态（拖动 / 键盘操作，滑块旁显示档位名）。
-
-集成时的**刻意改动**：
-
-- **只把滑块换成白色圆形。** chibi-runner“大肥鱼”滑块（把圆钮换成鱼形贴图）不带入；其余与上游逐字一致——渐变胶囊轨道、左侧裁剪的 canvas 辐射动效与 flare 辉光、拖动/键盘契约、乐观提交 + 被拒回滚。
-- **官方模型席位绝不被替换。** 上游插件把整个席位顶掉（自绘触发钮 + 菜单）；这里官方右下角 *模型 · 思考强度* 显示形式保持原样，滑块在官方菜单弹出时注入到其顶部。
-- **位置与设置项减少。** 上游的“推理强度滑块 / 大肥鱼滑块”两项在通用设置页；这里只保留 *推理强度滑块* 开关，放在**「模型」**页添加提供方按钮下方的带框容器内；“大肥鱼滑块”随功能一起移除。
-- **面向 `0.1.5-alpha` 及后续线维护**（编译与门禁基线 `0.1.6-alpha.2`）。 这是基于 harness wire 契约的精简重写（不是上游 bundle 的 fork）：无需上游的 `0.1.0-rc.6` 版本钉死，可跑在 `0.1.5-alpha.1` 及后续内核上（见上方兼容性说明），整个挂载/卸载生命周期由本插件的 DOM 注入器管理。若上游项目恢复更新，留意两点：两个插件同时装会重复——上游再次顶掉官方席位，官方触发钮会再次消失。
-
-如果你之前用过上游插件，请移除它，避免同席位上出现两套思考强度控制：
+Composer 滑块**改编自 [HanaAyane 的 dsh-reasoning-effort](https://github.com/HanaAyane/dsh-reasoning-effort)**（MIT）——感谢原作者与 codex 风格档位控件的创意。本集成保留了上游的会话选择契约与滑块交互形态，并有意做了几处改变：只保留白色圆钮（不带 chibi 小鱼钮）、绝不替换官方模型席位、以精简重实现跑在 `0.1.5-alpha`+ 线上。如果用过上游插件，请先移除以免同一席位出现两个档位控件：
 
 ```bash
 dsh plugin --profile web remove dsh-reasoning-effort
@@ -209,7 +175,7 @@ dsh plugin --profile web remove dsh-reasoning-effort
 
 ## Activity
 
-[![HaoyueQin/dsh-better-reasoning-effort GitStock K-Line Chart](https://gitstock.org/HaoyueQin/dsh-better-reasoning-effort/stock.svg)](https://gitstock.org/HaoyueQin/dsh-better-reasoning-effort)
+[![HaoyueQin/dsh-better-reasoning-effort GitStock K-Line Chart](https://gitstock.org/HaoyueQin/dsh-better-reasoning-effort/stock.svg)](https://gitstock.org/HaoyueQin/dsh-better-reasoning-effort/stock.svg)
 
 ## License
 
