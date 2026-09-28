@@ -6,7 +6,7 @@ import {
 } from "./shared/capture-utils.mjs";
 
 /**
- * Producer-owned source kind stamped on every message this plugin injects.
+ * The producer identity stamped on every message this plugin injects.
  *
  * Session format v4 refuses the retired `{ kind: 'plugin', plugin }` wrapper at
  * native admission (`format v4 message requires a producer-owned source kind`),
@@ -14,9 +14,13 @@ import {
  * the host's documented V4 mapping for a producer that is not one of its
  * same-name first-party plugins, and it is also what this plugin's v3-era
  * messages become when a session is migrated — so a read-back predicate written
- * against this value keeps working on both fresh and migrated history.
+ * against {@link OPENVIKING_PLUGIN_KIND} keeps working on both fresh and
+ * migrated history. The retired `plugin` field is deliberately not written:
+ * migration drops it, and an injected message has to match what replaying that
+ * history produces.
  */
-export const OPENVIKING_PLUGIN_SOURCE = "plugin:openviking-memory";
+export const OPENVIKING_PLUGIN_SOURCE = "openviking-memory";
+export const OPENVIKING_PLUGIN_KIND = `plugin:${OPENVIKING_PLUGIN_SOURCE}`;
 
 /**
  * Kinds that carry a real conversation turn.
@@ -36,11 +40,18 @@ export function pluginMessage(content, source) {
   return createUserMessage({
     content: [{ type: "text", text: content }],
     source: {
-      kind: OPENVIKING_PLUGIN_SOURCE,
+      kind: OPENVIKING_PLUGIN_KIND,
       ...source,
     },
   });
 }
+
+export function isOpenVikingPluginMessage(message) {
+  const source = message?.source;
+  return source?.kind === OPENVIKING_PLUGIN_KIND
+    || (source?.kind === "plugin" && source.plugin === OPENVIKING_PLUGIN_SOURCE);
+}
+
 
 export function captureEvent(event, config, toolNames = new Map()) {
   if (!event || typeof event !== "object") return null;
@@ -110,7 +121,7 @@ function captureMessage(event, message, config, toolNames) {
 
 export function promptText(messages) {
   return (messages || [])
-    .filter(message => message?.source?.kind !== OPENVIKING_PLUGIN_SOURCE)
+    .filter(message => !isOpenVikingPluginMessage(message))
     .map(message => extractTextFromPayload(message))
     .filter(Boolean)
     .join("\n\n")
