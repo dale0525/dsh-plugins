@@ -8,6 +8,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
 import { WorkBuddyProbeControl } from './WorkBuddyProbeControl.tsx'
+import { WorkBuddyUpdateOverlay } from './WorkBuddyUpdateNotice.tsx'
+import { WorkBuddyUpdateStore } from './update-store.ts'
+import { WORKBUDDY_CONNECT_VERSION } from '../version.ts'
 import { WorkBuddyPluginConfig } from './WorkBuddyPluginConfig.tsx'
 import type { WorkBuddyPluginConfigInjected } from './WorkBuddyPluginConfig.tsx'
 import { en, zh } from './locales.ts'
@@ -18,6 +21,26 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     /** WorkBuddy plugin card copy. */
     'settings.workbuddy': WorkBuddySettingsKey
   }
+  interface SlotMap {
+    /**
+     * Compile-time mirror of the shell's overlay seat (declared at runtime by
+     * the ui-layout AppFrame, which this bundle does not depend on): a list
+     * slot the shell renders over the whole app, click-through until an entry
+     * opts into pointer events. Hosts without the seat simply never fire the
+     * inject below. If a future dependency ships the real declaration, drop
+     * this mirror in its favour.
+     */
+    'shell.overlay': {
+      kind: 'list'
+      scope: 'root'
+      owner: WorkBuddyShellOverlayOwnerProps
+    }
+  }
+}
+
+/** Owner share of the overlay seat: the frame supplies nothing to entries. */
+interface WorkBuddyShellOverlayOwnerProps {
+  children?: never
 }
 
 /** Stable browser-plugin name. */
@@ -116,6 +139,24 @@ export function apply(ctx: ClientContext): void {
         }),
       }, WorkBuddyProbeControl))
     })
+    // The update reminder: one store for the whole bundle (the check compares
+    // this package's own version, so both provider cards share it). It
+    // refreshes once on mount through a 7-day localStorage cache and never
+    // blocks a contribution — a failed check simply renders nothing.
+    const updater = new WorkBuddyUpdateStore(WORKBUDDY_CONNECT_VERSION)
+    ctx.effect(() => {
+      void updater.refresh()
+      return () => { updater.dispose() }
+    }, 'dsh-workbuddy-connect: update checker')
+    // The floating seat. Hosts whose shell declares no `shell.overlay` seat
+    // never fire this callback — the reminder is simply absent there.
+    ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+      name: 'shell.overlay',
+      id: 'workbuddy-update',
+      order: 40,
+      locale: namespace,
+      inject: () => ({ t, updater }),
+    }, WorkBuddyUpdateOverlay))
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     // Developers see the full cause in the browser console; users see no banner.

@@ -6,9 +6,9 @@ import type { ChatIdentity } from '../src/client-identity.ts'
 /**
  * Outbound wire pin for the phase-1 chat identity (plan §3, 阶段一离线检查):
  * capture the exact `(url, init)` the client hands to `fetch` and assert that
- * chat and probe present the desktop UA while everything else — the shared
- * header family, the body shapes, refresh, catalog, and billing — stays
- * byte-for-byte what it has always been.
+ * chat and probe present the desktop UA plus the three verified IDE
+ * attribution headers. Refresh, catalog, and billing must remain free of the
+ * chat-only attribution family.
  */
 
 const CN: WorkBuddyCredential = {
@@ -45,7 +45,7 @@ function captureFetch(body: string, ok = true, status = 200) {
 }
 
 describe('chatStream identity', () => {
-  it('presents the CN desktop UA and leaves every other header unchanged', async () => {
+  it('presents the CN desktop UA and preserves the shared header contract', async () => {
     const wire = captureFetch('{}')
     const result = await client().chatStream(CN, JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'hi' }] }))
     expect(result.ok).toBe(true)
@@ -53,6 +53,10 @@ describe('chatStream identity', () => {
     expect(url).toBe('https://copilot.tencent.com/v2/chat/completions')
     const headers = init.headers as Record<string, string>
     expect(headers['User-Agent']).toBe('WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1')
+    expect(headers['X-IDE-Type']).toBe('WorkBuddy')
+    expect(headers['X-IDE-Name']).toBe('WorkBuddy')
+    expect(headers['X-IDE-Version']).toBe(IDENTITY.clientVersion)
+    expect(headers['X-Product']).toBe('SaaS')
     // The shared family stays exactly as before the identity change.
     expect(headers['X-Requested-With']).toBe('XMLHttpRequest')
     expect(headers['Origin']).toBe('https://www.codebuddy.cn')
@@ -72,6 +76,10 @@ describe('chatStream identity', () => {
     expect(url).toBe('https://www.workbuddy.ai/v2/chat/completions')
     const headers = init.headers as Record<string, string>
     expect(headers['User-Agent']).toBe('WorkBuddy/5.5.6 WorkBuddy AI/5.5.6 CLI/2.137.1')
+    expect(headers['X-IDE-Type']).toBe('WorkBuddy')
+    expect(headers['X-IDE-Name']).toBe('WorkBuddy')
+    expect(headers['X-IDE-Version']).toBe(IDENTITY.clientVersion)
+    expect(headers['X-Product']).toBe('SaaS')
     const body = JSON.parse(init.body as string) as { messages: { role: string }[] }
     expect(body.messages[0]?.role).toBe('system')
     expect(body.messages[1]?.role).toBe('user')
@@ -85,6 +93,10 @@ describe('probeEffort identity', () => {
     const [, init] = wire.last()
     const headers = init.headers as Record<string, string>
     expect(headers['User-Agent']).toBe('WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1')
+    expect(headers['X-IDE-Type']).toBe('WorkBuddy')
+    expect(headers['X-IDE-Name']).toBe('WorkBuddy')
+    expect(headers['X-IDE-Version']).toBe(IDENTITY.clientVersion)
+    expect(headers['X-Product']).toBe('SaaS')
     const body = JSON.parse(init.body as string) as {
       messages: { role: string }[]; max_tokens: number; reasoning_effort: string
     }
@@ -99,6 +111,10 @@ describe('probeEffort identity', () => {
     const [, init] = wire.last()
     const headers = init.headers as Record<string, string>
     expect(headers['User-Agent']).toBe('WorkBuddy/5.5.6 WorkBuddy AI/5.5.6 CLI/2.137.1')
+    expect(headers['X-IDE-Type']).toBe('WorkBuddy')
+    expect(headers['X-IDE-Name']).toBe('WorkBuddy')
+    expect(headers['X-IDE-Version']).toBe(IDENTITY.clientVersion)
+    expect(headers['X-Product']).toBe('SaaS')
     const body = JSON.parse(init.body as string) as { messages: { role: string }[]; max_tokens: number }
     expect(body.messages[0]?.role).toBe('system')
     expect(body.max_tokens).toBe(16)
@@ -116,12 +132,24 @@ describe('probeEffort identity', () => {
     expect(chat.ok).toBe(true)
     expect((chatWire.last()[1].headers as Record<string, string>)['User-Agent'])
       .toBe('WorkBuddy/5.5.6 WorkBuddy/5.5.6')
+    expect((chatWire.last()[1].headers as Record<string, string>)['X-IDE-Version'])
+      .toBe('5.5.6')
+    expect((chatWire.last()[1].headers as Record<string, string>)['X-IDE-Type'])
+      .toBe('WorkBuddy')
+    expect((chatWire.last()[1].headers as Record<string, string>)['X-IDE-Name'])
+      .toBe('WorkBuddy')
 
     const probeWire = captureFetch('{"code":11150,"msg":"no"}', false, 400)
     const probe = await throwing.probeEffort(GLOBAL, 'model-x', 'low', new AbortController().signal)
     expect(probe.status).toBe(400)
     expect((probeWire.last()[1].headers as Record<string, string>)['User-Agent'])
       .toBe('WorkBuddy/5.5.2 WorkBuddy AI/5.5.2')
+    expect((probeWire.last()[1].headers as Record<string, string>)['X-IDE-Version'])
+      .toBe('5.5.2')
+    expect((probeWire.last()[1].headers as Record<string, string>)['X-IDE-Type'])
+      .toBe('WorkBuddy')
+    expect((probeWire.last()[1].headers as Record<string, string>)['X-IDE-Name'])
+      .toBe('WorkBuddy')
   })
 })
 
@@ -136,6 +164,9 @@ describe('unchanged paths (regression pin)', () => {
     expect(headers['X-Auth-Refresh-Source']).toBe('workbuddy')
     expect(headers['X-Refresh-Token']).toBe('rt')
     expect(headers['Origin']).toBe('https://www.codebuddy.cn')
+    expect(headers['X-IDE-Type']).toBeUndefined()
+    expect(headers['X-IDE-Name']).toBeUndefined()
+    expect(headers['X-IDE-Version']).toBeUndefined()
   })
 
   it('CN catalog keeps the CLI-form UA', async () => {
@@ -146,7 +177,11 @@ describe('unchanged paths (regression pin)', () => {
     await client().fetchModels(CN)
     const [url, init] = wire.last()
     expect(url).toBe('https://copilot.tencent.com/console/enterprises/personal/models')
-    expect((init.headers as Record<string, string>)['User-Agent']).toBe('CLI/2.63.2 CodeBuddy/2.63.2')
+    const headers = init.headers as Record<string, string>
+    expect(headers['User-Agent']).toBe('CLI/2.63.2 CodeBuddy/2.63.2')
+    expect(headers['X-IDE-Type']).toBeUndefined()
+    expect(headers['X-IDE-Name']).toBeUndefined()
+    expect(headers['X-IDE-Version']).toBeUndefined()
   })
 
   it('international catalog keeps the no-space App-form UA', async () => {
@@ -161,7 +196,11 @@ describe('unchanged paths (regression pin)', () => {
     await intlClient.fetchModels(GLOBAL)
     const [url, init] = wire.last()
     expect(url).toBe('https://www.workbuddy.ai/v3/config')
-    expect((init.headers as Record<string, string>)['User-Agent']).toBe('WorkBuddyAI/5.5.2')
+    const headers = init.headers as Record<string, string>
+    expect(headers['User-Agent']).toBe('WorkBuddyAI/5.5.2')
+    expect(headers['X-IDE-Type']).toBeUndefined()
+    expect(headers['X-IDE-Name']).toBeUndefined()
+    expect(headers['X-IDE-Version']).toBeUndefined()
   })
 
   it('billing stays untouched by the identity change', async () => {
@@ -172,6 +211,10 @@ describe('unchanged paths (regression pin)', () => {
     await client().fetchCredits(CN)
     const [url, init] = wire.last()
     expect(url).toBe('https://www.codebuddy.cn/v2/billing/meter/get-user-resource')
-    expect((init.headers as Record<string, string>)['User-Agent']).toBeUndefined()
+    const headers = init.headers as Record<string, string>
+    expect(headers['User-Agent']).toBeUndefined()
+    expect(headers['X-IDE-Type']).toBeUndefined()
+    expect(headers['X-IDE-Name']).toBeUndefined()
+    expect(headers['X-IDE-Version']).toBeUndefined()
   })
 })

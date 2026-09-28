@@ -9,9 +9,10 @@
  * removed — returns the 21-model App document. The UA is therefore built from
  * the form verified in code, not from the earlier prose.
  *
- * The version is only ever a UA component: a missing App, an unreadable
- * plist, or a bad cached value degrades to the last saved value and finally to
- * a compiled-in constant, and never blocks credential use or the provider.
+ * The version feeds the international catalog UA and the chat identity's
+ * `X-IDE-Version`: a missing App, an unreadable plist, or a bad cached value
+ * degrades to the last saved value and finally to a compiled-in constant, and
+ * never blocks credential use or the provider.
  *
  * @module dsh-workbuddy-connect/app-version
  */

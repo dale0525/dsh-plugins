@@ -127,7 +127,8 @@ describe('#48 card assist block', () => {
   })
 
   it('shows the block for the international card too, naming WorkBuddy AI', async () => {
-    // Auto-discovery is CN-only, but the prompt is offered for Global as well:
+    // Auto-discovery is product/platform-specific, but the prompt is offered
+    // for Global as well:
     // whether we search and whether we help are independent decisions.
     statusBody = { status: 'signed-out', reason: 'not configured', reasonCode: 'electron-binary-unavailable' }
     const rendered = await mount(AI_CARD_VARIANT)

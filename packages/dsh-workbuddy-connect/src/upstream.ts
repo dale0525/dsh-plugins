@@ -301,6 +301,12 @@ const SESSION_DEAD_MARKERS: readonly string[] = ['Offline user session not found
 /** Classify an upstream failure from its HTTP status and body excerpt. */
 export function classifyUpstreamError(status: number, body: string): UpstreamErrorKind {
   if (status === 402) return 'hard_credit'
+  // A 401 is an auth failure whatever its body says: there is no business
+  // meaning for it on this upstream, and the session-dead markers below are
+  // only an additional signal (they also catch dead sessions answered as
+  // 403). Keeping every 401 in `session_dead` preserves the `(http 401)`
+  // status note the host needs to classify it as AUTH.
+  if (status === 401) return 'session_dead'
   const lower = body.toLowerCase()
   for (const marker of HARD_CREDIT_MARKERS) {
     if (lower.includes(marker.toLowerCase()) || body.includes(marker)) return 'hard_credit'
@@ -313,6 +319,36 @@ export function classifyUpstreamError(status: number, body: string): UpstreamErr
   if (status >= 500) return 'server'
   if (status >= 400) return 'client'
   return 'client'
+}
+
+/**
+ * Extract a user-facing error message from an upstream JSON response body.
+ * Prefers WorkBuddy's localized `displayMsg.zh` / `displayMsg.en`, falling back to `msg`.
+ */
+export function extractDisplayErrorMessage(body: string): string | undefined {
+  const trimmed = body.trim()
+  if (!trimmed.startsWith('{')) return undefined
+  try {
+    const parsed: unknown = JSON.parse(trimmed)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+    const obj = parsed as Record<string, unknown>
+    const displayMsg = obj['displayMsg']
+    if (typeof displayMsg === 'object' && displayMsg !== null && !Array.isArray(displayMsg)) {
+      const localized = displayMsg as Record<string, unknown>
+      if (typeof localized['zh'] === 'string' && localized['zh'].trim() !== '') {
+        return localized['zh'].trim()
+      }
+      if (typeof localized['en'] === 'string' && localized['en'].trim() !== '') {
+        return localized['en'].trim()
+      }
+    }
+    if (typeof obj['msg'] === 'string' && obj['msg'].trim() !== '') {
+      return obj['msg'].trim()
+    }
+  } catch {
+    // Non-JSON bodies stay undefined
+  }
+  return undefined
 }
 
 /** Region for a login domain; an empty domain means CN (matching upstream tooling). */
@@ -348,14 +384,14 @@ function commonHeaders(credential: WorkBuddyCredential): Record<string, string> 
 /**
  * Chat request headers, including the X-No-* conventions the official CLI uses.
  *
- * `userAgent` carries the desktop identity for chat and probe requests; when
- * it is absent the shared CLI-form UA applies. Refresh shares `commonHeaders`
- * but never this override, so the two paths cannot drift into each other.
+ * `userAgent` and `clientVersion` carry the same resolved desktop identity for
+ * chat and probe requests. Refresh shares `commonHeaders` but never this
+ * override, so the two paths cannot drift into each other.
  */
-function chatHeaders(credential: WorkBuddyCredential, userAgent?: string): Record<string, string> {
+function chatHeaders(credential: WorkBuddyCredential, userAgent: string, clientVersion: string): Record<string, string> {
   const headers: Record<string, string> = {
     ...commonHeaders(credential),
-    ...userAgent === undefined ? {} : { 'User-Agent': userAgent },
+    'User-Agent': userAgent,
     'Content-Type': 'application/json',
     // 安全红线：chat 请求绝不携带 refresh token。
     ...credential.uid === '' ? { 'X-No-User-Id': '1' } : { 'X-User-Id': credential.uid },
@@ -363,6 +399,9 @@ function chatHeaders(credential: WorkBuddyCredential, userAgent?: string): Recor
       ? { 'X-No-Enterprise-Id': '1' }
       : { 'X-Enterprise-Id': credential.enterpriseId },
     ...credential.domain === '' ? { 'X-No-Department-Info': '1' } : { 'X-Domain': credential.domain },
+    'X-IDE-Type': 'WorkBuddy',
+    'X-IDE-Name': 'WorkBuddy',
+    'X-IDE-Version': clientVersion,
     'X-Product': 'SaaS',
   }
   return headers
@@ -575,17 +614,20 @@ export class WorkBuddyUpstreamClient {
     // Identity resolution must never block a message: any failure — a thrown
     // resolver included — degrades to the desktop fallback form (built-in
     // version, no CLI segment), never to the legacy CLI UA.
+    let identity: ChatIdentity
     let userAgent: string
     try {
-      userAgent = chatUserAgent(await this.resolveChatIdentity(region), region)
+      identity = await this.resolveChatIdentity(region)
+      userAgent = chatUserAgent(identity, region)
     } catch {
-      userAgent = chatUserAgent(fallbackChatIdentity(region), region)
+      identity = fallbackChatIdentity(region)
+      userAgent = chatUserAgent(identity, region)
     }
     let response: Response
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential, userAgent), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers: { ...chatHeaders(credential, userAgent, identity.clientVersion), 'Authorization': `Bearer ${credential.accessToken}` },
         body: region === 'global' ? prepareInternationalChatBody(bodyJson) : bodyJson,
         ...signal === undefined ? {} : { signal },
       })
@@ -945,11 +987,14 @@ export class WorkBuddyUpstreamClient {
     // Same identity rule as the chat path — chat and its probe sibling must
     // never present two different clients, and a thrown resolver degrades to
     // the desktop fallback form exactly as in `chatStream`.
+    let identity: ChatIdentity
     let userAgent: string
     try {
-      userAgent = chatUserAgent(await this.resolveChatIdentity(international ? 'global' : 'cn'), international ? 'global' : 'cn')
+      identity = await this.resolveChatIdentity(international ? 'global' : 'cn')
+      userAgent = chatUserAgent(identity, international ? 'global' : 'cn')
     } catch {
-      userAgent = chatUserAgent(fallbackChatIdentity(international ? 'global' : 'cn'), international ? 'global' : 'cn')
+      identity = fallbackChatIdentity(international ? 'global' : 'cn')
+      userAgent = chatUserAgent(identity, international ? 'global' : 'cn')
     }
     const payload: Record<string, unknown> = {
       model,
@@ -966,7 +1011,7 @@ export class WorkBuddyUpstreamClient {
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential, userAgent), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers: { ...chatHeaders(credential, userAgent, identity.clientVersion), 'Authorization': `Bearer ${credential.accessToken}` },
         body: JSON.stringify(payload),
         signal,
       })

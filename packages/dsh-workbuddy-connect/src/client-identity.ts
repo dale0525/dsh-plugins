@@ -53,7 +53,7 @@ export const CN_APP_VERSION_FILENAME = '.workbuddy-app-version.json'
 
 /** The resolved identity a chat request presents as. */
 export interface ChatIdentity {
-  /** Desktop App version; drives both `WorkBuddy/<v>` product tokens. */
+  /** Desktop App version; drives the desktop UA and `X-IDE-Version`. */
   clientVersion: string
   /** Bundled agent-CLI version; absent drops the `CLI/…` UA token. */
   cliVersion?: string

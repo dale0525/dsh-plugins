@@ -25,6 +25,15 @@ export const WORKBUDDY_PROBE_PATH = '/plugins/dsh-workbuddy-connect/probe'
 export const WORKBUDDY_AI_STATUS_PATH = '/plugins/dsh-workbuddy-connect/ai/status'
 export const WORKBUDDY_AI_PROBE_PATH = '/plugins/dsh-workbuddy-connect/ai/probe'
 
+/**
+ * Same-origin route backing the browser's update reminder.
+ *
+ * Read-only like the status route, so the same loopback Host/Origin gate
+ * applies; it answers public npm/GitHub metadata only and never token
+ * material.
+ */
+export const WORKBUDDY_UPDATE_PATH = '/plugins/dsh-workbuddy-connect/update'
+
 /** One model's recorded probe observation, as the card displays it. */
 export interface WorkBuddyWebProbeModel {
   id: string
@@ -195,9 +204,9 @@ export type WorkBuddySignedOutReasonCode =
   | 'credential-region-mismatch'
   /** An encrypted credential exists but could not be opened (wrong key, GCM failure, helper crash). */
   | 'encrypted-credential-unreadable'
-  /** CN/macOS: discovery ran to completion and produced no usable candidate. */
+  /** A product on a supported platform: discovery ran to completion and found no usable candidate. */
   | 'electron-binary-not-found'
-  /** CN/macOS: discovery found more than one distinct usable app. */
+  /** A product on a supported platform: discovery found more than one distinct usable app. */
   | 'electron-binary-ambiguous'
   /** No auto-discovery for this product/platform and no explicit path configured. */
   | 'electron-binary-unavailable'
