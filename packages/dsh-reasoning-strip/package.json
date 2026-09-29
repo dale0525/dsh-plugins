@@ -1,0 +1,57 @@
+{
+  "name": "@logictan/dsh-reasoning-strip",
+  "version": "0.1.0",
+  "description": "Drops replayed reasoning (chain-of-thought) blocks from assistant history at the adapter boundary, for every provider. Reasoning stays visible in the transcript; only what is sent back upstream changes.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "prepare": "node build.mjs",
+    "prepack": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node build.mjs && node --test \"test/*.spec.mjs\""
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "reasoning",
+    "chain-of-thought",
+    "context",
+    "replay"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-reasoning-strip"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": ">=0.1.6-alpha.1 <0.2.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": "0.1.6-alpha.2",
+    "typescript": "^5.9.0"
+  }
+}

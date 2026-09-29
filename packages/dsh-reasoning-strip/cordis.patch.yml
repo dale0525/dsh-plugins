@@ -1,0 +1,8 @@
+# dsh-reasoning-strip bundle patch layer.
+#
+# One row: the plugin's host half. The row id must stay equal to the host
+# half's `export const name` — cordis-plugin-loader keys mounted rows by id
+# and hard-crashes on a duplicate across the whole profile.
+- insert:
+    - id: reasoning-strip
+      name: '@logictan/dsh-reasoning-strip'
