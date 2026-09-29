@@ -18,6 +18,18 @@ import {
 const ACCEPTED: ProbeAttempt = { status: 200, streamed: true }
 const REJECTED: ProbeAttempt = { status: 400, streamed: false, errorCode: 'invalid_reasoning_effort' }
 
+/**
+ * The *other* shape the international endpoint uses for the same situation.
+ *
+ * Measured 2026-09-29 on `deepseek-v4.1-flash` and `deepseek-v4.1-flash-sg`:
+ * a request whose only difference from a passing baseline is an unsupported
+ * `reasoning_effort` is answered 400 with
+ * `extError.code === 'model_param_invalid'` ("the request parameters were
+ * rejected by the model provider"). The baseline is what makes it
+ * attributable: the effort value is the only field that changed.
+ */
+const REJECTED_GENERIC: ProbeAttempt = { status: 400, streamed: false, errorCode: 'model_param_invalid' }
+
 /** A sender that answers from a table keyed by effort, with `undefined` = baseline. */
 function tableSender(table: Map<string | undefined, ProbeAttempt>): ProbeSender {
   return async effort => table.get(effort) ?? REJECTED
@@ -105,6 +117,41 @@ describe('probeModel', () => {
     expect(outcome.validation).toBe('unknown')
   })
 
+  it('treats the generic model_param_invalid as an effort rejection', async () => {
+    // The measured `deepseek-v4.1-flash` shape on the international endpoint:
+    // the baseline streams, and the sentinel is refused under a *generic*
+    // parameter code rather than the effort-specific one. Because the sentinel
+    // request differs from the passing baseline in nothing but the effort
+    // value, the refusal is still attributable to that value — the same
+    // conclusion, spelled differently.
+    const table = new Map<string | undefined, ProbeAttempt>([
+      [undefined, ACCEPTED],
+      [SENTINEL, REJECTED_GENERIC],
+      ['low', ACCEPTED],
+      ['medium', ACCEPTED],
+      ['high', ACCEPTED],
+      ['xhigh', ACCEPTED],
+      ['max', ACCEPTED],
+    ])
+    const outcome = await probeModel({ send: tableSender(table), sentinel: () => SENTINEL })
+    expect(outcome.validation).toBe('validating')
+    expect(outcome.efforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+  })
+
+  it('skips a level refused under the generic code instead of abandoning the sweep', async () => {
+    const table = new Map<string | undefined, ProbeAttempt>([
+      [undefined, ACCEPTED],
+      [SENTINEL, REJECTED_GENERIC],
+      ['low', ACCEPTED],
+      ['medium', REJECTED_GENERIC],
+      ['high', ACCEPTED],
+      ['xhigh', REJECTED_GENERIC],
+      ['max', ACCEPTED],
+    ])
+    const outcome = await probeModel({ send: tableSender(table), sentinel: () => SENTINEL })
+    expect(outcome.validation).toBe('validating')
+    expect(outcome.efforts).toEqual(['low', 'high', 'max'])
+  })
   it('does not count a 200 without a stream as acceptance', async () => {
     const table = new Map<string | undefined, ProbeAttempt>([
       [undefined, { status: 200, streamed: false }],

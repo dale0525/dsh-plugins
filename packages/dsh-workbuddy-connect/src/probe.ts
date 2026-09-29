@@ -74,16 +74,34 @@ export type ProbeOutcome =
   | { validation: 'unknown'; efforts: readonly []; requests: number; reason: string }
 
 /**
- * The upstream's "this effort value is not supported" code, measured
- * 2026-09-11 (plan §4.2). It is *not* treated as a permanent protocol promise:
- * anything unrecognized degrades to `unknown` rather than to a capability
- * conclusion.
+ * The codes the upstream uses to refuse a `reasoning_effort` value.
+ *
+ * Two spellings, measured on the international endpoint:
+ *
+ * - `invalid_reasoning_effort` (11150), measured 2026-09-11 (plan §4.2).
+ * - `model_param_invalid` (11133), measured 2026-09-29 on
+ *   `deepseek-v4.1-flash` and `deepseek-v4.1-flash-sg`. The gateway reports
+ *   "the request parameters were rejected by the model provider" under this
+ *   generic code when the model, not the gateway, refuses the value. Its
+ *   `extError.param` is the empty string, so it cannot be narrowed by field
+ *   name.
+ *
+ * Accepting the generic code here is safe because of where this is consulted,
+ * not because the code is specific. By the time the sentinel runs, the
+ * baseline has already passed with the same model, messages, and `max_tokens`;
+ * the sentinel request differs from that passing baseline in exactly one
+ * field, so a refusal is attributable to that field. The code list is *not*
+ * treated as a permanent protocol promise: anything unrecognized still
+ * degrades to `unknown` rather than to a capability conclusion.
  */
-const INVALID_EFFORT_CODE = 'invalid_reasoning_effort'
+const INVALID_EFFORT_CODES: readonly string[] = [
+  'invalid_reasoning_effort',
+  'model_param_invalid',
+]
 
 /** Whether an attempt is an attributable rejection of the effort value. */
 function isEffortRejection(attempt: ProbeAttempt): boolean {
-  return attempt.status === 400 && attempt.errorCode === INVALID_EFFORT_CODE
+  return attempt.status === 400 && attempt.errorCode !== undefined && INVALID_EFFORT_CODES.includes(attempt.errorCode)
 }
 
 /** Whether an attempt shows the upstream accepted the request and streamed. */

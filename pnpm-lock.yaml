@@ -51,7 +51,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-todo-goal
       '@logictan/dsh-workbuddy-connect':
-        specifier: ^0.6.4
+        specifier: ^0.6.5
         version: link:../dsh-workbuddy-connect
 
   packages/dsh-agy-link:
