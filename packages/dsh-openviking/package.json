@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-openviking",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "OpenViking memory and context bundle for DeepSeek Harness",
   "type": "module",
   "main": "index.mjs",
