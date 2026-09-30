@@ -1,6 +1,5 @@
 import { OpenVikingClient } from "./client.mjs";
 import { resolveConfig } from "./config.mjs";
-import { injectStartupProfile } from "./lifecycle.mjs";
 import { mountOpenVikingMcp } from "./mcp.mjs";
 import { OpenVikingRuntime } from "./runtime.mjs";
 import { mountOpenVikingSkills } from "./skills.mjs";
@@ -30,14 +29,40 @@ export function apply(ctx, input = {}) {
     "openvikingMemory.stopDrainer()",
   );
 
-  ctx.on("agent/session-start", ({ agent }) => {
-    if (skipMemory(agent.session)) return false;
-    agent.ctx.effect(
-      () => () => runtime.dispose(agent.session),
-      "openvikingMemory.disposeSession()",
-    );
-    return injectStartupProfile(agent, runtime);
+  // A memory tool surface belongs to the session, not the host. The root mount
+  // below resolved its peer against the host's own cwd, which is no session's
+  // project, so a session in another workspace would search — and be scoped by
+  // — whatever project launched the host. Each root agent gets its own mount
+  // carrying the peer that session resolved, and it shadows the root
+  // registration for that agent alone: the tool registry resolves the nearest
+  // scope first, and `agent.ctx` carries the agent's own scope.
+  //
+  // Subagents are excluded twice over: by owner, since `roots()` holds only
+  // ownerless agents, and by the same `skipSubagentSessions` toggle that
+  // governs the rest of the plugin — every mount starts its own proxy process.
+  const attached = new Map();
+  const attach = agent => {
+    if (attached.has(agent) || skipMemory(agent.session)) return;
+    if (!ctx.agents.roots().includes(agent)) return;
+    attached.set(agent, ctx.effect(() => agent.ctx.effect(() => {
+      mountOpenVikingMcp(
+        agent.ctx,
+        config,
+        runtime.stateFor(agent.session).config.peerId,
+      );
+      return () => runtime.dispose(agent.session);
+    }, "openvikingMemory.disposeSession()")));
+  };
+  ctx.on("agent/created", ({ agent }) => {
+    attach(agent);
   });
+  ctx.on("agent/disposed", ({ agent }) => {
+    const detach = attached.get(agent);
+    if (detach === undefined) return;
+    attached.delete(agent);
+    detach();
+  });
+  for (const agent of ctx.agents.roots()) attach(agent);
 
   // prepend: downstream waterfall listeners run first, so this plugin sees
   // the final claimed batch and appends after every other contributor.

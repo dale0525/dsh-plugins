@@ -16,11 +16,17 @@ export const PROXY_PATH = fileURLToPath(new URL("./servers/mcp-proxy.mjs", impor
  * `env` source so the child reads no file and lands on exactly this url, key,
  * identity, auth mode and peer — the empty ones included.
  */
-export function buildMcpConfig(config) {
+export function buildMcpConfig(config, peerId = undefined) {
   // In DSH Desktop, process.execPath is Electron's executable rather than a
   // standalone Node binary. This tells Electron to run the proxy script as
   // Node instead of attempting to launch a second Desktop instance.
   const env = { ELECTRON_RUN_AS_NODE: "1", ...forwardConnectionEnv(config) };
+  // A mount can be scoped to one session, whose peer is not the host's: the
+  // host resolves its copy of the config against its own cwd, so a session in
+  // another project must override it. Passing "" is a real answer — a session
+  // outside any workspace has no peer, and inheriting the host's would file
+  // its memories under whichever project happened to launch the host.
+  if (peerId !== undefined) env.OPENVIKING_PEER_ID = peerId;
   if (config.recallPeerScope) env.OPENVIKING_RECALL_PEER_SCOPE = config.recallPeerScope;
   if (config.timeoutMs) env.OPENVIKING_TIMEOUT_MS = String(config.timeoutMs);
   return {

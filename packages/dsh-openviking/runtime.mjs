@@ -9,6 +9,8 @@ import {
   replayPending,
 } from "./shared/pending-queue.mjs";
 import { isRetryableFailure } from "./shared/retryable.mjs";
+import { resolveWorkspaceSettings } from "./shared/plugin-config.mjs";
+import { resolveWorkspaceIdentity } from "./shared/workspace-identity.mjs";
 import { resolveEffectivePeerId } from "./shared/workspace-peer.mjs";
 import {
   captureEvent,
@@ -30,22 +32,16 @@ export class OpenVikingRuntime {
   }
 
   stateFor(session) {
-    let state = this.states.get(session.id);
-    if (state) return state;
-    const cwd = session.header?.cwd || process.cwd();
-    const peer = resolveEffectivePeerId({
-      cfg: {
-        peerId: this.config.explicitPeerId,
-        peerSource: this.config.peerSource,
-        workspacePeer: this.config.workspacePeer,
-        harness: this.config.harness,
-      },
-      cwd,
-    });
-    state = {
+    const existing = this.states.get(session.id);
+    if (existing) {
+      if (existing.peerUnresolved) this.resolvePeer(existing, session);
+      return existing;
+    }
+    const state = {
       dshSessionId: String(session.id),
       ovSessionId: deriveHarnessSessionId("dsh-", String(session.id)),
-      config: { ...this.config, peerId: peer.peerId, legacyPeerId: peer.legacyPeerId },
+      config: { ...this.config },
+      peerUnresolved: false,
       ready: false,
       profileBlock: "",
       profileDelivered: false,
@@ -56,8 +52,47 @@ export class OpenVikingRuntime {
       pendingCreatedAt: 0,
       disposing: null,
     };
+    this.resolvePeer(state, session);
     this.states.set(session.id, state);
     return state;
+  }
+
+  /**
+   * Resolve the peer against the session's own directory, and keep re-resolving
+   * it while the answer is "no peer".
+   *
+   * One session keeps one peer, but an empty one is not an answer worth
+   * keeping: it is what a directory that is not a workspace *yet* returns, and
+   * a repository created mid-session would otherwise file every memory of that
+   * session at the user level for the rest of its life. An explicit
+   * `workspacePeer: false` is a decision and stays cached.
+   */
+  resolvePeer(state, session) {
+    const cwd = session.header?.cwd || process.cwd();
+    const cfg = {
+      peerId: this.config.explicitPeerId,
+      peerSource: this.config.peerSource,
+      workspacePeer: this.config.workspacePeer,
+      harness: this.config.harness,
+    };
+    // A workspace names its own peer in `.openviking/config.json`, and the
+    // session's directory is the only place that file can be found: the host
+    // resolved its copy of this config against its own cwd, long before any
+    // session said which project it was in.
+    if (!cfg.peerId) {
+      const declared = resolveWorkspaceSettings(cwd).settings.peerId;
+      if (declared) cfg.peerId = declared;
+    }
+    // That same cache remembers "not a workspace" for a minute, which would
+    // defeat the re-resolution above, so the walk is repeated uncached while
+    // the answer is still empty. It costs a fraction of a millisecond.
+    const identity = state.peerUnresolved
+      ? resolveWorkspaceIdentity({ cwd, cache: false })
+      : null;
+    const peer = resolveEffectivePeerId({ cfg, cwd, identity });
+    state.config.peerId = peer.peerId;
+    state.config.legacyPeerId = peer.legacyPeerId;
+    state.peerUnresolved = peer.source === "none" && peer.origin === "unresolved";
   }
 
   async initialize(agent) {
@@ -324,9 +359,9 @@ export class OpenVikingRuntime {
   }
 
   /**
-   * Replay the pending queue through this runtime's client. The session-start
-   * path calls it without options and keeps consuming retries; the drainer
-   * passes consumeRetries:false so transient failures stay retryable.
+   * Replay the pending queue through this runtime's client. Session
+   * initialization calls it without options and keeps consuming retries; the
+   * drainer passes consumeRetries:false so transient failures stay retryable.
    */
   async replayPendingQueue(options = {}) {
     await replayPending(
@@ -337,8 +372,8 @@ export class OpenVikingRuntime {
   }
 
   /**
-   * One drainer tick, following the session-start replay flow: probe health
-   * first and only replay when the server answers. Replays run without
+   * One drainer tick, following the session-initialization replay flow: probe
+   * health first and only replay when the server answers. Replays run without
    * consuming retry budgets, then every session's latch is re-derived from
    * the queue. An empty queue clears the latches with zero HTTP traffic, so
    * once a transient write failure recovers, capture and commit resume on

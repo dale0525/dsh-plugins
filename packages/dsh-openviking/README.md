@@ -135,9 +135,15 @@ no config file and reaches the server exactly as the runtime does, including
 with no key when the runtime has none. A changed `ovcli.conf` therefore takes
 effect for the tools when DSH restarts the bundle, as it does for the runtime.
 
-Two consequences follow from the proxy being one process per profile:
+Two consequences follow from the proxy being one process per agent:
 
-- **The actor peer is process-level.** Recall, capture, and commit still resolve a peer per session from that session's workspace repository, but tool calls carry the peer resolved at boot. Set `OPENVIKING_PEER_ID` when one process serves several repositories and you need tool calls attributed exactly.
+- **The actor peer is the session's own.** The bridge is mounted per root agent
+  with the peer that session resolved from its workspace, so a tool call carries
+  the same actor as that session's recall, capture, and commit. A host serving
+  several repositories no longer attributes every session's tools to the project
+  it was started in. The root mount remains as the fallback for a session that
+  has not started yet, and keeps the boot-time peer. `OPENVIKING_PEER_ID` still
+  pins the actor peer explicitly, for every mount at once.
 - **`remember` is not session-scoped.** The server's MCP `remember` stores into
   its own short-lived session rather than the live `dsh-<session-id>` stream —
   the same behavior the Claude Code, Codex, and Cursor integrations have.
@@ -145,6 +151,10 @@ Two consequences follow from the proxy being one process per profile:
 
 The bridge and the skill provider are mounted last in `apply()`, after every
 lifecycle registration, so a proxy that cannot start holds up nothing above it.
+Each root agent then gets its own bridge when it is announced. Subagents get
+none, for the same two reasons they get no recall: the mount list holds only
+ownerless agents, and `skipSubagentSessions` filters them again — every bridge
+starts its own proxy process.
 
 ### Why the skill gets its own provider
 
@@ -171,7 +181,7 @@ Common environment variables:
 | `OPENVIKING_API_KEY` / `OPENVIKING_BEARER_TOKEN` | Bearer credential |
 | `OPENVIKING_ACCOUNT` | Trusted-mode account |
 | `OPENVIKING_USER` | Trusted-mode user |
-| `OPENVIKING_PEER_ID` | Explicit actor peer |
+| `OPENVIKING_PEER_ID` | Explicit actor peer; pins every mount at once |
 | `OPENVIKING_WORKSPACE_PEER` | Derive a peer from each DSH session workspace's git identity by default; `0` sends no peer |
 | `OPENVIKING_RECALL_PEER_SCOPE` | `all` for cross-workspace recall or `actor` for isolation |
 
@@ -193,18 +203,18 @@ The patch can also carry plugin config:
 
 ## Behavior
 
-- `agent/session-start` injects the OpenViking profile, the available-memory index, and the `<available-skills>` catalog through `agent.inject()`.
-- `agent/pre-step` retrieves with the current step input and appends a durable plugin message to that same step.
+- `agent/pre-step` retrieves with the current step input and appends a durable plugin message to that same step, including the OpenViking profile, the available-memory index, and the `<available-skills>` catalog on the first step of a session.
+- `agent/created` gives each root agent its own memory bridge, carrying that session's peer.
 - `session/event` captures user, assistant, and optionally tool-result messages without scraping a transcript.
 - `turn/end` checks the OpenViking pending-token threshold and commits when required.
-- `skipSubagentSessions: true` excludes sessions marked with `header.origin: subagent` from automatic profile, recall, capture, and commit; it defaults to `false`.
+- `skipSubagentSessions: true` excludes sessions marked with `header.origin: subagent` from automatic profile, recall, capture, commit, and their own memory bridge; it defaults to `false`.
 - `syncTurns: false` stops every new write: no captured messages, no threshold or shutdown commit. Writes queued while the toggle was on are still replayed by the background drainer once the server recovers — they were captured with the toggle on. Profile injection and recall are unaffected; it defaults to `true`.
 - `skillCatalog` (default `true`) and `skillCatalogTokenBudget` (default `1200`; `0` also turns the catalog off) govern `<available-skills>`. The catalog comes from one `GET /api/v1/skills?node_limit=200` call: the user's own skills first, then those shared under `viking://agent/skills` minus any whose name the user also owns, each description cut to about 40 tokens. Its budget is separate from `profileTokenBudget`. When the descriptions do not fit, the catalog lists names only (with a `... +N more` tail if even the names do not all fit); when not even one name fits, it shrinks to a one-line count; with no skills, or a server without the endpoint, it is omitted.
-- Failed writes enter the shared OpenViking pending queue. A background drainer (default every 60s, `OPENVIKING_PENDING_DRAIN_INTERVAL_MS`) probes the server health and replays the queue in-process, so a transient write failure recovers without restarting dsh; it does not consume the session-start retry budget. Session-start replays keep consuming retries as before.
+- Failed writes enter the shared OpenViking pending queue. A background drainer (default every 60s, `OPENVIKING_PENDING_DRAIN_INTERVAL_MS`) probes the server health and replays the queue in-process, so a transient write failure recovers without restarting dsh; it does not consume the retry budget that session initialization spends. Those initialization replays keep consuming retries as before.
 - `tools/pre-execute` denies a DSH filesystem tool (`read`, `glob`, `grep`, `edit`, `write`, `str_replace_editor`) whose path argument is a `viking://` URI, pointing the model at the bridged `mcp__openviking__*` tools instead. A `write` or `edit` under a skill directory (`viking://~/skills/...`, `viking://user/<id>/skills/...`, `viking://agent/skills/...`) points at `mcp__openviking__add_skill` instead, which creates or replaces a whole skill from its `SKILL.md` text. A `grep` whose pattern is `viking://` text still runs.
 - `tools/post-execute` lets a `bash` command that carries a `viking://` URI run unchanged and attaches a notice for the model: use the bridged tools if it meant OpenViking content, or ignore the notice when the URI is intentional data such as an `ov` argument or an HTTP payload.
 
-Each DSH session maps to `dsh-<session-id>` in OpenViking. Workspace-derived actor peers are resolved per session and sent on every session-specific request: the peer is the git identity of the session's workspace — the normalized `origin` URL (`git@github.com:volcengine/OpenViking.git` becomes `github.com-volcengine-openviking`), else the repository root path, that fallback keeping the older rule where every non-letter-or-digit character becomes `-`. Outside a git repository no peer is sent at all, and what is remembered there goes to the user-level space `viking://user/<you>/memories`. One repository therefore keeps one peer across subdirectories, worktrees, clones and machines, while a fork's different origin keeps it separate. DSH does not read workspace `.openviking/config.json` files, so a `peer.id` written there has no effect; pin a peer with `OPENVIKING_PEER_ID` instead. Memories written under the older path-derived peer stay reachable: the default `recallPeerScope: all` sweeps every peer under the user.
+Each DSH session maps to `dsh-<session-id>` in OpenViking. Workspace-derived actor peers are resolved per session and sent on every session-specific request: the peer is the git identity of the session's workspace — the normalized `origin` URL (`git@github.com:volcengine/OpenViking.git` becomes `github.com-volcengine-openviking`), else the repository root path, that fallback keeping the older rule where every non-letter-or-digit character becomes `-`. Outside a git repository no peer is sent at all, and what is remembered there goes to the user-level space `viking://user/<you>/memories`. One repository therefore keeps one peer across subdirectories, worktrees, clones and machines, while a fork's different origin keeps it separate. A `peer.id` written in the workspace's `.openviking/config.json` is honored: the peer is resolved against the session's own directory, which is the only place that file can be found. `OPENVIKING_PEER_ID` overrides it. Memories written under the older path-derived peer stay reachable: the default `recallPeerScope: all` sweeps every peer under the user.
 
 ## Tools
 

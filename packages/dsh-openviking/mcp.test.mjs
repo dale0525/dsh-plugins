@@ -224,6 +224,7 @@ test("apply mounts the tool surface instead of registering tools itself", () => 
     },
     plugin: (plugin, config) => mounted.push({ plugin, config }),
     tools: { register: definition => registered.push(definition) },
+    agents: { roots: () => [] },
     on() {},
   }, { endpoint: "http://127.0.0.1:1933", workspacePeer: false });
 
@@ -231,4 +232,89 @@ test("apply mounts the tool surface instead of registering tools itself", () => 
   const bridge = mounted.find(entry => entry.plugin.name === "mcp-client");
   assert.ok(bridge, "the MCP bridge must be mounted");
   assert.equal(bridge.config.env.OPENVIKING_URL, "http://127.0.0.1:1933");
+});
+
+test("a scoped mount carries the session's peer instead of the host's", () => {
+  const config = resolveConfig({
+    endpoint: "http://127.0.0.1:1933",
+    apiKey: "secret",
+    peerId: "host-resolved-peer",
+    workspacePeer: false,
+  }, {});
+
+  // The root mount keeps the host's answer: it is the fallback for a session
+  // the runtime has not seen yet.
+  assert.equal(Config(buildMcpConfig(config)).env.OPENVIKING_PEER_ID, "host-resolved-peer");
+  // A session-scoped mount carries that session's own peer.
+  assert.equal(Config(buildMcpConfig(config, "session-peer")).env.OPENVIKING_PEER_ID, "session-peer");
+  // A session with no peer must stay empty rather than inherit the host's,
+  // which would scope a non-repository session to whatever project the host
+  // happened to be started in.
+  assert.equal(Config(buildMcpConfig(config, "")).env.OPENVIKING_PEER_ID, "");
+});
+
+test("each root agent mounts a bridge carrying its own session's peer", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ov-agent-peer-"));
+  try {
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(
+      join(dir, ".git", "config"),
+      '[remote "origin"]\n\turl = git@github.com:volcengine/OpenViking.git\n',
+    );
+
+    const handlers = new Map();
+    const rootMounts = [];
+    // The host enters an agent into its registry before it announces it, and
+    // only ownerless agents are roots — so this list holds the agent by the
+    // time the event reaches the plugin.
+    const roots = [];
+    apply({
+      logger: { debug() {}, error() {}, warn() {}, info() {} },
+      provide() {},
+      effect(execute) {
+        execute();
+        return async () => {};
+      },
+      plugin: (plugin, config) => rootMounts.push({ plugin, config }),
+      tools: { register: () => () => {} },
+      agents: { roots: () => roots },
+      on(event, handler) {
+        handlers.set(event, handler);
+      },
+    }, { endpoint: "http://127.0.0.1:1933", workspacePeer: true });
+
+    const agentMounts = [];
+    const agent = {
+      session: { id: "session-a", header: { cwd: dir, origin: "user" } },
+      status: "working",
+      inject() {},
+      ctx: {
+        effect(execute) {
+          execute();
+          return async () => {};
+        },
+        plugin: (plugin, config) => agentMounts.push({ plugin, config }),
+      },
+    };
+    roots.push(agent);
+    handlers.get("agent/created")({ agent });
+
+    assert.equal(agentMounts.length, 1, "the agent scope must get its own bridge");
+    assert.equal(agentMounts[0].plugin.name, "mcp-client");
+    assert.equal(agentMounts[0].config.serverName, "openviking");
+    assert.equal(
+      agentMounts[0].config.env.OPENVIKING_PEER_ID,
+      "github.com-volcengine-openviking",
+    );
+    // The root mount remains, as the fallback for a session that never starts,
+    // and it carries the host's own answer — not the session's.
+    const rootBridges = rootMounts.filter(entry => entry.plugin.name === "mcp-client");
+    assert.equal(rootBridges.length, 1);
+    assert.notEqual(
+      rootBridges[0].config.env.OPENVIKING_PEER_ID,
+      "github.com-volcengine-openviking",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

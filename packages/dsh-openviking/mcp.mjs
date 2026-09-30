@@ -10,6 +10,6 @@ export { buildMcpConfig, PROXY_PATH } from "./mcp-env.mjs";
  * Startup failure is contained: recall, capture, and commit keep working
  * against a server whose MCP endpoint is unreachable.
  */
-export function mountOpenVikingMcp(ctx, config) {
-  return ctx.plugin(mcpClient, buildMcpConfig(config));
+export function mountOpenVikingMcp(ctx, config, peerId = undefined) {
+  return ctx.plugin(mcpClient, buildMcpConfig(config, peerId));
 }

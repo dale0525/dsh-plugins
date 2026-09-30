@@ -487,6 +487,61 @@ test("the per-session peer honors peerSource", async () => {
   assert.equal(byCwd.peerId, deriveWorkspacePeerId(root));
 });
 
+test("a session re-resolves a peer that was empty when it started", async () => {
+  const root = realpathSync(await mkdtemp(join(tmpdir(), "dsh-memory-peer-late-")));
+  tempDirs.push(root);
+  process.env.OPENVIKING_STATE_DIR = join(root, ".state");
+
+  const payloads = [];
+  const runtime = new OpenVikingRuntime({
+    async addMessage(_sessionId, payload) {
+      payloads.push(payload);
+      return { ok: true };
+    },
+  }, { ...config(), workspacePeer: true }, { debug() {} });
+  const session = { id: "late-peer", header: { cwd: root } };
+
+  // Opened in a directory that is not a workspace yet: no peer is sent, and
+  // that answer must not outlive the directory.
+  assert.equal(runtime.stateFor(session).config.peerId, "");
+  await mkdir(join(root, ".git"), { recursive: true });
+  await writeFile(
+    join(root, ".git", "config"),
+    '[remote "origin"]\n\turl = git@github.com:volcengine/OpenViking.git\n',
+  );
+
+  runtime.stateFor(session).ready = true;
+  runtime.capture(session, userEvent("This directory is a repository now."));
+  await runtime.flush(session);
+
+  assert.equal(payloads.length, 1);
+  assert.equal(payloads[0].peer_id, "github.com-volcengine-openviking");
+});
+
+test("a session peer honors the workspace's .openviking/config.json", async () => {
+  const root = realpathSync(await mkdtemp(join(tmpdir(), "dsh-memory-ws-peer-")));
+  tempDirs.push(root);
+  await mkdir(join(root, ".git"), { recursive: true });
+  await writeFile(
+    join(root, ".git", "config"),
+    '[remote "origin"]\n\turl = git@github.com:volcengine/OpenViking.git\n',
+  );
+  await mkdir(join(root, ".openviking"), { recursive: true });
+  await writeFile(
+    join(root, ".openviking", "config.json"),
+    JSON.stringify({ version: 1, peer: { id: "declared-peer" } }),
+  );
+  process.env.OPENVIKING_STATE_DIR = join(root, ".state");
+
+  const session = { id: "ws-peer", header: { cwd: root } };
+  const cfg = new OpenVikingRuntime({}, {
+    ...config(),
+    workspacePeer: true,
+  }, { debug() {} }).stateFor(session).config;
+
+  assert.equal(cfg.peerId, "declared-peer");
+});
+
 function config() {
   return {
     explicitPeerId: "",

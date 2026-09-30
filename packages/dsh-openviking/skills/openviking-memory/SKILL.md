@@ -66,21 +66,33 @@ filesystem tools.
 
 ## Where memories are filed
 
-A git repository derives its peer from its `origin`, so every clone, worktree and subdirectory of one repository shares one memory.
+A git repository derives its peer from its `origin`, so every clone, worktree and subdirectory of one repository shares one memory. That derivation uses the session's own directory, not the directory the harness was started in, so sessions opened in different projects each file under their own peer.
 
-A directory that is neither a repository nor marked gets no peer at all, and what is remembered there goes to the user-level space — which is why a scratch directory sees no project memory of its own.
+A directory that is neither a repository nor marked gets no peer at all, and what is remembered there goes to the user-level space — which is why a scratch directory sees no project memory of its own. This is a real answer, not a transient one, so it is the state to fix deliberately rather than wait out: a repository created later in that directory is picked up (the empty answer is re-checked as the session goes on), but a directory that will never be a repository stays at the user level forever.
 
-To give a directory its own memory under Claude Code or Codex, create `.openviking/config.json` in it:
+To give a directory its own memory, create `.openviking/config.json` in it:
 
 ```json
 {"version": 1, "peer": {"id": "my-project"}}
 ```
 
-Two directories carrying the same `peer.id` share one memory. Adding `"recall": {"peer_scope": "actor"}` to the same file limits recall to this project.
+Every harness reads that file, DSH included, and it wins over the `origin` derivation above — which is the point: a directory that is not a repository, or whose `origin` is a remote you do not want to name a memory after, still gets a project memory of its own. Two directories carrying the same `peer.id` share one memory. Adding `"recall": {"peer_scope": "actor"}` to the same file limits recall to this project.
 
-Other harnesses do not read that file: under them, pin a peer with the `OPENVIKING_PEER_ID` environment variable instead.
+The file is read from the session's directory, so it takes effect in the sessions opened there — a session already running keeps the peer it started with. Where you cannot write files, pin a peer with the `OPENVIKING_PEER_ID` environment variable instead.
 
 Do not invent other keys or commands for this: that file is the whole interface, and no `ov` subcommand creates, renames or merges a peer.
+
+## Sessions that are not in a repository
+
+A session opened in a scratch directory, a home directory, or a directory that is not (or not yet) a repository has no peer, and its memories go to the user-level space. That is correct for genuinely cross-repository work — a conclusion that applies to every project belongs at the user level.
+
+It is wrong for work that is really about one project. Before writing, ask which project the memory is about, not where the shell happens to be:
+
+- **The directory is a project, but not a repository** — add `.openviking/config.json` with a `peer.id`. One file, and the directory gets its own memory.
+- **The project is a repository, but this session is not inside it** — the memory still belongs to that project. Say so in the content (`<project>: …`) so it can be attributed, and file it deliberately rather than letting it default to the user level; moving it later means editing stored memories.
+- **The memory is about several repositories, or none** — the user level is the right home. Do not invent a peer for it.
+
+The failure to avoid is a project decision landing at the user level because the session happened to be opened somewhere else: it then surfaces in every unrelated project, and the project that owns it cannot find it.
 
 ## Boundaries
 

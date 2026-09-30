@@ -5,6 +5,16 @@ import { apply } from "./index.mjs";
 test("session filtering skips subagents without changing main-session recall", async () => {
   const handlers = new Map();
   let memoryRuntime;
+  const agent = {
+    session: { id: "dsh-final-batch", header: { cwd: "/workspace" } },
+    ctx: {
+      effect(execute) {
+        execute();
+        return async () => {};
+      },
+      plugin() {},
+    },
+  };
   const ctx = {
     logger: { debug() {} },
     provide(name, value) {
@@ -16,6 +26,7 @@ test("session filtering skips subagents without changing main-session recall", a
     },
     tools: { register() {} },
     plugin() {},
+    agents: { roots: () => [agent] },
     on(name, handler) {
       handlers.set(name, handler);
     },
@@ -26,17 +37,8 @@ test("session filtering skips subagents without changing main-session recall", a
     skipSubagentSessions: true,
   });
 
-  const agent = {
-    session: { id: "dsh-final-batch", header: { cwd: "/workspace" } },
-    ctx: {
-      effect(execute) {
-        execute();
-        return async () => {};
-      },
-    },
-  };
-  const sessionStart = handlers.get("agent/session-start");
-  assert.equal(typeof sessionStart, "function");
+  const agentCreated = handlers.get("agent/created");
+  assert.equal(typeof agentCreated, "function");
 
   const preStep = handlers.get("agent/pre-step");
   const initial = [message("initial input")];
@@ -75,9 +77,13 @@ test("session filtering skips subagents without changing main-session recall", a
         effect() {
           assert.fail("subagent teardown commit must not be registered");
         },
+        plugin() {
+          assert.fail("subagent must not mount a memory bridge");
+        },
       },
     };
-    assert.equal(await sessionStart({ agent: child }), false);
+    // Subagents never mount: they are excluded by owner, not by a flag.
+    agentCreated({ agent: child });
     const childMessages = [message("derived worker input")];
     const childDecision = await preStep({
       agent: child,

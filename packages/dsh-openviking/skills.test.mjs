@@ -75,6 +75,7 @@ test("apply mounts both the tool surface and the skill", () => {
     effect(execute) { execute(); return async () => {}; },
     plugin: (plugin, config) => mounted.push({ name: plugin.name, config }),
     tools: { register() {} },
+    agents: { roots: () => [] },
     on() {},
   }, { endpoint: "http://127.0.0.1:1933", workspacePeer: false });
 
