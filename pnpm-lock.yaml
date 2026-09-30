@@ -36,7 +36,7 @@ importers:
         specifier: ^2.7.1
         version: link:../dsh-easyrewrite
       '@logictan/dsh-fakeip-fetch':
-        specifier: ^0.1.0
+        specifier: ^0.1.1
         version: link:../dsh-fakeip-fetch
       '@logictan/dsh-imagegen':
         specifier: ^2.0.1
