@@ -145,8 +145,13 @@ export class FakeIpFetchProvider {
 	 * Fetch through the real guard, retrying through the fake-ip allowlist only
 	 * when that guard rejected the destination.
 	 *
-	 * The original strict error is rethrown when the fallback also fails, so a
-	 * refused request keeps reporting the guard's own diagnosis.
+	 * When the fallback fails too, the error that surfaces is the fallback's,
+	 * unless the fallback *also* refused the destination — only then does the
+	 * guard's own diagnosis stay the answer. Reporting the guard's error for
+	 * every fallback failure blamed DNS for requests that got past resolution
+	 * and failed downstream (a cross-origin redirect, a size limit, a refused
+	 * connection), which reads as "the exemption did not apply" and sends the
+	 * operator to debug a resolver that was working.
 	 */
 	async fetch(request, signal) {
 		try {
@@ -155,8 +160,9 @@ export class FakeIpFetchProvider {
 			if (error?.code !== 'WEB_BLOCKED_URL') throw error;
 			try {
 				return await this.#relaxed.fetch(request, signal);
-			} catch {
-				throw error;
+			} catch (fallbackError) {
+				if (fallbackError?.code === 'WEB_BLOCKED_URL') throw error;
+				throw fallbackError;
 			}
 		}
 	}
