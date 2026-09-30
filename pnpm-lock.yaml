@@ -45,7 +45,7 @@ importers:
         specifier: ^1.1.5
         version: link:../dsh-loop-guard
       '@logictan/dsh-openviking':
-        specifier: ^0.4.6
+        specifier: ^0.4.7
         version: link:../dsh-openviking
       '@logictan/dsh-reasoning-strip':
         specifier: ^0.1.0

@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-openviking",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "OpenViking memory and context bundle for DeepSeek Harness",
   "type": "module",
   "main": "index.mjs",
@@ -12,7 +12,6 @@
     "client.mjs",
     "config.mjs",
     "capture.mjs",
-    "lifecycle.mjs",
     "mcp.mjs",
     "mcp-env.mjs",
     "runtime.mjs",
