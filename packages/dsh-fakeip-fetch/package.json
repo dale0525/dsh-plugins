@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-fakeip-fetch",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH web_fetch provider that works behind a fake-ip DNS proxy (Clash / sing-box). Narrows the upstream non-public-address guard to the configured reserved range instead of removing it.",
   "type": "module",
   "main": "lib/index.js",
