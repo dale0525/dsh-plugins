@@ -44,7 +44,6 @@
 - **自动填充（避开编辑期）**：启动时由 host 为没有 `reasoningEfforts` 声明的模型自动补一份推荐声明——缺失的输入模态声明也会一并补齐（可用 `modalityAutofill: false` 关闭；已声明、显式 `false`、刻意撤销的标记一律不动，容量字段则从不写入）。运行中新增的模型由浏览器侧补写，且只在**你退出编辑卡片之后**执行（编辑期的后台写入正是"存不上"的成因）；写入采用乐观锁：若你的编辑已把设置顶高，自动填充会放弃并稍后重试，绝不与你抢写。
 - **三种意图**：全不勾 = 取消声明（回到继承——以 `reasoningEffortsUnset` 标记持久化，自动填充会尊重它，重启后依然有效）；只勾 off = 禁用推理（`false`）；勾选档位 = 写入声明。模态侧同理：未声明 = 继承提供方默认，勾选图片 = 声明收图，「清除声明」= 以 `inputUnset` 标记持久化撤销。编辑器随官方页重新渲染与推送的设置变更保持同步，你编辑到一半不会被打断。
 - **Composer 思考强度滑块（整个弹窗复刻）**：官方模型菜单（右下角席位弹出的 popover）打开的那一帧起，体内即替换为上游设计——滑块（白色圆钮、渐变胶囊轨道、radiation canvas + flare；档位取自当前模型适配器播报的阶梯）带 14px 内边距，一条分隔线，然后**一行** *模型名 · 当前档位 ›*（点击打开官方模型列表）。官方“推理等级”钻取行被滑块取代（滑块本身就是档位控件）；官方菜单外壳与右下角触发钮保持原样。拖动经官方 session 模型选择链路提交（乐观 + 被拒回滚，失败在菜单内提示）。档位少于两个的模型显示安静提示 + 模型行。复刻体与菜单同一帧挂载，不会先闪现官方原版窗口。切换模型会沿用你的档位：官方模型列表发起的不带档位的切换，会自动重新应用**本会话内**你选择的档位（会话内始终最高），其次该模型的默认思考强度，其次你在该模型上上次选择的档位（按「供应商/模型」记忆），最后是知识库记录的厂商官方默认档——与切换在同一原子提交中完成，中间不会闪现「Default」态（受滑块开关控制；目标模型阶梯不含该档位时保持官方默认行为）。全新会话与会话恢复由投影监视器走同一条链——监视器自会话诞生即接线，而非等你第一次打开模型菜单。
-- **Composer 模型搜索（无条件注入）**：官方模型菜单处于**模型列表**面板时，列表上方注入一个搜索框。它按供应商名、模型名与模型 ID 过滤官方行（空格分词、大小写不敏感），隐藏无命中的分组，无结果时显示空态提示。输入框内 `↓` 跳到第一个命中项，`Esc` 清空查询；查询生效期间方向键**只在可见行之间**移动（不会落到被隐藏的行上）。搜索框位于官方列表之上、官方加载提示条之下，且**不改动菜单自身的尺寸与滚动**。与滑块不同，它**不受设置页开关控制**：只要插件生效就会注入。
 - **每个模型的默认思考强度（issue #4）**：模型行编辑器新增「默认思考强度」选择器——每个新会话打开该模型时使用的档位。它存储在设置文档的模型行上（随部署走、跨设备一致、重启不丢），跨会话优先于记住的上次档位；会话内手动选择始终最高——你选过的档位（或显式的「跟随提供方默认」）不会被任何自动机制覆盖。选择器的候选就是该模型自己声明的档位；清除后回到记忆链，留空的模型文档上不写任何字段（无需标记——没有自动填充会去填它）。
 - **模型页开关**：「推理强度滑块」开关从通用设置移出，放到**「模型」**设置页“添加提供方 / 添加自定义提供方”的下方，置于一个带边框的容器内（设置项形式与上游插件一致）。该开关无条件占据官方 `settings.models.footer` slot。
 - **请求头与 User-Agent**：提供商卡片内编辑官方的 `headers` 字段（掩码显示、路径合并、随卡片保存），并在 fetch 层按 origin 精确接管 `user-agent` 的覆盖（官方适配器保留该名称）；同源 `/models` 探测一并覆盖，冲突时提示而不猜。
@@ -57,11 +56,11 @@
 
 ## 安装
 
-需要 DeepSeek Harness **`0.1.5-alpha.1` 及后续**（当前 0.1.x 内核发布线；peer 范围 `@deepseek-ai/dsh-api-remotes@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1`、`@deepseek-ai/dsh-settings@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1`，另有 `@deepseek-ai/schemastery@^3.18.0`。peer 用逐线并集而非 `>=0.1.5-alpha.1`，是因为 semver 的预发布豁免只管同 `major.minor.patch` 元组——`>=0.1.5-alpha.1` 匹配不到后续发布线的任何预发布版）。
+需要 DeepSeek Harness **`0.1.5-alpha.1` 及后续**（面向 `0.1.5`–`0.2.0` 内核发布线；peer 范围 `@deepseek-ai/dsh-api-remotes@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2`、`@deepseek-ai/dsh-settings@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2`，另有 `@deepseek-ai/schemastery@^3.18.0`。peer 用逐线并集而非 `>=0.1.5-alpha.1`，是因为 semver 的预发布豁免只管同 `major.minor.patch` 元组——`>=0.1.5-alpha.1` 匹配不到后续发布线的任何预发布版）。
 
 > **还在用旧版 DeepSeek Harness？**本插件这条发布线面向 `0.1.5-alpha` 及后续——`0.1.2-rc` / `0.1.3-alpha` 线及更早版本**均不再受支持**。请升级 Harness，或安装与内核匹配的本插件旧版本（例如 `0.1.2-rc` / `0.1.3-alpha` 线请用 `dsh-better-reasoning-effort@0.3.7`）。
 
-以 `0.1.7-alpha.1` 为编译与门禁基线（typecheck / 测试套件 / 完整构建都跑在 `0.1.7-alpha.1` 的各官方包上）；最近一次**实机**运行时基线仍为 `0.1.5-rc.1`。
+以 `0.2.0-rc.2` 为编译与门禁基线（typecheck / 测试套件 / 完整构建都跑在 `0.2.0-rc.2` 的各官方包上）；最近一次**实机**运行时基线仍为 `0.1.5-rc.1`。逐内核的接缝复核记录见 [docs/compatibility-notes.md](docs/compatibility-notes.md)。
 
 `0.1.5-rc.2` → `0.1.6-alpha.1` 的逐接缝源码复核：settings 服务（`get` / `describe` / `update` 与 `settings/updated`）与生成的 Typert `ctx.remote.settings` 契约、`settings.models` 的两个 slot 席位、slots / locale 运行时、`connection` 服务与 `connection/reset` 事件、Models 页六个锚点 aria-label 与结构类名、composer 模型弹层（`aria-controls` → `role="menu"` → `menuitem` / `menuitemradio`）、`dsh.client` 装载规则与 `/plugins/<id>/client.js` 路由、`llm` 服务的 `prepareCall` / `stream` 包装、`webServer.register`，以及 pi-ai 的 `config.ts` / `catalog.ts`（compat 键、`reasoningEfforts`、`input`）——承载实现全部零改动。两处相邻改动不在本插件的注入路径上：`ui-settings-models` 为 deepseek 家族端点加了新占位与提示文案，`ui-input-trigger` 改了斜杠命令菜单行的显示形态（本插件注入的是 `ModelSelect` 弹层）。`0.1.5` 线的既有适配说明继续成立（源码级验证：settings Remote wire、Models 页锚点、模型目录类型、slots / locale 自 `0.1.2-rc.1` 起全部原样；仅 `llm-pi-ai` compat schema 增长——pi-ai 0.85.1 新增 `thinkingTokenBudgetField` / `vllmPriority` / `supportsMaxOutputTokens`，以及 composer 模型菜单改为 portal 到 `document.body`——滑块经触发钮 `aria-controls` 链接跟随，内联形态保留为兜底）。新 schema 键按协议取用，旧内核写拒绝时自动剥离重试，全程无版本嗅探。接缝明细：settings Remote 是生成的 Typert `ctx.remote.settings` stub（无参 `describe`、位置参数 `mutate(ns, ops, expectedRevision)`、`{ok, value | error}` 包络、`settings/conflict` / `settings/rejected` 拒绝码）；Models 页锚点（`Capacities`/容量、Model ID、Display name、Provider ID、Base URL、API protocol 与 `settings.models.footer` slot）全部原样；原始列表探测镜像内核自己的模型发现——同一协议集合（新含 **Anthropic Messages**，走原生 `/v1/models` 路由、`x-api-key` + `anthropic-version`）、同款 `data`/`models` 双形态解析、同款 4 MB 上限。client bundle 运行时不请求任何官方模块。
 
@@ -128,7 +127,6 @@ host 侧接受可选配置项（以下为默认值）：
 ├─ Composer 注入
 │   MutationObserver 监听整个文档
 │   → ComposerSlider（root 面板）
-│   → 模型搜索框（模型列表面板）
 ├─ EffortEditor（React 组件）
 │   档位勾选 / 线上值 / 输入模态开关 /
 │   自动适配（分区式建议展示）/ 随卡片保存写入
@@ -147,7 +145,7 @@ npm test            # vitest：知识库 / 推断 / 自动填充 / DOM 注入 / 
 npm run build       # lib/*.js + lib/client.js（module-loader bundle）
 ```
 
-契约版本：`@deepseek-ai/dsh-api-remotes@0.1.7-alpha.1`（client 契约类型，peer 范围 `^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1`）；开发依赖已统一到已发布的 `0.1.7-alpha.1` 各包与 Cordis `4.0.3`，typecheck（0 错误）、测试套件（20 文件 / 400 测试全通过）与完整构建均针对该版本执行；运行时实测基线为 `0.1.5-rc.1`——`0.1.6-alpha.1` 至 `0.1.7-alpha.1` 目前完成的是源码/包契约门禁，实机复核未做。测试套件钉住 composer 菜单发现（portal 与内联双形态），`0.1.2-rc.1` 降级重试路径保留为安全网。
+契约版本：`@deepseek-ai/dsh-api-remotes@0.2.0-rc.2`（client 契约类型，peer 范围 `^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2`）；开发依赖已统一到已发布的 `0.2.0-rc.2` 各包与 Cordis `4.0.4`，typecheck（0 错误）、测试套件与完整构建均针对该版本执行；运行时实测基线为 `0.1.5-rc.1`——`0.1.6-alpha.1` 至 `0.2.0-rc.2` 目前完成的是源码/包契约门禁，实机复核未做。测试套件钉住 composer 菜单发现（portal 与内联双形态），`0.1.2-rc.1` 降级重试路径保留为安全网。
 在 `0.1.5-rc.1` 内核上的运行时复核（2026-09）：settings Remote 的 `describe`/`mutate(ns, ops, revision)` 契约、Models 页锚点、slider 的菜单发现全部原样；rc.1 对 `llm-pi-ai` 的两处加严已被本插件覆盖——模型级 compat 必须属于该模型解析出的协议（写拒绝时按协议剥离并重试，拒绝文案已逐字钉进测试），以及存量无效配置改为在提供方卡片上就地显示错误而非整体失败。
 
 ## 已知限制

@@ -642,6 +642,7 @@ describe('client apply()', () => {
           }],
         }],
         failures: [],
+        pending: null,
         status: 'ready',
         error: null,
       })
@@ -702,6 +703,7 @@ describe('client apply()', () => {
           }],
         }],
         failures: [],
+        pending: null,
         status: 'ready',
         error: null,
       })
@@ -809,6 +811,7 @@ describe('client apply()', () => {
           }],
         }],
         failures: [],
+        pending: null,
         status: 'ready',
         error: null,
       })

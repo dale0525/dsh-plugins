@@ -79,6 +79,7 @@ export function directoryFixture(): ModelDirectoryLike & { update: (next: ModelD
       }],
     }],
     failures: [],
+    pending: null,
     status: 'ready',
     error: null,
   }

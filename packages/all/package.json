@@ -20,7 +20,7 @@
   ],
   "dependencies": {
     "@logictan/dsh-agy-link": "^0.6.0",
-    "@logictan/dsh-better-reasoning-effort": "^0.5.1",
+    "@logictan/dsh-better-reasoning-effort": "^0.5.2",
     "@logictan/dsh-browser-agent": "^0.2.0",
     "@logictan/dsh-config-manager": "^0.1.76",
     "@logictan/dsh-desktop-agent": "^0.1.3",

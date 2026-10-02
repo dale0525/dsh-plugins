@@ -33,6 +33,7 @@ function fixture(state?: Partial<ModelDirectoryStateLike>): {
       }],
     }],
     failures: [],
+    pending: null,
     status: 'ready',
     error: null,
     ...state,
@@ -93,9 +94,9 @@ beforeEach(() => {
 describe('effectiveEffortIndex', () => {
   const levels = [{ id: 'off', name: 'Off' }, { id: 'low', name: 'Low' }, { id: 'medium', name: 'Medium' }, { id: 'high', name: 'High' }, { id: 'max', name: 'Max' }]
   it('prefers the session effort, then the adapter default, then the middle', () => {
-    expect(effectiveEffortIndex(levels, { current: { provider: 'a', model: 'm', reasoningEffort: 'high' }, routable: true, groups: [], failures: [], status: 'ready', error: null })).toBe(3)
-    expect(effectiveEffortIndex(levels, { current: { provider: 'a', model: 'm' }, routable: true, groups: [{ id: 'a', name: 'A', models: [{ id: 'm', name: 'M', reasoning: { defaultEffort: 'low', efforts: levels } }] }], failures: [], status: 'ready', error: null })).toBe(1)
-    expect(effectiveEffortIndex(levels, { current: { provider: 'a', model: 'm' }, routable: true, groups: [{ id: 'a', name: 'A', models: [{ id: 'm', name: 'M' }] }], failures: [], status: 'ready', error: null })).toBe(2)
+    expect(effectiveEffortIndex(levels, { current: { provider: 'a', model: 'm', reasoningEffort: 'high' }, routable: true, groups: [], failures: [], pending: null, status: 'ready', error: null })).toBe(3)
+    expect(effectiveEffortIndex(levels, { current: { provider: 'a', model: 'm' }, routable: true, groups: [{ id: 'a', name: 'A', models: [{ id: 'm', name: 'M', reasoning: { defaultEffort: 'low', efforts: levels } }] }], failures: [], pending: null, status: 'ready', error: null })).toBe(1)
+    expect(effectiveEffortIndex(levels, { current: { provider: 'a', model: 'm' }, routable: true, groups: [{ id: 'a', name: 'A', models: [{ id: 'm', name: 'M' }] }], failures: [], pending: null, status: 'ready', error: null })).toBe(2)
   })
   it('hides the slider for models with fewer than two levels', async () => {
     const one = fixture({ current: { provider: 'aliyun', model: 'qwen-max' }, groups: [{ id: 'aliyun', name: 'Aliyun', models: [{ id: 'qwen-max', name: 'Qwen Max', reasoning: { efforts: [{ id: 'off', name: 'Off' }] } }] }] })
