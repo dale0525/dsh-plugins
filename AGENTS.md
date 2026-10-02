@@ -31,7 +31,8 @@ dsh-plugins/
 
 **patch 行 `id` 必须全仓库唯一**，且等于该插件宿主半边的 `export const name`。撞车时宿主启动硬崩
 （`cordis-plugin-loader`：`duplicate loader entry id: <id>`），而 `aggregate.mjs --check` **不校验**
-行 id 唯一性（只校验 `deps` 重复包名）—— 新增子插件时须人工比对。
+行 id 唯一性（只校验 `deps` 重复包名）—— **唯一性**用 `pnpm run check:host` 查（见「✅ 验证命令」），
+**「等于宿主半边 `export const name`」这半仍靠人工核对**（脚本不读 `src/`）。
 
 **构建产物不入版本控制**：每个 `packages/<name>/lib/` 由各自 `.gitignore` 忽略，由该包自己的构建脚本生成。
 各包的触发时机**不统一**：多数用 `prepare`（`pnpm install` 即构建），`dsh-imagegen` 用 `prepack`、
@@ -99,7 +100,7 @@ git subtree add --prefix=packages/<name> <上游仓库 URL> <基线 tag>
 
 | 约束 | 违反后果 | 谁在检查 |
 |---|---|---|
-| patch 行 `id` 全仓库唯一，且等于该插件宿主半边的 `export const name` | 重复即硬崩：`duplicate loader entry id: <id>`（`cordis-plugin-loader`） | **无人自动检查**，须人工核对 |
+| patch 行 `id` 全仓库唯一，且等于该插件宿主半边的 `export const name` | 重复即硬崩：`duplicate loader entry id: <id>`（`cordis-plugin-loader`） | 唯一性：`pnpm run check:host`；名称相等：**无**，人工核对 |
 | 客户端产物 entry `id` 等于包名 | `window.__ModuleLoader__.load({ id })` 与包名不符 → 浏览器半边加载失败 | 无 |
 
 ### 3. 在 `packages/all/aggregate.yml` 登记
@@ -141,7 +142,7 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（CI 会�
 | **上游祖先已建立**（仅限有上游的） | `git log --oneline --grep="git-subtree-dir: packages/<name>"` 有输出（§1）；自制插件此条不适用 |
 | **该包有上游身份**（仅限有上游的） | `packages/<name>/upstream.json` 存在且 `id` / `url` / `prefix` 齐备；自制插件不需要 |
 | 聚合生成物与清单一致 | `node scripts/aggregate.mjs --check` 无 drift |
-| patch 行 `id` 未撞车 | 人工比对全仓库 `cordis.patch.yml` 的行 `id`（无自动检查） |
+| patch 行 `id` 未撞车 | `pnpm run check:host` 报 0 重复（只覆盖唯一性；名称相等仍人工核对） |
 | 发布顺序正确 | `npm run publish:plan` 中该子插件在聚合包之前 |
 | 从 registry 全新安装 | 干净 `DSH_HOME` 下 `dsh plugin --profile <p> add @logictan/dsh-plugins-all@latest`，依赖链带出该子插件 |
 | 客户端产物可加载 | `lib/client.js` 按 loader 协议注册 1 次，注册 `id` 等于包名 |
@@ -290,13 +291,24 @@ npm run publish:plan                 # 确认顺序：子插件在聚合包之�
 
 ## ✅ 验证命令
 
-安装与日常构建命令见 `README.md` 的「开发」。以下三条是**合并前必过的验收门禁**：
+安装与日常构建命令见 `README.md` 的「开发」。以下四条是**合并前必过的验收门禁**：
 
 ```bash
 node scripts/aggregate.mjs --check            # 聚合 patch / deps 与清单一致（CI 会跑）
 pnpm test                                     # 全仓测试：根 scripts/*.test.mjs + 每个子包
 pnpm typecheck                                # 全仓 typecheck（pnpm -r --if-present）
+pnpm run check:host                           # 宿主世代兼容 + patch 行 id 唯一（升级宿主后必跑）
 ```
+
+> **前三条 CI 会跑，第四条不会**（`grep -rn 'check:host' .github/` 无命中）：CI 的 runner 没装
+> `dsh`，装了也不该为一个只读自检去拉整个宿主。所以 `check:host` 是**本地人工门禁** ——
+> 宿主升级后、发布前各跑一次，**没有任何自动化会在你忘记时替你跑**。
+>
+> 它查三类缺陷：两类会让插件行**静默禁用**（宿主包误写 `dependencies`、peer 不接受当前宿主）、
+> 一类会让宿主启动**硬崩**（聚合 patch 行 `id` 重复）。这三类里**只有 R2 需要宿主**：
+> R1 是纯 manifest 检查、R4 是纯文本检查，无宿主的机器上也照跑（R1 挡的正是本次真实发生过的
+> `mcp-stitch` 事故，所以它不能依赖宿主在场）。本机没宿主时 R2 会明说「未检查」并以 0 退出，
+> **不会假装通过**。
 
 > **`--workspace-concurrency=2` 不是性能旋钮，别调大**：`node --test` 与 vitest 各自按
 > CPU 数开 worker，pnpm 再并发跑多个包，两个乘数叠起来会在 10 核机器上拉起 ~30 个测试进程，
