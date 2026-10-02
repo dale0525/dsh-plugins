@@ -2,8 +2,19 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import * as settingsModule from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace, SettingsSectionHooks } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type z from '@deepseek-ai/schemastery'
+
+/**
+ * Hooks accepted by the legacy installSection installers this shim still
+ * supports. Declared here because the current host generation no longer
+ * exports the contract; the configure path uses only onChange.
+ */
+interface SettingsSectionHooks<T> {
+  setSource(current: () => T): void
+  onChange(): void
+  validate?: (value: T) => void
+}
 
 type SettingsModuleCompat = {
   settingsNamespace?: (value: string) => SettingsNamespace

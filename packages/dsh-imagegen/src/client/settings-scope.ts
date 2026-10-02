@@ -13,8 +13,32 @@ import {
   type SnapshotStore,
 } from '@deepseek-ai/dsh-client-store'
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
-import type { SettingsScope, SettingsScopeSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { IMAGEGEN_SETTINGS_NAMESPACE, SETTINGS_API, type ChannelConfig } from '../protocol.ts'
+
+/**
+ * Client-side sync state of one settings namespace, owned here because this
+ * package re-serves its namespace over its own bridge rather than consuming
+ * the host scope service, and the host generation this bridge was written
+ * against no longer exports the contract.
+ */
+export interface SettingsScopeSnapshot<T> {
+  status: 'loading' | 'ready' | 'unavailable'
+  value: T | undefined
+  base: unknown
+  user: unknown
+  revision: number | undefined
+  writable: boolean
+  mode: 'host' | 'memory'
+}
+
+/** Reactive owner handle over one namespace's durable section. */
+export interface SettingsScope<T> {
+  getSnapshot(): SettingsScopeSnapshot<T>
+  subscribe(listener: () => void): () => void
+  mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<void>
+  set(field: string, value: unknown): Promise<void>
+  unset(field: string): Promise<void>
+}
 
 /** One cascading-picker group: a configured channel and its model aliases. */
 export interface ImageModelGroup {
