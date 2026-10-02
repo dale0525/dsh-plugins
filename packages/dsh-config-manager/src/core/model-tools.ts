@@ -18,7 +18,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
-import type { JsonValue } from '@deepseek-ai/dsh-tools'
+import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { SyncEngine } from '../sync/sync-engine.ts'
 import { SECTION_IDS } from '../schema/config.ts'
 import type { SectionId } from '../schema/types.ts'

@@ -44,7 +44,7 @@ import { promisify } from 'node:util'
 
 import type { Context } from '@deepseek-ai/cordis'
 import * as dshSettings from '@deepseek-ai/dsh-settings'
-import type { SettingsProvider } from '@deepseek-ai/dsh-settings'
+import type { SettingsForms } from '@deepseek-ai/dsh-settings'
 import * as dshCredentials from '@deepseek-ai/dsh-credentials'
 import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import { dshHomePath, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
@@ -426,7 +426,7 @@ class DshSettingsFacade implements SettingsFacade {
     this.ctx = ctx
   }
 
-  private provider(): SettingsProvider {
+  private provider(): SettingsForms {
     return this.ctx.settings
   }
 

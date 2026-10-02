@@ -2,7 +2,7 @@
  * Client 半的类型集中出口：把对 @deepseek-ai 运行时包的类型依赖收敛到本文件，
  * 其余组件只从 `../client-types.ts` 引用，避免类型散落与误用值导入。
  */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 
 export type { ClientContext }

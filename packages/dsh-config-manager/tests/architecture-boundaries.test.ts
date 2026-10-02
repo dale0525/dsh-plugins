@@ -104,6 +104,10 @@ function isDshPackageAllowed(rel: string): boolean {
 const KNOWN_VIOLATIONS = new Set([
   'core/model-tools.ts → @deepseek-ai/cordis',
   'core/model-tools.ts → @deepseek-ai/dsh-tools',
+  // 上游把 JsonValue 从 dsh-tools 移到 dsh-util-values（0.2.0-rc.2 世代）。
+  // 例外授予的是该文件的「@deepseek-ai/* 依赖」这一类，不是某个具体包名，
+  // 故跟着这次改名同步例外条目，不新增违规类别。
+  'core/model-tools.ts → @deepseek-ai/dsh-util-values',
   'core/model-tools.ts → ../sync/sync-engine.ts',
   'core/model-tools.ts → ../sync/sync-config.ts',
   'market/view.ts → ../ui/i18n.ts',

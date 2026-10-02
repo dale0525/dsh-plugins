@@ -11,6 +11,9 @@ import type { ClientContext } from './client-types.ts'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only：拉入 SlotMap / LocaleNamespaceMap 合并表（dsh-client-ui-slots）。
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
+// Type-only：拉入 ctx.slots 的 Context 合并。0.1.2 起该服务从
+// @deepseek-ai/dsh-client-runtime 移到 dsh-client-ui-renderer。
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { ConfigManagerApi } from './api.ts'
 import { ConfigManagerSection } from './ConfigManagerSection.tsx'
 import { en, zh, type ConfigManagerKey } from './locales.ts'
