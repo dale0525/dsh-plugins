@@ -23,7 +23,7 @@ dsh-plugins/
 ├── scripts/
 │   ├── aggregate.mjs       # aggregate.yml → patch + deps
 │   ├── publish.mjs         # 按依赖边拓扑推导发布顺序（子插件 → 聚合包）
-│   └── sync-upstream.mjs   # 上游同步的只读工具（--list / --changed）
+│   └── sync-upstream.mjs   # 上游同步的只读工具（--list / --changed / --preflight）
 └── packages/dsh-config-manager/scripts/dev-watch.mjs   # 源 → 产物自动重建（子包内）
 ```
 
@@ -207,12 +207,29 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（CI 会�
 只声明它的上游身份（`id` / `url` / `prefix`）。
 
 ```bash
-node scripts/sync-upstream.mjs --list              # 各 fork 的上游、上次同步点、上游最新 tag
-node scripts/sync-upstream.mjs --changed <id>      # 上游从上次同步点到最新 tag 改了什么
+node scripts/sync-upstream.mjs --list              # 各 fork 的上游、上游最新 tag、我们相对它的状态
+node scripts/sync-upstream.mjs --changed <id>      # 上游从真正的同步点到最新 tag 改了什么
+node scripts/sync-upstream.mjs --preflight <id>    # 预演这次同步会撞哪些冲突，并按裁定难度分好类
 ```
 
 脚本不 pull、不 checkout、不 rm、不 commit（`scripts/sync-upstream.test.mjs` 钉住这条契约）。
-`--changed` 把 tag fetch 到 `FETCH_HEAD` 再 `git diff --stat`，不动工作区。
+`--changed` 把 tag fetch 到 `refs/dsh-sync/<id>` 再 `git diff --stat`，不动工作区。
+
+> **同步点是 `merge-base(HEAD, 上游 tag)`，不是 subtree trailer。** 手工同步的合并提交不带
+> `git-subtree-split:` trailer（它只出现在**收养**提交里），拿它当同步点等于把收养点当成上次同步点，
+> `--changed` 会把已经合并进来的历史再报一遍（实测 bre：48 文件 / 5185 行）。
+>
+> **fetch 到自己的 ref 命名空间，绝不复用上游 tag 名。** 本仓的发布 tag 也叫 `v0.5.2`，
+> 直接 `git fetch <url> tag v0.5.2` 会撞车，以 `! [rejected] would clobber existing tag` 失败（实测）。
+> 但**加 `--force` 就不再失败，而是静默改写**——本仓 121 个 tag 里有 29 个与上游同名
+> （`git ls-remote --tags --refs <上游>` 与本仓 `git tag -l` 取交集），实测 `--force` 把本仓的
+> `v0.5.2`、`v0.5.0` 直接指向了上游提交，**报错都没有**。要探上游 tag，一律 fetch 进
+> `refs/dsh-sync/<id>`，永不写 `refs/tags/`。
+>
+> `--preflight` 用 `git merge-tree -X subtree=<prefix>` 复现 `subtree pull` 的三方合并，**只报告不落地**：
+> 把我方已故意删除的构建产物 / 锁文件（维持 `git rm`，机械可裁定）与真正要人看的冲突分开列。
+> 实测它与真 pull 的冲突集**完全一致**（bre 4 处、workbuddy 11 处）；不带 `-X subtree` 会多报假冲突。
+> 它只把「机械的那部分」直接给出命令，**不替人裁定**，也不改工作区。
 
 ### 手工同步一个 fork
 
