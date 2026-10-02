@@ -86,13 +86,27 @@ function assistantToolCalls(
 }
 
 /**
- * One Harness tool-result message, in the 0.1.5 host contract: a user-role
- * message whose source is the tool seat, one result block per message.
+ * One Harness tool-result message.
+ *
+ * The host contract CHANGED with the 0.2.0 core: dsh-llm's
+ * `createToolResultMessage()` now builds a first-class tool-role message —
+ * `role: 'tool'` with a top-level `toolCallId` — and `dsh-llm-pi-ai`'s
+ * conversion answers exactly that (verified against the installed
+ * dsh-llm / dsh-llm-pi-ai 0.2.0-rc.2). The 0.1.x shape this helper used to
+ * feed — a user-role message carrying embedded `tool-result` blocks — is no
+ * longer normalized there; the conversion reads it as a plain user turn,
+ * orphaning the call id and producing the synthetic filler this suite pins
+ * against (this suite passed on that old shape only while a stale
+ * 0.1.6-alpha.2 install was satisfying the dev dependencies). The
+ * `tool_call_id` + `role: 'tool'` form on the WIRE remains pi-ai's output to
+ * OpenAI-style endpoints, asserted below.
  */
 function toolResultMessage(id: string, text: string): Record<string, unknown> {
   return {
-    role: 'user',
-    content: [{ type: 'tool-result', toolCallId: id, content: [{ type: 'text', text }], isError: false }],
+    role: 'tool',
+    toolCallId: id,
+    content: [{ type: 'text', text }],
+    isError: false,
     source: { kind: 'tool', callId: id },
   }
 }

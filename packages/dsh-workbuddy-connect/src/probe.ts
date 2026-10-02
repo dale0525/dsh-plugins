@@ -73,35 +73,41 @@ export type ProbeOutcome =
   | { validation: 'non-validating'; efforts: readonly []; requests: number }
   | { validation: 'unknown'; efforts: readonly []; requests: number; reason: string }
 
+/** Which endpoint's rejection vocabulary a probe interprets. */
+export type ProbeRegion = 'cn' | 'global'
+
 /**
- * The codes the upstream uses to refuse a `reasoning_effort` value.
+ * The upstream's "this effort value is not supported" codes, per region, as
+ * measured on each live endpoint. The sets are kept separate so a code only
+ * ever widens detection for the endpoint it was measured on.
  *
- * Two spellings, measured on the international endpoint:
+ * - `invalid_reasoning_effort` — the China endpoint, measured 2026-09-11
+ *   (plan §4.2). Also kept for `global` as a fallback spelling.
+ * - `model_param_invalid` — the global endpoint, measured 2026-10-01. A
+ *   non-canonical value is answered `400` / `11133` with this code, which names
+ *   no field (`extError.param` is empty), instead of one that names the effort.
+ *   It is generic enough to be readable here only because the baseline step has
+ *   already proved the *same* request without `reasoning_effort` succeeds,
+ *   leaving the sentinel as the only difference between the two attempts. A
+ *   sibling code in the same `11133` envelope that names another parameter
+ *   (`integer_below_min_value`, the `max_tokens` floor) and a body carrying no
+ *   `extError` at all (`11102`, unknown model) are therefore not mistaken for
+ *   it, and neither is a level-sweep answer. It is *not* added to `cn`: that
+ *   endpoint was measured answering the specific code, and reading a generic
+ *   code there would widen attribution beyond what was observed.
  *
- * - `invalid_reasoning_effort` (11150), measured 2026-09-11 (plan §4.2).
- * - `model_param_invalid` (11133), measured 2026-09-29 on
- *   `deepseek-v4.1-flash` and `deepseek-v4.1-flash-sg`. The gateway reports
- *   "the request parameters were rejected by the model provider" under this
- *   generic code when the model, not the gateway, refuses the value. Its
- *   `extError.param` is the empty string, so it cannot be narrowed by field
- *   name.
- *
- * Accepting the generic code here is safe because of where this is consulted,
- * not because the code is specific. By the time the sentinel runs, the
- * baseline has already passed with the same model, messages, and `max_tokens`;
- * the sentinel request differs from that passing baseline in exactly one
- * field, so a refusal is attributable to that field. The code list is *not*
- * treated as a permanent protocol promise: anything unrecognized still
- * degrades to `unknown` rather than to a capability conclusion.
+ * Neither is treated as a permanent protocol promise: anything unrecognized
+ * still degrades to `unknown` rather than to a capability conclusion.
  */
-const INVALID_EFFORT_CODES: readonly string[] = [
-  'invalid_reasoning_effort',
-  'model_param_invalid',
-]
+const INVALID_EFFORT_CODES: Record<ProbeRegion, ReadonlySet<string>> = {
+  cn: new Set(['invalid_reasoning_effort']),
+  global: new Set(['invalid_reasoning_effort', 'model_param_invalid']),
+}
 
 /** Whether an attempt is an attributable rejection of the effort value. */
-function isEffortRejection(attempt: ProbeAttempt): boolean {
-  return attempt.status === 400 && attempt.errorCode !== undefined && INVALID_EFFORT_CODES.includes(attempt.errorCode)
+function isEffortRejection(attempt: ProbeAttempt, region: ProbeRegion): boolean {
+  const codes = INVALID_EFFORT_CODES[region]
+  return attempt.status === 400 && attempt.errorCode !== undefined && codes.has(attempt.errorCode)
 }
 
 /** Whether an attempt shows the upstream accepted the request and streamed. */
@@ -120,17 +126,21 @@ function unknownReason(stage: string, attempt: ProbeAttempt): string {
  * Probe one model.
  *
  * `options.candidates` exists so tests can shorten the sweep; production always
- * uses {@link PROBE_EFFORT_CANDIDATES}.
+ * uses {@link PROBE_EFFORT_CANDIDATES}. `options.region` selects which
+ * endpoint's rejection vocabulary is read; it defaults to `cn`, which is also
+ * the production default for the China app.
  */
 export async function probeModel(options: {
   send: ProbeSender
   sentinel?: SentinelFactory
   candidates?: readonly WorkBuddyEffort[]
   timeoutMs?: number
+  region?: ProbeRegion
 }): Promise<ProbeOutcome> {
   const sentinel = options.sentinel ?? randomSentinel
   const candidates = options.candidates ?? PROBE_EFFORT_CANDIDATES
   const timeoutMs = options.timeoutMs ?? PROBE_REQUEST_TIMEOUT_MS
+  const region = options.region ?? 'cn'
   let requests = 0
 
   const attempt = async (effort: string | undefined): Promise<ProbeAttempt> => {
@@ -163,7 +173,7 @@ export async function probeModel(options: {
     // requests producing false positives.
     return { validation: 'non-validating', efforts: [], requests }
   }
-  if (!isEffortRejection(sentinelAttempt)) {
+  if (!isEffortRejection(sentinelAttempt, region)) {
     return { validation: 'unknown', efforts: [], requests, reason: unknownReason('sentinel', sentinelAttempt) }
   }
 
@@ -175,7 +185,7 @@ export async function probeModel(options: {
       accepted.push(effort)
       continue
     }
-    if (isEffortRejection(levelAttempt)) continue
+    if (isEffortRejection(levelAttempt, region)) continue
     // A non-decisive answer mid-sweep: the partial list is not a finding, so
     // report the whole run as unknown rather than under-claiming a model.
     return {

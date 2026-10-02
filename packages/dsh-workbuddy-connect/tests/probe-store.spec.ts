@@ -190,6 +190,7 @@ describe('WorkBuddyProbeService precedence', () => {
       catalog,
       credentials: { current: async () => undefined } as never,
       client: {} as never,
+      region: 'cn',
       consent: () => options.consent,
       account: () => ACCOUNT,
     })
@@ -245,6 +246,7 @@ describe('recordFor: the single judgement the card and adapter share', () => {
       catalog: new WorkBuddyCatalog(),
       credentials: { current: async () => undefined } as never,
       client: {} as never,
+      region: 'cn',
       consent: () => true,
       account: () => ACCOUNT,
     })

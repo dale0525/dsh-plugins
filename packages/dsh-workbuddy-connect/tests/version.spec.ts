@@ -51,3 +51,46 @@ describe('package version sync', () => {
     ).not.toHaveLength(0)
   })
 })
+
+describe('peer manifest pins the verified DSH cores', () => {
+  /**
+   * #69's lesson: a caret on a prerelease arm (`^0.2.0-rc.1`) silently
+   * admits every later rc of the same tuple — semver auto-extends support
+   * nobody verified. Since 0.7.0 the seven DSH service peers are pinned to
+   * exactly the cores this release was smoke-tested on; extending support
+   * means editing this list after a real run, not letting a caret do it.
+   * Since 0.7.1 the list is rc.2 alone: rc.1 cannot be smoke-tested anymore
+   * alongside it, and an untested arm is support nobody verified.
+   *
+   * #74's lesson on top of it: pi-ai must NOT be a dual-arm range. An
+   * in-place upgrade from a 0.6.x-era pnpm profile keeps satisfying
+   * `^0.85.1 || ^0.87.1` with the old 0.85.1 install, reproducing #69's
+   * two-generation mixing against an rc.2 host that ships 0.87.1. The
+   * `^0.87.1`-only range forces the resolver to move it.
+   */
+  const DSH_SERVICE_PEERS = [
+    '@deepseek-ai/dsh-atomic-write',
+    '@deepseek-ai/dsh-attachment',
+    '@deepseek-ai/dsh-home-paths',
+    '@deepseek-ai/dsh-host-webserver',
+    '@deepseek-ai/dsh-llm',
+    '@deepseek-ai/dsh-llm-pi-ai',
+    '@deepseek-ai/dsh-settings',
+  ] as const
+
+  it('each DSH service peer is an exact, caret-free list of verified cores', () => {
+    const pkg = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { peerDependencies: Record<string, string> }
+    for (const name of DSH_SERVICE_PEERS) {
+      expect(pkg.peerDependencies[name], `${name} missing from peerDependencies`).toBe('0.2.0-rc.2')
+    }
+  })
+
+  it('pi-ai admits only the generation the rc.2 host ships', () => {
+    const pkg = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { peerDependencies: Record<string, string> }
+    expect(pkg.peerDependencies['@earendil-works/pi-ai']).toBe('^0.87.1')
+  })
+})

@@ -144,7 +144,7 @@ describe('composer control provider routing', () => {
   } as WorkBuddyProbeControlProps['directory']
 
   function select(provider: string, model: string): void {
-    state = { current: { provider, model }, status: 'ready', groups: [], failures: [], error: null, routable: true }
+    state = { current: { provider, model }, status: 'ready', groups: [], failures: [], pending: null, error: null, routable: true }
     listeners.forEach(listener => listener())
   }
 

@@ -35,7 +35,29 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
       scope: 'root'
       owner: WorkBuddyShellOverlayOwnerProps
     }
+    /**
+     * Compile-time mirror of DSH 0.1.5's settings Plugins-tab seat.
+     *
+     * DSH 0.2.0 dropped this slot entirely — its Plugins page declares
+     * `plugins.item` (a *list* slot the official settings pages occupy) and
+     * `plugins.bundle.config` instead — so no shipped dependency declares the
+     * key any more and the name is not in `SlotMap`. The mirror keeps the 0.1.5
+     * seam compiling: that slot's declaration lifetime still decides whether
+     * the registration runs, so a 0.2.0 host simply never fires the inject
+     * below and the bundle's own `plugins.bundle.config` page serves both
+     * cards there. Drop this mirror once 0.1.5 support ends.
+     */
+    'settings.plugin.item': {
+      kind: 'keyed'
+      scope: 'root'
+      owner: WorkBuddyLegacySettingsCardOwnerProps
+    }
   }
+}
+
+/** Owner share of the 0.1.5 settings-tab seat: the tab supplies nothing to entries. */
+interface WorkBuddyLegacySettingsCardOwnerProps {
+  children?: never
 }
 
 /** Owner share of the overlay seat: the frame supplies nothing to entries. */

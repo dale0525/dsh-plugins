@@ -129,16 +129,34 @@ describe('#48 card assist block', () => {
   it('shows the block for the international card too, naming WorkBuddy AI', async () => {
     // Auto-discovery is product/platform-specific, but the prompt is offered
     // for Global as well:
-    // whether we search and whether we help are independent decisions.
+    // whether we search and whether we help are independent decisions. With
+    // a live reason present the prompt carries it (#66); the product name
+    // comes from the card variant.
     statusBody = { status: 'signed-out', reason: 'not configured', reasonCode: 'electron-binary-unavailable' }
     const rendered = await mount(AI_CARD_VARIANT)
     expect(rendered).toContain(en.assistantHeading)
     expect(rendered).toContain('WorkBuddy AI')
-    expect(rendered).toContain(en.assistUnavailableAI)
+    expect(rendered).toContain('not configured')
   })
 
-  it('names the CN product and its own summary on the CN card', async () => {
-    statusBody = { status: 'signed-out', reason: 'gone', reasonCode: 'electron-binary-not-found' }
+  it('carries the live diagnosis into the copied prompt (#66)', async () => {
+    // The per-code summaries flatten every not-found variant back to "no
+    // usable decryption program" — the exact misdirection #66 reported:
+    // candidates were found and rejected, but the copied prompt would have
+    // told the agent nothing was found. The prompt now embeds the live
+    // reason verbatim.
+    const reason = 'Windows uninstall records found 1 WorkBuddy candidate, but it did not match the expected app layout'
+    statusBody = { status: 'signed-out', reason, reasonCode: 'electron-binary-not-found' }
+    const rendered = await mount(CN_CARD_VARIANT)
+    const expectedPrompt = en.assistantPrompt
+      .replace('{appName}', 'WorkBuddy')
+      .replace('{failureSummary}', reason)
+    expect(rendered).toContain(expectedPrompt)
+    expect(rendered).not.toContain(en.assistNotFound)
+  })
+
+  it('falls back to the per-code summary when the host sends no reason', async () => {
+    statusBody = { status: 'signed-out', reasonCode: 'electron-binary-not-found' }
     const rendered = await mount(CN_CARD_VARIANT)
     expect(rendered).toContain('WorkBuddy')
     expect(rendered).toContain(en.assistNotFound)

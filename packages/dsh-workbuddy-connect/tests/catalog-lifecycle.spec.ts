@@ -5,12 +5,11 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import * as WorkBuddy from '../src/index.ts'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { fingerprintModel } from '../src/probe-store.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
+import { LegacySettingsService } from './helpers/legacy-settings.ts'
 
 /**
  * Catalog lifecycle: what happens across a credential change and a failed fetch.
@@ -20,17 +19,13 @@ import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
  * credential sweep, the catalog gate, and the retry backoff all have to agree.
  */
 
-class MemorySettings extends SettingsProvider {
-  readonly writable = true
-  private storedDocument: Record<string, unknown> = {}
-
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve(structuredClone(this.storedDocument))
-  }
-
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.storedDocument[ns] = structuredClone(section)
-    return Promise.resolve()
+/** In-memory legacy settings: the 0.1.5/0.1.6 section API this plugin drives. */
+class MemorySettings extends LegacySettingsService {
+  constructor() {
+    super({
+      read: () => ({}),
+      persist: () => Promise.resolve(),
+    })
   }
 }
 
@@ -119,7 +114,7 @@ async function boot(): Promise<Context> {
   const ctx = new Context()
   context = ctx
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(MemorySettings)
+  ctx.provide('settings', new MemorySettings())
   await ctx.plugin(FakeWebServer)
   await ctx.plugin(WorkBuddy, {})
   // Provider row and model roster are two separate steps (registration vs the

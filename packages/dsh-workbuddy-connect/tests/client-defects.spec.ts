@@ -516,7 +516,7 @@ describe('WorkBuddyProbeControl', () => {
   } as WorkBuddyProbeControlProps['directory']
 
   beforeEach(() => {
-    state = { current: { provider: 'workbuddy', model: 'glm-5.2' }, status: 'ready', groups: [], failures: [], error: null, routable: true }
+    state = { current: { provider: 'workbuddy', model: 'glm-5.2' }, status: 'ready', groups: [], failures: [], pending: null, error: null, routable: true }
   })
 
   afterEach(() => {

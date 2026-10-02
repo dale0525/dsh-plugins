@@ -99,4 +99,8 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-workspace@0.1.7-alpha.1'
 
 overrides:
-  '@deepseek-ai/dsh-attachment': 0.1.6-alpha.2
+  # 把参与 Context 声明合并的宿主包收敛到宿主当前世代（升级前是 0.1.6-alpha.2）。
+  # 目的不变：让声明合并落在同一个物理实例上，与真实 profile 一致。
+  # 世代不跟着宿主走，会强制把 workbuddy 的 0.2.0-rc.2 peer 降级，
+  # 产生两份互不兼容的 AttachmentStore 类型（宿主半边 typecheck 报 protected 成员不可赋值）。
+  '@deepseek-ai/dsh-attachment': 0.2.0-rc.2

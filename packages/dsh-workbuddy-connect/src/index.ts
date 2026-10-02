@@ -36,6 +36,7 @@ import type { WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
+import { legacySettingsOf } from './legacy-settings.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
@@ -452,7 +453,10 @@ function createVariantRuntime(
     catalog,
     credentials: store,
     client,
-    consent: () => current().probeConsent,
+    // The two endpoints answer a rejected effort with different codes; each
+    // runtime reads only the vocabulary measured on its own endpoint.
+    region: variant.id === CN_VARIANT.id ? 'cn' : 'global',
+    consent: () => current().probeConsent === true,
     // Observations are per account: the service reads and writes its records
     // against this identity, so one account's detected levels never answer for
     // another's, and an in-flight sweep cannot store under a new account.
@@ -967,7 +971,6 @@ export function apply(ctx: Context, config: Config): void {
     }
     // A caller should normally reach this only after `adoptIdentity()` has
     // already cancelled a previous generation. Keep this guard local as well:
-    // no stale request may prevent the current account from fetching now.
     inflight?.controller.abort()
     const controller = new AbortController()
     let run: Promise<void>

@@ -56,16 +56,20 @@ For models without declared levels, Web and Desktop instead use user-authorized,
 
 Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin reuses the app's sign-in state and follows account switches automatically; the same applies to the international WorkBuddy AI app, and the two do not affect each other.
 
-**Match the plugin version to your DSH core** — from **`0.6.0`** on, one plugin version spans both core generations, removing the per-version pairing; earlier releases still pair one-to-one, and a mismatched combination fails to start DSH:
+**Match the plugin version to your DSH core** — from **`0.6.0`** on, one plugin version spans both core generations, removing the per-version pairing; earlier releases still pair one-to-one, and a mismatched combination fails to start DSH. **From `0.7.0` the plugin targets `0.2.0` cores only; `0.1.x` users should stay on `0.6.5`**:
 
 | Plugin | Required DSH core | Desktop app |
 |---|---|---|
-| **0.6.0 (dual-UI adaptive)** | `0.1.5-rc.1` / `rc.2` / `rc.3`; the `0.1.6-alpha` line (incl. `alpha.1` / `alpha.2`) and `0.1.6` stable; verified against `0.1.7-alpha.1` (`0.1.7` stable is inside the range too). **Newer prereleases (e.g. `0.1.8-alpha.x`) are NOT covered automatically** — the plugin must extend its peer range first | `2.0.7`+ works today; desktop builds bundling `0.1.6+` will work too |
+| **0.7.1 (current stable)** | **supports `0.2.0-rc.2` only** (`0.2.0-rc.1` users should stay on `0.7.0`), and narrows the `@earendil-works/pi-ai` peer from `^0.85.1 \|\| ^0.87.1` to **`^0.87.1`**: pnpm profiles upgraded in place from `0.6.x` no longer keep a stale `pi-ai@0.85.1` that still satisfies the range and re-creates the two-generation mixing of [#69](https://github.com/corrinehu/dsh-workbuddy-connect/issues/69) ([#74](https://github.com/corrinehu/dsh-workbuddy-connect/issues/74)). **The in-place upgrade from `0.6.5` is verified**: after editing `package.json` and running `pnpm install`, the plugin resolves `pi-ai@0.87.1` with no overrides; the old dual-arm behavior of `0.7.0` admitting `0.85.1` was reproduced as the control. | desktop builds bundling the `0.2.0-rc.2` core (preview / nightly) |
+| **0.7.0 (the 0.2.0-era debut)** | **supports `0.2.0-rc.1` / `0.2.0-rc.2` only** (`0.1.5` / `0.1.6` / `0.1.7` are no longer covered — those users should stay on `0.6.5`), verified on a real `0.2.0-rc.2` host (web: loading, both CN and international catalogs, encrypted credentials, status routes all fine). This is the release that adapts to DSH `0.2.0`'s settings-service rework — `0.2.0` replaced the service with a Config-derived form facade that no longer installs sections, so earlier releases lose their settings there. **`0.7.1` drops `rc.1`** | desktop builds bundling the `0.2.0` core (preview / nightly) |
+| **0.6.0 (dual-UI adaptive)** | `0.1.5-rc.1` / `rc.2` / `rc.3`; the `0.1.6-alpha` line (incl. `alpha.1` / `alpha.2`) and `0.1.6` stable; verified against `0.1.7-alpha.1` (`0.1.7` stable is inside the range too). **Subsequent `0.1.x` prereleases (e.g. `0.1.8-alpha.x`) DO fall inside the `^0.1.7-alpha.1` arm** — the host's compatibility check resolves peer ranges with includePrerelease semantics (our earlier "not covered" claim was wrong; corrected here); prereleases crossing into `0.2.0` are the ones that need an explicit peer-range extension | `2.0.7`+ works today; desktop builds bundling `0.1.6+` will work too |
+| **0.6.5 (final release of the `0.1.x` line)** | adds `0.2.0-rc.1` on top of the `0.6.0` surface (`0.1.5` / `0.1.6` / `0.1.7` / `0.2.0-rc.1`), verified on a real `0.2.0-rc.1` host (web: loading, catalogs, encrypted credentials, chat & image round-trips all fine). Releases up to and including `0.6.4` do not carry that range and are skipped wholesale by DSH `0.2.0-rc.1` (see [#63](https://github.com/corrinehu/dsh-workbuddy-connect/issues/63)) | desktop builds bundling `0.1.x` cores (incl. the released `2.0.7`+ line); `0.2.0-rc.1` works too (verified on web; desktop not yet verified) |
 | **0.3.2 – 0.5.4** (international support since `0.5.0`) | the `0.1.5-rc.1` line only (no `0.1.6+`; see [#41](https://github.com/corrinehu/dsh-workbuddy-connect/issues/41)) | `2.0.7`+ (bundled core `0.1.5-rc.1`) |
 | **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5` |
 | **0.2.6** | `0.1.1-rc.2` (older line) | `2.0.3` / `2.0.4` |
 
 - **`0.6.0` does not require upgrading to DSH `0.1.6` just to install WorkBuddy Connect**: the plugin adapts to whichever configuration surface the host actually provides at load time — `0.1.5` and `0.1.6+` each get their own UI, independently.
+- **DSH `0.2.0` reworked the settings service**: from `0.2.0` it is a Config-derived form facade exposing only `.volatile()` fields, with no section-installation API. The plugin adapts to what the host actually offers: on `0.1.5` / `0.1.6` both sections install as before (so `authFile` / `authFileAI` stay readable from `settings.yaml` and the TUI `/settings`), while on `0.1.7`+ / `0.2.0` it degrades to a settings-less provider — models, the picker, model visibility, and the context rows all keep working; only the "use the upstream's declared maximum context window" preference stops being persistable, and the card renders no switch it could not save.
 - **Where the cards live depends on the DSH version** — each generation has its own place:
 
   ```text
@@ -92,10 +96,12 @@ Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin r
   ```
 
 - From `0.6.0` on, the Models settings page no longer shows the non-editable WorkBuddy / WorkBuddy AI cards (consistent across both core generations); the model picker, `/model`, and chat calls are unaffected.
-- On DSH `0.1.5` / `0.1.6` / `0.1.7`, just install the latest: `dsh plugin --profile web add dsh-workbuddy-connect`
+- On DSH `0.2.0-rc.2`, just install the latest: `dsh plugin --profile web add dsh-workbuddy-connect`; on `0.2.0-rc.1`, stay on `0.7.0`: `dsh plugin --profile web add dsh-workbuddy-connect@0.7.0`
+- pnpm profiles upgraded in place from `0.6.x` (with a manually installed `pi-ai@0.85.1`): on `0.7.1+` the peer range no longer admits `0.85.1`, so `pnpm install` moves the plugin onto the host's `0.87.1`; the temporary `overrides: {'@earendil-works/pi-ai': 0.87.1}` from [#74](https://github.com/corrinehu/dsh-workbuddy-connect/issues/74) can be removed
+- Still on DSH `0.1.5` / `0.1.6` / `0.1.7`? Stay on `0.6.5`: `dsh plugin --profile web add dsh-workbuddy-connect@0.6.5`
 - Still on DSH `0.1.2-rc.1`? Stay on `0.3.1`: `dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
 - Still on DSH `0.1.1-rc.2`? Stay on the older release: `dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
-- The desktop app has bundled `0.1.5-rc.1` since `2.0.7`, so it can use the latest plugin directly; `2.0.5` and earlier apps (bundled `0.1.2-rc.1`) should stay on `0.3.1`
+- Pick the desktop plugin version by the **bundled core**: desktop builds bundling `0.1.x` cores (incl. the released `2.0.7`+ line) should use `dsh-workbuddy-connect@0.6.5`; desktop builds bundling the `0.2.0` core (preview / nightly) should use the latest; `2.0.5` and earlier apps (bundled `0.1.2-rc.1`) should stay on `0.3.1`
 
 The plugin runs under all three DSH interfaces: **Web**, **Desktop**, and **TUI**. Pick the install command that matches the profile you use.
 
