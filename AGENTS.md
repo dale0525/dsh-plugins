@@ -167,6 +167,18 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（CI 会�
   （浏览器只加载一份实例）。把每个子插件的 `dsh-client-ui-slots` 对齐到宿主当前世代即可；
   同理，参与 `Context` 声明合并的宿主包（如 `dsh-attachment`）也要收敛到同一版本，
   否则插件通过 `ctx.get(...)` 拿到的类型与自己的 import 不是同一个符号。
+- **宿主包一律写 `peerDependencies`，绝不写 `dependencies`**：`dependencies` 里钉的宿主包
+  范围一旦不被当前宿主满足（如 `^0.1.6-alpha.2` 遇上宿主 `0.2.0-rc.2`），pnpm 会**另装一份
+  实体副本**进 profile。该副本遮蔽指向宿主安装树的共享软链（`~/.dsh/profiles/node_modules`），
+  patch 行于是按副本的 peer 被宿主兼容门禁拒绝 —— **静默禁用该行**，功能无声消失。
+  实测：`dsh-desktop-agent` 曾把 `@deepseek-ai/dsh-mcp-client` 写成 `dependencies`，令全局
+  patch 的 `mcp-stitch` 行被禁用。patch 行只写包名、不钉版本，故修法就是改成 optional peer：
+  profile 从宿主安装树解析，**跟着宿主升级自动走，无需改任何 patch 文件**。
+- **devDeps 的世代滞后会制造假绿**：`devDependencies` 里的宿主包是**编译期**类型来源，
+  钉在旧世代意味着 `tsc` 校验的是**旧 API 表面** —— typecheck 全绿，但校验了错的对象。
+  对齐到宿主世代后暴露的类型错误是**真实的**（实测 `dsh-imagegen` 对齐后暴露 7 个：
+  宿主已删除 `SettingsScope` / `SettingsScopeSnapshot` / `SettingsSectionHooks`）。
+  症状与上面 slots 那条相反：那条是「编译失败、运行正常」，这条是「编译通过、校验错对象」。
 
 ## 🚀 生效门禁（哪类改动需要重启）
 
