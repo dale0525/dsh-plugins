@@ -142,7 +142,7 @@ test('predictConflicts 带 -X subtree：不把「前缀错位」误报成冲突'
   mkdirSync(main, { recursive: true })
   const g = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   try {
-    g(up, ['init', '-q', '.'])
+    g(up, ['init', '-q', '-b', 'main', '.'])
     g(up, ['config', 'user.email', 't@t'])
     g(up, ['config', 'user.name', 't'])
     writeFileSync(join(up, 'src', 'a.ts'), 'v1\n')
@@ -155,7 +155,7 @@ test('predictConflicts 带 -X subtree：不把「前缀错位」误报成冲突'
     g(up, ['commit', '-qam', 'v2'])
     const up2 = g(up, ['rev-parse', 'HEAD']).trim()
 
-    g(main, ['init', '-q', '.'])
+    g(main, ['init', '-q', '-b', 'main', '.'])
     g(main, ['config', 'user.email', 't@t'])
     g(main, ['config', 'user.name', 't'])
     writeFileSync(join(main, 'host.ts'), 'host\n')
@@ -200,5 +200,12 @@ test('--preflight 缺 id / 未知 id 都以退出码 1 失败', () => {
 test('--preflight 对已同步的目标如实报告，不臆造冲突', () => {
   const result = run(['--preflight', 'better-reasoning-effort'])
   assert.equal(result.code, 0)
+  // CI 的 checkout 是浅克隆（fetch-depth 默认 1），此时读不到共同祖先。正确行为是
+  // **如实说读不到**并指向 --unshallow，而不是把「历史没拉下来」当成冲突报出来。
+  if (result.stdout.includes('浅克隆')) {
+    assert.match(result.stdout, /fetch --unshallow/)
+    assert.equal(result.stdout.includes('需人工裁定'), false, '浅克隆不得臆造冲突')
+    return
+  }
   assert.match(result.stdout, /已同步/)
 })

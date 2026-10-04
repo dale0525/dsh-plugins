@@ -44,6 +44,11 @@ export function git(args, options = {}) {
   }
 }
 
+/** 浅克隆里没有共同祖先不是「基线坏了」，而是历史根本没拉下来 —— 两者的修法不同。 */
+export function isShallowClone() {
+  return git(['rev-parse', '--is-shallow-repository'], { allowFail: true }).trim() === 'true'
+}
+
 /** 同 git()，但**失败时也把 stdout/stderr 交回来**。`merge-tree` 用退出码 1 表示「有冲突」，
  *  冲突清单就在 stdout 里 —— 用 git() 的 allowFail 会把它丢成空串。 */
 export function gitCapture(args, options = {}) {
@@ -237,7 +242,7 @@ const USAGE = [
 function describeState(state) {
   if (state.state === 'no-tag') return '上游没有版本 tag'
   if (state.state === 'unreachable') return '读不到上游：' + state.error
-  if (state.state === 'blocked') return '阻塞：与上游无共同祖先，subtree pull 会拒绝'
+  if (state.state === 'blocked') return isShallowClone() ? '读不到共同祖先：浅克隆，先 git fetch --unshallow' : '阻塞：与上游无共同祖先，subtree pull 会拒绝'
   if (state.state === 'current') return '已同步到 ' + state.tag
   return '落后：共同祖先 ' + state.base.slice(0, 12) + '，待并入 ' + state.tag
 }
@@ -264,7 +269,11 @@ function showChanged(target, log) {
   const state = resolveState(target)
   if (state.state === 'no-tag') bail(target.id + ' 的上游没有版本 tag')
   if (state.state === 'unreachable') bail(target.id + ' 的上游读不到：' + state.error)
-  if (state.state === 'blocked') bail(target.id + ' 与上游没有共同祖先，无法计算改动（先修 subtree 基线）')
+  if (state.state === 'blocked') {
+    bail(target.id + (isShallowClone()
+      ? ' 的仓库是浅克隆，读不到共同祖先，无法计算改动（先 git fetch --unshallow）'
+      : ' 与上游没有共同祖先，无法计算改动（先修 subtree 基线）'))
+  }
   if (state.state === 'current') {
     log(target.id + ' 已同步到 ' + state.tag + '（无改动）')
     return 0
@@ -290,6 +299,11 @@ function showPreflight(target, log) {
   }
   log('  上游最新  ' + state.tag + '  (' + state.sha.slice(0, 12) + ')')
   if (state.state === 'blocked') {
+    if (isShallowClone()) {
+      log('  状态      读不到共同祖先：这是浅克隆，上游历史不在本地')
+      log('            不是基线坏了 —— 先 `git fetch --unshallow` 再预检。')
+      return 0
+    }
     log('  状态      阻塞：上游历史与本地不连通')
     log('            本地与 ' + state.sha.slice(0, 12) + ' 没有共同祖先，`git subtree pull` 会直接以')
     log('            `fatal: refusing to merge unrelated histories` 失败 —— 先修基线，再谈同步。')
