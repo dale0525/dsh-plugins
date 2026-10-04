@@ -120,7 +120,7 @@ deps:
 
 ```bash
 node scripts/aggregate.mjs           # 生成 packages/all/cordis.patch.yml 与 package.json
-node scripts/aggregate.mjs --check   # 校验生成物与清单一致（CI 会跑）
+node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版时 CI 才跑）
 ```
 
 ### 5. 首发：人工 `npm publish` + 配 trust（**由用户执行**）
@@ -311,15 +311,18 @@ npm run publish:plan                 # 确认顺序：子插件在聚合包之�
 安装与日常构建命令见 `README.md` 的「开发」。以下四条是**合并前必过的验收门禁**：
 
 ```bash
-node scripts/aggregate.mjs --check            # 聚合 patch / deps 与清单一致（CI 会跑）
+node scripts/aggregate.mjs --check            # 聚合 patch / deps 与清单一致（发版时 CI 才跑）
 pnpm test                                     # 全仓测试：根 scripts/*.test.mjs + 每个子包
 pnpm typecheck                                # 全仓 typecheck（pnpm -r --if-present）
 pnpm run check:host                           # 宿主世代兼容 + patch 行 id 唯一（升级宿主后必跑）
 ```
 
-> **前三条 CI 会跑，第四条不会**（`grep -rn 'check:host' .github/` 无命中）：CI 的 runner 没装
-> `dsh`，装了也不该为一个只读自检去拉整个宿主。所以 `check:host` 是**本地人工门禁** ——
-> 宿主升级后、发布前各跑一次，**没有任何自动化会在你忘记时替你跑**。
+> **这四条都不会在合并前自动跑**：本仓库只有一个 workflow（`.github/workflows/publish.yml`），
+> 只在推 tag 或 main 上手动 `dry_run=false` 时触发 —— **`main` 的日常提交没有任何 CI 门禁**。
+> 前三条在**发版那一刻**才跑（门禁排在 publish 步骤之前），第四条 `check:host` 则从不跑：
+> CI 的 runner 没装 `dsh`，装了也不该为一个只读自检去拉整个宿主。
+> 所以四条全是**本地人工门禁** —— 提交前各跑一次，**没有任何自动化会在你忘记时替你跑**。
+> 实测代价：两条坏测试在 `main` 上躺了一整天无人发现，直到 `v0.5.57` 打 tag 才暴露，发布直接失败。
 >
 > 它查三类缺陷：两类会让插件行**静默禁用**（宿主包误写 `dependencies`、peer 不接受当前宿主）、
 > 一类会让宿主启动**硬崩**（聚合 patch 行 `id` 重复）。这三类里**只有 R2 需要宿主**：
