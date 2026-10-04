@@ -31,6 +31,41 @@
 const MAX_AX_CHARS = 24000;
 
 /**
+ * Cap on the element anchors handed to a model, per capture.
+ *
+ * Measured on the heaviest tree available here (a browser window): a 300-element
+ * cap returns ~200 nodes in 0.5-3.7 s, of which ~174 carry both a token and a
+ * label -- ~18 KB of anchors. The same walk uncapped returned 1130 nodes and
+ * 68 KB of anchors, which buys nothing: an element with no label cannot be named
+ * in a decision, and the screenshot already shows it.
+ */
+const MAX_AX_ELEMENTS = 300;
+
+/**
+ * Reduce the driver's element table to the anchors a decision can actually use.
+ *
+ * An entry survives only when it carries BOTH an `element_token` and a non-empty
+ * label. The token is what makes it addressable without a coordinate, and the
+ * label is what lets a model recognise it; either one alone is not an anchor.
+ * `frame` rides along so a model that would rather click the pixel can read the
+ * element's own rectangle instead of estimating one from the picture.
+ *
+ * @param elements - the driver's `structuredContent.elements`, if any.
+ * @returns the anchors, in the driver's own order.
+ */
+function anchors(elements) {
+  return (elements ?? [])
+    .filter((element) => typeof element.element_token === 'string' && element.element_token !== '')
+    .filter((element) => typeof element.label === 'string' && element.label.trim() !== '')
+    .map((element) => ({
+      token: element.element_token,
+      role: element.role,
+      label: element.label,
+      frame: element.frame,
+    }));
+}
+
+/**
  * Marker the driver emits when its AX walk stopped before the tree ended.
  *
  * It is a warning, not a failure: the driver's own text says "Element indices
@@ -84,27 +119,36 @@ function imageBlock(value) {
 /**
  * Capture one window for the vision channel.
  *
- * `include_accessibility_tree: false` selects the driver's capture-only path: the
- * AX walk is the expensive half of the call (up to 20 s on a large Electron tree)
- * and a vision decision reads none of it.
+ * One call returns the screenshot AND the element anchors, which is the point:
+ * a screenshot alone forces the model to estimate a coordinate from the picture,
+ * and that estimate is the plugin's known failure mode. The anchors give the same
+ * model an addressable handle ("click token s00000001:2") that needs no estimate
+ * at all, so the two senses correct each other inside one decision.
  *
- * @param input - the dispatch seam, the target, and the screenshot size cap.
- * @returns the observation, with the PNG bytes and the frame they occupy.
+ * The walk is not free -- measured 0.5-3.7 s and ~18 KB of anchors at the cap --
+ * which is why it is bounded by {@link MAX_AX_ELEMENTS} rather than left open.
+ *
+ * @param input - the dispatch seam, the target, the screenshot size cap, and the
+ *   anchor cap.
+ * @returns the observation, with the PNG bytes, the frame they occupy, and the
+ *   element anchors.
  */
 export async function captureVision(input) {
-  const { dispatch, target, maxImageDimension, signal } = input;
+  const { dispatch, target, maxImageDimension, signal, maxElements = MAX_AX_ELEMENTS } = input;
   const value = await dispatch(
     'cua_driver_native__get_window_state',
     {
       pid: target.pid,
       window_id: target.windowId,
-      include_accessibility_tree: false,
+      include_accessibility_tree: true,
       max_dimension: maxImageDimension,
+      max_elements: maxElements,
     },
     signal,
   );
   const payload = structured(value, 'get_window_state');
   const image = imageBlock(value);
+  const elements = anchors(payload.elements);
 
   return {
     channel: 'vision',
@@ -113,6 +157,11 @@ export async function captureVision(input) {
     image,
     // The frame the model reasons in: the PNG's own pixel space.
     frame: { width: payload.screenshot_width, height: payload.screenshot_height },
+    elements,
+    // The walk stopped at the cap, or found nothing actionable. Both are worth
+    // saying out loud: the first means the control may be missing from the list,
+    // the second is the signature of a window whose renderer is suspended.
+    elementsTruncated: elements.length >= maxElements,
   };
 }
 
@@ -151,6 +200,7 @@ export async function captureAx(input) {
       role: element.role,
       label: element.label ?? '',
       value: element.value,
+      frame: element.frame,
     })),
     markdown: markdown.slice(0, maxChars),
     // The walk stopped early, or this plugin clipped it. Either way the model is

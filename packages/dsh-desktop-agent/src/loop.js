@@ -11,7 +11,11 @@
  *
  *  - It must not claim success the model did not observe. `done` is the model's
  *    own claim about the screenshot it was shown, and the trace reports it as
- *    such; this plugin has no independent way to verify a goal.
+ *    such; this plugin has no independent way to verify a goal. The driver's own
+ *    `verify_state` is not used as a second opinion: measured against the one
+ *    Electron window available it answered `unknown` ("untrusted_source") after
+ *    ~5.6 s, so it would add latency and a false sense of checking without
+ *    actually checking anything.
  *  - It must not silently end on a mismatch. A decision that failed to execute,
  *    or an action whose result does not match what was asked, is recorded and
  *    re-decided — that is the whole reason the vision channel works at all, since
@@ -92,6 +96,7 @@ export async function run(input) {
         target,
         frame: observation.channel === 'vision' ? observation.frame : null,
         deliveryMode: config.deliveryMode,
+        allowBringToFront: config.allowBringToFront,
       });
     } catch (cause) {
       steps.push({ step, operation: decision.kind, result: `rejected: ${messageOf(cause)}` });

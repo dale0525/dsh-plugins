@@ -7,10 +7,26 @@
  * entry here maps to a tool the driver actually exposes, so a decision the model
  * can express is a decision that can be executed.
  *
+ * `zoom` is excluded too, and the reason is measured rather than assumed: it was
+ * the obvious candidate for a self-drawn surface with no element tokens, but it
+ * returns a 1:1 crop, not a magnified one — a 100x100 region came back 140x140,
+ * which is exactly the documented 20% padding per side and no enlargement, with
+ * the output capped at 500px wide. It therefore cannot make a small target easier
+ * to read, and `from_zoom` is accepted by `click` alone, so supporting it would
+ * mean a second coordinate space in the loop for every other pointer action.
+ *
  * Coordinates travel as screenshot pixels in the frame the last observation
  * carried — see `geometry.js` for why that frame, and only that frame, is
  * authoritative.
  *
+ * A pointer action may ALSO be addressed by the `element_token` of an element the
+ * last capture listed. That is the preferred form when a token is available: a
+ * token names an element the driver itself identified, while a coordinate is the
+ * model's estimate of where that element is, and the estimate is the documented
+ * failure mode of the vision channel. A token that has been superseded by a newer
+ * capture is refused by the driver with `stale_element_token`, which is why the
+ * loop re-observes every step.
+
  * @module @logictan/dsh-desktop-agent/actions
  */
 import { isFrame, within } from './geometry.js';
@@ -26,12 +42,13 @@ export const ACTION_KINDS = [
   'scroll',
   'set_value',
   'launch_app',
+  'bring_to_front',
   'wait',
   'done',
   'blocked',
 ];
 
-/** Mouse actions, each addressed by a screenshot pixel. */
+/** Mouse actions, each addressed by a screenshot pixel or an element token. */
 const POINTER_KINDS = ['click', 'double_click', 'right_click'];
 
 /** Actions that end the run rather than reaching the driver. */
@@ -48,6 +65,7 @@ const TOOL_BY_KIND = {
   scroll: 'cua_driver_native__scroll',
   set_value: 'cua_driver_native__set_value',
   launch_app: 'cua_driver_native__launch_app',
+  bring_to_front: 'cua_driver_native__bring_to_front',
 };
 
 /**
@@ -88,27 +106,45 @@ export function plan(decision, context) {
     return { tool: TOOL_BY_KIND.launch_app, args };
   }
 
+  if (kind === 'bring_to_front') {
+    // The one action that takes no coordinates at all: it addresses the window
+    // the run already resolved.
+    if (context.allowBringToFront !== true) {
+      throw new Error(
+        'desktop_agent: bring_to_front is disabled. It steals the foreground from whatever the user is doing, ' +
+          'so it has to be enabled explicitly in this plugin\'s settings. ' +
+          'Reach the window with a click or a key instead.',
+      );
+    }
+    return { tool: TOOL_BY_KIND.bring_to_front, args: { pid: context.target.pid, window_id: context.target.windowId } };
+  }
+
   const args = { pid: context.target.pid, window_id: context.target.windowId };
   if (context.deliveryMode === 'foreground') args.delivery_mode = 'foreground';
 
   if (POINTER_KINDS.includes(kind)) {
-    const point = requirePoint(decision, context);
     const modifiers = Array.isArray(decision.modifiers) ? decision.modifiers : [];
+
+    // An element token supersedes the coordinate: it addresses the element the
+    // driver identified, with no estimate from the model.
+    if (typeof decision.token === 'string' && decision.token !== '') {
+      args.element_token = decision.token;
+    } else {
+      const point = requirePoint(decision, context);
+      args.x = point.x;
+      args.y = point.y;
+    }
 
     // A MODIFIED double click is expressed as a two-count click: click is the
     // only pointer tool whose schema carries both `count` and `modifier`
     // (double_click carries modifier but no count), so one call can say "twice,
     // with this modifier" without splitting the gesture across two tools.
     if (kind === 'double_click' && modifiers.length > 0) {
-      args.x = point.x;
-      args.y = point.y;
       args.count = 2;
       args.modifier = modifiers;
       return { tool: TOOL_BY_KIND.click, args };
     }
 
-    args.x = point.x;
-    args.y = point.y;
     if (kind === 'click' && Number.isInteger(decision.count) && decision.count > 1) args.count = decision.count;
     if (kind !== 'double_click' && modifiers.length > 0) args.modifier = modifiers;
     return { tool: TOOL_BY_KIND[kind], args };
@@ -135,6 +171,10 @@ export function plan(decision, context) {
       throw new Error('desktop_agent: type_text needs the text to type.');
     }
     args.text = decision.text;
+    // A token focuses that exact field before typing. Without one the text lands
+    // in whatever already holds focus, which is not necessarily the field the
+    // model clicked a moment ago.
+    if (typeof decision.token === 'string' && decision.token !== '') args.element_token = decision.token;
     return { tool: TOOL_BY_KIND.type_text, args };
   }
 
@@ -178,7 +218,7 @@ function requirePoint(decision, context) {
   if (!isFrame(context.frame)) {
     throw new Error(
       'desktop_agent: no screenshot frame is available for this action, so a coordinate cannot be placed. ' +
-        'This run is on the accessibility channel; use set_value with an element token instead.',
+        'This run is on the accessibility channel; address the element by its token instead.',
     );
   }
   if (!Number.isFinite(x) || !Number.isFinite(y)) {

@@ -110,6 +110,12 @@ window.__ModuleLoader__.load({
         ],
         hint: "后台投递不抢焦点；游戏等自绘表面会过滤按 pid 路由的事件，需要前台投递。",
       },
+      {
+        key: "allowBringToFront",
+        label: "允许抢前台",
+        kind: "checkbox",
+        hint: "关闭时模型不能使用 bring_to_front。开启后模型可把目标窗口提到最前，代价是抢走你当前的焦点；仅当窗口被压在后台、内容不刷新时才需要。",
+      },
     ];
 
     /** The three vision route fields, rendered together below the catalog. */
@@ -200,6 +206,7 @@ window.__ModuleLoader__.load({
     function parse(field, raw) {
       if (field.kind === "text") return raw;
       if (field.kind === "select") return raw;
+      if (field.kind === "checkbox") return raw === "true";
       var value = Number(raw);
       if (!isFinite(value)) throw new Error(field.label + "必须是数字。");
       if (field.step === 1 && !Number.isInteger(value)) throw new Error(field.label + "必须是整数。");
@@ -510,6 +517,16 @@ window.__ModuleLoader__.load({
               return React.createElement("option", { key: option.value, value: option.value }, option.label);
             }),
           );
+        } else if (field.kind === "checkbox") {
+          control = React.createElement("input", {
+            type: "checkbox",
+            checked: rawOf(field.key) === "true",
+            disabled: disabled,
+            "aria-label": field.label,
+            onChange: function (event) {
+              edit(field.key, event.target.checked ? "true" : "false");
+            },
+          });
         } else if (field.kind === "number") {
           control = React.createElement("input", {
             type: "number",

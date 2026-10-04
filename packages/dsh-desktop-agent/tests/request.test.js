@@ -49,7 +49,7 @@ test('a missing kind is rejected', () => {
   assert.throws(() => parseDecision('{"x":1,"y":2}'), /no usable action kind/);
 });
 
-test('the vision payload states the screenshot frame and carries no elements', () => {
+test('the vision payload states the screenshot frame', () => {
   const payload = decisionPayload({
     goal: 'compute 7x5',
     observation: { channel: 'vision', app: 'Calculator', title: '', frame: { width: 460, height: 816 } },

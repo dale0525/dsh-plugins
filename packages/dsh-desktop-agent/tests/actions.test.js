@@ -36,6 +36,60 @@ test('a click without a point throws instead of picking one', () => {
   assert.throws(() => plan({ kind: 'click' }, CONTEXT), /needs numeric x and y/);
 });
 
+test('a click addressed by element token carries no coordinate', () => {
+  // The token is the driver's own handle on the element, so the model never has
+  // to estimate a pixel. Sending x/y alongside it would be the estimate again.
+  const planned = plan({ kind: 'click', token: 's00000001:2' }, CONTEXT);
+  assert.equal(planned.tool, 'cua_driver_native__click');
+  assert.equal(planned.args.element_token, 's00000001:2');
+  assert.equal(planned.args.x, undefined);
+  assert.equal(planned.args.y, undefined);
+});
+
+test('a token supersedes a coordinate when a model sends both', () => {
+  const planned = plan({ kind: 'click', token: 's00000001:2', x: 999, y: 999 }, CONTEXT);
+  assert.equal(planned.args.element_token, 's00000001:2');
+  assert.equal(planned.args.x, undefined);
+});
+
+test('a token-addressed action needs no screenshot frame', () => {
+  // The AX channel has no image at all, and an element token is exactly how a
+  // control is addressed there. Requiring a frame would make the fallback's own
+  // vocabulary unusable on the fallback.
+  const planned = plan({ kind: 'click', token: 's1:4' }, { ...CONTEXT, frame: null });
+  assert.equal(planned.args.element_token, 's1:4');
+});
+
+test('a modified double click keeps the two-count idiom on the token path', () => {
+  const planned = plan({ kind: 'double_click', token: 's1:4', modifiers: ['cmd'] }, CONTEXT);
+  assert.equal(planned.tool, 'cua_driver_native__click');
+  assert.equal(planned.args.count, 2);
+  assert.deepEqual(planned.args.modifier, ['cmd']);
+  assert.equal(planned.args.element_token, 's1:4');
+});
+
+test('type_text can focus an exact field by token', () => {
+  const planned = plan({ kind: 'type_text', text: 'hi', token: 's1:9' }, CONTEXT);
+  assert.equal(planned.args.element_token, 's1:9');
+  assert.equal(planned.args.text, 'hi');
+  assert.equal(plan({ kind: 'type_text', text: 'hi' }, CONTEXT).args.element_token, undefined);
+});
+
+test('bring_to_front addresses the window and takes no coordinates', () => {
+  const planned = plan({ kind: 'bring_to_front' }, { ...CONTEXT, allowBringToFront: true });
+  assert.deepEqual(planned, {
+    tool: 'cua_driver_native__bring_to_front',
+    args: { pid: 42, window_id: 7 },
+  });
+});
+
+test('bring_to_front is refused unless the operator enabled it', () => {
+  // It steals the foreground from whatever the user is doing, so it is opt-in
+  // and the refusal has to say how to turn it on.
+  assert.throws(() => plan({ kind: 'bring_to_front' }, CONTEXT), /bring_to_front is disabled/);
+  assert.throws(() => plan({ kind: 'bring_to_front' }, CONTEXT), /settings/);
+});
+
 test('a click on the accessibility channel names the channel instead of the frame', () => {
   // Regression: the AX channel has no screenshot, so its frame is null. Reading
   // through to width/height threw a bare TypeError, which reached the model as
@@ -45,7 +99,7 @@ test('a click on the accessibility channel names the channel instead of the fram
     () => plan({ kind: 'click', x: 10, y: 10 }, { ...CONTEXT, frame: null }),
     /no screenshot frame is available/,
   );
-  assert.throws(() => plan({ kind: 'click', x: 10, y: 10 }, { ...CONTEXT, frame: null }), /set_value with an element token/);
+  assert.throws(() => plan({ kind: 'click', x: 10, y: 10 }, { ...CONTEXT, frame: null }), /address the element by its token/);
 });
 
 test('a point outside the observation frame is rejected with its coordinates', () => {

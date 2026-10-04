@@ -31,6 +31,7 @@ function configRefs(overrides = {}) {
     maxSteps: 4,
     maxImageDimension: 1568,
     deliveryMode: 'background',
+    allowBringToFront: false,
     ...overrides,
   };
   const refs = {};
@@ -68,6 +69,8 @@ function capture() {
       screenshot_width: 460,
       screenshot_height: 816,
       screenshot_scale: 2,
+      snapshot_id: 's00000001',
+      elements: [{ element_index: 0, element_token: 's00000001:0', role: 'AXButton', label: '7', frame: { x: 1, y: 2, w: 3, h: 4 } }],
     },
   };
 }

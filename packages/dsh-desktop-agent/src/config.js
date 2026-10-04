@@ -64,6 +64,16 @@ export const DELIVERY_MODES = ['background', 'foreground'];
  * an image that is merely offloaded arrives at the model as placeholder text —
  * the model would then be "looking" at nothing. The default matches the
  * driver's own 1568 ceiling, so the two never disagree.
+ *
+ * `allowBringToFront` defaults to OFF because the driver's `bring_to_front`
+ * verifiably STEALS THE FOREGROUND from whatever the user is doing — it is not a
+ * z-order nudge. Measured on macOS it returned
+ * `exact_window_effect.focused = true` while the global window order was left
+ * untouched. It is worth having because a backgrounded window whose renderer has
+ * been suspended exposes almost no accessibility tree (measured: 112 elements and
+ * no `AXWebArea`, versus 207 with one after raising it), which is exactly the
+ * "the window has no controls" failure — but that is a trade the operator has to
+ * opt into, never a default this plugin picks on their behalf.
  */
 export const Config = z.object({
   visionProvider: z.string().default('').volatile(),
@@ -72,6 +82,7 @@ export const Config = z.object({
   maxSteps: z.number().step(1).min(1).default(DEFAULT_MAX_STEPS).volatile(),
   maxImageDimension: z.number().step(1).min(200).default(1568).volatile(),
   deliveryMode: z.union(DELIVERY_MODES).default('background').volatile(),
+  allowBringToFront: z.boolean().default(false).volatile(),
 });
 
 /**

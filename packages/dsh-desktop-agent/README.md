@@ -20,12 +20,33 @@ So the plugin routes by capability rather than by configuration:
 
 | The resolved model declares `image` | Channel |
 | --- | --- |
-| yes | screenshot + a JSON action |
+| yes | screenshot + the element anchors + a JSON action |
 | no, or the field is absent | the driver's element table and markdown tree |
 
 "Absent" is treated as "cannot see" on purpose. The host rewrites an image sent to
 a route that does not accept one into placeholder text, after which the model is
 describing a picture it never received — and answering confidently about it.
+
+### Both senses arrive together
+
+The vision channel used to ask for the screenshot alone, which left the model
+estimating every coordinate from the picture — the documented failure mode of
+vision models, and a real one here: asked for the centre of the largest button in
+a 1567×894 screenshot, a live model answered `(310, 1062)`, a y past the bottom
+of the image.
+
+One capture now returns the screenshot AND the window's own controls, each with a
+`token`, a `role`, a `label`, and its `frame` in the same pixel space. A
+decision may address a control by its token instead of guessing a coordinate, and
+the token names the element the driver itself identified. A token that has been
+superseded by a newer capture is refused with `stale_element_token` rather than
+mis-clicking, which is one more reason the loop re-observes every step.
+
+Measured cost of the extra walk, on the heaviest tree available here (a browser
+window): 0.5–3.7 s, returning ~174 anchors and ~18 KB at the 300-element cap. The
+same walk uncapped returned 1130 nodes and 68 KB, which buys nothing — an element
+with no label cannot be named in a decision, and the screenshot already shows it.
+Only elements carrying both a token and a non-empty label become anchors.
 
 ## Requirements
 
@@ -49,6 +70,7 @@ publish the same tool names, and the second registration is refused with
 | Max steps | Actions per run; defaults to 40. |
 | Screenshot long edge | Pixels; defaults to 1568. Lower saves tokens, but too low hides the controls. |
 | Delivery | `background` (default) never steals focus; `foreground` is required by surfaces that filter per-process-routed input, such as canvas apps and games. |
+| Allow bring-to-front | Off by default. When on, the model may use `bring_to_front` to raise the target window. It verifiably **steals your foreground**, so it is opt-in. |
 
 ## Tool
 
@@ -56,6 +78,26 @@ publish the same tool names, and the second registration is refused with
 observe/decide/act loop until `DONE`/`BLOCKED` or a cap is reached, and returns a
 structured trace. `app` accepts an application name or a window title; omitting
 it uses the frontmost window.
+
+### When to call it
+
+For any desktop task that takes more than about two steps, call `desktop_agent`
+rather than driving the `cua_driver_native__*` tools yourself. The loop's ~40
+captures and decisions stay inside this one call; driving the raw tools by hand
+puts every screenshot into the agent's own context instead. The raw tools remain
+the right choice for resolving a window, or for a single action already decided on.
+
+For a task that lives in a web page, `browser_agent` is the better tool — it
+drives the DOM over CDP and does not depend on reading pixels. This tool is for
+native windows, desktop applications, and games.
+
+### What it does not do
+
+It does not verify the goal. `done` is the model's own claim about the screenshot
+it was shown, and the trace reports it as such. The driver's `verify_state` is
+deliberately not used as a second opinion: measured against the one Electron window
+available it answered `unknown` (`untrusted_source`) after ~5.6 s, so it would add
+latency and a false sense of checking without checking anything.
 
 Only on-screen windows are eligible. A covered window cannot be captured or acted
 on, so the tool fails with the window named rather than screenshotting whatever
