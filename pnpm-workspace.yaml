@@ -97,6 +97,13 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-util-values@0.1.7-alpha.1'
   - '@deepseek-ai/dsh-util-workspace-path@0.1.7-alpha.1'
   - '@deepseek-ai/dsh-workspace@0.1.7-alpha.1'
+  - '@trycua/cua-driver-darwin-arm64@0.33.1'
+  - '@trycua/cua-driver-darwin-x64@0.33.1'
+  - '@trycua/cua-driver-linux-arm64-gnu@0.33.1'
+  - '@trycua/cua-driver-linux-x64-gnu@0.33.1'
+  - '@trycua/cua-driver-win32-arm64-msvc@0.33.1'
+  - '@trycua/cua-driver-win32-x64-msvc@0.33.1'
+  - '@trycua/cua-driver@0.33.1'
 
 overrides:
   # 把参与 Context 声明合并的宿主包收敛到宿主当前世代（升级前是 0.1.6-alpha.2）。
