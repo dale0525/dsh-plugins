@@ -288,7 +288,9 @@ function seatAgent({ prompt, inheritedEvents = [], id = 'child-1', parentSession
   return {
     session: {
       id,
-      header: { parentSession },
+      // The host marks a seat with `origin` and `delegationDepth`; a bare
+      // `parentSession` also appears on forks, which are not seats.
+      header: { parentSession, origin: 'subagent', delegationDepth: 1 },
       inheritedEventCount: inherited,
       snapshotEvents: (from = 0) => events.slice(from),
     },
@@ -303,6 +305,26 @@ function seatCall(agent, toolName, args = {}) {
 /** The root session: a header with no delegating parent. */
 function rootAgent() {
   return { session: { id: 'root-1', header: {}, inheritedEventCount: 0, snapshotEvents: () => [] } };
+}
+
+/**
+ * A forked continuation: the host records the predecessor in `parentSession`
+ * but the session is not a seat, so no profile may constrain it.
+ */
+function forkAgent() {
+  return {
+    session: {
+      id: 'fork-1',
+      header: { parentSession: 'root-1', delegationDepth: 0 },
+      inheritedEventCount: 0,
+      snapshotEvents: () => [
+        {
+          type: 'user/message',
+          data: { content: [{ type: 'text', text: '[只读] inherited from the fork source' }], source: { kind: 'user' } },
+        },
+      ],
+    },
+  };
 }
 
 test('an unmarked instruction is read-only, so the default denies every write', async () => {
@@ -336,6 +358,18 @@ test('the read-only profile allows reads, research, and reporting', async () => 
     const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, toolName, {}), ALLOW);
     assert.deepEqual(decision, { kind: 'allow' }, toolName + ' is how the seat reports back');
   }
+});
+
+test('the read-only profile allows the agy mirror but not agy_ask', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[只读] survey the codebase' });
+  // agy_tool only replays activity agy already recorded; denying it prevents no
+  // side effect and stalls the seat in a retry loop.
+  const mirror = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'agy_tool', { run: 'r', step: 1 }), ALLOW);
+  assert.deepEqual(mirror, { kind: 'allow' });
+  // agy_ask spawns a fresh agy process, which can write files.
+  const ask = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'agy_ask', { prompt: 'hi' }), ALLOW);
+  assert.equal(ask.kind, 'deny');
 });
 
 test('the read-only profile denies commands and file writes', async () => {
@@ -431,6 +465,19 @@ test('the edit profile does not grant commands', async () => {
   const agent = seatAgent({ prompt: '[编辑: src/a.js] fix the bug' });
   const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'bash', { command: 'git status' }), ALLOW);
   assert.equal(decision.kind, 'deny');
+});
+
+test('a forked continuation is not a seat and keeps full authority', async () => {
+  const { listeners } = harness();
+  const agent = forkAgent();
+  for (const [toolName, args] of [
+    ['write', { file_path: 'src/anything.js' }],
+    ['bash', { command: 'rm -rf build' }],
+    ['edit', { file_path: 'src/anything.js' }],
+  ]) {
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, toolName, args), ALLOW);
+    assert.deepEqual(decision, { kind: 'allow' }, `a fork must not be governed: ${toolName}`);
+  }
 });
 
 test('a forked seat reads its marker after the inherited history', async () => {

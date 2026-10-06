@@ -113,6 +113,12 @@ const READ_ONLY_TOOLS = new Set([
   'job_list',
   'job_output',
   'get_goal',
+  // agy-link's mirror tool replays activity agy already recorded and throws for
+  // an unknown run/step, so it performs no side effect: denying it prevents
+  // nothing. It must stay allowed because agy re-emits one mirror call per
+  // completed step, and a denial makes the seat retry that step forever
+  // (observed: 136 denials, 9 minutes, manual interrupt).
+  'agy_tool',
 ]);
 
 /**
@@ -261,11 +267,29 @@ function seatInstruction(session) {
 }
 
 /**
+ * Whether one session is a delegated seat.
+ *
+ * Mirrors the host's own predicate: a seat is marked by `origin` or by a
+ * non-zero `delegationDepth`, both written when the child session is created.
+ * A durable `parentSession` is NOT that mark -- a forked or resumed
+ * continuation of a conversation carries its predecessor's id while remaining
+ * an ordinary session the user talks to, and constraining it would deny the
+ * user their own session.
+ *
+ * @param session - the session to classify.
+ * @returns whether a delegation started this session.
+ */
+function isSeat(session) {
+  const header = session?.header;
+  if (header === undefined) return false;
+  return header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0;
+}
+
+/**
  * The profile governing one call.
  *
  * Read once per seat and cached: the instruction cannot change while the seat
- * lives, and a session without a delegating parent is the root, which this
- * plugin never constrains.
+ * lives, and a session that no delegation started is never constrained.
  *
  * @param cache - seat session id -> profile.
  * @param agent - the agent making the call.
@@ -274,7 +298,7 @@ function seatInstruction(session) {
 function profileOf(cache, agent) {
   const session = agent?.session;
   if (session === undefined) return undefined;
-  if (session.header?.parentSession === undefined) return undefined;
+  if (!isSeat(session)) return undefined;
   const id = session.id;
   const cached = cache.get(id);
   if (cached !== undefined) return cached;
