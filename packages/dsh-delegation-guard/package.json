@@ -1,0 +1,46 @@
+{
+  "name": "@logictan/dsh-delegation-guard",
+  "version": "0.1.0",
+  "description": "DSH plugin that refuses one-shot subagent delegations and arms a self-waking checkpoint so a seat that dies silently cannot leave the delegating session waiting forever. DSH 派单守护子插件。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "build": "node build.mjs",
+    "prepare": "node build.mjs",
+    "prepack": "node build.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "subagent",
+    "delegation",
+    "guard",
+    "session"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-delegation-guard"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  }
+}
