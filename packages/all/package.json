@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.59",
+  "version": "0.5.60",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -23,7 +23,7 @@
     "@logictan/dsh-better-reasoning-effort": "^0.5.2",
     "@logictan/dsh-browser-agent": "^0.2.1",
     "@logictan/dsh-config-manager": "^0.1.77",
-    "@logictan/dsh-delegation-guard": "^0.1.1",
+    "@logictan/dsh-delegation-guard": "^0.1.2",
     "@logictan/dsh-desktop-agent": "^0.1.5",
     "@logictan/dsh-easyrewrite": "^2.7.1",
     "@logictan/dsh-fakeip-fetch": "^0.1.2",
