@@ -29,6 +29,9 @@ importers:
       '@logictan/dsh-config-manager':
         specifier: ^0.1.77
         version: link:../dsh-config-manager
+      '@logictan/dsh-delegation-guard':
+        specifier: ^0.1.0
+        version: link:../dsh-delegation-guard
       '@logictan/dsh-desktop-agent':
         specifier: ^0.1.5
         version: link:../dsh-desktop-agent
@@ -282,6 +285,8 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+
+  packages/dsh-delegation-guard: {}
 
   packages/dsh-desktop-agent:
     dependencies:
