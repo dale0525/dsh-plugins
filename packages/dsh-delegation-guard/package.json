@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-delegation-guard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH plugin that refuses one-shot subagent delegations and arms a self-waking checkpoint so a seat that dies silently cannot leave the delegating session waiting forever. DSH 派单守护子插件。",
   "type": "module",
   "main": "lib/index.js",
