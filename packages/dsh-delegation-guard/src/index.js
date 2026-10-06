@@ -32,6 +32,13 @@ export const name = 'delegation-guard';
 /**
  * The tool registry (to identify delegation tools from their own declaration)
  * and the live agent registry (to resolve a child's durable parent).
+ *
+ * `systemPrompt` is deliberately NOT injected. This plugin only listens on the
+ * `system-prompt/assemble` event; it never calls the service. Injection means
+ * "required", so a host without that service would disable this plugin entirely
+ * — losing the one-shot ban and the wait bound along with the annotation. The
+ * host's own listeners (`dsh-agent-preset-registry`, `dsh-session-reference`)
+ * subscribe the same way without injecting it.
  */
 export const inject = ['tools', 'agents'];
 
@@ -208,29 +215,30 @@ function parseProfilePaths(text) {
 /**
  * Read the profile a delegating instruction declares.
  *
- * The first bracketed marker whose head is a known profile wins, so prose
- * elsewhere in the instruction may use brackets freely. An instruction with no
- * known marker is read-only.
+ * The instruction must OPEN with the marker: leading whitespace is tolerated,
+ * but any other text before it makes the marker inert. Scanning the whole
+ * instruction for a known marker instead would let a read-only brief that merely
+ * quotes one grant the authority it was written to forbid — the brief "never use
+ * [编辑: src/a.js]" escalated that seat to write authority on `src/a.js`
+ * (measured). Anchoring to the start is what makes a mention inert, and it also
+ * makes "which marker wins" unambiguous: there is only ever the first one.
+ *
+ * An instruction with no leading marker is read-only.
  *
  * @param instruction - the text of the seat's delegation prompt.
  * @returns the governing profile.
  */
 function parseProfile(instruction) {
   if (typeof instruction !== 'string') return READ_ONLY;
-  const marker = /\[([^\]]*)\]/g;
-  let match = marker.exec(instruction);
-  while (match !== null) {
-    const body = match[1].trim();
-    const separator = body.indexOf(':');
-    const head = (separator === -1 ? body : body.slice(0, separator)).trim().toLowerCase();
-    const kind = PROFILE_MARKERS.get(head);
-    if (kind !== undefined) {
-      if (kind !== 'edit') return { kind };
-      return { kind, paths: parseProfilePaths(separator === -1 ? '' : body.slice(separator + 1)) };
-    }
-    match = marker.exec(instruction);
-  }
-  return READ_ONLY;
+  const match = /^\s*\[([^\]]*)\]/.exec(instruction);
+  if (match === null) return READ_ONLY;
+  const body = match[1].trim();
+  const separator = body.indexOf(':');
+  const head = (separator === -1 ? body : body.slice(0, separator)).trim().toLowerCase();
+  const kind = PROFILE_MARKERS.get(head);
+  if (kind === undefined) return READ_ONLY;
+  if (kind !== 'edit') return { kind };
+  return { kind, paths: parseProfilePaths(separator === -1 ? '' : body.slice(separator + 1)) };
 }
 
 /**
@@ -382,6 +390,29 @@ function checkProfile(profile, exec) {
 
 
 /**
+ * The requirement appended to every delegation tool's own description.
+ *
+ * Root cannot follow a rule it never reads. The rule lives in AGENTS.md and in
+ * the `delivery-discipline` skill, and was still missed in practice: a seat was
+ * briefed with a prose tool allow-list and no marker, silently received the
+ * read-only profile, and only discovered it when a step was refused a whole
+ * round later. The tool description is the one place in front of the model at
+ * the moment it decides to delegate, so the requirement is stated there too.
+ *
+ * Kept to the actionable minimum: which markers exist, that omitting one is
+ * read-only, and that the marker must open the prompt.
+ */
+const MARKER_REQUIREMENT = [
+  'The `prompt` MUST begin with an authority marker, which decides what the seat may do:',
+  '`[只读]` (read files, search, research, report — also the default when no marker is given),',
+  '`[审核]` (the above plus read-only commands such as `git status`/`git diff`),',
+  '`[编辑: <paths>]` (the above plus writing exactly those files).',
+  'A prompt with no marker grants read-only authority, and the seat is refused a write only',
+  'when it reaches one — so state the marker deliberately. English spellings',
+  '(`[readonly]`, `[review]`, `[edit: ...]`) are equivalent.',
+].join(' ');
+
+/**
  * Remove every checkpoint this plugin owns on one session.
  *
  * Looked up by title rather than remembered in memory so that "at most one live
@@ -491,6 +522,21 @@ export function apply(ctx) {
     const reason = checkProfile(profile, exec);
     if (reason === undefined) return next();
     return { kind: 'deny', reason };
+  });
+
+  // Rule 4, second half: state the marker requirement on the delegation tool
+  // itself. A rule the delegator never reads is not enforced by being written
+  // down elsewhere; this puts it in front of the model at the moment it decides
+  // to delegate. Only the description is touched, and only on delegation tools.
+  ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+    const assembly = await next();
+    let touched = false;
+    const tools = assembly.tools.map((tool) => {
+      if (!isDelegation(ctx, tool)) return tool;
+      touched = true;
+      return { ...tool, description: tool.description + ' ' + MARKER_REQUIREMENT };
+    });
+    return touched ? { ...assembly, tools } : assembly;
   });
 
   // Rules 2 and 3: a seat that starts arms the wait bound; a seat that reports

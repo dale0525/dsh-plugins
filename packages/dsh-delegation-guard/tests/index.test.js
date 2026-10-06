@@ -502,3 +502,85 @@ test('the English marker spellings are accepted', async () => {
   const dryRun = await fire(listeners, 'tools/pre-execute', seatCall(review, 'bash', { command: 'git diff' }), ALLOW);
   assert.deepEqual(dryRun, { kind: 'allow' });
 });
+
+// ---------------------------------------------------------------------------
+// The marker must OPEN the instruction.
+//
+// Scanning the whole instruction for a known marker let a read-only brief that
+// merely MENTIONS one grant the authority it was quoted to forbid: the brief
+// "never use [编辑: src/a.js]" escalated that seat to write authority. Anchoring
+// the marker to the start makes a mention inert.
+// ---------------------------------------------------------------------------
+
+test('a marker that does not open the instruction is ignored', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: 'fix the bug in src/a.js\n[编辑: src/a.js]' });
+  const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'write', { file_path: 'src/a.js' }), ALLOW);
+  assert.equal(decision.kind, 'deny', 'a trailing marker must not grant write authority');
+});
+
+test('a read-only brief that mentions a marker does not escalate', async () => {
+  const { listeners } = harness();
+  const quoted = seatAgent({ prompt: 'Never request [编辑: src/a.js]. Report findings only.' });
+  const write = await fire(listeners, 'tools/pre-execute', seatCall(quoted, 'write', { file_path: 'src/a.js' }), ALLOW);
+  assert.equal(write.kind, 'deny', 'quoting a marker must not grant the authority it forbids');
+  const review = seatAgent({ prompt: 'Note that [审核] is not granted here. Report.' });
+  const command = await fire(listeners, 'tools/pre-execute', seatCall(review, 'bash', { command: 'git status' }), ALLOW);
+  assert.equal(command.kind, 'deny', 'mentioning the review marker must not grant dry-run commands');
+});
+
+test('leading whitespace before the marker is tolerated', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '\n\n  [编辑: src/a.js] fix it' });
+  const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'write', { file_path: 'src/a.js' }), ALLOW);
+  assert.deepEqual(decision, { kind: 'allow' });
+});
+
+test('an unrecognized bracket before the marker makes the marker inert', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[重要] [编辑: src/a.js] fix it' });
+  const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'write', { file_path: 'src/a.js' }), ALLOW);
+  assert.equal(decision.kind, 'deny', 'only the opening bracket is read, so an unknown one there is not a marker');
+});
+
+// ---------------------------------------------------------------------------
+// The marker requirement is surfaced on the delegation tool itself.
+//
+// Root cannot follow a rule it never reads. Prose in AGENTS.md is advisory and
+// was demonstrably missed; the tool description is in front of the model at the
+// moment it decides to delegate.
+// ---------------------------------------------------------------------------
+
+/** Run one assembly waterfall, whose listener takes (assembly, context, next). */
+async function fireAssembly(listeners, assembly, context, terminal) {
+  const handlers = listeners.get('system-prompt/assemble');
+  assert.ok(handlers, 'no listener registered for system-prompt/assemble');
+  const dispatch = (index) =>
+    index >= handlers.length ? terminal() : handlers[index](assembly, context, () => dispatch(index + 1));
+  return dispatch(0);
+}
+
+test('the delegation tool description carries the marker requirement', async () => {
+  const { listeners } = harness({ definitions: { subagent: CONTINUABLE_TOOL, bash: PLAIN_TOOL } });
+  const assembly = {
+    tools: [
+      { name: 'subagent', description: 'Delegate a self-contained task.', parameters: {} },
+      { name: 'bash', description: 'Run a command.', parameters: {} },
+    ],
+  };
+  const assembled = await fireAssembly(listeners, assembly, { agent: undefined }, async () => assembly);
+  const byName = new Map(assembled.tools.map((tool) => [tool.name, tool]));
+  assert.match(byName.get('subagent').description, /\[只读\]/, 'the delegation tool must state the markers');
+  assert.match(byName.get('subagent').description, /\[编辑: <paths>\]/);
+  assert.match(byName.get('subagent').description, /read-only authority/, 'an unmarked prompt is read-only');
+  assert.equal(byName.get('bash').description, 'Run a command.', 'a non-delegation tool is untouched');
+});
+
+test('repeated assemblies of the same tool set are byte-identical', async () => {
+  const { listeners } = harness({ definitions: { subagent: CONTINUABLE_TOOL } });
+  const source = () => ({ tools: [{ name: 'subagent', description: 'Delegate a task.', parameters: {} }] });
+  const first = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
+  const second = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
+  assert.deepEqual(second, first, 'a stable description keeps the request header from churning every step');
+  assert.equal(first.tools[0].description.split('MUST begin').length - 1, 1, 'the requirement appears exactly once');
+});
