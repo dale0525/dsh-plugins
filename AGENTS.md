@@ -12,7 +12,7 @@ dsh-plugins/
 │   ├── all/                # 聚合载体 @logictan/dsh-plugins-all（唯一被安装的那个包）
 │   │   ├── aggregate.yml   # 手写清单（patchFrom / deps）
 │   │   ├── cordis.patch.yml# 生成物，勿手改
-│   │   └── package.json    # 生成物，勿手改
+│   │   └── package.json    # dependencies 由脚本生成；version 手工改（见「📤 发布」）
 │   ├── dsh-fakeip-fetch/       # 自制（无上游）→ 不 fork
 │   ├── dsh-agy-link/           # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
@@ -132,8 +132,14 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
 
 **闭环：聚合包必须跟着升版并发出去。** 子插件首发只把它自己放上 npm；此时线上的
 `@logictan/dsh-plugins-all` 还是不含它的旧版本，`dsh plugin add …@latest` 自然带不出它。
-所以还要：升聚合包版本（`packages/all/package.json` 是生成物，改它的来源）→ 跑
+所以还要：**手工改 `packages/all/package.json` 的 `version`** → 跑
 `node scripts/aggregate.mjs` → 走 CI/CD 发布。顺序由 `scripts/publish.mjs` 保证子插件在前。
+
+> **聚合包的 `version` 没有「来源」，只能手工改。** `aggregate.mjs` 只重写
+> `dependencies`（把每个子包钉成 `^<子包版本>`），其余字段原样保留 ——
+> `aggregate.yml` 里根本没有 `version` 这一项，脚本也不生成它。
+> 所以别去找「生成物对应的来源」：改 `aggregate.yml` 不会影响版本号，
+> 版本没升则该包被 CI 判重跳过，**看似发布成功、实则没发**。
 
 ### 验收
 
@@ -158,6 +164,13 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   两者都缺时该 action 直接失败。
 - **根测试用 `pnpm test`，不用 `pnpm -r run test`**：`-r` 只覆盖 workspace 子项目，
   会跳过根包自己的 `scripts/*.test.mjs`。
+- **`inject` 是「必需」，只监听事件就不要 inject 那个服务**：`inject` 里的服务缺失时
+  cordis **不调用该插件的 `apply`**，整个插件静默失效（实测：`inject: ['svc']` 且 svc 未提供
+  → `apply` 从不执行；去掉 `inject` 即正常）。所以给插件加一条
+  `ctx.on('some/event', ...)` 监听**不需要**把该事件的宿主服务写进 `inject` ——
+  写进去只会让「宿主没装那个服务」从「少一个功能」升级成「插件整体消失」。
+  宿主自己的监听方也这么写（`dsh-agent-preset-registry`、`dsh-session-reference` 都监听
+  `system-prompt/assemble` 而不 inject `systemPrompt`）。
 - **provenance 需要 `repository`**：包的 `package.json` 缺 `repository`（指向本仓库且
   `directory` 正确）时，OIDC 发布的 provenance 生成被拒。已发布的旧版本无法补，只能等下一个版本。
 - **`@deepseek-ai/dsh-client-ui-slots` 的版本必须全仓库一致**：宿主用 `declare module`
