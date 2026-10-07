@@ -127,7 +127,7 @@
 ## 开发
 
 ```bash
-pnpm test          # node --test（45 个用例，覆盖五条规范、三类误报与三档授权档案）
+pnpm test          # node --test（46 个用例，覆盖五条规范、三类误报与三档授权档案）
 node build.mjs     # src/ → lib/（prepare / prepack 也会跑）
 ```
 
