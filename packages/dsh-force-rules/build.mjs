@@ -1,5 +1,5 @@
 /**
- * dsh-delegation-guard build script: copy the host half from `src/` to `lib/`.
+ * dsh-force-rules build script: copy the host half from `src/` to `lib/`.
  *
  * `lib/` is not version-controlled (see `.gitignore`); a fresh clone builds it
  * through `prepare`/`prepack`. The sources are already plain ESM and there is no
@@ -17,4 +17,4 @@ const libDir = join(root, 'lib');
 
 await rm(libDir, { recursive: true, force: true });
 await cp(srcDir, libDir, { recursive: true });
-console.log(`[dsh-delegation-guard] built: ${libDir}`);
+console.log(`[dsh-force-rules] built: ${libDir}`);

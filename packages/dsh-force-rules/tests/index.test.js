@@ -1,5 +1,5 @@
 /**
- * Acceptance contract for the delegation guard.
+ * Acceptance contract for the rule guard.
  *
  * The plugin enforces three sentences: a seat is never one-shot, a delegating
  * session does not spin, and silence has an upper bound. Every case below pins
@@ -140,7 +140,7 @@ function delegation(name, runInBackground, agent = {}) {
 }
 
 test('the row id matches the patch row this plugin ships', () => {
-  assert.equal(name, 'delegation-guard');
+  assert.equal(name, 'force-rules');
   assert.deepEqual(inject, ['tools', 'agents']);
 });
 

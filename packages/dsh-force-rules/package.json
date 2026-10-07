@@ -1,7 +1,7 @@
 {
-  "name": "@logictan/dsh-delegation-guard",
-  "version": "0.1.4",
-  "description": "DSH plugin that refuses one-shot subagent delegations and arms a self-waking checkpoint so a seat that dies silently cannot leave the delegating session waiting forever. DSH 派单守护子插件。",
+  "name": "@logictan/dsh-force-rules",
+  "version": "0.1.0",
+  "description": "DSH plugin that mechanizes five prose rules: no one-shot subagent delegations, no spinning while a seat runs, an upper bound on silence, seat authority limited to the instruction's own marker, and a plain-speech mandate steered in at the turn boundary. DSH 规则门禁子插件。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -39,6 +39,7 @@
     "plugin",
     "subagent",
     "delegation",
+    "rules",
     "guard",
     "session"
   ],
@@ -46,7 +47,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dale0525/dsh-plugins.git",
-    "directory": "packages/dsh-delegation-guard"
+    "directory": "packages/dsh-force-rules"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

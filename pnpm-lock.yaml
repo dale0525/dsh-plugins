@@ -29,9 +29,6 @@ importers:
       '@logictan/dsh-config-manager':
         specifier: ^0.1.77
         version: link:../dsh-config-manager
-      '@logictan/dsh-delegation-guard':
-        specifier: ^0.1.4
-        version: link:../dsh-delegation-guard
       '@logictan/dsh-desktop-agent':
         specifier: ^0.1.5
         version: link:../dsh-desktop-agent
@@ -41,6 +38,9 @@ importers:
       '@logictan/dsh-fakeip-fetch':
         specifier: ^0.1.2
         version: link:../dsh-fakeip-fetch
+      '@logictan/dsh-force-rules':
+        specifier: ^0.1.0
+        version: link:../dsh-force-rules
       '@logictan/dsh-imagegen':
         specifier: ^2.0.2
         version: link:../dsh-imagegen
@@ -286,15 +286,6 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
-  packages/dsh-delegation-guard:
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: ^4.0.2
-        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
-      '@deepseek-ai/dsh-llm':
-        specifier: 0.2.0-rc.2
-        version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)
-
   packages/dsh-desktop-agent:
     dependencies:
       '@trycua/cua-driver':
@@ -337,6 +328,15 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.2
         version: 3.18.4
+
+  packages/dsh-force-rules:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.2
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@deepseek-ai/dsh-llm':
+        specifier: 0.2.0-rc.2
+        version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)
 
   packages/dsh-imagegen:
     dependencies:

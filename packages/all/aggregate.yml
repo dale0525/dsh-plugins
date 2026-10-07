@@ -14,7 +14,7 @@ patchFrom:
   - ../dsh-loop-guard
   - ../dsh-better-reasoning-effort
   - ../dsh-todo-goal
-  - ../dsh-delegation-guard
+  - ../dsh-force-rules
   - ../dsh-reasoning-strip
 deps:
   - ../dsh-config-manager
@@ -35,5 +35,5 @@ deps:
   # co-install — remove the upstream package first, then install this bundle.
   - ../dsh-better-reasoning-effort
   - ../dsh-todo-goal
-  - ../dsh-delegation-guard
+  - ../dsh-force-rules
   - ../dsh-reasoning-strip

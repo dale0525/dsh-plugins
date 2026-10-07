@@ -1,5 +1,5 @@
 /**
- * dsh-delegation-guard — deterministic enforcement of the delegation norms.
+ * dsh-force-rules — deterministic enforcement of five prose rules.
  *
  * Five prose rules in the operating instructions are mechanized here, because
  * prose is advisory and each of these has already failed in practice:
@@ -37,12 +37,16 @@
  * a live seat. A seat that reports normally removes it; a seat that dies
  * silently leaves it to fire.
  *
- * @module @logictan/dsh-delegation-guard
+ * The package is named for what it actually carries: four hard gates plus one
+ * mandatory reminder. A name covering only the delegation half would send a
+ * reader looking in the wrong place for the other rules.
+ *
+ * @module @logictan/dsh-force-rules
  */
 
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
-export const name = 'delegation-guard';
+export const name = 'force-rules';
 
 /**
  * The tool registry (to identify delegation tools from their own declaration)
@@ -461,7 +465,7 @@ const PLAIN_SPEECH_MANDATE = [
  * is not one of its same-name first-party plugins, and it is the same identity
  * `dsh-loop-guard` uses for its own notices.
  */
-const NOTICE_SOURCE = { kind: 'plugin:dsh-delegation-guard', form: 'notice' };
+const NOTICE_SOURCE = { kind: 'plugin:dsh-force-rules', form: 'notice' };
 
 /** What the collapsed transcript row shows for the mandate. */
 const NOTICE_SUMMARY = 'plain-speech mandate before the turn closes';

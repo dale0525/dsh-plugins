@@ -1,10 +1,10 @@
-# dsh-delegation-guard — DSH 派单守护
+# dsh-force-rules — DSH 规则门禁
 
-> 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）提供的派单守护插件：把「禁用一次性子代理」「派单后不空转」「沉默必须有上限」「席位只拿到指令授权的权限」「交付前说人话」五条规范从**散文**变成**确定性机制**（前四条是硬门禁，第五条是轮次结束时的必定提醒）
+> 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）提供的规则门禁插件：把「禁用一次性子代理」「派单后不空转」「沉默必须有上限」「席位只拿到指令授权的权限」「交付前说人话」五条规范从**散文**变成**确定性机制**（前四条是硬门禁，第五条是轮次结束时的必定提醒）
 
 **🌏 中文**
 
-`dsh` · `dsh-plugin` · `plugin` · `subagent` · `delegation` · `guard` · `派单` · `子代理` · `检查点`
+`dsh` · `dsh-plugin` · `plugin` · `subagent` · `delegation` · `rules` · `guard` · `派单` · `子代理` · `检查点`
 
 ## 简介
 
