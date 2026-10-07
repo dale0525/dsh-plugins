@@ -78,6 +78,7 @@ function fakeSchedule() {
  */
 function harness({ definitions = {}, parents = {}, schedule } = {}) {
   const listeners = new Map();
+  const registered = [];
   const agents = new Map(
     Object.entries(parents).map(([id, parentSession]) => [
       id,
@@ -85,7 +86,16 @@ function harness({ definitions = {}, parents = {}, schedule } = {}) {
     ]),
   );
   const ctx = {
-    tools: { get: (toolName) => definitions[toolName] },
+    tools: {
+      get: (toolName) => definitions[toolName],
+      // The host returns the disposer that unregisters the tool; the plugin
+      // does not need it, because `register` already ties the tool to the
+      // plugin's fiber.
+      register: (definition) => {
+        registered.push(definition);
+        return () => {};
+      },
+    },
     agents: { get: (id) => agents.get(id) },
     get: (service) => (service === 'schedule' ? schedule : undefined),
     on: (event, handler) => {
@@ -95,7 +105,7 @@ function harness({ definitions = {}, parents = {}, schedule } = {}) {
     },
   };
   apply(ctx);
-  return { listeners };
+  return { listeners, registered };
 }
 
 /**
@@ -583,4 +593,67 @@ test('repeated assemblies of the same tool set are byte-identical', async () => 
   const second = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
   assert.deepEqual(second, first, 'a stable description keeps the request header from churning every step');
   assert.equal(first.tools[0].description.split('MUST begin').length - 1, 1, 'the requirement appears exactly once');
+});
+// ---------------------------------------------------------------------------
+// The plain-speech checkpoint.
+//
+// `validate_dsh_ui` works because it is a registered tool whose description
+// names the moment to call it. This plugin registers the same kind of call
+// point for the prose rules that govern how an answer is delivered, so the
+// mandate is in front of the model at the moment it is about to answer rather
+// than only in a skill file it may never open.
+// ---------------------------------------------------------------------------
+
+/** The registered checkpoint tool, by its own name. */
+function checkpointTool(registered) {
+  const tool = registered.find((definition) => definition.name === 'check_reply');
+  assert.ok(tool, 'the plugin must register the check_reply checkpoint');
+  return tool;
+}
+
+test('registers exactly one tool, named check_reply', () => {
+  const { registered } = harness();
+  assert.equal(registered.length, 1, 'the plugin adds one call point and no more');
+  assert.equal(registered[0].name, 'check_reply');
+});
+
+test('the tool description names the moment to call it', () => {
+  const { registered } = harness();
+  const { description } = checkpointTool(registered);
+  assert.match(description, /BEFORE/, 'the trigger moment must be explicit');
+  assert.match(description, /plain/i, 'the mandate is plain speech');
+});
+
+test('calling the checkpoint returns the response rules', async () => {
+  const { registered } = harness();
+  const tool = checkpointTool(registered);
+  const verdict = await tool.execute({ draft: 'The invariant is upheld.' }, {});
+  assert.equal(typeof verdict, 'string');
+  assert.match(verdict, /premise|前提/i, 'restore the missing premise');
+  assert.match(verdict, /plain Chinese|说人话|大白话/i, 'the answer must be plain speech');
+  assert.match(verdict, /CONTEXT\.md/, 'the project vocabulary is named');
+  assert.match(verdict, /broaden|扩大/i, 're-explaining must not widen scope');
+});
+
+test('the checkpoint declares an output schema and a renderer', async () => {
+  const { registered } = harness();
+  const tool = checkpointTool(registered);
+  assert.equal(tool.output.schema.type, 'string');
+  const blocks = tool.output.render({}, 'verdict text');
+  assert.deepEqual(blocks, [{ type: 'text', text: 'verdict text' }]);
+});
+
+test('the checkpoint is repeatable and depends on nothing', async () => {
+  const { registered } = harness();
+  const tool = checkpointTool(registered);
+  const first = await tool.execute({ draft: 'a' }, {});
+  const second = await tool.execute({ draft: 'b' }, {});
+  assert.equal(second, first, 'a reminder that varied with the draft would be a check, not a reminder');
+});
+
+test('a read-only seat may call the checkpoint', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[只读] survey the codebase' });
+  const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'check_reply', { draft: 'x' }), ALLOW);
+  assert.deepEqual(decision, { kind: 'allow' }, 'the checkpoint performs no side effect');
 });

@@ -18,6 +18,12 @@
  *     default when no marker is present), `[审核]`, or `[编辑: <paths>]` --
  *     and every call the seat makes is checked against that profile.
  *
+ *  5. An answer to the user must be plain speech, and must restore the premise
+ *     the reader is missing. That mandate lived only in a skill file, with
+ *     nothing in front of the model at the moment it answers, so it is given a
+ *     call point here -- a registered `check_reply` tool whose own description
+ *     names the moment to call it, the same way `validate_dsh_ui` does.
+ *
  * Rules 2 and 3 are one mechanism: the plugin keeps one durable self-waking
  * checkpoint on each delegating session for exactly as long as that session has
  * a live seat. A seat that reports normally removes it; a seat that dies
@@ -115,6 +121,9 @@ const READ_ONLY_TOOLS = new Set([
   'structured_output',
   'todo_write',
   'ask_user_question',
+  // The plain-speech checkpoint performs no side effect and is how a seat
+  // reports back in prose, so every profile may call it.
+  'check_reply',
   'list_agents',
   'list_subagent_models',
   'job_list',
@@ -413,6 +422,90 @@ const MARKER_REQUIREMENT = [
 ].join(' ');
 
 /**
+ * The name of the call point that carries the plain-speech mandate.
+ *
+ * `validate_dsh_ui` works because it is a registered tool whose own description
+ * names the moment to call it, so the instruction is in front of the model at
+ * the moment it acts rather than only in a skill file it may never open. The
+ * rules governing how an answer is *delivered* had no such call point; this is
+ * one, at the same place in the turn.
+ */
+const REPLY_CHECK_TOOL_NAME = 'check_reply';
+
+/**
+ * The tool description — the load-bearing half.
+ *
+ * This text is in front of the model on every step, so it states the trigger
+ * moment ("before you send your answer") and the mandate in the smallest form
+ * that still reads as a rule. The detail lives in the verdict the call returns.
+ */
+const REPLY_CHECK_DESCRIPTION = [
+  'Re-read the plain-speech mandate BEFORE you send any answer to the user.',
+  'Call this once per user-facing answer — a task summary, an explanation, a report,',
+  'or a question back. It returns the rules that answer must follow; it checks',
+  'nothing, blocks nothing, and never fails.',
+].join(' ');
+
+/**
+ * The verdict: the rules one delivered answer must satisfy.
+ *
+ * Deliberately a fixed string. A reminder that varied with the draft would be a
+ * check, and "is this plain enough" has no computable answer — which is exactly
+ * why this is a checkpoint and not a validator. The rules are the response
+ * rules of the `wait-what` skill, which is where the mandate is defined.
+ */
+const REPLY_CHECK_RULES = [
+  'Plain-speech mandate for the answer you are about to send:',
+  '1. Write plain Chinese, and treat the reader as a non-technical person.',
+  '   Translate jargon instead of naming it; if a term must stay, define it in the same sentence.',
+  '2. Restore the premise the reader is missing: what was being decided, where the boundary was,',
+  '   and why this conclusion follows. A bare conclusion is not an answer.',
+  '3. Keep exact code, commands, API names, file paths, and quoted source text unchanged.',
+  '   Plain speech applies to the explanation, never to the identifiers.',
+  '4. Use the project vocabulary from CONTEXT.md when it exists; that is the shared language.',
+  '5. Do not introduce a new decision, broaden the scope, or change a commitment while explaining.',
+  '6. Be shorter only after the explanation is clearer. Never collapse it into a',
+  '   context-free summary or a bare list.',
+].join('\n');
+
+/**
+ * The checkpoint tool.
+ *
+ * It takes an optional draft purely so that a future mechanical check needs no
+ * signature change; nothing reads it yet, and the call is a no-op on purpose.
+ * Accepting the seam now is an explicit user instruction, which is the recorded
+ * exception to the ban on reserving interfaces for unconfirmed needs.
+ *
+ * @returns the tool definition registered with the host.
+ */
+function createReplyCheckTool() {
+  return {
+    name: REPLY_CHECK_TOOL_NAME,
+    description: REPLY_CHECK_DESCRIPTION,
+    parameters: {
+      type: 'object',
+      properties: {
+        draft: {
+          type: 'string',
+          description:
+            'Optional: the answer you are about to send. Accepted so a future mechanical check needs no signature change; no check reads it yet.',
+        },
+      },
+      additionalProperties: false,
+    },
+    output: {
+      schema: { type: 'string', description: 'The plain-speech rules this answer must follow.' },
+      render(_args, value) {
+        return [{ type: 'text', text: String(value) }];
+      },
+    },
+    async execute() {
+      return REPLY_CHECK_RULES;
+    },
+  };
+}
+
+/**
  * Remove every checkpoint this plugin owns on one session.
  *
  * Looked up by title rather than remembered in memory so that "at most one live
@@ -493,6 +586,10 @@ export function apply(ctx) {
     }, () => {});
     return next;
   }
+
+  // Rule 5: the plain-speech mandate gets a call point of its own, so the rule
+  // is in the tool table on every step rather than only in a skill file.
+  ctx.tools.register(createReplyCheckTool());
 
   // Rule 1: the one-shot switch is refused before dispatch, so the delegating
   // session never enters the path that cannot report back. A denial here is a
