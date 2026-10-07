@@ -594,6 +594,41 @@ test('repeated assemblies of the same tool set are byte-identical', async () => 
   assert.deepEqual(second, first, 'a stable description keeps the request header from churning every step');
   assert.equal(first.tools[0].description.split('MUST begin').length - 1, 1, 'the requirement appears exactly once');
 });
+
+// ---------------------------------------------------------------------------
+// Rule 5, second half: the plain-speech requirement on the question tool.
+//
+// The turn boundary cannot reach a question: `ask_user_question` suspends the
+// turn while it waits for the human, so `agent/turn-stopping` does not fire
+// before the question is read. The tool description is the one place in front of
+// the model at the moment it writes that question.
+// ---------------------------------------------------------------------------
+
+test('the question tool description carries the plain-speech requirement', async () => {
+  const { listeners } = harness({
+    definitions: { ask_user_question: PLAIN_TOOL, bash: PLAIN_TOOL },
+  });
+  const assembly = {
+    tools: [
+      { name: 'ask_user_question', description: 'Ask the user a question.', parameters: {} },
+      { name: 'bash', description: 'Run a command.', parameters: {} },
+    ],
+  };
+  const assembled = await fireAssembly(listeners, assembly, { agent: undefined }, async () => assembly);
+  const byName = new Map(assembled.tools.map((tool) => [tool.name, tool]));
+  const description = byName.get('ask_user_question').description;
+  assert.match(description, /plain Chinese/, 'the question must be written plainly');
+  assert.match(description, /non-technical person/);
+  assert.match(description, /Restore the premise/, 'a bare choice is not a question');
+  assert.equal(byName.get('bash').description, 'Run a command.', 'an unrelated tool is untouched');
+});
+
+test('the question requirement never lands on a delegation tool', async () => {
+  const { listeners } = harness({ definitions: { subagent: CONTINUABLE_TOOL } });
+  const assembly = { tools: [{ name: 'subagent', description: 'Delegate a task.', parameters: {} }] };
+  const assembled = await fireAssembly(listeners, assembly, { agent: undefined }, async () => assembly);
+  assert.doesNotMatch(assembled.tools[0].description, /non-technical person/);
+});
 // ---------------------------------------------------------------------------
 // Rule 5: the plain-speech mandate at the turn boundary.
 //
@@ -632,6 +667,7 @@ test('steers the mandate when a root turn is about to deliver an answer', async 
   assert.match(text, /plain Chinese|说人话|大白话/i, 'the answer must be plain speech');
   assert.match(text, /CONTEXT\.md/, 'the project vocabulary is named');
   assert.match(text, /broaden|扩大/i, 're-explaining must not widen scope');
+  assert.match(text, /re-pitch/i, 'the re-explanation rule migrated from the retired skill');
 });
 
 test('leaves a seat turn alone: the mandate is for answers to the user', async () => {

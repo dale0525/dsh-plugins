@@ -1,7 +1,7 @@
 {
   "name": "@logictan/dsh-force-rules",
-  "version": "0.1.0",
-  "description": "DSH plugin that mechanizes five prose rules: no one-shot subagent delegations, no spinning while a seat runs, an upper bound on silence, seat authority limited to the instruction's own marker, and a plain-speech mandate steered in at the turn boundary. DSH 规则门禁子插件。",
+  "version": "0.2.0",
+  "description": "DSH plugin that mechanizes five prose rules: no one-shot subagent delegations, no spinning while a seat runs, an upper bound on silence, seat authority limited to the instruction's own marker, and plain speech for both the turn's answer (steered in at the turn boundary) and the question asked of the user (appended to the question tool's own description). DSH 规则门禁子插件。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

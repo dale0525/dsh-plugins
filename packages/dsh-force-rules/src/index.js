@@ -19,18 +19,25 @@
  *     and every call the seat makes is checked against that profile.
  *
  *  5. An answer to the user must be plain speech, and must restore the premise
- *     the reader is missing. That mandate lived only in a skill file, with
- *     nothing in front of the model at the moment it answers. A registered tool
- *     cannot fix that -- a tool is fetched on the model's own initiative, so it
- *     cannot cover "the turn is ending". The turn boundary itself can: this
- *     plugin listens on `agent/turn-stopping` and steers the mandate back into
- *     any user-facing session whose turn is about to close.
+ *     the reader is missing. So must a question. That mandate lived only in a
+ *     skill file, with nothing in front of the model at the moment it answers or
+ *     asks. A registered tool cannot fix the answer half -- a tool is fetched on
+ *     the model's own initiative, so it cannot cover "the turn is ending". The
+ *     turn boundary itself can: this plugin listens on `agent/turn-stopping` and
+ *     steers the mandate back into any user-facing session whose turn is about
+ *     to close.
  *
  *     Unlike rules 1-4 this one only *reminds*. The host commits the answer
  *     before `agent/turn-stopping` fires, so the model must be sent back for one
  *     more step, and "is this plain enough" has no computable failure predicate
  *     to gate on. What is deterministic here is the delivery -- the right moment,
  *     every turn, regardless of what the model chose to do -- not the compliance.
+ *
+ *     A question is the other half, and the turn boundary cannot reach it:
+ *     `ask_user_question` suspends the turn while it waits for the human, so
+ *     `agent/turn-stopping` does not fire before the question is read. That half
+ *     is carried on the question tool's own description instead, which is in
+ *     front of the model at the moment it writes the question.
  *
  * Rules 2 and 3 are one mechanism: the plugin keeps one durable self-waking
  * checkpoint on each delegating session for exactly as long as that session has
@@ -112,6 +119,24 @@ function declaresContinuable(node) {
 function isDelegation(ctx, exec) {
   const schema = ctx.tools.get(exec.name, exec.agent)?.output?.schema;
   return schema !== undefined && declaresContinuable(schema);
+}
+
+/** The question tool's registered name, shared by its plain and timed variants. */
+const QUESTION_TOOL = 'ask_user_question';
+
+/**
+ * Whether this tool asks the human a question.
+ *
+ * Matched by name because both of the host's variants — the plain tool and the
+ * timed one — register under the same name, and neither advertises a schema
+ * property that distinguishes it from an arbitrary tool that happens to take an
+ * array argument.
+ *
+ * @param tool - the tool definition from the assembly.
+ * @returns whether this is the question tool.
+ */
+function isQuestionTool(tool) {
+  return tool.name === QUESTION_TOOL;
 }
 
 /**
@@ -436,8 +461,8 @@ const MARKER_REQUIREMENT = [
  *
  * Deliberately a fixed string. A reminder that varied with the answer would be a
  * check, and "is this plain enough" has no computable answer — which is exactly
- * why this is a reminder and not a validator. The rules are the response rules
- * of the `wait-what` skill, which is where the mandate is defined.
+ * why this is a reminder and not a validator. The rules are defined here, in the
+ * plugin that delivers them, so there is one source and no file to drift from.
  */
 const PLAIN_SPEECH_MANDATE = [
   'Your turn is about to close, and the answer above is what the user will read.',
@@ -453,7 +478,29 @@ const PLAIN_SPEECH_MANDATE = [
   '5. Do not introduce a new decision, broaden the scope, or change a commitment while explaining.',
   '6. Be shorter only after the explanation is clearer. Never collapse it into a',
   '   context-free summary or a bare list.',
+  '7. When re-explaining something the reader did not follow, re-pitch it rather than',
+  '   repeating or truncating the previous wording.',
 ].join('\n');
+
+/**
+ * The plain-speech requirement appended to the question tool's own description.
+ *
+ * The turn boundary covers the answer; it cannot cover the question, because
+ * `ask_user_question` suspends the turn while it waits for the human — so
+ * `agent/turn-stopping` never fires before the question is read. The question is
+ * the one moment the reader must understand without any surrounding explanation,
+ * which makes it the worst place to spend jargon. The tool description is the one
+ * place in front of the model at the moment it writes that question, so the
+ * requirement is stated there, exactly as the marker requirement is for seats.
+ */
+const QUESTION_REQUIREMENT = [
+  'Write every question, option label, and option description in plain Chinese,',
+  'treating the reader as a non-technical person: translate jargon instead of naming it,',
+  'and if a term must stay, define it in the same sentence.',
+  'Keep exact code, commands, API names, file paths, and quoted source text unchanged.',
+  'Restore the premise the reader is missing — what is being decided, where the boundary is,',
+  'and what each option leads to — because a bare choice is not a question.',
+].join(' ');
 
 /**
  * The mandate's producer identity.
@@ -634,10 +681,17 @@ export function apply(ctx) {
   // itself. A rule the delegator never reads is not enforced by being written
   // down elsewhere; this puts it in front of the model at the moment it decides
   // to delegate. Only the description is touched, and only on delegation tools.
+  //
+  // Rule 5, second half: the same treatment for the question tool, whose moment
+  // the turn boundary cannot reach.
   ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     const assembly = await next();
     let touched = false;
     const tools = assembly.tools.map((tool) => {
+      if (isQuestionTool(tool)) {
+        touched = true;
+        return { ...tool, description: tool.description + ' ' + QUESTION_REQUIREMENT };
+      }
       if (!isDelegation(ctx, tool)) return tool;
       touched = true;
       return { ...tool, description: tool.description + ' ' + MARKER_REQUIREMENT };
