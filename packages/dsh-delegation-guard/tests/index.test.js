@@ -595,65 +595,117 @@ test('repeated assemblies of the same tool set are byte-identical', async () => 
   assert.equal(first.tools[0].description.split('MUST begin').length - 1, 1, 'the requirement appears exactly once');
 });
 // ---------------------------------------------------------------------------
-// The plain-speech checkpoint.
+// Rule 5: the plain-speech mandate at the turn boundary.
 //
-// `validate_dsh_ui` works because it is a registered tool whose description
-// names the moment to call it. This plugin registers the same kind of call
-// point for the prose rules that govern how an answer is delivered, so the
-// mandate is in front of the model at the moment it is about to answer rather
-// than only in a skill file it may never open.
+// The rules governing how an answer is *delivered* lived only in a skill file,
+// which the model may never open and which nothing puts in front of it at the
+// moment it answers. A registered tool does not fix that: a tool is fetched by
+// the model on its own initiative, so it cannot cover "the turn is ending".
+//
+// `agent/turn-stopping` is the seam that does. The host dispatches it when the
+// turn is about to close and the model owes a response, and it is awaited
+// before the boundary commits, so a listener that steers sends the model back
+// for one more step with the mandate in hand.
 // ---------------------------------------------------------------------------
 
-/** The registered checkpoint tool, by its own name. */
-function checkpointTool(registered) {
-  const tool = registered.find((definition) => definition.name === 'check_reply');
-  assert.ok(tool, 'the plugin must register the check_reply checkpoint');
-  return tool;
+/** One root agent whose turn is stopping. */
+function stoppingTurn(agent = rootAgent(), turn = 1) {
+  return { agent, turn, signal: { aborted: false } };
 }
 
-test('registers exactly one tool, named check_reply', () => {
-  const { registered } = harness();
-  assert.equal(registered.length, 1, 'the plugin adds one call point and no more');
-  assert.equal(registered[0].name, 'check_reply');
-});
+/** The text this plugin steered into one agent, in order. */
+function steered(agent) {
+  return (agent.steers ?? []).map((message) => message.content.map((block) => block.text).join(''));
+}
+/** An agent stub that records what a listener steers into it. */
+function steerableAgent(base = rootAgent()) {
+  return { ...base, steers: [], steer(message) { this.steers.push(message); } };
+}
 
-test('the tool description names the moment to call it', () => {
-  const { registered } = harness();
-  const { description } = checkpointTool(registered);
-  assert.match(description, /BEFORE/, 'the trigger moment must be explicit');
-  assert.match(description, /plain/i, 'the mandate is plain speech');
-});
-
-test('calling the checkpoint returns the response rules', async () => {
-  const { registered } = harness();
-  const tool = checkpointTool(registered);
-  const verdict = await tool.execute({ draft: 'The invariant is upheld.' }, {});
-  assert.equal(typeof verdict, 'string');
-  assert.match(verdict, /premise|前提/i, 'restore the missing premise');
-  assert.match(verdict, /plain Chinese|说人话|大白话/i, 'the answer must be plain speech');
-  assert.match(verdict, /CONTEXT\.md/, 'the project vocabulary is named');
-  assert.match(verdict, /broaden|扩大/i, 're-explaining must not widen scope');
-});
-
-test('the checkpoint declares an output schema and a renderer', async () => {
-  const { registered } = harness();
-  const tool = checkpointTool(registered);
-  assert.equal(tool.output.schema.type, 'string');
-  const blocks = tool.output.render({}, 'verdict text');
-  assert.deepEqual(blocks, [{ type: 'text', text: 'verdict text' }]);
-});
-
-test('the checkpoint is repeatable and depends on nothing', async () => {
-  const { registered } = harness();
-  const tool = checkpointTool(registered);
-  const first = await tool.execute({ draft: 'a' }, {});
-  const second = await tool.execute({ draft: 'b' }, {});
-  assert.equal(second, first, 'a reminder that varied with the draft would be a check, not a reminder');
-});
-
-test('a read-only seat may call the checkpoint', async () => {
+test('steers the mandate when a root turn is about to deliver an answer', async () => {
   const { listeners } = harness();
-  const agent = seatAgent({ prompt: '[只读] survey the codebase' });
-  const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'check_reply', { draft: 'x' }), ALLOW);
-  assert.deepEqual(decision, { kind: 'allow' }, 'the checkpoint performs no side effect');
+  const agent = steerableAgent();
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
+  const [text] = steered(agent);
+  assert.ok(text, 'the turn boundary must carry the mandate');
+  assert.match(text, /premise|前提/i, 'restore the missing premise');
+  assert.match(text, /plain Chinese|说人话|大白话/i, 'the answer must be plain speech');
+  assert.match(text, /CONTEXT\.md/, 'the project vocabulary is named');
+  assert.match(text, /broaden|扩大/i, 're-explaining must not widen scope');
+});
+
+test('leaves a seat turn alone: the mandate is for answers to the user', async () => {
+  const { listeners } = harness();
+  const agent = steerableAgent(seatAgent({ prompt: '[只读] survey the codebase' }));
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
+  assert.deepEqual(steered(agent), [], 'a seat reports to its delegator, not to the user');
+});
+
+test('leaves a forked continuation alone: it is not a root session either', async () => {
+  const { listeners } = harness();
+  const agent = steerableAgent(forkAgent());
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
+  assert.deepEqual(steered(agent), []);
+});
+
+test('steers at most once per turn, so the extra step cannot re-arm it', async () => {
+  const { listeners } = harness();
+  const agent = steerableAgent();
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent, 1));
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent, 1));
+  assert.equal(steered(agent).length, 1, 'a second stop in the same turn must not steer again');
+});
+
+test('a later turn gets its own reminder', async () => {
+  const { listeners } = harness();
+  const agent = steerableAgent();
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent, 1));
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent, 2));
+  assert.equal(steered(agent).length, 2, 'each turn delivers its own answer');
+});
+
+test('two sessions do not share the once-per-turn guard', async () => {
+  const { listeners } = harness();
+  const first = steerableAgent();
+  const second = steerableAgent({ session: { id: 'root-2', header: {} } });
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(first, 1));
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(second, 1));
+  assert.equal(steered(first).length, 1);
+  assert.equal(steered(second).length, 1, 'the guard is per session, not global');
+});
+
+test('the steered message is a user message the host can accept', async () => {
+  const { listeners } = harness();
+  const agent = steerableAgent();
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
+  const [message] = agent.steers;
+  assert.equal(message.role, 'user', 'steering accepts a user message');
+  assert.ok(Array.isArray(message.content), 'content is block-shaped');
+  assert.equal(message.content[0].type, 'text');
+  assert.ok(message.source, 'the message carries its producer');
+});
+
+test('the steered message is attributed as a notice, not as a human turn', async () => {
+  const { listeners } = harness();
+  const agent = steerableAgent();
+  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
+  const [message] = agent.steers;
+  assert.equal(
+    message.source.form,
+    'notice',
+    'without `form: notice` the nudge renders as a prompt the user never wrote',
+  );
+  assert.ok(message.source.summary, 'a notice must carry its one-line account');
+  assert.match(message.source.kind, /^plugin:/, 'producers name themselves as a plugin');
+});
+
+test('does not attach the mandate to an unrelated root tool call', async () => {
+  const { listeners } = harness();
+  const decision = await fire(
+    listeners,
+    'tools/pre-execute',
+    { name: 'bash', arguments: { command: 'ls' }, agent: rootAgent() },
+    ALLOW,
+  );
+  assert.deepEqual(decision, { kind: 'allow' }, 'only the turn boundary carries the mandate');
 });

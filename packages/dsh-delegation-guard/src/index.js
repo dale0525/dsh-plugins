@@ -1,7 +1,7 @@
 /**
  * dsh-delegation-guard — deterministic enforcement of the delegation norms.
  *
- * Three prose rules in the operating instructions are mechanized here, because
+ * Five prose rules in the operating instructions are mechanized here, because
  * prose is advisory and each of these has already failed in practice:
  *
  *  1. A subagent seat is never one-shot. `run_in_background: false` is the only
@@ -20,9 +20,17 @@
  *
  *  5. An answer to the user must be plain speech, and must restore the premise
  *     the reader is missing. That mandate lived only in a skill file, with
- *     nothing in front of the model at the moment it answers, so it is given a
- *     call point here -- a registered `check_reply` tool whose own description
- *     names the moment to call it, the same way `validate_dsh_ui` does.
+ *     nothing in front of the model at the moment it answers. A registered tool
+ *     cannot fix that -- a tool is fetched on the model's own initiative, so it
+ *     cannot cover "the turn is ending". The turn boundary itself can: this
+ *     plugin listens on `agent/turn-stopping` and steers the mandate back into
+ *     any user-facing session whose turn is about to close.
+ *
+ *     Unlike rules 1-4 this one only *reminds*. The host commits the answer
+ *     before `agent/turn-stopping` fires, so the model must be sent back for one
+ *     more step, and "is this plain enough" has no computable failure predicate
+ *     to gate on. What is deterministic here is the delivery -- the right moment,
+ *     every turn, regardless of what the model chose to do -- not the compliance.
  *
  * Rules 2 and 3 are one mechanism: the plugin keeps one durable self-waking
  * checkpoint on each delegating session for exactly as long as that session has
@@ -32,6 +40,7 @@
  * @module @logictan/dsh-delegation-guard
  */
 
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
 export const name = 'delegation-guard';
 
@@ -121,9 +130,6 @@ const READ_ONLY_TOOLS = new Set([
   'structured_output',
   'todo_write',
   'ask_user_question',
-  // The plain-speech checkpoint performs no side effect and is how a seat
-  // reports back in prose, so every profile may call it.
-  'check_reply',
   'list_agents',
   'list_subagent_models',
   'job_list',
@@ -422,40 +428,17 @@ const MARKER_REQUIREMENT = [
 ].join(' ');
 
 /**
- * The name of the call point that carries the plain-speech mandate.
+ * The plain-speech mandate, delivered at the turn boundary.
  *
- * `validate_dsh_ui` works because it is a registered tool whose own description
- * names the moment to call it, so the instruction is in front of the model at
- * the moment it acts rather than only in a skill file it may never open. The
- * rules governing how an answer is *delivered* had no such call point; this is
- * one, at the same place in the turn.
- */
-const REPLY_CHECK_TOOL_NAME = 'check_reply';
-
-/**
- * The tool description — the load-bearing half.
- *
- * This text is in front of the model on every step, so it states the trigger
- * moment ("before you send your answer") and the mandate in the smallest form
- * that still reads as a rule. The detail lives in the verdict the call returns.
- */
-const REPLY_CHECK_DESCRIPTION = [
-  'Re-read the plain-speech mandate BEFORE you send any answer to the user.',
-  'Call this once per user-facing answer — a task summary, an explanation, a report,',
-  'or a question back. It returns the rules that answer must follow; it checks',
-  'nothing, blocks nothing, and never fails.',
-].join(' ');
-
-/**
- * The verdict: the rules one delivered answer must satisfy.
- *
- * Deliberately a fixed string. A reminder that varied with the draft would be a
+ * Deliberately a fixed string. A reminder that varied with the answer would be a
  * check, and "is this plain enough" has no computable answer — which is exactly
- * why this is a checkpoint and not a validator. The rules are the response
- * rules of the `wait-what` skill, which is where the mandate is defined.
+ * why this is a reminder and not a validator. The rules are the response rules
+ * of the `wait-what` skill, which is where the mandate is defined.
  */
-const REPLY_CHECK_RULES = [
-  'Plain-speech mandate for the answer you are about to send:',
+const PLAIN_SPEECH_MANDATE = [
+  'Your turn is about to close, and the answer above is what the user will read.',
+  'Re-read it against this mandate. If it already complies, reply with nothing at all.',
+  'Otherwise send the corrected answer:',
   '1. Write plain Chinese, and treat the reader as a non-technical person.',
   '   Translate jargon instead of naming it; if a term must stay, define it in the same sentence.',
   '2. Restore the premise the reader is missing: what was being decided, where the boundary was,',
@@ -469,40 +452,35 @@ const REPLY_CHECK_RULES = [
 ].join('\n');
 
 /**
- * The checkpoint tool.
+ * The mandate's producer identity.
  *
- * It takes an optional draft purely so that a future mechanical check needs no
- * signature change; nothing reads it yet, and the call is a no-op on purpose.
- * Accepting the seam now is an explicit user instruction, which is the recorded
- * exception to the ban on reserving interfaces for unconfirmed needs.
- *
- * @returns the tool definition registered with the host.
+ * A message source is a merge-extensible sum type with no shared catch-all
+ * `kind`, and `form: 'notice'` is what keeps a synthetic nudge from rendering
+ * as a human turn — a bare plugin name would make the user see a prompt they
+ * never wrote. `plugin:` is the host's documented mapping for a producer that
+ * is not one of its same-name first-party plugins, and it is the same identity
+ * `dsh-loop-guard` uses for its own notices.
  */
-function createReplyCheckTool() {
-  return {
-    name: REPLY_CHECK_TOOL_NAME,
-    description: REPLY_CHECK_DESCRIPTION,
-    parameters: {
-      type: 'object',
-      properties: {
-        draft: {
-          type: 'string',
-          description:
-            'Optional: the answer you are about to send. Accepted so a future mechanical check needs no signature change; no check reads it yet.',
-        },
-      },
-      additionalProperties: false,
-    },
-    output: {
-      schema: { type: 'string', description: 'The plain-speech rules this answer must follow.' },
-      render(_args, value) {
-        return [{ type: 'text', text: String(value) }];
-      },
-    },
-    async execute() {
-      return REPLY_CHECK_RULES;
-    },
-  };
+const NOTICE_SOURCE = { kind: 'plugin:dsh-delegation-guard', form: 'notice' };
+
+/** What the collapsed transcript row shows for the mandate. */
+const NOTICE_SUMMARY = 'plain-speech mandate before the turn closes';
+
+/**
+ * Whether one session is answering the user, as opposed to reporting to a
+ * delegator.
+ *
+ * A seat reports to whoever delegated it, and a forked continuation likewise
+ * reports back to its caller — neither answer is read by the user, so neither is
+ * given the mandate. A root session is the one with no delegating parent.
+ *
+ * @param session - the session whose turn is closing.
+ */
+function answersTheUser(session) {
+  const header = session?.header;
+  if (header === undefined) return false;
+  if (isSeat(session)) return false;
+  return header.parentSession === undefined;
 }
 
 /**
@@ -544,6 +522,16 @@ export function apply(ctx) {
   const reconciles = new Map();
   /** Seat session id -> the profile its delegating instruction declared. */
   const profiles = new Map();
+  /**
+   * Session id -> the last turn the mandate was steered into.
+   *
+   * The extra step a steer buys re-enters `agent/turn-stopping` with the same
+   * turn number, so remembering the turn — rather than a bare "already done"
+   * flag — is what keeps the reminder from re-arming itself while still letting
+   * the next turn deliver its own. Turn numbers rise monotonically within one
+   * session, so one number per live session is the whole state.
+   */
+  const reminded = new Map();
 
   /**
    * Drive one session's checkpoint to match its current live seats.
@@ -587,9 +575,26 @@ export function apply(ctx) {
     return next;
   }
 
-  // Rule 5: the plain-speech mandate gets a call point of its own, so the rule
-  // is in the tool table on every step rather than only in a skill file.
-  ctx.tools.register(createReplyCheckTool());
+  // Rule 5: the plain-speech mandate is delivered at the turn boundary. The
+  // host dispatches `agent/turn-stopping` when the turn is about to close and
+  // the model owes a response, and awaits it before the boundary commits — so
+  // steering here sends the model back for exactly one more step with the
+  // mandate in hand. A session that reports to a delegator rather than to the
+  // user is left alone.
+  ctx.on('agent/turn-stopping', ({ agent, turn }) => {
+    const session = agent.session;
+    if (!answersTheUser(session)) return;
+    // The extra step this steer buys re-enters this listener with the same
+    // `turn`, so without this guard the reminder would re-arm itself forever.
+    if (reminded.get(session.id) === turn) return;
+    reminded.set(session.id, turn);
+    agent.steer(
+      createUserMessage({
+        content: [{ type: 'text', text: PLAIN_SPEECH_MANDATE }],
+        source: { ...NOTICE_SOURCE, summary: NOTICE_SUMMARY },
+      }),
+    );
+  });
 
   // Rule 1: the one-shot switch is refused before dispatch, so the delegating
   // session never enters the path that cannot report back. A denial here is a
@@ -659,5 +664,11 @@ export function apply(ctx) {
     seats.delete(info.id);
     if (seats.size === 0) liveSeats.delete(parentSessionId);
     return reconcile(parentSessionId);
+  });
+
+  // The reminder guard is the only state keyed by a session that outlives its
+  // turn, so it is dropped when the session is.
+  ctx.on('session/disposed', (session) => {
+    reminded.delete(session.id);
   });
 }
