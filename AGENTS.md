@@ -352,6 +352,13 @@ pnpm run check:host                           # 宿主世代兼容 + patch 行 i
 > 把 `dsh-better-reasoning-effort` 的 jsdom 用例饿到撞 5000ms 默认超时（实测：默认并发
 > 峰值净增 30 进程，本机三次运行均失败；限到 2 后净增 15 进程、通过且更快）。它是为了给 jsdom 留 CPU，
 > 不是省时间。
+>
+> **增删子插件会改变并行配对，可能让「与本次改动无关」的包测试失败——别当成自己改坏了。**
+> `--workspace-concurrency=2` 每次挑两个包同时跑，挑谁取决于工作区里有哪些包。删掉一个轻包后队列前移，
+> `dsh-better-reasoning-effort` 可能改与 `dsh-config-manager`（1184 个测试）配对而被饿到超时
+> （实测：删掉 `dsh-agy-link` 后本机 5/5 失败，失败用例名每次都不同，报 `Test timed out in 5000ms`；
+> 把并发限到 1 即全绿，单独只跑这两个包稳定复现，换成轻包搭伴稳定通过）。该包源码可**逐字节未改**，
+> 属调度副作用而非回归。判据：先 `git diff <base> -- <该包>/` 确认未改，再看并发限 1 是否转绿。
 
 > **测试的 TMPDIR 陷阱（macOS，仅 `dsh-config-manager`）**：该包的符号链接类测试
 > （`packages/dsh-config-manager/src/**/*.test.ts`，如 `utils/recursive-walk.test.ts`、
