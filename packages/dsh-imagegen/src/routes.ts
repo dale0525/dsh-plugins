@@ -15,6 +15,7 @@ import type { UpstreamConfig } from './engine.ts'
 import { enhancePrompt, listImageModels, listPromptModels, type PromptModelConfig } from './prompt-enhancer.ts'
 import { normalizeImageModels } from './image-models.ts'
 import { ImageGenerationRuntime, type ChannelsView } from './generation-runtime.ts'
+import { credentialRefForPath } from './credential-refs.ts'
 import { IMAGE_PRESETS } from './presets.ts'
 import { AGENT_IMAGE_API, CONVERSATION_IMAGE_API, GENERATE_API, IMAGEGEN_SETTINGS_NAMESPACE, IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, SETTINGS_API, SUBSCRIPTION_API, SUBSCRIPTION_PROVIDERS, TASK_API, isChannelProtocolPreference, type GeneratedImage, type GenerateRequest, type ModelMapping, type PresetProviderView } from './protocol.ts'
 
@@ -28,10 +29,40 @@ export interface SettingsSeam {
   readonly writable?: boolean
 }
 
+/**
+ * Credential seam face the bridge needs (the host credentials provider).
+ *
+ * API keys are NOT config fields. `role('secret')` only redacts a value from
+ * settings *reads* — the plaintext still lands in `cordis.patch.yml`, which the
+ * config-sync `plugins` adapter exports verbatim. So the bridge translates the
+ * key-bearing settings paths (see {@link credentialRefForPath}) into credential
+ * refs here, and those paths never reach the settings seam.
+ *
+ * The path→ref naming scheme is a pure function imported from
+ * `credential-refs.ts`, so classification works identically on a host that
+ * composes no credential provider — where a key write is refused rather than
+ * silently stored as plaintext.
+ */
+export interface CredentialsSeam {
+  /** Whether a ref currently holds a value (drives the redacted secrets view). */
+  holds(ref: string): Promise<boolean>
+  /** Store a value for a ref. Callers must map an empty value to {@link unset}. */
+  set(ref: string, value: string): Promise<void>
+  /** Remove a ref's value. */
+  unset(ref: string): Promise<void>
+}
+
 /** Route dependencies. */
 export interface ImageGenRoutesDeps {
   /** The settings seam (namespace storage). */
   settings: SettingsSeam
+  /**
+   * Resolve the credential seam. Absent on a deployment that composes no
+   * credential provider; the bridge then rejects key writes instead of falling
+   * back to storing plaintext in the settings document. Resolved per call
+   * because providers come up asynchronously.
+   */
+  credentials?: () => CredentialsSeam | undefined
   /** Resolve the current upstream config (legacy single-endpoint path). */
   resolve: () => UpstreamConfig
   /** Resolve the current channel view (the channel-aware path). */
@@ -147,16 +178,20 @@ function imageDataUrl(value: string): { mediaType: ImageMediaType; data: Uint8Ar
 }
 
 /** Project one settings descriptor onto the bridge wire view. */
-function toView(descriptor: SettingsDescriptor, namespace = String(descriptor.ns)): Record<string, unknown> {
+function toView(
+  descriptor: SettingsDescriptor,
+  namespace = String(descriptor.ns),
+  extraSecrets: Array<{ path: string[]; set: boolean }> = [],
+): Record<string, unknown> {
+  const declared = (descriptor.secrets ?? []).map(secret => ({ path: [...secret.path], set: secret.set }))
+  const secrets = [...declared, ...extraSecrets]
   return {
     ns: namespace,
     schema: descriptor.schema,
     value: descriptor.value,
     ...descriptor.base === undefined ? {} : { base: descriptor.base },
     ...descriptor.user === undefined ? {} : { user: descriptor.user },
-    ...descriptor.secrets === undefined ? {} : {
-      secrets: descriptor.secrets.map(secret => ({ path: [...secret.path], set: secret.set })),
-    },
+    ...secrets.length === 0 ? {} : { secrets },
     revision: descriptor.revision,
   }
 }
@@ -176,6 +211,80 @@ function failureOf(error: unknown): { ok: false; code: string; message: string }
   }
   const message = error instanceof Error ? error.message : String(error)
   return { ok: false, code: 'settings-rejected', message }
+}
+
+/** The path of a raw settings op, or `undefined` when it carries no string path. */
+function settingsOpPath(op: unknown): string[] | undefined {
+  if (typeof op !== 'object' || op === null) return undefined
+  const path = (op as { path?: unknown }).path
+  if (!Array.isArray(path)) return undefined
+  return path.every(segment => typeof segment === 'string') ? path as string[] : undefined
+}
+
+/** One credential write decoded from a settings path op. */
+interface CredentialOp {
+  ref: string
+  /** The value to store; `undefined` removes the ref. */
+  value: string | undefined
+}
+
+/**
+ * Split submitted settings ops into config-field ops and credential ops.
+ *
+ * A credential path is never forwarded to the settings seam: the namespace root
+ * is volatile, so a `set` there would be accepted and would persist the
+ * plaintext key into `cordis.patch.yml` — the exact leak this split exists to
+ * prevent. An empty (or whitespace-only) value decodes as a removal because the
+ * credential store refuses to hold an empty string.
+ *
+ * @param ops - the raw ops from the bridge request body.
+ * @returns the ops to forward to the settings seam, and the credential writes.
+ * @throws {TypeError} when a credential path carries an undecodable op.
+ */
+function splitCredentialOps(ops: unknown[]): { settingsOps: unknown[]; credentialOps: CredentialOp[] } {
+  const settingsOps: unknown[] = []
+  const credentialOps: CredentialOp[] = []
+  for (const op of ops) {
+    const path = settingsOpPath(op)
+    const ref = path === undefined ? undefined : credentialRefForPath(path)
+    if (path === undefined || ref === undefined) {
+      settingsOps.push(op)
+      continue
+    }
+    const kind = (op as { op?: unknown }).op
+    if (kind === 'unset') {
+      credentialOps.push({ ref, value: undefined })
+      continue
+    }
+    const raw = (op as { value?: unknown }).value
+    if (kind !== 'set' || typeof raw !== 'string') {
+      throw new TypeError(`settings op for credential field "${path.join('.')}" must be a string set or an unset`)
+    }
+    const value = raw.trim()
+    credentialOps.push({ ref, value: value === '' ? undefined : value })
+  }
+  return { settingsOps, credentialOps }
+}
+
+/**
+ * The credential-backed secret entries the redacted view must carry.
+ *
+ * The client never receives a key value, so "is a key held?" is answered from
+ * this sidecar. The schema no longer declares the key fields, so these entries
+ * are synthesized from the credential store rather than walked off the schema.
+ *
+ * @param deps - the route dependencies.
+ * @returns one entry per credential-backed path.
+ */
+async function credentialSecrets(deps: ImageGenRoutesDeps): Promise<Array<{ path: string[]; set: boolean }>> {
+  const credentials = deps.credentials?.()
+  if (credentials === undefined) return []
+  const paths: string[][] = [['promptApiKey']]
+  for (const channel of deps.resolveChannels?.().channels ?? []) paths.push(['channelSecrets', channel.id])
+  return Promise.all(paths.map(async path => {
+    const ref = credentialRefForPath(path)
+    return { path, set: ref === undefined ? false : await credentials.holds(ref) }
+  }))
 }
 
 /** Validate a submitted generation request (the browser's generate payload). */
@@ -415,7 +524,9 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
         writeJson(res, 200, {
           ok: true,
           value: {
-            namespaces: descriptor === undefined ? [] : [toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE)],
+            namespaces: descriptor === undefined
+              ? []
+              : [toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE, await credentialSecrets(deps))],
             writable: deps.settings.writable !== false,
           },
         })
@@ -438,10 +549,36 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           return
         }
         const expectedRevision = typeof body.expectedRevision === 'number' ? body.expectedRevision : undefined
+        let settingsOps: unknown[]
+        let credentialOps: CredentialOp[]
+        try {
+          ({ settingsOps, credentialOps } = splitCredentialOps(body.ops))
+        } catch (error) {
+          writeJson(res, 200, failureOf(error))
+          return
+        }
+        // A key write is only ever diverted to the credential store. Refusing it
+        // when no provider is composed keeps the key out of the settings
+        // document, where it would be persisted as plaintext.
+        const credentials = deps.credentials?.()
+        if (credentialOps.length > 0 && credentials === undefined) {
+          writeJson(res, 200, {
+            ok: false,
+            code: 'settings-rejected',
+            message: 'this host composes no credential provider, so an API key cannot be stored',
+          })
+          return
+        }
         try {
           // The bridge accepts its stable public alias; managed-form hosts
           // map that alias to their profile entry id for the actual write.
-          await deps.settings.mutate(settingsNamespace, body.ops, expectedRevision)
+          if (settingsOps.length > 0) {
+            await deps.settings.mutate(settingsNamespace, settingsOps, expectedRevision)
+          }
+          for (const credential of credentialOps) {
+            if (credential.value === undefined) await credentials?.unset(credential.ref)
+            else await credentials?.set(credential.ref, credential.value)
+          }
         } catch (error) {
           writeJson(res, 200, failureOf(error))
           return
@@ -452,7 +589,10 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
           writeJson(res, 200, { ok: false, code: 'internal', message: `settings namespace "${settingsNamespace}" was disposed after the mutate` })
           return
         }
-        writeJson(res, 200, { ok: true, value: toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE) })
+        writeJson(res, 200, {
+          ok: true,
+          value: toView(descriptor, IMAGEGEN_SETTINGS_NAMESPACE, await credentialSecrets(deps)),
+        })
       },
     },
     // ----------------------------------------------------------- generate

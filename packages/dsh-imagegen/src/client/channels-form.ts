@@ -6,9 +6,11 @@
  *
  * Storage rules (dictated by dsh-settings semantics):
  *  - the whole `channels` array is written wholesale via `path: ['channels']`;
- *  - every channel's API key lives at `channelSecrets.<channelId>` (a secret
- *    dict), written per-key so untouched keys are never clobbered by a save
- *    the reader could not see (keys are redacted out of the wire view);
+ *  - every channel's API key is written to `path: ['channelSecrets', <id>]`,
+ *    one key at a time so untouched keys are never clobbered by a save the
+ *    reader could not see (keys are redacted out of the wire view). The host
+ *    bridge diverts that path into the credential store, so the value never
+ *    reaches the settings document — this module only speaks the wire shape;
  *  - path ops never navigate *inside* the channels array.
  */
 

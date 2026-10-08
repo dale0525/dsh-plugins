@@ -46,7 +46,7 @@ dsh plugin --profile web add @logictan/dsh-imagegen
 | --- | --- |
 | 预设 | 常见厂商的预填（OpenAI 官方、xAI Grok Imagine、Google Nano Banana、字节 Seedream、智谱 GLM-Image、阿里 Qwen-Image、MiniMax image-01 等） |
 | API 地址 | 该渠道的端点；非 OpenAI 兼容协议的厂商按其官方接口填写（预设里已说明） |
-| API 密钥 | 仅存于本机设置文档，生成时由宿主代理转发 |
+| API 密钥 | 凭据，存于 `$DSH_HOME/.credentials.yaml`（渠道密钥为 `DSH_IMAGEGEN_CHANNEL_<渠道 ID>`，提示词增强为 `DSH_IMAGEGEN_PROMPT_KEY`）；不写入插件配置行，生成时由宿主代理转发 |
 | 模型目录 | 该渠道下可用的「别名 → 上游模型 id」映射 |
 
 可选配置**提示词增强**：填一个 OpenAI 兼容的聊天端点与模型，生图前会把简短提示词扩写成更完整的描述。

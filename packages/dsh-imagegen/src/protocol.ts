@@ -191,11 +191,12 @@ export interface ModelMapping {
 
 /**
  * One configured image channel (provider). Secrets never live here — the API
- * key is stored at `channelSecrets.<channelId>` in the settings document so
- * whole-array writes can never clobber keys the user did not re-enter.
+ * key is a credential (`DSH_IMAGEGEN_CHANNEL_<ID>`, see `channelKeyRef` in
+ * `index.ts`), so a whole-array write can never clobber keys the user did not
+ * re-enter and no key ever reaches `cordis.patch.yml`.
  */
 export interface ChannelConfig {
-  /** Stable channel id (the channelSecrets dict is keyed by it). */
+  /** Stable channel id (the credential ref is derived from it). */
   id: string
   /** Preset provider id this channel was created from ('' = custom). */
   preset: string

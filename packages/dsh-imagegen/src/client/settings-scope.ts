@@ -57,8 +57,9 @@ export interface ImageGenConfig {
   allowAgentImageGeneration?: boolean
   /** Configured channels (each: name, endpoint, model catalog). */
   channels?: ChannelConfig[]
-  /** Per-channel API keys, keyed by channel id. The redacted wire view returns
-   *  this as an empty object; key presence comes from the secrets sidecar. */
+  /** Per-channel API keys, keyed by channel id. Write-only wire shape: the
+   *  host bridge diverts it into the credential store, so it never appears in
+   *  the settings value. Key presence comes from the secrets sidecar. */
   channelSecrets?: Record<string, string>
   /** Channel used when a request does not name one. */
   defaultChannelId?: string

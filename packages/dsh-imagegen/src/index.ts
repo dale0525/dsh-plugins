@@ -7,6 +7,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import type CredentialProvider from '@deepseek-ai/dsh-credentials'
 import { installSettingsSectionCompat, settingsNamespaceCompat } from './settings-compat.ts'
 import z from '@deepseek-ai/schemastery'
 // Type-only: pulls the webServer Context merge (route registration).
@@ -18,7 +20,8 @@ import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-tools'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { IMAGEGEN_SETTINGS_NAMESPACE, type ChannelConfig, type ModelMapping } from './protocol.ts'
-import { makeRoutes, type SettingsSeam } from './routes.ts'
+import { makeRoutes, type CredentialsSeam, type SettingsSeam } from './routes.ts'
+import { channelKeyRef, PROMPT_KEY_REF } from './credential-refs.ts'
 import { ImageGenerationRuntime, type ChannelsView, type RuntimeChannel } from './generation-runtime.ts'
 import { registerAgentImageTools } from './agent-image-tools.ts'
 import { registerEditImageCommand } from './edit-image-command.ts'
@@ -45,11 +48,14 @@ export const ImageGenSettingsNamespace = settingsNamespaceCompat(IMAGEGEN_SETTIN
 /**
  * Plugin config, validated by the same-named schemastery schema.
  *
- * Channels own the endpoint + model catalog. The API key of each channel lives
- * in `channelSecrets` (a secret dict keyed by channel id) instead of inside the
- * channel objects — dsh-settings redaction supports dict/array containers, but
- * path ops cannot reach inside arrays, so a whole-array write must never carry
- * secrets it would clobber.
+ * Channels own the endpoint + model catalog. The API key of each channel is a
+ * CREDENTIAL (`DSH_IMAGEGEN_CHANNEL_<ID>`, see {@link channelKeyRef}) rather
+ * than a config field: a `role('secret')` field is redacted from every settings
+ * read, but the plaintext still sits in `cordis.patch.yml`, and
+ * `dsh-config-manager`'s `plugins` adapter exports patch rows verbatim — so the
+ * key would ship inside every config-sync snapshot. As a credential it never
+ * reaches the patch, and it still syncs through the `credentialsStatus`
+ * section, which exports the credential file's refs.
  */
 export interface Config {
   /** Master switch for the plugin (routes, prompt section). */
@@ -60,24 +66,21 @@ export interface Config {
   allowAgentImageGeneration?: boolean
   /** Configured channels (each: name, endpoint, model catalog). */
   channels?: ChannelConfig[]
-  /** Per-channel API keys, keyed by channel id. */
-  channelSecrets?: Record<string, string>
   /** Channel used when a request does not name one. */
   defaultChannelId?: string
   /** Optional OpenAI-compatible chat endpoint for prompt enhancement. */
   promptApiUrl?: string
-  /** Optional secret for the prompt enhancement endpoint. */
-  promptApiKey?: string
   /** Chat model used to expand short image prompts. */
   promptModel?: string
   /* ----- deprecated legacy single-endpoint fields (migrated to channels) ----- */
   /** Legacy base URL; synthesized into the default channel on upgrade. */
   apiUrl?: string
-  /** Legacy secret; migrated into channelSecrets on upgrade. */
-  apiKey?: string
   /** Legacy allow-list; migrated into the default channel's catalog. */
   imageModels?: string[]
 }
+
+/** Re-exported so existing importers keep resolving; defined in `credential-refs.ts`. */
+export { channelKeyRef, PROMPT_KEY_REF } from './credential-refs.ts'
 
 /**
  * The config schema. Every field is live: the root is marked volatile so the
@@ -99,13 +102,10 @@ export const Config: z<Config> = z.object({
       id: z.string(),
     })).default([]),
   })).default([]),
-  channelSecrets: z.dict(z.string().role('secret')).default({}),
   defaultChannelId: z.string().default(''),
   promptApiUrl: z.string().default(''),
-  promptApiKey: z.string().role('secret').default(''),
   promptModel: z.string().default(''),
   apiUrl: z.string().default(''),
-  apiKey: z.string().role('secret').default(''),
   imageModels: z.array(z.string()).default([]),
 // The volatile marker widens the schema generic; the shape is still exactly
 // Config, which is what the loader and the settings form consume.
@@ -120,7 +120,7 @@ const DEFAULT_ALLOW_AGENT_IMAGE_GENERATION = true
 const SECTION_ORDER = 150
 
 /** Model-facing announcement: plugin presence, capabilities, and limits. */
-export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：通过「渠道」对接 OpenAI 兼容图像生成 API（每个渠道 = 一个 API 端点 + 各自的模型目录），支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok-imagine 模型按官方 JSON image_url 协议发送，nanobanana 系列按 aspect_ratio / image_size 参数协议发送；seedream 系列统一走 /images/generations，参考图以 JSON image 数组发送；智谱 `glm-image` 使用官方 `/api/paas/v4/images/generations`，当前仅支持文生图；qwen-image 系列使用阿里云 DashScope 原生接口（api_url 填 https://dashscope.aliyuncs.com/api/v1，不支持 OpenAI 兼容模式，该渠道不可复用于提示词增强，尺寸自动映射为宽*高）。MiniMax `image-01` 使用 MiniMax 原生 `/image_generation` 接口（api_url 填 https://api.minimax.io/v1 或国内站 https://api.minimaxi.com/v1，支持 1:1/16:9/4:3/3:2/2:3/3:4/9:16/21:9 宽高比，一次最多 9 张；图生图为单张 subject_reference 主体参考（保持人物/主体一致，非像素级局部编辑）；其 /models 只列聊天模型，图片模型需用预设目录）。API 地址与密钥在 GUI 设置中按渠道配置，密钥仅存于本机设置文档；生成请求由本地宿主代理转发，结果以 base64 返回。模型只能使用用户在各渠道配置目录中的模型；检测模型时会过滤聊天、Embedding 等非图片模型，但模型出现在 /models 中仍不等于其网关原生支持生图协议，遇到 Qwen、MiniMax、Gemini 等非 OpenAI 生图协议时应如实说明上游兼容性。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；默认保持工具调用等待直到任务完成，完成图片显示在工具调用对应的左侧结果区域，模型收到状态和附件引用，不会额外伪造用户消息。用户也可以使用 `/edit_image <修改描述>`，命令会直接读取当前对话最近图片并调用插件图片模型，不经过对话模型的图片能力检查。若明确需要后台执行，可传 `wait_for_completion: false`，之后再用 `get_image_generation_task` 查询；不要反复轮询。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在设置文档中；参考图会发送至所配置的 API 服务。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图」时即指本插件，请据此协作。'
+export const IMAGEGEN_GUIDANCE = '本机已安装 dsh-imagegen 插件（DSH AI 生图）：通过「渠道」对接 OpenAI 兼容图像生成 API（每个渠道 = 一个 API 端点 + 各自的模型目录），支持文生图（/images/generations）与图生图（/images/edits，上传参考图，grok-imagine 模型按官方 JSON image_url 协议发送，nanobanana 系列按 aspect_ratio / image_size 参数协议发送；seedream 系列统一走 /images/generations，参考图以 JSON image 数组发送；智谱 `glm-image` 使用官方 `/api/paas/v4/images/generations`，当前仅支持文生图；qwen-image 系列使用阿里云 DashScope 原生接口（api_url 填 https://dashscope.aliyuncs.com/api/v1，不支持 OpenAI 兼容模式，该渠道不可复用于提示词增强，尺寸自动映射为宽*高）。MiniMax `image-01` 使用 MiniMax 原生 `/image_generation` 接口（api_url 填 https://api.minimax.io/v1 或国内站 https://api.minimaxi.com/v1，支持 1:1/16:9/4:3/3:2/2:3/3:4/9:16/21:9 宽高比，一次最多 9 张；图生图为单张 subject_reference 主体参考（保持人物/主体一致，非像素级局部编辑）；其 /models 只列聊天模型，图片模型需用预设目录）。API 地址与密钥在 GUI 设置中按渠道配置，密钥存于 $DSH_HOME/.credentials.yaml 的 DSH_IMAGEGEN_CHANNEL_* 引用，不写入插件配置行；生成请求由本地宿主代理转发，结果以 base64 返回。模型只能使用用户在各渠道配置目录中的模型；检测模型时会过滤聊天、Embedding 等非图片模型，但模型出现在 /models 中仍不等于其网关原生支持生图协议，遇到 Qwen、MiniMax、Gemini 等非 OpenAI 生图协议时应如实说明上游兼容性。Agent 可直接调用 `generate_image` 提交文生图，也可用 `edit_image` 图生图；默认保持工具调用等待直到任务完成，完成图片显示在工具调用对应的左侧结果区域，模型收到状态和附件引用，不会额外伪造用户消息。用户也可以使用 `/edit_image <修改描述>`，命令会直接读取当前对话最近图片并调用插件图片模型，不经过对话模型的图片能力检查。若明确需要后台执行，可传 `wait_for_completion: false`，之后再用 `get_image_generation_task` 查询；不要反复轮询。限制：生成消耗上游 API 额度；图片内容由上游模型生成，可能不符合预期或包含不适宜内容；api_key 以明文存储在 $DSH_HOME/.credentials.yaml；参考图会发送至所配置的 API 服务。用户提到「生图 / 绘画 / 生成图片 / 文生图 / 图生图」时即指本插件，请据此协作。'
 
 /** Append the live channel × model table so an Agent can honor user choices. */
 function guidanceFor(channels: RuntimeChannel[], defaultChannelId: string): string {
@@ -180,7 +180,6 @@ export interface EffectiveConfig {
   promptApiKey: string
   promptModel: string
 }
-
 /**
  * A live config reference.
  *
@@ -202,12 +201,47 @@ export function apply(ctx: Context, config?: ConfigRef<Config>): void {
   // the loader, so settings edits apply without a remount.
   let current: () => Config = () => config?.get() ?? {}
 
+  /**
+   * Synchronous mirror of the credential values this plugin needs.
+   *
+   * `resolve()` is synchronous and is called from route handlers, the Agent
+   * tools and the runtime, while the credential seam resolves asynchronously.
+   * Rather than making every call site async, the values are read once into
+   * this map and refreshed on every credential change: the seam emits
+   * `credentials/reference-updated` after a write commits and after each file
+   * reload, so the mirror tracks the store without polling.
+   *
+   * A missing provider leaves the map empty, which reads as "no key" — the same
+   * outcome as an unset ref, and it keeps the plugin mountable on a deployment
+   * that composes no credential provider.
+   */
+  const keyMirror = new Map<string, string>()
+
+  const credentials = (): CredentialProvider | undefined => ctx.get('credentials') as CredentialProvider | undefined
+
+  /** Re-read one reference into the mirror; a missing provider or ref clears it. */
+  const refreshKey = async (ref: string): Promise<void> => {
+    const provider = credentials()
+    if (provider === undefined) {
+      keyMirror.delete(ref)
+      return
+    }
+    const resolved = await provider.resolve(credentialRef(ref))
+    const value = resolved?.value ?? ''
+    if (value === '') keyMirror.delete(ref)
+    else keyMirror.set(ref, value)
+  }
+
+  /** Re-read every reference this plugin can name (all channels + the prompt key). */
+  const refreshAllKeys = async (): Promise<void> => {
+    const refs = new Set<string>([PROMPT_KEY_REF])
+    for (const channel of normalizeChannels(current()?.channels)) refs.add(channelKeyRef(channel.id))
+    await Promise.all([...refs].map(ref => refreshKey(ref)))
+  }
+
   const resolve = (): EffectiveConfig => {
     const value = current() ?? {}
     let channels = normalizeChannels(value.channels)
-    // Settings scopes are deep-frozen by the host. Legacy migration adds the
-    // synthesized default-channel secret, so always work on a detached copy.
-    const secrets: Record<string, string> = { ...(value.channelSecrets ?? {}) }
     // Legacy single-endpoint migration: no channels yet → synthesize the
     // default channel from the old flat fields so upgrades never break.
     if (channels.length === 0) {
@@ -219,8 +253,6 @@ export function apply(ctx: Context, config?: ConfigRef<Config>): void {
         : []
       if (legacyUrl !== '' || legacyModels.length > 0) {
         channels = [{ id: 'default', preset: '', name: '默认渠道', apiUrl: legacyUrl, apiUrlFull: false, models: legacyModels }]
-        const legacyKey = typeof value.apiKey === 'string' ? value.apiKey.trim() : ''
-        if (legacyKey !== '') secrets['default'] = legacyKey
       }
     }
     const named = channels.map(channel => ({
@@ -236,11 +268,11 @@ export function apply(ctx: Context, config?: ConfigRef<Config>): void {
       allowAgentImageGeneration: value.allowAgentImageGeneration ?? DEFAULT_ALLOW_AGENT_IMAGE_GENERATION,
       channels: named.map(channel => ({
         ...channel,
-        apiKey: typeof secrets[channel.id] === 'string' ? secrets[channel.id] : '',
+        apiKey: keyMirror.get(channelKeyRef(channel.id)) ?? '',
       })),
       defaultChannelId,
       promptApiUrl: typeof value.promptApiUrl === 'string' ? value.promptApiUrl.trim() : '',
-      promptApiKey: typeof value.promptApiKey === 'string' ? value.promptApiKey.trim() : '',
+      promptApiKey: keyMirror.get(PROMPT_KEY_REF) ?? '',
       promptModel: typeof value.promptModel === 'string' ? value.promptModel.trim() : '',
     }
   }
@@ -266,10 +298,24 @@ export function apply(ctx: Context, config?: ConfigRef<Config>): void {
   // user re-enables the plugin from the settings card.
   ctx.inject(['settings', 'attachments'], (sctx) => {
     const seam = sctx.get('settings') as unknown as SettingsSeam
+    // Read per call rather than injected: the credential provider is optional,
+    // and injecting it would make the whole route family vanish on a host that
+    // composes none. The bridge refuses a key write in that case instead of
+    // storing the plaintext key in the settings document.
+    const credentialsSeam = (): CredentialsSeam | undefined => {
+      const provider = credentials()
+      if (provider === undefined) return undefined
+      return {
+        holds: async ref => (await provider.describe(credentialRef(ref))).configured,
+        set: async (ref, value) => { await provider.set(credentialRef(ref), value) },
+        unset: async ref => { await provider.unset(credentialRef(ref)) },
+      }
+    }
     sctx.effect(
       () => {
         const routes = makeRoutes({
           settings: seam,
+          credentials: credentialsSeam,
           resolve: () => {
             const value = resolve()
             const channel = value.channels.find(candidate => candidate.id === value.defaultChannelId) ?? value.channels[0]
@@ -344,9 +390,21 @@ export function apply(ctx: Context, config?: ConfigRef<Config>): void {
   installSettingsSectionCompat(ctx, ImageGenSettingsNamespace, Config, config?.get() ?? {}, {
     setSource: (source) => {
       current = source
-      sync()
+      void refreshAllKeys().then(sync)
     },
-    onChange: sync,
+    onChange: () => { void refreshAllKeys().then(sync) },
+  })
+
+  // Keep the key mirror in step with the credential store. The seam emits this
+  // after a write commits and after every file reload, so a key set from the
+  // settings card (or arriving through config sync) reaches the next request
+  // without a restart.
+  ctx.inject(['credentials'], (cctx) => {
+    cctx.effect(() => {
+      const dispose = cctx.on('credentials/reference-updated', () => { void refreshAllKeys().then(sync) })
+      void refreshAllKeys().then(sync)
+      return dispose
+    }, 'dsh-imagegen: credential mirror')
   })
 
   // Initial registration from the composition entry (covers deployments with
