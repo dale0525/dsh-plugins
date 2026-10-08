@@ -39,7 +39,7 @@ importers:
         specifier: ^0.3.0
         version: link:../dsh-force-rules
       '@logictan/dsh-goal-resume':
-        specifier: ^0.1.0
+        specifier: ^0.1.1
         version: link:../dsh-goal-resume
       '@logictan/dsh-imagegen':
         specifier: ^2.0.3

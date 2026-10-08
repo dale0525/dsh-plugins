@@ -11,8 +11,14 @@
  *
  * One pass, once, a fixed delay after boot. The delay is what makes the pass
  * safe to be automatic: the session corpus, the projection cache, and the
- * workspace registry have all finished their own startup by then, and any
- * session a human opened in the meantime is already live and gets skipped.
+ * workspace registry have all finished their own startup by then.
+ *
+ * A session the human reopened is NOT skipped. Reopening restores the
+ * conversation and nothing else — `activation` comes back `disarmed` — so a
+ * live session holding an `active`, `disarmed` goal is exactly the case this
+ * plugin exists for; a liveness check here would skip every real target.
+ * Arming it while the human works is safe because the round driver only
+ * submits a round once the agent is idle with nothing else queued.
  *
  * The read route is the projection cache, and it is a PREFILTER only. The
  * cache is a zero-I/O view of stored rows — identity-checked, so it is never
@@ -37,7 +43,7 @@ import {
 export const name = 'goal-resume';
 
 /**
- * Services this plugin cannot run without. All four are mounted by `dsh-base`.
+ * Services this plugin cannot run without. All three are mounted by `dsh-base`.
  *
  * The two the pass also needs — the archive set and the session controller —
  * are deliberately NOT here: they are mounted by `dsh-web-app` only, and a
@@ -45,7 +51,7 @@ export const name = 'goal-resume';
  * entire `apply`. They are read with `ctx.get(...)` at pass time instead, so a
  * profile without them simply finds nothing to do.
  */
-export const inject = ['agents', 'goals', 'sessionQuery', 'sessionProjectionCache'];
+export const inject = ['goals', 'sessionQuery', 'sessionProjectionCache'];
 
 /** Delay before the pass, long enough for the corpus, cache, and registry. */
 const STARTUP_DELAY_MS = 30_000;
@@ -133,10 +139,6 @@ async function runPass(ctx) {
 async function resumeOne(ctx, controller, target) {
   const sessionId = target.header.id;
 
-  // A live agent was not stopped by the restart — someone is using it — and
-  // arming its goal underneath them is not this plugin's business.
-  if (ctx.agents.get(sessionId) !== undefined) return;
-
   const resolved = await controller.resolveAgent(sessionId);
   if ('error' in resolved) {
     ctx.logger.warn(`goal-resume: session "${sessionId}" could not be reopened: ${resolved.error.code}`);
@@ -145,10 +147,27 @@ async function resumeOne(ctx, controller, target) {
 
   // Authoritative re-read: the cache may have lagged, and reopening takes time.
   const live = liveGoalFacts(ctx.goals.get(resolved.agent));
-  if (!isResumable(live)) return;
+  if (!isResumable(live)) {
+    ctx.logger.info(`goal-resume: session "${sessionId}" needs no resume (${describe(live)})`);
+    return;
+  }
   // Already armed means the round loop is running; `resume` would reject it.
-  if (live.activation === 'armed') return;
+  if (live.activation === 'armed') {
+    ctx.logger.info(`goal-resume: session "${sessionId}" is already armed`);
+    return;
+  }
 
   ctx.goals.resume(resolved.agent, { id: live.id, revision: live.revision });
   ctx.logger.info(`goal-resume: resumed goal "${live.id}" in session "${sessionId}"`);
+}
+
+/**
+ * Render why a live goal was not resumed, for the skip log line.
+ *
+ * @param facts - normalized goal facts, or `undefined`.
+ * @returns a short human-readable reason.
+ */
+function describe(facts) {
+  if (facts === undefined) return 'no goal';
+  return `phase "${facts.phase}", rounds ${facts.roundsStarted}/${facts.maxGoalRounds}`;
 }

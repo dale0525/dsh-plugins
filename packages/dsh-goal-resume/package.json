@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-goal-resume",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH plugin that re-arms the active goals a restart left stopped, one pass a short delay after boot. DSH 重启后自动恢复未完成目标子插件。",
   "type": "module",
   "main": "lib/index.js",

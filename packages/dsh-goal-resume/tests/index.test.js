@@ -58,7 +58,6 @@ function harness(options = {}) {
   const {
     records = [header()],
     snapshots = { 'session-1': snapshot() },
-    liveAgents = {},
     liveGoals = { 'session-1': liveGoal() },
   } = options;
   // `null` means the service is not mounted in this profile; an omitted key
@@ -95,7 +94,12 @@ function harness(options = {}) {
       cachedSnapshot: (h) => snapshots[h.id],
     },
     agents: {
-      get: (id) => liveAgents[id],
+      // Tripwire, not a stub. Consulting agent liveness is the defect this
+      // suite exists to prevent: a session the human reopened is the primary
+      // target, not a reason to skip. Any call here fails the test.
+      get: () => {
+        throw new Error('the pass must not consult agent liveness');
+      },
     },
     goals: {
       get: (agent) => liveGoals[agent.id],
@@ -119,7 +123,7 @@ test.afterEach(() => mock.timers.reset());
 
 test('the plugin row is named for its patch row and injects only base services', () => {
   assert.equal(name, 'goal-resume');
-  assert.deepEqual(inject, ['agents', 'goals', 'sessionQuery', 'sessionProjectionCache']);
+  assert.deepEqual(inject, ['goals', 'sessionQuery', 'sessionProjectionCache']);
 });
 
 test('the pass waits 30s and does not fire early', async () => {
@@ -214,12 +218,25 @@ test('a goal whose rounds are spent is left alone', async () => {
   assert.equal(resumed.length, 0);
 });
 
-test('a session that is already live is left to its user', async () => {
-  const { ctx, resumed } = harness({ liveAgents: { 'session-1': { id: 'session-1' } } });
+test('a session a human reopened is still resumed', async () => {
+  // Reopening restores the conversation, not the continuation authority, so a
+  // live session holding an active disarmed goal is the primary target — the
+  // case a restart actually produces. The pass must reach the controller for
+  // it: the removed guard short-circuited on liveness BEFORE this call, which
+  // is what silently skipped every real target in the field.
+  let consulted = 0;
+  const controller = {
+    resolveAgent: async () => {
+      consulted += 1;
+      return { agent: { id: 'session-1' } };
+    },
+  };
+  const { ctx, resumed } = harness({ controller });
   apply(ctx);
   await runPass(ctx);
 
-  assert.equal(resumed.length, 0);
+  assert.equal(consulted, 1);
+  assert.deepEqual(resumed, [{ sessionId: 'session-1', ref: { id: 'goal-1', revision: 3 } }]);
 });
 
 test('a session that cannot be reopened is skipped', async () => {
