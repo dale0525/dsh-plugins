@@ -40,28 +40,27 @@ export const ENTRY_ID = 'browser-agent';
 /**
  * Schema of the `browser-agent` configuration.
  *
- * The TypeSafe key is `role('secret')`: it is stored in the local settings
- * document and stripped by every redacting surface, including config sync. That
- * is a deliberate consequence — a secret never leaves the machine that entered
- * it — so the key must be typed once per device.
+ * The TypeSafe key is NOT a field here. It is a credential
+ * (`BROWSER_AGENT_TYPESAFE_KEY`, see {@link API_KEY_REF} in the package entry),
+ * stored in `$DSH_HOME/.credentials.yaml` and read through the credentials
+ * service. Two properties follow, and the earlier `role('secret')` field had
+ * neither:
  *
- * It deliberately carries NO default. The redaction sidecar reports
- * `set: value !== undefined` against the RESOLVED value, so `.default('')`
- * would make the key look permanently present: the card could never tell an
- * unset key from a set one, and its reset would clear a key it wrongly believed
- * was there. Leaving the field optional is what keeps that flag truthful.
+ *  - The value never reaches `cordis.patch.yml`. A `role('secret')` field was
+ *    redacted from every *settings* read, but the row in `cordis.patch.yml`
+ *    still carried the plaintext, and `dsh-config-manager`'s `plugins` adapter
+ *    exports patch rows verbatim — so the key shipped inside every config-sync
+ *    snapshot despite the comment here claiming otherwise.
+ *  - The key is now syncable on purpose. `dsh-config-manager` exports the
+ *    `credentialsStatus` section from the credentials file, so a synced key
+ *    arrives on the other machine instead of having to be retyped per device.
  *
  * The TYPE_TEXT route is three separate fields rather than one. Empty means
  * "use the session's own current route", which is the only default that stays
  * correct after config sync moves the file to a machine with different
  * providers; a hard-coded model would point at a model the target may not have.
- *
- * `volatile()` order matters for the secret: `role()` must come first, because
- * `volatile()` wraps the schema and a second wrap throws `volatile schema is
- * already wrapped`.
  */
 export const Config = z.object({
-  typesafeApiKey: z.string().role('secret').volatile(),
   typesafeEndpoint: z.string().default(DEFAULT_TYPESAFE_ENDPOINT).volatile(),
   typesafeModel: z.string().default(DEFAULT_MODEL).volatile(),
   cdpEndpoint: z.string().default(DEFAULT_CDP_ENDPOINT).volatile(),

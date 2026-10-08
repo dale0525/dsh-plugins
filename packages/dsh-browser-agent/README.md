@@ -37,16 +37,19 @@ ends, so your window and tabs are left exactly as they were.
 
 | Field | Meaning |
 | --- | --- |
-| TypeSafe key | `role('secret')`; stored locally, never synced, never read back |
+| TypeSafe key | not a config field — a credential (`BROWSER_AGENT_TYPESAFE_KEY`); see below |
 | TypeSafe endpoint | defaults to `https://api.typesafe.ai/v1/systemone` |
 | TypeSafe model | defaults to `jev-latest` |
 | CDP endpoint | defaults to `http://127.0.0.1:9222` |
 | Max steps | browser actions per run; defaults to 60 |
 | Text provider / model / reasoning effort | route for the `TYPE_TEXT` field-value call, chosen from the live model catalog. All empty = the session's own current route. |
 
-The TypeSafe key is a `role('secret')` field: it must be entered once per
-device (DSH's config sync deliberately strips secret values), and it is never
-read back into the card.
+The TypeSafe key is a **credential**, entered once per device in the same card
+under *TypeSafe key*. It lives in `$DSH_HOME/.credentials.yaml` as
+`BROWSER_AGENT_TYPESAFE_KEY` and is never read back into the card. Storing it as
+a config field would defeat that: a config value is only redacted from settings
+*reads*, while the plaintext still sits in `cordis.patch.yml`, which the config
+sync exports verbatim.
 
 ## Tool
 

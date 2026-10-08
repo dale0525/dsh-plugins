@@ -23,6 +23,11 @@
  * be injected. Reading it optionally is the same choice
  * `dsh-config-manager`'s `registerModelTools` makes, for the same reason.
  *
+ * The TypeSafe key is read from the credentials service per call rather than
+ * injected. A profile that mounts no credential provider must still get the
+ * tool: it simply reports the key as unset. Injecting `credentials` would turn
+ * "no provider mounted" into "this plugin never activates".
+ *
  * @module @logictan/dsh-browser-agent
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -35,6 +40,14 @@ export { Config } from './config.js';
 
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
 export const name = 'browser-agent';
+
+/**
+ * Credential reference holding the TypeSafe API key.
+ *
+ * The reference grammar is `/^[A-Za-z_][A-Za-z0-9_]*$/`, so a POSIX-shell-style
+ * name is required.
+ */
+export const API_KEY_REF = 'BROWSER_AGENT_TYPESAFE_KEY';
 
 /**
  * Services this plugin needs before it can mount.
@@ -71,7 +84,6 @@ export function apply(ctx, config) {
    */
   function currentConfig() {
     return {
-      typesafeApiKey: config.typesafeApiKey.get(),
       typesafeEndpoint: config.typesafeEndpoint.get(),
       typesafeModel: config.typesafeModel.get(),
       cdpEndpoint: config.cdpEndpoint.get(),
@@ -80,6 +92,22 @@ export function apply(ctx, config) {
       textModel: config.textModel.get(),
       textReasoningEffort: config.textReasoningEffort.get(),
     };
+  }
+
+  /**
+   * Resolve the TypeSafe API key from the credentials store.
+   *
+   * Read per call, not captured: the key can be set, replaced or removed from
+   * the Plugins page while the process runs, and a captured value would keep
+   * signing with a revoked key until the next restart.
+   *
+   * @returns the key, or `''` when unset or no credential provider is mounted.
+   */
+  async function resolveApiKey() {
+    const credentials = ctx.get('credentials');
+    if (credentials === undefined || credentials === null) return '';
+    const resolved = await credentials.resolve(API_KEY_REF);
+    return resolved?.value ?? '';
   }
 
   const definition = defineTool({
@@ -98,8 +126,9 @@ export function apply(ctx, config) {
     },
     async execute(args, exec) {
       const current = currentConfig();
+      const typesafeApiKey = await resolveApiKey();
       // An unset optional field resolves to undefined; a cleared one to ''.
-      if (current.typesafeApiKey === undefined || current.typesafeApiKey === '') {
+      if (typesafeApiKey === undefined || typesafeApiKey === '') {
         throw new Error(
           'browser_agent: no TypeSafe API key is configured. ' +
             'Open Settings → Plugins → browser-agent and paste a key from https://console.typesafe.ai/keys.',
@@ -115,7 +144,7 @@ export function apply(ctx, config) {
           page,
           llm,
           config: {
-            apiKey: current.typesafeApiKey,
+            apiKey: typesafeApiKey,
             endpoint: current.typesafeEndpoint,
             model: current.typesafeModel,
             maxSteps: current.maxSteps,

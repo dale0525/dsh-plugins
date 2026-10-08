@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-browser-agent",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "DSH browser agent: a dynamic operation+target decision loop. TypeSafe picks the action, this plugin executes it over CDP against the user's own Chrome. DSH 浏览器 Agent 子插件。",
   "type": "module",
   "main": "lib/index.js",

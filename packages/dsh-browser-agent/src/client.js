@@ -49,6 +49,16 @@ window.__ModuleLoader__.load({
      */
     var BUNDLE_NAMES = ["@logictan/dsh-plugins-all", "@logictan/dsh-browser-agent"];
 
+    /**
+     * Credential reference holding the TypeSafe API key.
+     *
+     * Must equal `API_KEY_REF` in the host half (`src/index.js`). The key is a
+     * credential rather than a config field so it never lands in
+     * `cordis.patch.yml` — which `dsh-config-manager` exports verbatim — while
+     * still travelling with config sync through the `credentialsStatus` section.
+     */
+    var API_KEY_REF = "BROWSER_AGENT_TYPESAFE_KEY";
+
     var copy = {
       summary: "浏览器 Agent 的参数",
       heading: "浏览器 Agent",
@@ -61,6 +71,19 @@ window.__ModuleLoader__.load({
       overridden: "已覆盖",
       unwritable: "当前连接不写回本机设置，无法保存。",
       secretSet: "已设置（不回读）",
+      keyLabel: "TypeSafe Key",
+      keyHint:
+        "来自 https://console.typesafe.ai/keys。存于 $DSH_HOME/.credentials.yaml 的 " +
+        API_KEY_REF +
+        "，不写入插件配置行，因此不会以明文出现在 cordis.patch.yml；随配置同步走 credentials 分区。",
+      keySet: "已配置（值不回读）。",
+      keyUnset: "未配置。设置后 browser_agent 工具才可用。",
+      keySave: "保存密钥",
+      keyClear: "清除密钥",
+      keyPlaceholder: "粘贴新的 key",
+      keyReading: "读取中…",
+      keySaved: "已保存。",
+      keyCleared: "已清除。",
       catalogLoading: "正在读取模型目录…",
       catalogError: "模型目录读取失败，可切换为手填。",
       catalogPartial: "部分 provider 读取失败，列表可能不完整。",
@@ -74,17 +97,11 @@ window.__ModuleLoader__.load({
     /**
      * Editable fields, in render order. `kind` picks the control.
      *
-     * A `secret` field is never pre-filled: the Host strips secret values from
-     * every read, so the control can only accept a new one and the placeholder
-     * reports whether one is already set.
+     * The TypeSafe key is deliberately absent: it is a credential, rendered by
+     * its own card section below, and cannot be a config field without landing
+     * in plaintext in `cordis.patch.yml`.
      */
     var FIELDS = [
-      {
-        key: "typesafeApiKey",
-        label: "TypeSafe Key",
-        kind: "secret",
-        hint: "来自 https://console.typesafe.ai/keys。role('secret')：只存本机，随配置同步被剥离，换设备需重录。",
-      },
       {
         key: "typesafeEndpoint",
         label: "TypeSafe endpoint",
@@ -264,51 +281,6 @@ window.__ModuleLoader__.load({
       return { value: value, reload: load };
     }
 
-    /**
-     * Which role('secret') fields currently hold a value.
-     *
-     * A secret is stripped from BOTH the resolved value and the raw user layer
-     * before any read crosses the wire, so neither layer can tell the card
-     * whether a key is set — overridden() is false for a saved key, which would
-     * make the reset button skip it and silently leave it stored. The describe
-     * sidecar is the one read that carries the fact: a { path, set } entry per
-     * schema-declared secret, with the value itself never sent.
-     *
-     * The shared describe mirror is reached through `configForms.describe()`.
-     * It exposes the whole document — `view.namespaces`, one row per served
-     * entry — and the form controller bound to this entry does NOT project the
-     * sidecar, so the lookup is done here against the mirror's own snapshot.
-     *
-     * @returns a map from field key to whether that secret currently has a value.
-     */
-    function useSecretStatus(ctx) {
-      var mirror = ctx.configForms.describe();
-      var subscribe = React.useCallback(
-        function (onChange) {
-          return mirror.subscribe(onChange);
-        },
-        [mirror],
-      );
-      var getSnapshot = React.useCallback(
-        function () {
-          return mirror.getSnapshot();
-        },
-        [mirror],
-      );
-      var snapshot = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-
-      var namespaces = (snapshot && snapshot.view && snapshot.view.namespaces) || [];
-      var row = null;
-      for (var i = 0; i < namespaces.length; i++) {
-        if (namespaces[i].ns === NS) row = namespaces[i];
-      }
-      var set = {};
-      ((row && row.secrets) || []).forEach(function (secret) {
-        if (secret.path.length === 1 && secret.set) set[secret.path[0]] = true;
-      });
-      return set;
-    }
-
     /** Every model in the catalog, flattened with its provider. */
     function modelsOf(groups) {
       var models = [];
@@ -330,6 +302,155 @@ window.__ModuleLoader__.load({
         });
       });
       return found;
+    }
+
+    /**
+     * The TypeSafe API-key section.
+     *
+     * The key is write-only across the wire: `credentials.describe` reports
+     * whether a value exists and never returns it, so the input is never
+     * pre-filled. That is a property of the credential seam, not a UI choice —
+     * and it is why this section needs no `configForms`.
+     *
+     * @param props - `ctx` is the scoped context carrying `remote.credentials`.
+     */
+    function TypesafeKeySection(props) {
+      var ctx = props.ctx;
+      var st = React.useState(null);
+      var status = st[0];
+      var setStatus = st[1];
+      var val = React.useState("");
+      var value = val[0];
+      var setValue = val[1];
+      var msg = React.useState("");
+      var message = msg[0];
+      var setMessage = msg[1];
+      var busy = React.useState(false);
+      var pending = busy[0];
+      var setPending = busy[1];
+
+      function read() {
+        return ctx.remote.credentials
+          .describe([API_KEY_REF])
+          .then(function (response) {
+            if (!response.ok) {
+              setMessage("读取失败: " + ((response.error && response.error.message) || "未知错误"));
+              return;
+            }
+            setStatus(response.value[API_KEY_REF] || null);
+          })
+          .catch(function (e) {
+            setMessage("读取失败: " + ((e && e.message) || e));
+          });
+      }
+
+      React.useEffect(function () {
+        read();
+        var off = ctx.remote.$on("credentials/reference-updated", function (ref) {
+          if (ref === API_KEY_REF) read();
+        });
+        return function () {
+          if (typeof off === "function") off();
+        };
+      }, []);
+
+      function save() {
+        if (value === "") return;
+        setPending(true);
+        setMessage("");
+        ctx.remote.credentials
+          .set(API_KEY_REF, value)
+          .then(function (response) {
+            if (response && response.ok === false) {
+              setMessage("保存失败: " + ((response.error && response.error.message) || "未知错误"));
+              return;
+            }
+            setValue("");
+            setMessage(copy.keySaved);
+            return read();
+          })
+          .catch(function (e) {
+            setMessage("保存失败: " + ((e && e.message) || e));
+          })
+          .then(function () {
+            setPending(false);
+          });
+      }
+
+      function clear() {
+        setPending(true);
+        setMessage("");
+        ctx.remote.credentials
+          .unset(API_KEY_REF)
+          .then(function (response) {
+            if (response && response.ok === false) {
+              setMessage("清除失败: " + ((response.error && response.error.message) || "未知错误"));
+              return;
+            }
+            setMessage(copy.keyCleared);
+            return read();
+          })
+          .catch(function (e) {
+            setMessage("清除失败: " + ((e && e.message) || e));
+          })
+          .then(function () {
+            setPending(false);
+          });
+      }
+
+      var configured = status && status.configured === true;
+      var statusLine =
+        status === null
+          ? React.createElement("div", { style: hintStyle }, copy.keyReading)
+          : configured
+            ? React.createElement(
+                "div",
+                { style: { color: "var(--dsw-alias-label-secondary)", fontSize: "12px" } },
+                copy.keySet,
+              )
+            : React.createElement(
+                "div",
+                { style: { color: "var(--dsw-alias-label-secondary)", fontSize: "12px" } },
+                copy.keyUnset,
+              );
+
+      return React.createElement(
+        "div",
+        { key: "typesafe-key", style: fieldStyle },
+        React.createElement("span", { style: labelStyle }, copy.keyLabel),
+        React.createElement("input", {
+          type: "password",
+          style: textStyle,
+          value: value,
+          disabled: pending,
+          placeholder: configured ? copy.secretSet : copy.keyPlaceholder,
+          autoComplete: "off",
+          "aria-label": copy.keyLabel,
+          onChange: function (event) {
+            setValue(event.target.value);
+          },
+          onKeyDown: function (event) {
+            if (event.key === "Enter") save();
+          },
+        }),
+        React.createElement(
+          "div",
+          { style: { display: "flex", gap: "8px", alignItems: "center" } },
+          React.createElement(
+            "button",
+            { type: "button", style: buttonStyle, disabled: pending || value === "", onClick: save },
+            copy.keySave,
+          ),
+          React.createElement(
+            "button",
+            { type: "button", style: buttonStyle, disabled: pending || !configured, onClick: clear },
+            copy.keyClear,
+          ),
+          message ? React.createElement("span", { style: hintStyle }, message) : null,
+        ),
+        statusLine,
+        React.createElement("div", { style: hintStyle }, copy.keyHint),
+      );
     }
 
     /**
@@ -358,7 +479,6 @@ window.__ModuleLoader__.load({
       var snapshot = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
       var catalog = useModelCatalog(ctx);
-      var secretSet = useSecretStatus(ctx);
 
       var draftState = React.useState({});
       var draft = draftState[0];
@@ -411,14 +531,9 @@ window.__ModuleLoader__.load({
         { key: "textReasoningEffort", label: "填空 reasoning effort", kind: "text" },
       ]);
 
-      /**
-       * Whether a field currently carries a user override.
-       *
-       * A secret is the exception to reading the user layer: it is redacted from
-       * that layer, so its presence comes from the describe sidecar instead.
-       */
+      /** Whether a field currently carries a user override. */
       function isOverridden(field) {
-        return field.kind === "secret" ? secretSet[field.key] === true : overridden(snapshot, field.key);
+        return overridden(snapshot, field.key);
       }
 
       // Every field whose draft no longer matches what is stored. A draft that
@@ -514,26 +629,7 @@ window.__ModuleLoader__.load({
       FIELDS.forEach(function (field) {
         var disabled = !writable || busy;
         var control;
-        if (field.kind === "secret") {
-          // Never pre-filled: the Host strips secret values from every read, so
-          // the control can only accept a new one. "Is one already set" comes
-          // from the describe sidecar, never from the redacted layers.
-          control = React.createElement("input", {
-            type: "password",
-            style: textStyle,
-            value: has(draft, field.key) ? draft[field.key] : "",
-            disabled: disabled,
-            placeholder: secretSet[field.key] === true ? copy.secretSet : copy.inherit,
-            autoComplete: "off",
-            "aria-label": field.label,
-            onChange: function (event) {
-              edit(field.key, event.target.value);
-            },
-            onKeyDown: function (event) {
-              if (event.key === "Enter") save();
-            },
-          });
-        } else if (field.kind === "number") {
+        if (field.kind === "number") {
           control = React.createElement("input", {
             type: "number",
             min: field.min,
@@ -581,6 +677,14 @@ window.__ModuleLoader__.load({
           children.push(React.createElement("div", { key: field.key + "-hint", style: hintStyle }, field.hint));
         }
       });
+
+      children.push(
+        React.createElement("hr", {
+          key: "key-sep",
+          style: { border: "none", borderTop: "1px solid var(--dsw-alias-border-l2)", margin: "4px 0" },
+        }),
+      );
+      children.push(React.createElement(TypesafeKeySection, { key: "typesafe-key", ctx: ctx }));
 
       children.push(
         React.createElement("hr", {
@@ -833,7 +937,7 @@ window.__ModuleLoader__.load({
      * @param ctx - client root context.
      */
     function apply(ctx) {
-      ctx.inject(["configForms"], function (scoped) {
+      ctx.inject(["configForms", "remote.credentials"], function (scoped) {
         var scope = scoped.configForms.get(NS);
         BUNDLE_NAMES.forEach(function (bundle) {
           scoped.slots.inject("plugins.row.config", function () {
