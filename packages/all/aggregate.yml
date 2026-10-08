@@ -13,6 +13,7 @@ patchFrom:
   - ../dsh-loop-guard
   - ../dsh-better-reasoning-effort
   - ../dsh-todo-goal
+  - ../dsh-goal-resume
   - ../dsh-force-rules
   - ../dsh-reasoning-strip
   - ../dsh-stitch-designer
@@ -34,6 +35,7 @@ deps:
   # co-install — remove the upstream package first, then install this bundle.
   - ../dsh-better-reasoning-effort
   - ../dsh-todo-goal
+  - ../dsh-goal-resume
   - ../dsh-force-rules
   - ../dsh-reasoning-strip
   # dsh-stitch-designer registers the 15 `mcp__stitch__*` tool names itself, so it

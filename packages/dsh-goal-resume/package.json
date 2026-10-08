@@ -1,0 +1,45 @@
+{
+  "name": "@logictan/dsh-goal-resume",
+  "version": "0.1.0",
+  "description": "DSH plugin that re-arms the active goals a restart left stopped, one pass a short delay after boot. DSH 重启后自动恢复未完成目标子插件。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "build": "node build.mjs",
+    "prepare": "node build.mjs",
+    "prepack": "node build.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "goal",
+    "restart",
+    "session"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-goal-resume"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  }
+}

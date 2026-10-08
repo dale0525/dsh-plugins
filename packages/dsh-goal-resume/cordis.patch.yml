@@ -1,0 +1,16 @@
+# dsh-goal-resume bundle patch layer.
+#
+# One bare plugin row. The package has a host half only: it registers no tool
+# and no client surface, it runs one startup pass and writes through
+# `ctx.goals.resume`.
+#
+# Row id `goal-resume` equals the host half's `export const name` in
+# src/index.js. It is checked by hand against every other row id in this
+# repository; `aggregate.mjs --check` does not validate id uniqueness.
+#
+# This plugin owns no configuration: the "active goals only, 30s after boot"
+# contract is the rule it exists to enforce, so both are constants in the source
+# rather than settings that can drift away from the rule.
+- insert:
+    - id: goal-resume
+      name: '@logictan/dsh-goal-resume'

@@ -38,6 +38,9 @@ importers:
       '@logictan/dsh-force-rules':
         specifier: ^0.3.0
         version: link:../dsh-force-rules
+      '@logictan/dsh-goal-resume':
+        specifier: ^0.1.0
+        version: link:../dsh-goal-resume
       '@logictan/dsh-imagegen':
         specifier: ^2.0.3
         version: link:../dsh-imagegen
@@ -297,6 +300,8 @@ importers:
       '@deepseek-ai/dsh-llm':
         specifier: 0.2.0-rc.2
         version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)
+
+  packages/dsh-goal-resume: {}
 
   packages/dsh-imagegen:
     dependencies:

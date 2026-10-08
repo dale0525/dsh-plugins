@@ -26,6 +26,7 @@
     "@logictan/dsh-easyrewrite": "^2.7.1",
     "@logictan/dsh-fakeip-fetch": "^0.1.2",
     "@logictan/dsh-force-rules": "^0.3.0",
+    "@logictan/dsh-goal-resume": "^0.1.0",
     "@logictan/dsh-imagegen": "^2.0.3",
     "@logictan/dsh-loop-guard": "^1.1.5",
     "@logictan/dsh-openviking": "^0.4.7",
