@@ -1,0 +1,22 @@
+# Patch row of @logictan/dsh-stitch-designer.
+#
+# Two rules this file must keep, both enforced elsewhere:
+#
+#  - `name` is the BARE package name. A subpath (`@logictan/dsh-stitch-designer/client`)
+#    resolves to no manifest, so the loader cannot read `dsh.bundle.patch` and the row
+#    never mounts. The browser half is reached through the package's `./client` export,
+#    which `dsh-client-modules` reads from the manifest — never from this row.
+#  - `id` equals the host half's `export const name` ('stitch-designer' in
+#    src/index.js). `node scripts/aggregate.mjs --check` does NOT validate row-id
+#    uniqueness; `pnpm run check:host` does, and a duplicate hard-crashes the host
+#    with `duplicate loader entry id`. The "equals `export const name`" half has no
+#    automated check at all and is verified by hand.
+#
+# The row carries no `config:` — this plugin has no configuration of its own. The
+# Stitch API key is NOT a patch value: it lives in the credentials file
+# (`$DSH_HOME/.credentials.yaml`, ref `STITCH_API_KEY`) and is edited from the
+# Plugins page, which is what makes it survive config sync without ever appearing
+# in a plaintext snapshot as a patch row.
+- insert:
+    - id: stitch-designer
+      name: '@logictan/dsh-stitch-designer'

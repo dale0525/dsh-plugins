@@ -21,7 +21,7 @@ importers:
         specifier: ^0.5.2
         version: link:../dsh-better-reasoning-effort
       '@logictan/dsh-browser-agent':
-        specifier: ^0.2.1
+        specifier: ^0.2.2
         version: link:../dsh-browser-agent
       '@logictan/dsh-config-manager':
         specifier: ^0.1.77
@@ -39,7 +39,7 @@ importers:
         specifier: ^0.2.0
         version: link:../dsh-force-rules
       '@logictan/dsh-imagegen':
-        specifier: ^2.0.2
+        specifier: ^2.0.3
         version: link:../dsh-imagegen
       '@logictan/dsh-loop-guard':
         specifier: ^1.1.5
@@ -50,6 +50,9 @@ importers:
       '@logictan/dsh-reasoning-strip':
         specifier: ^0.1.0
         version: link:../dsh-reasoning-strip
+      '@logictan/dsh-stitch-designer':
+        specifier: ^1.0.0
+        version: link:../dsh-stitch-designer
       '@logictan/dsh-todo-goal':
         specifier: ^0.1.0
         version: link:../dsh-todo-goal
@@ -443,6 +446,15 @@ importers:
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
+
+  packages/dsh-stitch-designer:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.2
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@deepseek-ai/dsh-tools':
+        specifier: ^0.2.0-rc.2
+        version: 0.2.0-rc.2(f4d67997db82188fba4a070d3b317192)
 
   packages/dsh-todo-goal: {}
 

@@ -15,6 +15,7 @@ patchFrom:
   - ../dsh-todo-goal
   - ../dsh-force-rules
   - ../dsh-reasoning-strip
+  - ../dsh-stitch-designer
 deps:
   - ../dsh-config-manager
   - ../dsh-workbuddy-connect
@@ -35,3 +36,11 @@ deps:
   - ../dsh-todo-goal
   - ../dsh-force-rules
   - ../dsh-reasoning-strip
+  # dsh-stitch-designer registers the 15 `mcp__stitch__*` tool names itself, so it
+  # REPLACES the global `mcp-stitch` patch row rather than coexisting with it.
+  # Two registrations of one tool name throw (`NamedEntries`: `tool "<name>" is
+  # already registered`), which would leave this plugin's tools unregistered while
+  # the old row kept serving. Remove the `mcp-stitch` row from
+  # `$DSH_HOME/cordis.patch.yml` before installing this bundle; the API key moves
+  # to the `STITCH_API_KEY` credential (set it on the Plugins page).
+  - ../dsh-stitch-designer
