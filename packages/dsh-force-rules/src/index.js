@@ -1,7 +1,7 @@
 /**
- * dsh-force-rules — deterministic enforcement of five prose rules.
+ * dsh-force-rules — deterministic enforcement of six prose rules.
  *
- * Five prose rules in the operating instructions are mechanized here, because
+ * Six prose rules in the operating instructions are mechanized here, because
  * prose is advisory and each of these has already failed in practice:
  *
  *  1. A subagent seat is never one-shot. `run_in_background: false` is the only
@@ -39,12 +39,21 @@
  *     is carried on the question tool's own description instead, which is in
  *     front of the model at the moment it writes the question.
  *
+ *  6. A delegation that can select the child's model must name the route it
+ *     selected. The host treats the selection as optional and lets the seat
+ *     inherit a default, so an unnamed route silently runs the seat on a model
+ *     the delegator never chose, and nothing surfaces that until its output is
+ *     read. `provider` and `model` are one unit -- either half alone identifies
+ *     no route. `reasoning_effort` is required only for a route whose model
+ *     advertises efforts: the host rejects any effort on a model that has none,
+ *     so a blanket requirement there would be a denial no value could satisfy.
+ *
  * Rules 2 and 3 are one mechanism: the plugin keeps one durable self-waking
  * checkpoint on each delegating session for exactly as long as that session has
  * a live seat. A seat that reports normally removes it; a seat that dies
  * silently leaves it to fire.
  *
- * The package is named for what it actually carries: four hard gates plus one
+ * The package is named for what it actually carries: five hard gates plus one
  * mandatory reminder. A name covering only the delegation half would send a
  * reader looking in the wrong place for the other rules.
  *
@@ -434,6 +443,115 @@ function checkProfile(profile, exec) {
 
 
 /**
+ * Whether a tool's declared parameters include a child-route field.
+ *
+ * Keyed on the tool's own parameter schema, exactly as the delegation test is
+ * keyed on its output schema: a tool that cannot accept a route has none to
+ * name, and demanding one there would be a denial no value could satisfy.
+ *
+ * @param properties - the tool's declared parameter properties.
+ * @returns whether the tool advertises `provider` and/or `model`.
+ */
+function declaresRoute(properties) {
+  if (properties === undefined) return false;
+  return properties.provider !== undefined || properties.model !== undefined;
+}
+
+/**
+ * Whether the tool behind one call or assembly entry declares a route field.
+ *
+ * @param ctx - the plugin context.
+ * @param exec - the pending call, or an assembly entry naming the tool.
+ * @returns whether the tool advertises `provider` and/or `model`.
+ */
+function advertisesRoute(ctx, exec) {
+  return declaresRoute(ctx.tools.get(exec.name, exec.agent)?.parameters?.properties);
+}
+
+/**
+ * One route field, or undefined when the call named nothing usable.
+ *
+ * Whitespace-only counts as absent: the host rejects a zero-length value but
+ * accepts `"   "`, which identifies no route while looking like it does.
+ *
+ * @param value - the value the call supplied.
+ * @returns the value exactly as written, or undefined.
+ */
+function namedValue(value) {
+  if (typeof value !== 'string') return undefined;
+  return value.trim().length === 0 ? undefined : value;
+}
+
+/**
+ * Whether the selected route's model advertises reasoning efforts.
+ *
+ * An effort is required only where one exists: the host rejects any effort on a
+ * model that advertises none, so requiring it unconditionally would deny every
+ * possible value for such a route — a retry loop, not a gate.
+ *
+ * Returns undefined when the runtime cannot answer: no `llm` service, an
+ * unregistered provider, or an unknown model. The host resolves the same route
+ * again before dispatch and diagnoses it in far more detail than this gate
+ * could, so an unresolvable route is left to it rather than denied twice with a
+ * worse message.
+ *
+ * @param ctx - the plugin context.
+ * @param exec - the pending call.
+ * @param provider - the named provider.
+ * @param model - the named model.
+ * @returns whether an effort must be named, or undefined when unknown.
+ */
+async function requiresEffort(ctx, exec, provider, model) {
+  const llm = ctx.get('llm');
+  if (llm === undefined) return undefined;
+  let info;
+  try {
+    info = await llm.resolveModelInfo(provider, model, exec.signal);
+  } catch {
+    // Route validity is the host's to report. This gate exists to catch a
+    // missing name, not to second-guess whether a route resolves.
+    return undefined;
+  }
+  return (info?.reasoning?.efforts?.length ?? 0) > 0;
+}
+
+/**
+ * Judge one delegation call against the route requirement.
+ *
+ * @param ctx - the plugin context.
+ * @param exec - the pending call.
+ * @returns a denial reason, or undefined to allow the call.
+ */
+async function checkRoute(ctx, exec) {
+  if (!isDelegation(ctx, exec)) return undefined;
+  const properties = ctx.tools.get(exec.name, exec.agent)?.parameters?.properties;
+  if (!declaresRoute(properties)) return undefined;
+  const args = exec.arguments;
+  const provider = namedValue(args?.provider);
+  const model = namedValue(args?.model);
+  const missing = [];
+  if (provider === undefined) missing.push('`provider`');
+  if (model === undefined) missing.push('`model`');
+  if (
+    missing.length === 0 &&
+    properties.reasoning_effort !== undefined &&
+    namedValue(args?.reasoning_effort) === undefined &&
+    (await requiresEffort(ctx, exec, provider, model))
+  ) {
+    missing.push('`reasoning_effort`');
+  }
+  if (missing.length === 0) return undefined;
+  return [
+    'A delegation must name the child route the seat runs on; an unnamed route silently',
+    'runs the seat on a default the delegator did not choose.',
+    'Missing from this call: ' + missing.join(', ') + '.',
+    'Pass `provider` and `model` together in the call arguments, plus `reasoning_effort`',
+    'when the selected model advertises one. Call `list_subagent_models` to read the',
+    'available routes and their efforts.',
+  ].join(' ');
+}
+
+/**
  * The requirement appended to every delegation tool's own description.
  *
  * Root cannot follow a rule it never reads. The rule lives in AGENTS.md and in
@@ -454,6 +572,24 @@ const MARKER_REQUIREMENT = [
   'A prompt with no marker grants read-only authority, and the seat is refused a write only',
   'when it reaches one — so state the marker deliberately. English spellings',
   '(`[readonly]`, `[review]`, `[edit: ...]`) are equivalent.',
+].join(' ');
+
+/**
+ * The route requirement appended to every delegation tool's own description.
+ *
+ * The host presents the child route as optional and lets the seat inherit a
+ * default, which is exactly the framing the gate refuses — so the requirement
+ * is stated where the delegator writes the call, not only in the denial it
+ * would meet afterwards. Same seam and same reasoning as the marker
+ * requirement below; the two are appended together on a delegation tool.
+ */
+const ROUTE_REQUIREMENT = [
+  'A call to this tool MUST name the child route the seat runs on: pass `provider` and',
+  '`model` together in the call arguments, plus `reasoning_effort` when the selected',
+  'model advertises one. An unnamed route silently runs the seat on a default you did',
+  'not choose. Call `list_subagent_models` first to read the available routes and their',
+  'efforts, then write those three fields into this call\'s arguments — naming a model',
+  'only in the instruction prose does not select it.',
 ].join(' ');
 
 /**
@@ -665,6 +801,15 @@ export function apply(ctx) {
     };
   });
 
+  // Rule 6: a delegation that can select the child's model must name the route
+  // it selected. Registered after rule 1 so a one-shot call is refused by the
+  // rule that explains the sharper failure first.
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const reason = await checkRoute(ctx, exec);
+    if (reason === undefined) return next();
+    return { kind: 'deny', reason };
+  });
+
   // Rule 4: a seat receives only the authority its own instruction declares.
   // The profile is read from that instruction and cached, because it cannot
   // change while the seat lives. The root session has no delegating parent, so
@@ -684,6 +829,9 @@ export function apply(ctx) {
   //
   // Rule 5, second half: the same treatment for the question tool, whose moment
   // the turn boundary cannot reach.
+  //
+  // Rule 6, second half: the same treatment for the route requirement, which
+  // the host's own description presents as optional.
   ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     const assembly = await next();
     let touched = false;
@@ -694,7 +842,10 @@ export function apply(ctx) {
       }
       if (!isDelegation(ctx, tool)) return tool;
       touched = true;
-      return { ...tool, description: tool.description + ' ' + MARKER_REQUIREMENT };
+      const requirement = advertisesRoute(ctx, tool)
+        ? MARKER_REQUIREMENT + ' ' + ROUTE_REQUIREMENT
+        : MARKER_REQUIREMENT;
+      return { ...tool, description: tool.description + ' ' + requirement };
     });
     return touched ? { ...assembly, tools } : assembly;
   });

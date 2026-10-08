@@ -1,11 +1,14 @@
 /**
  * Acceptance contract for the rule guard.
  *
- * The plugin enforces three sentences: a seat is never one-shot, a delegating
- * session does not spin, and silence has an upper bound. Every case below pins
- * one half of one sentence against the seams the host actually exposes: the
- * tool registry (what a delegation tool is), the live agent registry (whose
- * child a seat is), and the reminder service (the wait bound).
+ * The plugin turns the delegation rules into deterministic mechanisms: a seat is
+ * never one-shot, a delegating session does not spin, silence has an upper
+ * bound, a seat gets only the authority its instruction declares, a delegation
+ * names the child route it runs on, and the answer is plain speech. Every case
+ * below pins one half of one rule against the seams the host actually exposes:
+ * the tool registry (what a delegation tool is), the live agent registry (whose
+ * child a seat is), the LLM runtime (what a route can do), and the reminder
+ * service (the wait bound).
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -32,6 +35,41 @@ const CONTINUABLE_TOOL = {
           },
         },
       ],
+    },
+  },
+};
+
+/**
+ * A model-selectable delegation tool.
+ *
+ * On top of the continuable outcome it advertises the child-route fields, which
+ * is what makes the route gate apply to it: a delegation that can pick a model
+ * must say which one it picked.
+ */
+const ROUTE_TOOL = {
+  ...CONTINUABLE_TOOL,
+  parameters: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string' },
+      description: { type: 'string' },
+      provider: { type: 'string' },
+      model: { type: 'string' },
+      reasoning_effort: { type: 'string' },
+      run_in_background: { type: 'boolean' },
+    },
+  },
+};
+
+/** A delegation tool whose route advertises no reasoning effort to name. */
+const ROUTE_ONLY_TOOL = {
+  ...CONTINUABLE_TOOL,
+  parameters: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string' },
+      provider: { type: 'string' },
+      model: { type: 'string' },
     },
   },
 };
@@ -76,7 +114,7 @@ function fakeSchedule() {
  * `parents` maps a child session id to its durable parent, which is how the
  * plugin resolves lineage without depending on package-private internals.
  */
-function harness({ definitions = {}, parents = {}, schedule } = {}) {
+function harness({ definitions = {}, parents = {}, schedule, llm } = {}) {
   const listeners = new Map();
   const registered = [];
   const agents = new Map(
@@ -97,7 +135,11 @@ function harness({ definitions = {}, parents = {}, schedule } = {}) {
       },
     },
     agents: { get: (id) => agents.get(id) },
-    get: (service) => (service === 'schedule' ? schedule : undefined),
+    get: (service) => {
+      if (service === 'schedule') return schedule;
+      if (service === 'llm') return llm;
+      return undefined;
+    },
     on: (event, handler) => {
       const handlers = listeners.get(event) ?? [];
       handlers.push(handler);
@@ -596,7 +638,175 @@ test('repeated assemblies of the same tool set are byte-identical', async () => 
 });
 
 // ---------------------------------------------------------------------------
-// Rule 5, second half: the plain-speech requirement on the question tool.
+// The delegation route gate.
+//
+// A delegation that can select a child model must say which one it selected: an
+// unnamed route silently inherits whatever the host or the parent session
+// defaults to, so the seat does not run on the model the delegator meant, and
+// nothing surfaces that until its output is read.
+//
+// `provider` and `model` are one unit — either half alone identifies no route.
+// `reasoning_effort` is required only for a route that advertises efforts: the
+// host rejects any effort on a model that has none, so a blanket requirement
+// there would be a denial no value could satisfy — a retry loop, not a gate.
+// ---------------------------------------------------------------------------
+
+/** An LLM runtime stub answering the one capability question the gate asks. */
+function fakeLlm(routes) {
+  return {
+    resolveModelInfo: async (provider, model) => {
+      const info = routes[`${provider}/${model}`];
+      if (info === undefined) throw new Error(`LLM provider "${provider}" is not registered`);
+      return info;
+    },
+  };
+}
+
+/** One exact route whose model advertises reasoning efforts. */
+const EFFORT_ROUTES = {
+  'cpa/gemini-3.8-flash-high': {
+    provider: 'cpa',
+    id: 'gemini-3.8-flash-high',
+    name: 'gemini-3.8-flash-high',
+    reasoning: { efforts: [{ id: 'high', name: 'high' }], defaultEffort: 'high' },
+  },
+};
+
+/** One exact route whose model advertises no reasoning at all. */
+const PLAIN_ROUTES = {
+  'cpa/plain-model': { provider: 'cpa', id: 'plain-model', name: 'plain-model' },
+};
+
+/** One delegation call that names a child route. */
+function routeDelegation(args, agent = rootAgent(), toolName = 'subagent') {
+  return { name: toolName, arguments: { prompt: 'x', description: 'y', ...args }, agent };
+}
+
+test('refuses a delegation that names no route at all', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
+  const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({}), ALLOW);
+  assert.equal(decision.kind, 'deny');
+  assert.match(decision.reason, /provider/);
+  assert.match(decision.reason, /model/);
+  assert.match(decision.reason, /list_subagent_models/, 'the model must be told how to find the route');
+});
+
+test('refuses a route with only half of it named', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
+  for (const half of [{ provider: 'cpa' }, { model: 'gemini-3.8-flash-high' }]) {
+    const decision = await fire(listeners, 'tools/pre-execute', routeDelegation(half), ALLOW);
+    assert.equal(decision.kind, 'deny', `${JSON.stringify(half)} identifies no route on its own`);
+  }
+});
+
+test('refuses a route field that carries only whitespace', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
+  for (const blank of [
+    { provider: 'cpa', model: '   ' },
+    { provider: 'cpa', model: 'gemini-3.8-flash-high', reasoning_effort: ' ' },
+  ]) {
+    const decision = await fire(listeners, 'tools/pre-execute', routeDelegation(blank), ALLOW);
+    assert.equal(decision.kind, 'deny', `${JSON.stringify(blank)} names nothing`);
+  }
+});
+
+test('refuses a route that omits the effort its model advertises', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
+  const decision = await fire(
+    listeners,
+    'tools/pre-execute',
+    routeDelegation({ provider: 'cpa', model: 'gemini-3.8-flash-high' }),
+    ALLOW,
+  );
+  assert.equal(decision.kind, 'deny');
+  assert.match(decision.reason, /reasoning_effort/);
+});
+
+test('allows a route that names provider, model, and effort', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
+  const decision = await fire(
+    listeners,
+    'tools/pre-execute',
+    routeDelegation({ provider: 'cpa', model: 'gemini-3.8-flash-high', reasoning_effort: 'high' }),
+    ALLOW,
+  );
+  assert.deepEqual(decision, { kind: 'allow' });
+});
+
+test('allows a route whose model advertises no effort to name', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(PLAIN_ROUTES) });
+  const decision = await fire(
+    listeners,
+    'tools/pre-execute',
+    routeDelegation({ provider: 'cpa', model: 'plain-model' }),
+    ALLOW,
+  );
+  assert.deepEqual(decision, { kind: 'allow' }, 'demanding an effort here would deny every possible value');
+});
+
+test('leaves a route this runtime cannot resolve to the host preflight', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm({}) });
+  const decision = await fire(
+    listeners,
+    'tools/pre-execute',
+    routeDelegation({ provider: 'ghost', model: 'nope' }),
+    ALLOW,
+  );
+  assert.deepEqual(decision, { kind: 'allow' }, 'the host owns the route diagnosis; the gate adds no second one');
+});
+
+test('gates a seat that delegates on to a seat of its own', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
+  const agent = seatAgent({ prompt: '[只读] survey the codebase' });
+  const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({}, agent), ALLOW);
+  assert.equal(decision.kind, 'deny', 'a seat names a route exactly as the root session does');
+});
+
+test('does not gate a delegation tool that advertises no route fields', async () => {
+  const { listeners } = harness({ definitions: { subagent_fork: CONTINUABLE_TOOL } });
+  const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({}, rootAgent(), 'subagent_fork'), ALLOW);
+  assert.deepEqual(decision, { kind: 'allow' }, 'with no route to name, there is nothing to require');
+});
+
+test('does not gate a route-discovering tool that is not a delegation', async () => {
+  const { listeners } = harness({
+    definitions: { list_subagent_models: { ...PLAIN_TOOL, parameters: ROUTE_TOOL.parameters } },
+  });
+  const decision = await fire(
+    listeners,
+    'tools/pre-execute',
+    routeDelegation({}, rootAgent(), 'list_subagent_models'),
+    ALLOW,
+  );
+  assert.deepEqual(decision, { kind: 'allow' }, 'discovery must stay callable without naming a route');
+});
+
+test('the delegation tool description carries the route requirement', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL, bash: PLAIN_TOOL } });
+  const assembly = {
+    tools: [
+      { name: 'subagent', description: 'Delegate a self-contained task.', parameters: {} },
+      { name: 'bash', description: 'Run a command.', parameters: {} },
+    ],
+  };
+  const assembled = await fireAssembly(listeners, assembly, { agent: undefined }, async () => assembly);
+  const byName = new Map(assembled.tools.map((tool) => [tool.name, tool]));
+  assert.match(byName.get('subagent').description, /provider/, 'the route is stated where the call is written');
+  assert.match(byName.get('subagent').description, /reasoning_effort/);
+  assert.match(byName.get('subagent').description, /list_subagent_models/);
+  assert.equal(byName.get('bash').description, 'Run a command.', 'a non-delegation tool is untouched');
+});
+
+test('the route requirement lands exactly once across repeated assemblies', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL } });
+  const source = () => ({ tools: [{ name: 'subagent', description: 'Delegate a task.', parameters: {} }] });
+  const first = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
+  const second = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
+  assert.deepEqual(second, first, 'a stable description keeps the request header from churning every step');
+  assert.equal(first.tools[0].description.split('child route').length - 1, 1);
+});
+
+
 //
 // The turn boundary cannot reach a question: `ask_user_question` suspends the
 // turn while it waits for the human, so `agent/turn-stopping` does not fire
