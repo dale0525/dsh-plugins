@@ -28,7 +28,7 @@
 //
 // 有意排除的两项（附实测理由，避免日后被当成遗漏而补进来）：
 //
-//   - devDeps 世代滞后：会命中 4 个当前完全正常的包（agy-link / loop-guard /
+//   - devDeps 世代滞后：会命中 3 个当前完全正常的包（loop-guard /
 //     openviking / reasoning-strip），其中 dsh-openviking 的旧世代钉法是被
 //     bundle.test.mjs 冻结的**故意策略**。作为报错规则就是一台误报机器。
 //   - 发布期构建钩子缺失：那是**发布**关注点（imagegen 2.0.0 空包），

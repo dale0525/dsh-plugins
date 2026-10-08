@@ -14,7 +14,6 @@ dsh-plugins/
 │   │   ├── cordis.patch.yml# 生成物，勿手改
 │   │   └── package.json    # dependencies 由脚本生成；version 手工改（见「📤 发布」）
 │   ├── dsh-fakeip-fetch/       # 自制（无上游）→ 不 fork
-│   ├── dsh-agy-link/           # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-easyrewrite/        # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-imagegen/           # 衍生自上游，已去 fork 化 → 不参与同步

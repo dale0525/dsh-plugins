@@ -7,7 +7,6 @@ patchFrom:
   - ../dsh-easyrewrite
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch
-  - ../dsh-agy-link
   - ../dsh-browser-agent
   - ../dsh-desktop-agent
   - ../dsh-openviking
@@ -22,7 +21,6 @@ deps:
   - ../dsh-easyrewrite
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch
-  - ../dsh-agy-link
   - ../dsh-browser-agent
   - ../dsh-desktop-agent
   - ../dsh-openviking
