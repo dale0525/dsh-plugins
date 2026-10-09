@@ -18,7 +18,7 @@ importers:
   packages/all:
     dependencies:
       '@logictan/dsh-better-reasoning-effort':
-        specifier: ^0.5.2
+        specifier: ^0.5.3
         version: link:../dsh-better-reasoning-effort
       '@logictan/dsh-browser-agent':
         specifier: ^0.2.2
