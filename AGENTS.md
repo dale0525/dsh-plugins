@@ -319,6 +319,13 @@ git subtree pull --prefix=packages/<pkg> <url> <tag>
 **规则**：本地测试通过后，一律由 CI/CD 发布，**不跑 `npm publish`**。CI 的 publish 步骤带
 `npm view "$name@$version"` 判重，已在线版本自动跳过，所以整仓发布是幂等的、可放心重跑。
 
+> **失败的 run 可能已经发出去一部分**：发布按依赖顺序逐个包进行，任何一个包失败都会让整条
+> run 红掉，但它**前面的包已经上线了**。实测 v0.5.73：子插件 `0.5.3` 发布成功、聚合包在
+> `npm error code IDENTITY_TOKEN_READ_ERROR`（取 OIDC 身份令牌失败，瞬时故障）上失败，
+> run 整体 success=**false**。此时**先查线上实际版本再决定动作**——
+> `gh run rerun <id> --failed` 即可续跑，判重会跳过已发布的包；
+> 看到红 run 就重新升版，会白白多发一个版本。
+
 两条触发路径（`.github/workflows/publish.yml`）：
 
 | 路径 | 命令 | 用途 |
