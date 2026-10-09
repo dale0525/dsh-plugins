@@ -42,8 +42,8 @@ The screenshot above is real output: the reasoning block cycles through `OK. / W
 - **The correction points back at the task**: the injected notice says only "stop repeating, carry on" — it never tells the model to "state a conclusion and finish", which derails work in progress.
 - **Reactions do not latch**: one steer often fails to break a strong loop, so the counter resets and fires again (capped by `maxFires`).
 - **It follows the UI language**: the notice reads the host `locale` setting, and defaults to Chinese when it cannot tell.
-- **Never a silent retry of a loop**: **no** model fallback and no re-feeding a degenerate model — that is worse than the loop itself. The one automatic re-send is a **corrupted response body** (below): the request was fine and the upstream returned JSON the parser rejected, which is exactly the case where re-sending the same request is the right fix.
-- **Retries a corrupted response body**: when the model's response body fails to parse (the UI's "本轮运行失败 … JSON at position N"), the same request is re-sent, up to 2 times by default, after which the failure goes to downstream recovery. The predicate is narrow — the error code and a V8 parse signature must BOTH match — so `Too many pending requests` and `Provider finish_reason: error`, which report the same `PI_AI_ERROR` code, are **not** retried.
+- **Never a silent retry of a loop**: **no** model fallback and no re-feeding a degenerate model — that is worse than the loop itself. The one automatic re-send is a **response that never arrived intact** (below): the request was fine and the upstream either returned JSON the parser rejected or closed the stream before it carried anything usable, which is exactly the case where re-sending the same request is the right fix.
+- **Retries a response that never arrived intact**: when the model's response body fails to parse (the UI's "本轮运行失败 … JSON at position N") or the upstream closed the stream before it carried anything usable (`stream closed/ended before/without …`), the same request is re-sent, up to 2 times by default, after which the failure goes to downstream recovery. The predicate is narrow — the code must be `PI_AI_ERROR` and the message must match one of those two signatures — so `Too many pending requests` and `Provider finish_reason: error`, which report the same `PI_AI_ERROR` code, are **not** retried.
 - **Offline analyzer**: `tools/analyze-session.mjs` replays a session jsonl through the **same detector the plugin runs**, to answer "should this have fired?".
 - **Observable**: a cut writes a warn log naming which rule fired.
 
@@ -201,8 +201,8 @@ interface Config {
   /** Wait for the turn to unwind, then steer a correction in to push the task forward. Only useful with breakCorrection off. Default false. */
   resumeAfterBreak?: boolean
 
-  // ── retry of a corrupted response body ────────────────────
-  /** Re-send the request when its response body fails to parse. Default true. */
+  // ── retry of a response that never arrived intact ─────────
+  /** Re-send the request when its body fails to parse or the stream closed early. Default true. */
   retryRequestFailures?: boolean
   /** How many times ONE attempt may be re-sent before downstream recovery. Default 2. */
   maxRequestRetries?: number
@@ -347,9 +347,11 @@ Because retrying a **loop** re-sends the same request — the history is unchang
 
 **Q: Then why is "本轮运行失败 … JSON at position N" retried?**
 
-Because it is a **different failure**: the request itself was fine and the upstream returned a corrupted body (`JSON.parse` rejected it), which kills the turn on `agent/request-error`. Re-sending the same request usually succeeds, so not retrying is the waste. This is not the same thing as re-feeding a degenerate model.
+Because it is a **different failure**: the request itself was fine and the response never arrived intact — either a body the parser rejected (`JSON.parse`), or a stream the upstream closed before it carried anything usable — which kills the turn on `agent/request-error`. Re-sending the same request usually succeeds, so not retrying is the waste. This is not the same thing as re-feeding a degenerate model.
 
-The retry is governed by `retryRequestFailures` (on by default) and `maxRequestRetries` (default 2, deliberately below the host `llm-retry` policy's 5). The budget is tracked **per agent and per `(turn, step)`**: one corrupted step cannot starve the rest of the turn, and once the budget is spent the failure goes to downstream recovery as before.
+The closed-stream class is matched **semantically** (stream + closed/ended + before/without), not by hard-coding that sentence: the gateway mints it, no installed file on this machine contains it, and a literal match would go silently dead the moment the upstream reworded it. The control is its near-identical sibling `Stream ended without finish_reason`, which the host classifies `TRANSPORT` and re-sent 42 times out of 42 — the two differ by one word, `closed` versus `ended`, and are one class.
+
+The retry is governed by `retryRequestFailures` (on by default) and `maxRequestRetries` (default 2, deliberately below the host `llm-retry` policy's 5). The budget is tracked **per agent and per `(turn, step)`**: one retried step cannot starve the rest of the turn, and once the budget is spent the failure goes to downstream recovery as before.
 
 **Q: Does it switch model or lower the effort?**
 

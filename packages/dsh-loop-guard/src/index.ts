@@ -82,9 +82,10 @@
  * That stance is scoped to the break, and it is not in tension with
  * {@link Config.retryRequestFailures}. A break re-sends the request to a model
  * that has just demonstrated it cannot act on it — the input is the problem. A
- * corrupted response body is the opposite case: the request was well-formed and
- * the provider returned something the JSON parser rejected, so the same request
- * normally succeeds on a second attempt. Different cause, different remedy.
+ * response that never arrived intact is the opposite case: the request was
+ * well-formed and the provider returned something the JSON parser rejected or a
+ * stream it closed before carrying anything usable, so the same request normally
+ * succeeds on a second attempt. Different cause, different remedy.
  *
  * ## Cycled repetition (discussion #7043, v0.1.8)
  *
@@ -390,25 +391,27 @@ export interface Config {
    */
   resumeAfterBreak?: boolean
   /**
-   * Retry a model request whose response body could not be parsed. Default
-   * `true`.
+   * Retry a model request whose response never arrived intact. Default `true`.
    *
    * This is the one failure where re-sending the SAME request is the fix rather
    * than a silent re-bill, and it is a different class from the thinking-loop
    * breaks above — those re-enter a model that has already shown it cannot act,
    * which is why they are never retried automatically. Here the request was
-   * well-formed and the provider returned a corrupted body; the turn dies
-   * through `agent/request-error` with the user seeing `本轮运行失败`, and a
-   * second attempt normally succeeds.
+   * well-formed and the provider returned a corrupted body or closed the stream
+   * before it carried anything usable; the turn dies through
+   * `agent/request-error` with the user seeing `本轮运行失败`, and a second
+   * attempt normally succeeds.
    *
-   * The predicate is deliberately narrow — the code AND a V8 `JSON.parse`
-   * signature, both required. Measured across this machine's `~/.dsh/sessions`:
-   * every JSON-parse failure (16 error turns) arrives as `PI_AI_ERROR`, but
+   * The predicate is deliberately narrow — the code AND one of two measured
+   * signatures, both required. Measured across this machine's `~/.dsh/sessions`:
+   * every JSON-parse failure (20 distinct failed steps over 19 error turns)
+   * arrives as `PI_AI_ERROR`, but
    * `PI_AI_ERROR` alone is the adapter's catch-all — it also carries
    * `Too many pending requests, please retry later`, `Provider finish_reason:
-   * error`, and pi-ai's `ended pending` / `deferred` bodies, none of which is a
-   * parse failure. Conversely an upstream 400 whose error body merely QUOTES a
-   * JSON error must not be re-sent. See {@link isMalformedResponseFailure}.
+   * error`, and pi-ai's `ended pending` / `deferred` bodies, none of which is an
+   * interrupted response. Conversely an upstream 400 whose error body merely
+   * QUOTES a JSON error must not be re-sent. See
+   * {@link isRetryableResponseFailure}.
    */
   retryRequestFailures?: boolean
   /**
@@ -1263,29 +1266,43 @@ function whatFor(lang: 'zh' | 'en', rule: BreakRule): string {
 }
 
 /**
- * Whether a failed model request was a response body the JSON parser rejected.
+ * Whether a failed model request is one where re-sending the SAME request is the
+ * fix: the response never arrived intact.
  *
- * Both halves are required, and neither is sufficient alone:
+ * Two measured shapes qualify, and the code must be `PI_AI_ERROR` for either:
  *
- *  - The **code** alone is too broad. `PI_AI_ERROR` is the pi-ai adapter's
- *    catch-all, so it also carries bodies that are not parse failures at all —
- *    `Too many pending requests, please retry later`, `Provider finish_reason:
- *    error`, and pi-ai's own `ended pending` / `deferred` terminals. Measured
- *    across this machine's session store, the same code covered 16 genuine
- *    JSON-parse failures AND those unrelated ones.
- *  - The **message** alone is too broad too. An upstream 4xx/5xx whose error
- *    BODY quotes a JSON error is not a parse failure, and re-sending it just
- *    repeats the upstream's answer; those arrive under the upstream's own code.
+ *  - A body the JSON parser rejected. `JSON at position <n>` is the anchor V8
+ *    gives every positional parse failure — it is the shared substring of all
+ *    three observed shapes (`Unexpected non-whitespace character after JSON at
+ *    position …`, `Unterminated string in JSON at position …`, `Expected ',' or
+ *    '}' after property value in JSON at position …`). Matching the whole
+ *    phrasing of any single one would miss the others.
+ *  - A stream the upstream closed before it carried anything usable. Measured
+ *    once (`session-3e13c85e`, turn 3 step 10) as `upstream stream closed before
+ *    any chunk carried finish_reason`, and it killed the turn: pi-ai's transport
+ *    pattern matches only `stream ended`, so this wording fell through to the
+ *    `PI_AI_ERROR` catch-all and neither this guard nor the host's own retry
+ *    claimed it. The near-identical `Stream ended without finish_reason` IS
+ *    classified `TRANSPORT` and the host re-sent it 42 times out of 42, so the
+ *    two wordings are one class — the matcher is semantic (stream + closed/ended
+ *    + before/without) rather than the literal sentence, which no installed file
+ *    contains anyway: the gateway mints it.
  *
- * `JSON at position <n>` is the anchor V8 gives every positional parse failure —
- * it is the shared substring of all three observed shapes
- * (`Unexpected non-whitespace character after JSON at position …`,
- * `Unterminated string in JSON at position …`,
- * `Expected ',' or '}' after property value in JSON at position …`). Matching
- * the whole phrasing of any single one would miss the others.
+ * The **code** is required because `PI_AI_ERROR` alone is too broad — it is the
+ * pi-ai adapter's catch-all and also carries bodies that are not interrupted at
+ * all: `Too many pending requests, please retry later`, `Provider finish_reason:
+ * error`, and pi-ai's own `ended pending` / `deferred` terminals. None of those
+ * matches either signature. The **message** is required too: an upstream 4xx/5xx
+ * whose error BODY quotes a JSON error is not an interrupted body, and re-sending
+ * it just repeats the upstream's answer; those arrive under the upstream's own
+ * code.
  */
-function isMalformedResponseFailure(failure: LlmFailure): boolean {
-  return failure.code === 'PI_AI_ERROR' && /JSON at position \d+/.test(failure.message)
+function isRetryableResponseFailure(failure: LlmFailure): boolean {
+  if (failure.code !== 'PI_AI_ERROR') return false
+  return (
+    /JSON at position \d+/.test(failure.message) ||
+    /stream (?:closed|ended) (?:before|without)\b/i.test(failure.message)
+  )
 }
 
 /**
@@ -1338,7 +1355,7 @@ function installListeners(ctx: Context, currentConfig: () => ResolvedConfig): vo
    * failed step inside its own `while (true)` and advances `phase.step` only
    * between steps, so an unchanged key means the same attempt is being retried.
    * Scoping the budget to the attempt — rather than to the agent alone — is what
-   * stops one corrupted step from exhausting the whole turn.
+   * stops one retried step from exhausting the whole turn.
    *
    * A single slot per agent is enough because the loop only ever moves forward:
    * `step` resets to 1 only when `turn` increments, so a key that differs from
@@ -1538,21 +1555,22 @@ function installListeners(ctx: Context, currentConfig: () => ResolvedConfig): vo
     })
   }
 
-  // Re-send a request whose response body was corrupted in transit. Unlike every
+  // Re-send a request whose response never arrived intact. Unlike every
   // other reaction in this plugin, this one is an automatic retry — and it is
   // the only failure class where that is right, because the request itself was
-  // well-formed: the provider returned something the JSON parser rejected, the
-  // turn died through this very waterfall, and the same request normally
-  // succeeds on a second attempt. The thinking-loop breaks above re-enter a model
-  // that has already shown it cannot act, which is why those are never retried.
+  // well-formed: the provider returned a body the JSON parser rejected, or closed
+  // the stream before it carried anything usable, the turn died through this very
+  // waterfall, and the same request normally succeeds on a second attempt. The
+  // thinking-loop breaks above re-enter a model that has already shown it cannot
+  // act, which is why those are never retried.
   //
   // Declining is `next()`, never `undefined`: this waterfall is shared, so the
   // shipped `llm-retry` policy (and any later listener) must still get its turn
   // and its answer must survive.
   ctx.on('agent/request-error', ({ agent, turn, step, failure }, next) => {
-    if (!isMalformedResponseFailure(failure)) return next()
+    if (!isRetryableResponseFailure(failure)) return next()
     if (!claimRequestRetry(agent, turn, step)) return next()
-    ctx.logger.debug('dsh-loop-guard: retrying a malformed model response')
+    ctx.logger.debug('dsh-loop-guard: retrying an interrupted model response')
     return Promise.resolve<RequestErrorAction>({ kind: 'retry' })
   })
 

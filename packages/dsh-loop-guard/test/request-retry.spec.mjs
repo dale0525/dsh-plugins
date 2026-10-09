@@ -1,21 +1,25 @@
 /**
- * Automatic retry of a malformed model response.
+ * Automatic retry of a model response that never arrived intact.
  *
- * A provider that returns a body `JSON.parse` rejects kills the turn: the
- * adapter classifies it `PI_AI_ERROR`, `agent-loop` turns the failed finish into
- * a thrown `LlmError`, and the user sees `本轮运行失败`. The request itself was
- * well-formed, so the same request usually succeeds on a second attempt — this is
- * the one failure class where re-sending is the fix rather than a silent re-bill.
+ * Two shapes of that kill the turn the same way: the adapter classifies the
+ * failure `PI_AI_ERROR`, `agent-loop` turns the failed finish into a thrown
+ * `LlmError`, and the user sees `本轮运行失败`. The request itself was
+ * well-formed in both, so the same request usually succeeds on a second attempt —
+ * this is the one failure class where re-sending is the fix rather than a silent
+ * re-bill.
+ *
+ *  1. A body `JSON.parse` rejected — a V8 signature carrying `JSON at position N`.
+ *  2. A stream the upstream closed before it carried anything usable.
  *
  * The rule is deliberately NARROW, and the population below is measured rather
  * than guessed: across this machine's `~/.dsh/sessions` the JSON-parse failures
- * are 16 error turns, ALL `PI_AI_ERROR`, every one carrying a V8 `JSON.parse`
- * signature. `PI_AI_ERROR` alone is NOT the predicate — the same adapter reports
- * it for `Too many pending requests, please retry later` and
- * `Provider finish_reason: error`, neither of which is a parse failure and
- * neither of which should be retried. Nor is the message alone the predicate: an
- * upstream 400 whose error BODY quotes a JSON error must not be re-sent, which is
- * why the code and the signature are required together.
+ * are 20 distinct failed steps over 19 error turns, ALL `PI_AI_ERROR`, every one
+ * carrying a V8 `JSON.parse` signature. `PI_AI_ERROR` alone is NOT the predicate
+ * — the same adapter reports it for `Too many pending requests, please retry
+ * later` and `Provider finish_reason: error`, neither of which is an interrupted
+ * body and neither of which should be retried. Nor is the message alone the
+ * predicate: an upstream 400 whose error BODY quotes a JSON error must not be
+ * re-sent, which is why the code and a signature are required together.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -32,6 +36,19 @@ const PARSE_FAILURES = [
 ]
 
 /**
+ * The stream-terminated-early messages actually observed in the session store.
+ *
+ * Measured once (`session-3e13c85e`, turn 3 step 10): the upstream minted
+ * `upstream stream closed before any chunk carried finish_reason` and the
+ * adapter, whose transport pattern matches only `stream ended`, fell through to
+ * `PI_AI_ERROR` — so neither the guard nor the host's own retry claimed it and
+ * the turn died. The near-identical `Stream ended without finish_reason` IS
+ * classified `TRANSPORT` and was retried 42 times out of 42 by the host, which is
+ * why the two are treated as one class here.
+ */
+const INTERRUPTED_STREAMS = ['upstream stream closed before any chunk carried finish_reason']
+
+/**
  * A JSON.parse rejection the rule deliberately does NOT match.
  *
  * It is the one shape V8 reports WITHOUT a position, and it was measured ZERO
@@ -43,7 +60,7 @@ const PARSE_FAILURES = [
  */
 const UNMEASURED_JSON_ERROR = 'Unexpected end of JSON input'
 
-/** The `PI_AI_ERROR` messages that are NOT parse failures. */
+/** The `PI_AI_ERROR` messages that are neither parse failures nor interrupted streams. */
 const OTHER_PI_AI_ERRORS = [
   'Too many pending requests, please retry later (request id: 202609081744453134208618268d9d6PpXbtNGN)',
   'Provider finish_reason: error',
@@ -120,6 +137,34 @@ test('every measured JSON-parse failure is retried', async () => {
   }
 })
 
+test('every measured interrupted stream is retried', async () => {
+  // `Stream ended without finish_reason` is the measured sibling: the host's own
+  // retry classifies it `TRANSPORT` and re-sent it 42 times out of 42, so a
+  // `PI_AI_ERROR` carrying that wording is the same failure and must not fall
+  // between the two mechanisms the way the `closed` wording did.
+  for (const message of [...INTERRUPTED_STREAMS, 'Stream ended without finish_reason']) {
+    const { fire, calls } = mount()
+    assert.deepEqual(
+      await fire({ code: 'PI_AI_ERROR', message }),
+      { kind: 'retry' },
+      'must retry: ' + message,
+    )
+    assert.equal(calls.next, 0, 'a handled failure must not reach downstream recovery')
+  }
+})
+
+test('an interrupted stream under any other code is delegated', async () => {
+  for (const code of ['SERVER', 'RATE_LIMIT', 'TIMEOUT', 'TRANSPORT', 'INVALID_REQUEST']) {
+    const { fire, calls } = mount()
+    assert.equal(
+      await fire({ code, message: INTERRUPTED_STREAMS[0] }),
+      undefined,
+      'must not retry a ' + code + ' failure',
+    )
+    assert.equal(calls.next, 1)
+  }
+})
+
 test('the retry is bounded by the shipped default', async () => {
   // The default must be finite: a provider that corrupts EVERY body would
   // otherwise be re-billed forever, which is the failure this cap exists for.
@@ -175,7 +220,7 @@ test('the budget is per agent', async () => {
 /* what must NOT be retried                                                   */
 /* -------------------------------------------------------------------------- */
 
-test('a PI_AI_ERROR that is not a parse failure is delegated', async () => {
+test('a PI_AI_ERROR that is not an interrupted response is delegated', async () => {
   for (const message of OTHER_PI_AI_ERRORS) {
     const { fire, calls } = mount()
     assert.equal(

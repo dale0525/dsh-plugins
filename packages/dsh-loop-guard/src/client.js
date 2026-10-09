@@ -220,13 +220,13 @@ window.__ModuleLoader__.load({
         hint: "不等你发话就自己往下走。仅在关掉「注入纠正提示」时有用（开着时提示本身就会把任务推下去）。默认关。",
       },
       {
-        group: "响应体损坏时重试",
+        group: "响应体没完整到达时重试",
       },
       {
         key: "retryRequestFailures",
-        label: "自动重试损坏响应",
+        label: "自动重试不完整的响应",
         kind: "boolean",
-        hint: "模型返回的响应体 JSON 解析失败（本轮运行失败）时自动重发同一请求。默认开。",
+        hint: "模型响应体 JSON 解析失败、或上游在送出任何内容前关掉流（本轮运行失败）时自动重发同一请求。默认开。",
       },
       {
         key: "maxRequestRetries",
