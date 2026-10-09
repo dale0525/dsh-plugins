@@ -168,6 +168,9 @@ export const uiZh = {
   // issue #32：SAFE MODE 出口（423「配置修改已被保护」时的恢复入口）
   'sync.recovery.title': '恢复事项',
   'sync.recovery.attention': '检测到上次中断的配置修改，配置修改已被保护：推送/拉取都会被阻止，重试或重启 DSH 均无效。点击「解除保护」将放弃该次恢复并解除阻断；快照与日志证据会保留，不会被删除。',
+  // issue #33：闸门关着但没有任何未解决事项（journal 已被隔离，只剩残留保护标记）。
+  // 不能沿用上面那版文案 —— 此时并没有「待放弃的恢复」，说成有会误导用户。
+  'sync.recovery.attentionResidue': '配置修改仍处于保护状态（上次中断的配置修改已隔离，没有待处理事项，只剩残留的保护标记）：推送/拉取都会被阻止，重试或重启 DSH 均无效。点击「解除保护」清除该标记并解除阻断；已隔离的证据会保留，不会被删除。',
   'sync.recovery.dismiss': '解除保护',
   'sync.recovery.dismissing': '正在解除…',
   'sync.recovery.dismissed': '已解除保护，可以继续推送或拉取。',
@@ -376,6 +379,9 @@ export const uiEn: Record<UiTextKey, string> = {
   // issue #32：SAFE MODE exit (recovery entry when push fails with "config changes are protected")
   'sync.recovery.title': 'Recovery required',
   'sync.recovery.attention': 'An interrupted config change was detected and config changes are now protected: push and pull are both blocked, and retrying or restarting DSH will not help. Clicking "Remove protection" abandons that recovery and clears the block; snapshots and journal evidence are kept, not deleted.',
+  // issue #33: the gate is closed but nothing is pending (the journal was already quarantined
+  // and only a leftover protection marker remains) — must not reuse the wording above.
+  'sync.recovery.attentionResidue': 'Config changes are still protected (the interrupted change was already quarantined, so nothing is pending — only a leftover protection marker remains): push and pull are both blocked, and retrying or restarting DSH will not help. Clicking "Remove protection" clears that marker and the block; the quarantined evidence is kept, not deleted.',
   'sync.recovery.dismiss': 'Remove protection',
   'sync.recovery.dismissing': 'Removing…',
   'sync.recovery.dismissed': 'Protection removed — you can push or pull again.',

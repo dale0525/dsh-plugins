@@ -356,3 +356,39 @@ test('sync-view: recoveryPanelModel 未知 operationType → 兜底为通用名�
 })
 
 
+
+/* ---------------------------------------------------------------- 闸门关但无 incident（issue #33） */
+
+test('sync-view: recoveryPanelModel 闸门已关但无 incident → 必须显示出口（死局：面板恒空 = 按钮不存在）', () => {
+  const m = recoveryPanelModel([], null, zhUiT, true)
+  assert.equal(m.visible, true, '闸门关着就必须有出口，否则 SAFE MODE 无路可走（用户报告的症状）')
+  assert.equal(m.items.length, 0, '没有 incident 行，只有整块解除入口')
+  assert.equal(m.canRelease, true, '无 incident 时提供整块「解除保护」')
+  assert.equal(m.releaseLabel, '解除保护')
+  assert.match(m.detail, /残留的保护标记/, '无待处理事项时不得沿用「有待放弃的恢复」文案，会误导')
+  assert.doesNotMatch(m.detail, /放弃该次恢复/)
+})
+
+test('sync-view: recoveryPanelModel 闸门已关且有 incident → 只给逐条入口，不给整块（整块必被 Host 409 拒绝）', () => {
+  const m = recoveryPanelModel([INCIDENT_NEEDS_ATTENTION], null, zhUiT, true)
+  assert.equal(m.visible, true)
+  assert.equal(m.items.length, 1)
+  assert.equal(m.canRelease, false, '有未解决 incident 时必须逐条 dismiss —— 整块放行会被 Host 409 拒绝，不该给必败的按钮')
+})
+
+test('sync-view: recoveryPanelModel 闸门未关且无 incident → 整块隐藏（不误报、不诱导）', () => {
+  const m = recoveryPanelModel([], null, zhUiT, false)
+  assert.equal(m.visible, false)
+  assert.equal(m.canRelease, false)
+})
+
+test('sync-view: recoveryPanelModel 旧宿主不返回 safeMode（undefined）→ 退回原判据（有 incident 才显示）', () => {
+  assert.equal(recoveryPanelModel([], null, zhUiT, undefined).visible, false, '缺省 safeMode 不得凭空显示')
+  assert.equal(recoveryPanelModel([INCIDENT_NEEDS_ATTENTION], null, zhUiT, undefined).visible, true)
+})
+
+test('sync-view: recoveryPanelModel 解除进行中 → 整块入口禁用（防重入）', () => {
+  const m = recoveryPanelModel([], null, zhUiT, true, true)
+  assert.equal(m.canRelease, false, '进行中不得再点')
+  assert.equal(m.releaseLabel, '正在解除…')
+})

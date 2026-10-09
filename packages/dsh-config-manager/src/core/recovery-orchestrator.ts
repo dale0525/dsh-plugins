@@ -61,6 +61,17 @@ export interface RecoveryOrchestratorDeps {
    */
   clearSafeMode: () => Promise<void>;
   /**
+   * issue #33：SAFE MODE 闸门**当前**是否关着。宿主注入的必须是**与 423 闸门同一个谓词**
+   * （本仓库为 `() => host.safeModeIsBlocked?.() ?? false`，withMutationGate 的 isBlocked 也读它）。
+   *
+   * 为什么必须由宿主注入而不是本模块自己推断：闸门的判据在宿主（内存标志 + durable 标记），
+   * 而面板可见性过去只由 `incidents`（scanActive 的产物）决定 —— 两者是不同的东西。
+   * 已发生故障：corrupt journal 被 quarantine 后 `active/` 清空，incidents 恒为 []，
+   * 面板不渲染、dismiss 404，durable 标记再无出口（用户报告「找不到解除保护按钮」）。
+   * 让出口的可见性与闸门**同源**，才能保证「闸门关着 ⇒ 必有出口」。
+   */
+  isSafeModeBlocked: () => boolean;
+  /**
    * 只读环境锁状态（issue #31）。**由宿主注入而非本模块 import**：本模块不依赖 env-lock，
    * 无锁环境（测试 mock 端口）可返回保守的 UNKNOWN_STATE。
    * detail 含 owner pid/op 等内部诊断 → 只用于日志，绝不进响应体。
@@ -102,6 +113,15 @@ export interface RecoveryOrchestrator {
   verify(operationId: string): Promise<RecoveryResult>;
   retry(operationId: string, userConfirmed: boolean, makeExecutors: (runId: string) => RecoveryExecutorFns): Promise<RecoveryResult>;
   dismiss(operationId: string, userConfirmed: boolean): Promise<RecoveryResult>;
+  /**
+   * issue #33：**无 journal 的 SAFE MODE 出口**（durable 残留标记 / 已 quarantine 的死局）。
+   *
+   * 与 dismiss 的分工：dismiss 放弃的是**一个**未解决 incident；本方法处理的是
+   * 「闸门关着但 `active/` 里没有任何未解决 journal」这一状态 —— 那种状态下 dismiss
+   * 无处可调（journal 已不在 active → 404），durable 标记没有任何出口能清除。
+   * 存在未解决 incident 时**拒绝**（409）：那种情况该走 dismiss，整块放行等于静默放弃真实恢复事项。
+   */
+  releaseProtection(userConfirmed: boolean): Promise<RecoveryResult>;
   /** issue #31：显式回收 stale 残留锁（无 operationId；非 journal 事项）。 */
   recoverStaleLock(userConfirmed: boolean): Promise<RecoveryResult>;
   /**
@@ -112,7 +132,7 @@ export interface RecoveryOrchestrator {
 }
 
 export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): RecoveryOrchestrator {
-  const { store, runs, snapshotsDir, host, msg, snapshotExists, getEnvironmentFingerprint, clearSafeMode, inspectLockState, recoverStaleLock } = deps;
+  const { store, runs, snapshotsDir, host, msg, snapshotExists, getEnvironmentFingerprint, clearSafeMode, isSafeModeBlocked, inspectLockState, recoverStaleLock } = deps;
 
   /**
    * 只读 recovery decision（不修改 journal）。**不用 reconcileActive**：其 §6.5 硬门控会把
@@ -136,6 +156,22 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
   };
 
   /**
+   * 是否存在**未解决** incident（active 中存在非 terminal 或 NEEDS_ATTENTION 的 journal）。
+   * 单一判据：maybeClearSafeMode 与 releaseProtection 共用，避免两处各写一套「什么算未解决」。
+   * NEEDS_ATTENTION 是 terminal 状态但代表仍需人工处理的 incident → 视为未解决。
+   */
+  const hasUnresolvedIncident = async (): Promise<boolean> => {
+    const activeIds = await store.scanActive();
+    for (const opId of activeIds) {
+      const j = await store.loadActive(opId);
+      if (j === null) continue;
+      if (j.state === 'NEEDS_ATTENTION') return true;
+      if (!isTerminalState(j.state)) return true;
+    }
+    return false;
+  };
+
+  /**
    * recovery 成功后清除 SAFE MODE（§5.3 / §10.2「SAFE MODE 退出」）。
    * 仅当 **不存在其他未解决 active journal**（active 全部为已解决 terminal：
    * COMMITTED/ROLLED_BACK/RECOVERED，**NEEDS_ATTENTION 视为未解决**——它代表仍需
@@ -144,18 +180,7 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
    */
   const maybeClearSafeMode = async (): Promise<void> => {
     try {
-      const activeIds = await store.scanActive();
-      let allResolved = true;
-      for (const opId of activeIds) {
-        const j = await store.loadActive(opId);
-        if (j === null) continue;
-        // NEEDS_ATTENTION 是 terminal 但代表未解决 incident → 不视为 resolved
-        if (j.state === 'NEEDS_ATTENTION') { allResolved = false; break; }
-        if (!isTerminalState(j.state)) { allResolved = false; break; }
-      }
-      if (allResolved) {
-        await clearSafeMode();
-      }
+      if (!(await hasUnresolvedIncident())) await clearSafeMode();
     } catch {
       // 扫描失败保守：不清除 SAFE MODE（fail-closed）
     }
@@ -235,7 +260,11 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
       const running = runs.listActive().filter((r) => r.kind === 'recovery').map((r) => ({ runId: r.runId, status: r.status }));
       // issue #31：附带环境锁分类（与同步页入口共用 lockState 投影，见上）。
       const lock = await lockState();
-      return { status: 200, body: { incidents, running, lock } };
+      // issue #33：闸门**当前**状态（与 423 闸门同源）。incidents 只覆盖「有 journal 的阻断」，
+      // durable 残留标记 / 已 quarantine 的死局不在其中 —— 少了这个字段，UI 的出口可见性
+      // 就与闸门脱钩，闸门关着而面板恒空（用户报告的死局）。
+      const safeMode = isSafeModeBlocked();
+      return { status: 200, body: { incidents, running, lock, safeMode } };
     },
 
     async preview(operationId) {
@@ -358,6 +387,28 @@ export function createRecoveryOrchestrator(deps: RecoveryOrchestratorDeps): Reco
       // 而 dismiss 不解除阻断，SAFE MODE 就没有出口：所有 mutation 永久 423（已发生故障）。
       await maybeClearSafeMode();
       return { status: 200, body: { ok: true, operationId, dismissed: true } };
+    },
+
+    /**
+     * issue #33：无 journal 的 SAFE MODE 出口。闸门关着但 `active/` 里没有未解决 journal 时，
+     * dismiss 无从调用（journal 已 quarantine → 404），durable 标记便再无出口。本方法就是那个出口。
+     *
+     * 为什么拒绝「仍有未解决 incident」的情况（409）而不顺带放行：那会把**真实的**待处理恢复
+     * 事项静默丢弃，正确动作是逐条 dismiss（用户能看到自己放弃了什么）。
+     * 为什么要求 userConfirmed：与 dismiss / recoverStaleLock 同契约 —— 解除保护是用户显式决定，
+     * 不接受隐式触发。
+     * 为什么闸门未关时返回 released=false 而非报错：幂等。用户可能双击或状态刚被别处清除，
+     * 谎称「已解除」会让 UI 显示与实际不符。
+     */
+    async releaseProtection(userConfirmed) {
+      if (userConfirmed !== true) return { status: 400, body: { error: 'userConfirmed required' } };
+      if (!isSafeModeBlocked()) return { status: 200, body: { ok: true, released: false } };
+      // 仍有未解决 incident → 必须逐条 dismiss（releaseProtection 不是它们的替代品）
+      if (await hasUnresolvedIncident()) {
+        return { status: 409, body: { error: '存在未解决 incident，请逐条解除保护' } };
+      }
+      await clearSafeMode();
+      return { status: 200, body: { ok: true, released: true } };
     },
 
     /**

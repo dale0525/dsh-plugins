@@ -367,13 +367,17 @@ export interface RecoveryIncidentRow {
   canDismiss: boolean
 }
 
-/** SAFE MODE 恢复面板模型（issue #32）。 */
+/** SAFE MODE 恢复面板模型（issue #32；issue #33 增补无 incident 的死局出口）。 */
 export interface RecoveryPanelModel {
-  /** 是否渲染整块（无 incident / 旧宿主不返回 recovery → false，不误报） */
+  /** 是否渲染整块（闸门关着 **或** 有 incident；旧宿主两者都不返回 → false，不误报） */
   visible: boolean
   title: string
   detail: string
   items: RecoveryIncidentRow[]
+  /** 整块「解除保护」入口是否可点（闸门关着 **且无 incident 行** 且未在进行中） */
+  canRelease: boolean
+  /** 整块入口文案（进行中切「正在解除…」） */
+  releaseLabel: string
 }
 
 /** operationType → 人类可读名（未知类型兜底为通用名，绝不抛错）。 */
@@ -386,23 +390,36 @@ function recoveryOpLabel(operationType: string, t: UiT): string {
 }
 
 /**
- * SAFE MODE 恢复面板模型。**可见性恒为「有未解决 incident」**——这是 Host 侧 423
- * （LOCK_BLOCK_BRIEF.blocked）的真实成因，UI 不自造第二套判据。
+ * SAFE MODE 恢复面板模型。**可见性 = 闸门关着（safeMode）或 有未解决 incident**。
  *
- * 为什么必须有这个入口：`blocked` 闸门拦下所有 mutation，而恢复路由曾被整体删除，
- * 于是无 trusted snapshot 的 incident 只剩「放弃恢复」一条路，且当时连这条路也没有
- * 入口 → SAFE MODE 无出口、永久 423（已发生故障）。
+ * 为什么不能只看 incidents：`incidents` 来自 `scanActive()`，只覆盖「有 journal 的阻断」。
+ * 已发生故障（issue #33）：corrupt journal 被 quarantine 后 `active/` 清空，incidents 恒为 []，
+ * 而 durable SAFE MODE 标记仍在 → 闸门关着、面板不渲染、按钮不存在，用户无从解除
+ * （报告原文：「找不到解除保护按钮」）。因此可见性必须与闸门同源（`safeMode` 字段，
+ * 由宿主用与 423 闸门相同的谓词投影），才能保证「闸门关着 ⇒ 必有出口」。
+ *
+ * 两条出口分工：有 incident 行 → 逐条「解除保护」（dismiss，用户看得到自己放弃了什么）；
+ * 无 incident 而闸门关着 → 整块「解除保护」（release，清 durable 残留标记）。
  */
 export function recoveryPanelModel(
   incidents: readonly RecoveryIncident[] | undefined,
   dismissing: string | null,
   t: UiT = zhUiT,
+  safeMode?: boolean,
+  releasing = false,
 ): RecoveryPanelModel {
   const list = incidents ?? []
+  // 旧宿主不返回 safeMode → undefined 视为未阻断（不凭空显示）
+  const blocked = safeMode === true
+  const onlyResidue = blocked && list.length === 0
   return {
-    visible: list.length > 0,
+    visible: list.length > 0 || blocked,
     title: t('sync.recovery.title'),
-    detail: t('sync.recovery.attention'),
+    // 无 incident 时说明文字必须换成「残留保护标记」那一版：此时并无待处理的恢复事项，
+    // 沿用 incident 版文案会让用户以为有东西待放弃（实际只是清掉一个残留标记）。
+    detail: onlyResidue ? t('sync.recovery.attentionResidue') : t('sync.recovery.attention'),
+    canRelease: onlyResidue && !releasing,
+    releaseLabel: releasing ? t('sync.recovery.dismissing') : t('sync.recovery.dismiss'),
     items: list.map((i) => ({
       operationId: i.operationId,
       operationLabel: recoveryOpLabel(i.operationType, t),

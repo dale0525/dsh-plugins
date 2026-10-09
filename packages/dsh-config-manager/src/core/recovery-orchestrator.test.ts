@@ -33,6 +33,7 @@ async function makeOrchestrator(opts: {
   lockDetail?: string;
   lockThrows?: boolean;
   recoverResult?: { ok: boolean; removed: boolean; state: string; detail?: string };
+  safeMode?: boolean;
 } = {}): Promise<{
   orchestrator: ReturnType<typeof createRecoveryOrchestrator>
   spy: RecoverSpy
@@ -55,6 +56,7 @@ async function makeOrchestrator(opts: {
     snapshotExists: async () => false,
     getEnvironmentFingerprint: () => 'fp-test',
     clearSafeMode: async () => { clearCalls += 1; },
+    isSafeModeBlocked: () => opts.safeMode === true,
     inspectLockState: async () => {
       if (opts.lockThrows === true) throw new Error('probe failed');
       return { state: opts.lockState ?? 'FREE', ...(opts.lockDetail !== undefined ? { detail: opts.lockDetail } : {}) };
@@ -239,3 +241,83 @@ test('源码守卫：/sync/recovery/dismiss 路由不经 mutation gate（它就�
   assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 loopback + method 围栏');
 });
 
+
+// ---------- issue #33：闸门已关但面板恒空 → SAFE MODE 无出口（用户报告的死局） ----------
+// 已发生故障：reconcileOne 的 corrupt 分支在同一趟里既 quarantine 了 journal（active/ 清空）
+// 又写了 durable SAFE MODE 标记。于是 incidents 恒为 []（面板 visible=false、按钮不存在），
+// dismiss 因 journal 已不在 active 而 404 —— durable 标记再无任何东西能清除，重启也照旧。
+// 不变量：**闸门关着（safeModeIsBlocked=true）就必须有一个可达的出口**。
+
+test('status：闸门已关但无 incident（corrupt 已 quarantine 的死局）→ 必须上报 safeMode=true', async () => {
+  const { orchestrator } = await makeOrchestrator({ safeMode: true });
+  const r = await orchestrator.status();
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body['incidents'], [], '前置：journal 已 quarantine → incidents 恒空（死局成因）');
+  assert.equal(r.body['safeMode'], true, '闸门关着必须如实上报，UI 才能渲染出口（否则面板恒空 = 用户症状）');
+});
+
+test('status：闸门未关 → safeMode=false（不误报，旧宿主缺该字段也不影响）', async () => {
+  const { orchestrator } = await makeOrchestrator();
+  const r = await orchestrator.status();
+  assert.equal(r.body['safeMode'], false);
+});
+
+test('status：有未解决 incident 时闸门标志同样为真（两条出口并存，互不取代）', async () => {
+  const { orchestrator, store } = await makeOrchestrator({ safeMode: true });
+  const opId = '19059e36-f3a8-434e-ba71-a94c5c00a5e6';
+  const j = createJournalEntry('sync-push', {
+    operationId: opId, ownerInstanceId: 'o1', lockId: 'l1', packageVersion: '0.1.65', environmentFingerprint: 'fp-test',
+  }, '2026-09-24T05:53:04.000Z');
+  await store.create({ ...j, state: 'NEEDS_ATTENTION' });
+  const r = await orchestrator.status();
+  assert.equal((r.body['incidents'] as unknown[]).length, 1);
+  assert.equal(r.body['safeMode'], true);
+});
+
+test('releaseProtection：未显式确认 → 400 且绝不解除阻断', async () => {
+  const { orchestrator, clearCalls } = await makeOrchestrator({ safeMode: true });
+  const r = await orchestrator.releaseProtection(false);
+  assert.equal(r.status, 400);
+  assert.equal(clearCalls(), 0, '未确认不得解除阻断');
+});
+
+test('releaseProtection：存在未解决 incident → 409 拒绝（该走 dismiss，绝不整块放行）', async () => {
+  const { orchestrator, store, clearCalls } = await makeOrchestrator({ safeMode: true });
+  const opId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const j = createJournalEntry('sync-push', {
+    operationId: opId, ownerInstanceId: 'o1', lockId: 'l1', packageVersion: '0.1.65', environmentFingerprint: 'fp-test',
+  }, '2026-09-24T05:53:04.000Z');
+  await store.create({ ...j, state: 'NEEDS_ATTENTION' });
+  const r = await orchestrator.releaseProtection(true);
+  assert.equal(r.status, 409, '仍有未解决 incident 时不得解除（否则等于静默放弃真实恢复事项）');
+  assert.equal(clearCalls(), 0);
+});
+
+test('releaseProtection：无未解决 incident（纯 durable 残留标记）→ 200 并真正解除阻断', async () => {
+  const { orchestrator, clearCalls } = await makeOrchestrator({ safeMode: true });
+  const r = await orchestrator.releaseProtection(true);
+  assert.equal(r.status, 200);
+  assert.equal(r.body['released'], true);
+  assert.equal(clearCalls(), 1, '这是死局里唯一的出口，必须真的清除 durable 标记与内存标志');
+});
+
+test('releaseProtection：闸门本就未关 → 200 released=false（幂等，不谎称做了事）', async () => {
+  const { orchestrator, clearCalls } = await makeOrchestrator();
+  const r = await orchestrator.releaseProtection(true);
+  assert.equal(r.status, 200);
+  assert.equal(r.body['released'], false);
+  assert.equal(clearCalls(), 0, '未阻断时不得调用 clearSafeMode');
+});
+
+test('源码守卫：/sync/recovery/release 路由不经 mutation gate（否则解除动作自己被 423 挡死）', async () => {
+  const src = (await fs.readFile(new URL('../index.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+  const path = '/api/dsh-config-manager/sync/recovery/release';
+  assert.ok(src.includes(`syncRecoveryRelease: '${path}'`), 'API 常量必须登记解除保护路由');
+  const at = src.indexOf('path: API.syncRecoveryRelease,');
+  assert.ok(at > 0, '路由表必须注册解除保护路由');
+  const route = src.slice(at, src.indexOf('\n    },', at));
+  assert.equal(route.includes('withMutationGate'), false, '解除保护路由绝不能被 withMutationGate 包裹（必 423 → 出口不可达）');
+  assert.equal(route.includes('runWithMutationLock'), false, '解除保护路由绝不 acquire 锁（残留锁与 SAFE MODE 可并存）');
+  assert.ok(route.includes('releaseProtection(true)'), '必须以 userConfirmed=true 调用 releaseProtection');
+  assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 loopback + method 围栏');
+});

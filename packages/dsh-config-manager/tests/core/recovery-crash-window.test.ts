@@ -101,6 +101,8 @@ async function setup(t: test.TestContext, opts: { state?: OperationJournal['stat
     snapshotExists: async (id) => id !== null && id !== '',
     getEnvironmentFingerprint: () => FP,
     clearSafeMode: async () => { await store.writeSafeMode(false); },
+    // 本用例不接 Phase3Recovery（无内存 safeModeActive 机制）→ 闸门在本用例的世界里未关
+    isSafeModeBlocked: () => false,
   });
   return { store, runs, snapshotsDir, homeDir, transactionsDir, host, orch, snap, opId };
 }

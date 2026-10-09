@@ -224,6 +224,15 @@ export interface RecoveryStatus {
    * 旧宿主不返回 → undefined（面板按「无锁事项」处理，不误报）。
    */
   lock?: RecoveryLockStatus;
+  /**
+   * issue #33：SAFE MODE 闸门**当前**是否关着（与 423 闸门同源，宿主注入）。
+   *
+   * 为什么必须有：`incidents` 只覆盖「有 journal 的阻断」。journal 被 quarantine 后
+   * `active/` 清空，incidents 恒为 []，而 durable 标记仍在 → 闸门关着却没有任何出口可见
+   * （用户报告「找不到解除保护按钮」）。UI 的出口可见性必须与闸门同源，才能保证
+   * 「闸门关着 ⇒ 必有出口」。旧宿主不返回 → undefined（按「未阻断」处理，不凭空显示）。
+   */
+  safeMode?: boolean;
 }
 
 /** 环境锁状态摘要：**只暴露分类**（owner pid/op/hostname 属内部诊断，不进 UI/响应体）。 */
@@ -295,6 +304,15 @@ export interface RecoveryDismissResult {
   ok: boolean;
   operationId: string;
   dismissed: boolean;
+}
+
+/**
+ * POST /recovery/release 响应（issue #33：无 journal 的 SAFE MODE 出口）。
+ * `released=false` 表示调用时闸门本就未关（幂等，不谎称做了事）。
+ */
+export interface RecoveryReleaseResult {
+  ok: boolean;
+  released: boolean;
 }
 
 /**

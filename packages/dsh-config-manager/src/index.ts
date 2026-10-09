@@ -144,7 +144,7 @@ export const name = 'config-manager'
 export const inject = ['settings', 'credentials']
 
 /** Plugin version, kept in sync with package.json ("version"). */
-const PLUGIN_VERSION = '0.1.77'
+const PLUGIN_VERSION = '0.1.78'
 
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
@@ -223,6 +223,9 @@ const API = {
   syncLockRecover: '/api/dsh-config-manager/sync/lock/recover',
   // issue #32：SAFE MODE 出口 —— 放弃未解决 incident（quarantine）并解除阻断（GUI「解除保护」按钮）
   syncRecoveryDismiss: '/api/dsh-config-manager/sync/recovery/dismiss',
+  // issue #33：无 journal 的 SAFE MODE 出口 —— 闸门关着但 active/ 无未解决 journal 时，
+  // dismiss 无从调用（journal 已 quarantine → 404），durable 标记再无出口（用户报告的死局）
+  syncRecoveryRelease: '/api/dsh-config-manager/sync/recovery/release',
 } as const
 
 /**
@@ -1463,6 +1466,10 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
     clearSafeMode: async () => {
       if (host.phase3Recovery !== undefined) await host.phase3Recovery.clearSafeMode()
     },
+    // issue #33：闸门**当前**是否关着。直接复用 423 闸门自己用的那个谓词
+    // （withMutationGate 的 isBlocked 也读 host.safeModeIsBlocked），因此 status 上报的
+    // safeMode 与「会不会被 423」永远同源一致 —— UI 的出口可见性据此渲染，不会与闸门漂移。
+    isSafeModeBlocked: () => host.safeModeIsBlocked?.() ?? false,
     // issue #31：环境锁只读探测 + 显式回收，供配置页显示/处理**残留锁**。
     // 残留锁不是 journal（journalId 恒 null、transactions/active 为空），旧面板因此恒空。
     inspectLockState: async () => {
@@ -1564,6 +1571,9 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
             // 并决定「回收残留锁」是否可点。与恢复面板共用同一投影（见 recovery-orchestrator）。
             lock: recoveryStatus.body.lock,
             recovery: recoveryStatus.body.incidents,
+            // issue #33：闸门当前状态（与 423 闸门同源）。incidents 只覆盖「有 journal 的阻断」，
+            // durable 残留标记 / 已 quarantine 的死局不在其中；UI 据此在无 incident 时也渲染出口。
+            safeMode: recoveryStatus.body.safeMode,
           })
         } catch (error) {
           writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
@@ -1874,6 +1884,21 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
           return
         }
         const result = await recoveryOrchestrator.dismiss(operationId, true)
+        writeJson(res, result.status, result.body)
+      },
+    },
+    // issue #33：**无 journal 的 SAFE MODE 出口**（durable 残留标记 / 已 quarantine 的死局）。
+    // 同上不经 withMutationGate、不取 mutationLock：它同样是解除该闸门的机制。
+    // 无请求体：确认由用户点击按钮表达（与 syncLockRecover 同形态）。
+    // 与 dismiss 的分工：dismiss 放弃「某个」incident；本路由处理「闸门关着但 active/ 无未解决
+    // journal」——那种状态 dismiss 无从调用（journal 已 quarantine → 404），durable 标记再无出口。
+    // 仍有未解决 incident 时编排层拒绝（409），必须逐条 dismiss，绝不整块放行。
+    {
+      kind: 'exact',
+      path: API.syncRecoveryRelease,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const result = await recoveryOrchestrator.releaseProtection(true)
         writeJson(res, result.status, result.body)
       },
     },
