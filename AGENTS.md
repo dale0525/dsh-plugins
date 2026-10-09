@@ -192,6 +192,27 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   宿主已删除 `SettingsScope` / `SettingsScopeSnapshot` / `SettingsSectionHooks`）。
   症状与上面 slots 那条相反：那条是「编译失败、运行正常」，这条是「编译通过、校验错对象」。
 
+## ➖ 移除子插件
+
+与「新增」对称，但**没有任何脚本会替你校验**：下列几处必须同时改，漏掉任何一处的后果都是**静默**的
+（不报错、看似成功）。
+
+| 改动 | 漏掉的后果 |
+|---|---|
+| 删 `packages/<name>/` 整目录 | — |
+| 从 `packages/all/aggregate.yml` 的 `patchFrom` **和** `deps` 各摘一行 | 发出的包引用一个不存在的包，或凭空多出一行（理由见「3. 在 `packages/all/aggregate.yml` 登记」） |
+| 手工改 `packages/all/package.json` 的 `version` | CI 判重跳过，**看似发布成功、实则没发**（见「📤 发布」） |
+| 重跑 `node scripts/aggregate.mjs` | 生成物与清单 drift，`--check` 报错 |
+
+然后按「✅ 验证命令」跑四条门禁，按「📤 发布」走 CI/CD。
+
+**本机也要清**：`~/.dsh/profiles/<p>/cordis.patch.yml` 里该插件的行会变成指向不存在包的悬空行，
+须手工摘除；`$DSH_HOME` 下由该插件自己写的运行状态文件，等它停止运行后一并删除
+（先确认宿主已不再持有这些文件的句柄，否则删了会被重新写回）。
+
+> 删包后跑测试若有**与本次改动无关**的包失败，先读「✅ 验证命令」里那条并行配对的判据，
+> 不要当成自己改坏了。
+
 ## 🚀 生效门禁（哪类改动需要重启）
 
 **实测结论（2026-09-18，dsh-web PID 未变的前提下逐条验证）**：
