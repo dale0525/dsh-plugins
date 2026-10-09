@@ -377,6 +377,15 @@ pnpm run check:host                           # 宿主世代兼容 + patch 行 i
 > `timeout-minutes`。用「父路径是普通文件」的可移植写法：`mkdir` / `writeFile` 在三个平台都
 > 稳定抛 `ENOTDIR` / `EEXIST`。
 
+> **不要用哈希比对「本机构建产物」与「安装下来的产物」**：`dsh-config-manager` 与 `dsh-imagegen`
+> 的 client 半边用 lightningcss 编译 CSS Modules，而它的类名哈希由**文件绝对路径**派生
+> （`tsdown.config.ts` 把 `resolve(base, source)` 当 `filename` 传给 `transform`）—— 同一份 CSS
+> 在 CI（`/home/runner/work/...`）与本机（如 `/Volumes/LogicExt/...`）构建出的 `lib/client.js`
+> 必然不同。实测同一份 `config-manager.module.css`：本机得到 `Wcetya_*`，CI 得到 `A55DgG_*`；
+> 两侧产物屏蔽掉类名哈希与内嵌路径后**逐字节相同**。所以「发布后本地安装」核验时看到
+> `lib/client.js` 哈希不一致，是构建环境的必然差异，**不是装错版本**；要逐字节比对就先抹掉
+> 类名哈希与路径，或改比 `lib/index.js`（宿主半边由 `tsc` 产出，不含哈希）。
+
 ## 🧭 边界
 
 - **同步渠道必须指向独立的私有仓库**，与本仓库物理分离：本仓库是 public，fork 的插件源码公开无妨，但同步快照携带明文凭据。
