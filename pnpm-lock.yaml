@@ -45,7 +45,7 @@ importers:
         specifier: ^2.0.3
         version: link:../dsh-imagegen
       '@logictan/dsh-loop-guard':
-        specifier: ^1.1.5
+        specifier: ^1.1.6
         version: link:../dsh-loop-guard
       '@logictan/dsh-openviking':
         specifier: ^0.4.7

@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.71",
+  "version": "0.5.72",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -28,7 +28,7 @@
     "@logictan/dsh-force-rules": "^0.3.0",
     "@logictan/dsh-goal-resume": "^0.1.1",
     "@logictan/dsh-imagegen": "^2.0.3",
-    "@logictan/dsh-loop-guard": "^1.1.5",
+    "@logictan/dsh-loop-guard": "^1.1.6",
     "@logictan/dsh-openviking": "^0.4.7",
     "@logictan/dsh-reasoning-strip": "^0.1.0",
     "@logictan/dsh-stitch-designer": "^1.0.0",
