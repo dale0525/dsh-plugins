@@ -20,6 +20,7 @@ import {
   INPUT_MODALITIES,
   KNOWLEDGE_BASE,
   PROTOCOL_INFERENCE,
+  THINKING_FORMATS,
   suggestEfforts,
   type ReasoningEfforts,
 } from '../src/knowledge.js'
@@ -47,19 +48,30 @@ function coreModalities(): string[] {
   return [...match[1].matchAll(/([a-z]+):\s*true/g)].map(m => m[1]!)
 }
 
+/**
+ * pi-ai's nameable reasoning-dispatch formats, extracted MECHANICALLY from the
+ * installed artifact for the same reason as {@link coreModalities}: the
+ * upstream constant is module-private, so pinning it by hand would let a
+ * dependency upgrade drift the picker's vocabulary silently. The editor renders
+ * `THINKING_FORMATS` verbatim, so this is the gate that keeps the two lists one.
+ */
+function coreThinkingFormats(): string[] {
+  const source = readFileSync(
+    'node_modules/@deepseek-ai/dsh-llm-pi-ai/lib/index.js',
+    'utf8',
+  )
+  const match = source.match(/const SUPPORTED_THINKING_FORMATS = Object\.keys\(\{([\s\S]*?)\}\)/)
+  if (match === null) {
+    throw new Error(
+      'could not extract SUPPORTED_THINKING_FORMATS from @deepseek-ai/dsh-llm-pi-ai/lib/index.js -- '
+      + 'the generated shape changed; update this extractor together with the upgrade',
+    )
+  }
+  return [...match[1].matchAll(/"([a-z-]+)":\s*true/g)].map(m => m[1]!)
+}
+
 /** pi-ai's nameable reasoning-dispatch formats (THINKING_FORMAT_GATE keys). */
-const PI_AI_THINKING_FORMATS = [
-  'openai',
-  'deepseek',
-  'openrouter',
-  'together',
-  'zai',
-  'qwen',
-  'chat-template',
-  'qwen-chat-template',
-  'string-thinking',
-  'ant-ling',
-] as const
+const PI_AI_THINKING_FORMATS = coreThinkingFormats()
 
 /** The only protocols a route's `api` may name (provider.ts PROTOCOLS). */
 const PI_AI_PROTOCOLS = ['openai-completions', 'openai-responses', 'anthropic-messages'] as const
@@ -172,6 +184,12 @@ describe('knowledge base vocabulary grid', () => {
         expect([...INPUT_MODALITIES], entry.id + ': "' + modality + '"').toContain(modality)
       }
     }
+  })
+
+  it('offers exactly the thinking formats the installed kernel accepts', () => {
+    // The editor's picker renders THINKING_FORMATS verbatim, so this is the
+    // gate that keeps the picker's vocabulary and pi-ai's one list.
+    expect([...THINKING_FORMATS]).toEqual(PI_AI_THINKING_FORMATS)
   })
 
   it('never suggests a modality outside the vocabulary', () => {

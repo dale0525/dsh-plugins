@@ -14,6 +14,7 @@ import type { Root } from 'react-dom/client'
 import { EffortEditor, clearedCompatKeys, compatClearIntent, type EffortEditorProps } from '../src/client/EffortEditor.js'
 import type { SuggestReply, WriteEffortsReply, EffortEditorApi } from '../src/client/types.js'
 import { en } from '../src/client/locales.js'
+import { THINKING_FORMATS } from '../src/knowledge.js'
 import type { ReasoningEfforts } from '../src/knowledge.js'
 
 ;(globalThis as Record<string, unknown>)['IS_REACT_ACT_ENVIRONMENT'] = true
@@ -278,7 +279,11 @@ describe('EffortEditor', () => {
     expect(api.commit).toHaveBeenCalledWith('acme-gateway', 'qwen-max', {
       efforts: { off: null, low: 'low', high: 'high', max: 'max' },
       compat,
-      clearCompatKeys: ['thinkingTokenBudgetField', 'supportsThinkingTokenBudget', 'vllmPriority'],
+      // Every owned key the suggestion left unset is cleared. The suggestion
+      // carries thinkingFormat and supportsReasoningEffort, so those two are
+      // NOT cleared; supportsDeveloperRole rides the picker's own state, and
+      // this staged row has none.
+      clearCompatKeys: ['thinkingTokenBudgetField', 'supportsThinkingTokenBudget', 'vllmPriority', 'supportsDeveloperRole'],
     })
   })
 
@@ -643,6 +648,79 @@ describe('EffortEditor compat controls', () => {
     expect(api.commit).toHaveBeenCalled()
     const write = (api.commit.mock.calls[0] as unknown[])[2] as Record<string, unknown>
     expect(write['compat']).toMatchObject({ thinkingTokenBudgetField: 'thinking_budget' })
+  })
+})
+
+describe('EffortEditor thinking-format controls', () => {
+  it('offers every format the kernel accepts, unset first', async () => {
+    const { container } = await renderEditor(baseProps({ routeApi: 'openai-completions' }))
+    const select = container.querySelector<HTMLSelectElement>(`select[aria-label^="${t('thinkingFormatLabel')}"]`)
+    expect(select).not.toBeNull()
+    expect(Array.from(select!.options).map(option => option.value)).toEqual(['', ...THINKING_FORMATS])
+    expect(select!.options[0]!.textContent).toBe(t('thinkingFormatUnset'))
+  })
+
+  it('renders the stored format and the two endpoint switches', async () => {
+    const { container } = await renderEditor(baseProps({
+      routeApi: 'openai-completions',
+      compat: { thinkingFormat: 'deepseek', supportsDeveloperRole: false, supportsReasoningEffort: true },
+    }))
+    expect(container.querySelector<HTMLSelectElement>(`select[aria-label^="${t('thinkingFormatLabel')}"]`)!.value).toBe('deepseek')
+    expect(container.querySelector<HTMLSelectElement>(`select[aria-label^="${t('developerRoleLabel')}"]`)!.value).toBe('false')
+    expect(container.querySelector<HTMLSelectElement>(`select[aria-label^="${t('effortParamLabel')}"]`)!.value).toBe('true')
+  })
+
+  it('leaves all three unset on a row that never declared them', async () => {
+    const { container } = await renderEditor(baseProps({ routeApi: 'openai-completions' }))
+    for (const label of [t('thinkingFormatLabel'), t('developerRoleLabel'), t('effortParamLabel')]) {
+      expect(container.querySelector<HTMLSelectElement>(`select[aria-label^="${label}"]`)!.value).toBe('')
+    }
+  })
+
+  it('is absent on a protocol that does not take a thinking format', async () => {
+    const { container } = await renderEditor(baseProps({ routeApi: 'openai-responses' }))
+    expect(container.querySelector(`select[aria-label^="${t('thinkingFormatLabel')}"]`)).toBeNull()
+  })
+
+  it('writes the stored format and switches alongside a ladder edit', async () => {
+    const api = baseApi()
+    const { container } = await renderEditor(baseProps({
+      api,
+      routeApi: 'openai-completions',
+      efforts: { high: 'high' },
+      compat: { thinkingFormat: 'deepseek', supportsDeveloperRole: false, supportsReasoningEffort: true },
+    }))
+    await act(async () => { checkboxes(container)[2]!.click() })
+    const write = (api.commit.mock.calls[0] as unknown[])[2] as Record<string, unknown>
+    expect(write['compat']).toMatchObject({
+      thinkingFormat: 'deepseek',
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: true,
+    })
+  })
+
+  it('owns the three keys, so an empty picker clears them', () => {
+    // A stored format the user drops back to "unset" has to leave the document,
+    // exactly like the budget pick: the field is this editor's to clear.
+    expect(clearedCompatKeys('openai-completions', undefined)).toEqual([
+      'thinkingTokenBudgetField', 'supportsThinkingTokenBudget', 'vllmPriority',
+      'thinkingFormat', 'supportsDeveloperRole', 'supportsReasoningEffort',
+    ])
+    expect(clearedCompatKeys('openai-completions', { thinkingFormat: 'deepseek' })).toEqual([
+      'thinkingTokenBudgetField', 'supportsThinkingTokenBudget', 'vllmPriority',
+      'supportsDeveloperRole', 'supportsReasoningEffort',
+    ])
+  })
+
+  it('lets the picked format drive the Default-wire warning', async () => {
+    // The picker and the warning describe the same wire: a hand-picked
+    // `deepseek` must warn even when the knowledge base suggests nothing.
+    const { container } = await renderEditor(baseProps({
+      routeApi: 'openai-completions',
+      efforts: { high: 'high' },
+      compat: { thinkingFormat: 'deepseek' },
+    }))
+    expect(container.textContent).toContain(t('defaultRiskDisabled'))
   })
 })
 

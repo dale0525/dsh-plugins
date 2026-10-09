@@ -30,7 +30,7 @@ import {
   type DraftLevels,
 } from './effort.js'
 import { defaultWireRisk } from './wire-preview.js'
-import { suggestEfforts } from '../knowledge.js'
+import { suggestEfforts, THINKING_FORMATS } from '../knowledge.js'
 import type { EffortEditorApi } from './types.js'
 
 /** Thousands-grouped token counts, matching the official capacity inputs. */
@@ -132,7 +132,15 @@ function buildModalityIntent(draft: DraftModality): InputModalities | null {
  * a picker means unset, not "keep whatever was chosen last".
  */
 export const OWNED_COMPAT_KEYS: Readonly<Record<string, readonly string[]>> = {
-  'openai-completions': ['thinkingTokenBudgetField', 'supportsThinkingTokenBudget', 'vllmPriority'],
+  'openai-completions': [
+    'thinkingTokenBudgetField', 'supportsThinkingTokenBudget', 'vllmPriority',
+    // The reasoning-dispatch face: which wire format carries thinking, whether
+    // the endpoint takes a reasoning-effort parameter at all, and whether
+    // pi-ai may rewrite the system prompt to the developer role. These are the
+    // switches a non-standard relay needs, and the ones the official card has
+    // no field for -- the reason this section exists.
+    'thinkingFormat', 'supportsDeveloperRole', 'supportsReasoningEffort',
+  ],
   'openai-responses': ['supportsMaxOutputTokens'],
 }
 
@@ -207,6 +215,12 @@ export function EffortEditor({ route, routeApi, routeBaseURL, modelId, modelName
   const [budgetField, setBudgetField] = useState<string>(() => initialCompat?.thinkingTokenBudgetField ?? '')
   const [priorityText, setPriorityText] = useState<string>(() => initialCompat?.vllmPriority === undefined ? '' : String(initialCompat.vllmPriority))
   const [maxOutput, setMaxOutput] = useState<string>(() => initialCompat?.supportsMaxOutputTokens === undefined ? '' : String(initialCompat.supportsMaxOutputTokens))
+  // The reasoning-dispatch face. Each picker is a string draft with '' meaning
+  // "unset" -- the same vocabulary the budget picker above uses, so one clear
+  // rule (an empty owned field is deleted) covers all of them.
+  const [thinkingFormat, setThinkingFormat] = useState<string>(() => initialCompat?.thinkingFormat ?? '')
+  const [developerRole, setDeveloperRole] = useState<string>(() => initialCompat?.supportsDeveloperRole === undefined ? '' : String(initialCompat.supportsDeveloperRole))
+  const [effortParam, setEffortParam] = useState<string>(() => initialCompat?.supportsReasoningEffort === undefined ? '' : String(initialCompat.supportsReasoningEffort))
   const previousCompat = useRef<CompatSuggestion | undefined>(initialCompat)
   const [suggestedInputSource, setSuggestedInputSource] = useState<InputSource | undefined>(undefined)
   const [referenceContext, setReferenceContext] = useState<number | undefined>(undefined)
@@ -241,6 +255,9 @@ export function EffortEditor({ route, routeApi, routeBaseURL, modelId, modelName
         setBudgetField(initialCompat?.thinkingTokenBudgetField ?? '')
         setPriorityText(initialCompat?.vllmPriority === undefined ? '' : String(initialCompat.vllmPriority))
         setMaxOutput(initialCompat?.supportsMaxOutputTokens === undefined ? '' : String(initialCompat.supportsMaxOutputTokens))
+        setThinkingFormat(initialCompat?.thinkingFormat ?? '')
+        setDeveloperRole(initialCompat?.supportsDeveloperRole === undefined ? '' : String(initialCompat.supportsDeveloperRole))
+        setEffortParam(initialCompat?.supportsReasoningEffort === undefined ? '' : String(initialCompat.supportsReasoningEffort))
       }
     }
     // The pick participates in the same sync discipline as the other three
@@ -256,6 +273,11 @@ export function EffortEditor({ route, routeApi, routeBaseURL, modelId, modelName
     if (pruned !== '' && /^-?\d+$/.test(pruned)) out.vllmPriority = Number.parseInt(pruned, 10)
     if (maxOutput === 'true') out.supportsMaxOutputTokens = true
     else if (maxOutput === 'false') out.supportsMaxOutputTokens = false
+    if (thinkingFormat !== '') out.thinkingFormat = thinkingFormat
+    if (developerRole === 'true') out.supportsDeveloperRole = true
+    else if (developerRole === 'false') out.supportsDeveloperRole = false
+    if (effortParam === 'true') out.supportsReasoningEffort = true
+    else if (effortParam === 'false') out.supportsReasoningEffort = false
     return Object.keys(out).length === 0 ? undefined : out
   }
   const compatChanged = (): boolean => {
@@ -264,6 +286,9 @@ export function EffortEditor({ route, routeApi, routeBaseURL, modelId, modelName
       ...(initialCompat?.thinkingTokenBudgetField === undefined ? {} : { thinkingTokenBudgetField: initialCompat.thinkingTokenBudgetField }),
       ...(initialCompat?.vllmPriority === undefined ? {} : { vllmPriority: initialCompat.vllmPriority }),
       ...(initialCompat?.supportsMaxOutputTokens === undefined ? {} : { supportsMaxOutputTokens: initialCompat.supportsMaxOutputTokens }),
+      ...(initialCompat?.thinkingFormat === undefined ? {} : { thinkingFormat: initialCompat.thinkingFormat }),
+      ...(initialCompat?.supportsDeveloperRole === undefined ? {} : { supportsDeveloperRole: initialCompat.supportsDeveloperRole }),
+      ...(initialCompat?.supportsReasoningEffort === undefined ? {} : { supportsReasoningEffort: initialCompat.supportsReasoningEffort }),
     })
   }
   // The declared levels of this draft: the pick's value domain.
@@ -418,6 +443,27 @@ export function EffortEditor({ route, routeApi, routeBaseURL, modelId, modelName
     setMessage(undefined)
   }
 
+  const patchThinkingFormat = (value: string): void => {
+    markDirty()
+    setThinkingFormat(value)
+    commitPending(draft, modality, defaultEffort)
+    setMessage(undefined)
+  }
+
+  const patchDeveloperRole = (value: string): void => {
+    markDirty()
+    setDeveloperRole(value)
+    commitPending(draft, modality, defaultEffort)
+    setMessage(undefined)
+  }
+
+  const patchEffortParam = (value: string): void => {
+    markDirty()
+    setEffortParam(value)
+    commitPending(draft, modality, defaultEffort)
+    setMessage(undefined)
+  }
+
   const patchDefaultEffort = (value: string): void => {
     markDirty()
     setDefaultEffort(value)
@@ -501,6 +547,9 @@ export function EffortEditor({ route, routeApi, routeBaseURL, modelId, modelName
     setBudgetField(initialCompat?.thinkingTokenBudgetField ?? '')
     setPriorityText(initialCompat?.vllmPriority === undefined ? '' : String(initialCompat.vllmPriority))
     setMaxOutput(initialCompat?.supportsMaxOutputTokens === undefined ? '' : String(initialCompat.supportsMaxOutputTokens))
+    setThinkingFormat(initialCompat?.thinkingFormat ?? '')
+    setDeveloperRole(initialCompat?.supportsDeveloperRole === undefined ? '' : String(initialCompat.supportsDeveloperRole))
+    setEffortParam(initialCompat?.supportsReasoningEffort === undefined ? '' : String(initialCompat.supportsReasoningEffort))
     setSuggested(undefined)
     setSuggestedSource('')
     setSuggestedConfidence('low')
@@ -515,13 +564,18 @@ export function EffortEditor({ route, routeApi, routeBaseURL, modelId, modelName
   }
 
   // Default-wire warning (issue #2): a stored forced-thinking ladder sends
-  // an off-equivalent on Default/test calls. The format prefers the just
-  // applied suggestion, else the knowledge base for this route.
-  const wireFormat = appliedCompatRef.current?.thinkingFormat
-    ?? suggestEfforts(modelId, {
-      ...(routeApi === undefined ? {} : { api: routeApi }),
-      ...(routeBaseURL === undefined ? {} : { baseURL: routeBaseURL }),
-    }).compat?.thinkingFormat
+  // an off-equivalent on Default/test calls. The format the user can SEE wins:
+  // the picker's own value, else the just-applied suggestion, else the
+  // knowledge base for this route. The picker is the document's real wire, so
+  // letting the knowledge base outrank it would warn about a format the route
+  // does not send.
+  const wireFormat = thinkingFormat !== ''
+    ? thinkingFormat
+    : appliedCompatRef.current?.thinkingFormat
+      ?? suggestEfforts(modelId, {
+        ...(routeApi === undefined ? {} : { api: routeApi }),
+        ...(routeBaseURL === undefined ? {} : { baseURL: routeBaseURL }),
+      }).compat?.thinkingFormat
   const wireRisk = defaultWireRisk(initialEfforts, wireFormat)
 
   const disabled = readOnly || busy
@@ -645,6 +699,50 @@ export function EffortEditor({ route, routeApi, routeBaseURL, modelId, modelName
       {(routeApi ?? '').toLowerCase() === 'openai-completions' ? (
         <div className="bre-compat">
           <span className="bre-effort-title">{t('compatTitle')}</span>
+          <label className="bre-compat-row">
+            <span className="bre-compat-label">{t('thinkingFormatLabel')}</span>
+            <select
+              className="bre-select"
+              disabled={disabled}
+              aria-label={t('thinkingFormatLabel') + ' ' + String(index + 1)}
+              value={thinkingFormat}
+              onChange={(event) => { patchThinkingFormat(event.target.value) }}
+            >
+              <option value="">{t('thinkingFormatUnset')}</option>
+              {THINKING_FORMATS.map(format => <option key={format} value={format}>{format}</option>)}
+            </select>
+            <span className="bre-compat-hint">{t('thinkingFormatHint')}</span>
+          </label>
+          <label className="bre-compat-row">
+            <span className="bre-compat-label">{t('developerRoleLabel')}</span>
+            <select
+              className="bre-select"
+              disabled={disabled}
+              aria-label={t('developerRoleLabel') + ' ' + String(index + 1)}
+              value={developerRole}
+              onChange={(event) => { patchDeveloperRole(event.target.value) }}
+            >
+              <option value="">{t('switchUnset')}</option>
+              <option value="true">{t('switchOn')}</option>
+              <option value="false">{t('switchOff')}</option>
+            </select>
+            <span className="bre-compat-hint">{t('developerRoleHint')}</span>
+          </label>
+          <label className="bre-compat-row">
+            <span className="bre-compat-label">{t('effortParamLabel')}</span>
+            <select
+              className="bre-select"
+              disabled={disabled}
+              aria-label={t('effortParamLabel') + ' ' + String(index + 1)}
+              value={effortParam}
+              onChange={(event) => { patchEffortParam(event.target.value) }}
+            >
+              <option value="">{t('switchUnset')}</option>
+              <option value="true">{t('switchOn')}</option>
+              <option value="false">{t('switchOff')}</option>
+            </select>
+            <span className="bre-compat-hint">{t('effortParamHint')}</span>
+          </label>
           <label className="bre-compat-row">
             <span className="bre-compat-label">{t('budgetFieldLabel')}</span>
             <select

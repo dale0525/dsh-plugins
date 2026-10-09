@@ -55,6 +55,30 @@ export type InputModalities = readonly InputModality[]
 export const THINKING_TOKEN_BUDGET_FIELDS = ['thinking_token_budget', 'thinking_budget', 'thinking_budget_tokens'] as const
 export type ThinkingTokenBudgetField = (typeof THINKING_TOKEN_BUDGET_FIELDS)[number]
 
+/**
+ * Reasoning-dispatch wire formats pi-ai accepts (its `SUPPORTED_THINKING_FORMATS`
+ * keys, most-reached first). The kernel keeps that constant module-private, so
+ * the vocabulary is pinned here the way the budget fields above are — and
+ * `tests/vocabulary.spec.ts` fails if the installed artifact drifts from it.
+ *
+ * The editor renders this list verbatim: a format the picker cannot name is a
+ * format the user cannot hand-set, which is the whole point of the control.
+ */
+export const THINKING_FORMATS = [
+  'openai',
+  'deepseek',
+  'openrouter',
+  'together',
+  'baseten',
+  'zai',
+  'qwen',
+  'chat-template',
+  'qwen-chat-template',
+  'string-thinking',
+  'ant-ling',
+] as const
+export type ThinkingFormat = (typeof THINKING_FORMATS)[number]
+
 /** The compat fields this plugin may suggest (a subset of the profile schema). */
 export interface CompatSuggestion {
   /** Wire format the endpoint speaks; omitted when unknown. */
