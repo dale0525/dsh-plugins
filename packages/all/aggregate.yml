@@ -3,7 +3,6 @@
 # deps: 该子包以普通 semver range 写进本包 dependencies（版本取自子包 package.json）。
 patchFrom:
   - ../dsh-config-manager
-  - ../dsh-workbuddy-connect
   - ../dsh-easyrewrite
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch
@@ -19,7 +18,6 @@ patchFrom:
   - ../dsh-stitch-designer
 deps:
   - ../dsh-config-manager
-  - ../dsh-workbuddy-connect
   - ../dsh-easyrewrite
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch

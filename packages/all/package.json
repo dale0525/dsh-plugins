@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.70",
+  "version": "0.5.71",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -32,7 +32,6 @@
     "@logictan/dsh-openviking": "^0.4.7",
     "@logictan/dsh-reasoning-strip": "^0.1.0",
     "@logictan/dsh-stitch-designer": "^1.0.0",
-    "@logictan/dsh-todo-goal": "^0.1.0",
-    "@logictan/dsh-workbuddy-connect": "^0.7.1"
+    "@logictan/dsh-todo-goal": "^0.1.0"
   }
 }

@@ -31,18 +31,6 @@
         # 收不了目录树，所以跨设备同步的插件状态必须落在这一棵目录里。
         pluginFilesDir: plugin-config
 
-# from ../dsh-workbuddy-connect
-# Register the WorkBuddy provider without changing the profile's current
-# default model. The plugin reuses the WorkBuddy desktop app's sign-in; no
-# separate OAuth flow is started.
-#
-# Row id stays `llm-workbuddy`: it equals the host half's `export const name`
-# in src/index.ts, and the browser half keys its configuration entry on
-# `<bundle package name>#llm-workbuddy` for this same id.
-- insert:
-    - id: llm-workbuddy
-      name: '@logictan/dsh-workbuddy-connect'
-
 # from ../dsh-easyrewrite
 # dsh-easyrewrite bundle patch layer —— 把本插件挂载进 profile 树。
 #

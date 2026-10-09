@@ -5,7 +5,8 @@ packages:
 # 写普通 semver range，仓库内开发时链接到 workspace 工程（版本同源），
 # profile 里从 npm registry 安装时按该 range 解析。
 #
-# 这两个包只出现在 devDependencies 的传递依赖里（workbuddy → @earendil-works/pi-ai），
+# 这两个包只出现在 devDependencies 的传递依赖里
+# （better-reasoning-effort → @deepseek-ai/dsh-llm-pi-ai → @earendil-works/pi-ai），
 # 它们的 install 脚本对构建/测试/运行都不是必需的，显式拒绝执行以免 CI 静默跑第三方脚本。
 #
 # esbuild 同属「脚本非必需」：fork 自 dsh-better-reasoning-effort 的子包用它做
@@ -108,6 +109,7 @@ minimumReleaseAgeExclude:
 overrides:
   # 把参与 Context 声明合并的宿主包收敛到宿主当前世代（升级前是 0.1.6-alpha.2）。
   # 目的不变：让声明合并落在同一个物理实例上，与真实 profile 一致。
-  # 世代不跟着宿主走，会强制把 workbuddy 的 0.2.0-rc.2 peer 降级，
+  # 世代不跟着宿主走，dsh-openviking 的 overrides 会按旧世代钉出
+  # dsh-llm@0.1.0-rc.6，它把 dsh-attachment 拖成第二份 0.1.0-rc.8 实例，
   # 产生两份互不兼容的 AttachmentStore 类型（宿主半边 typecheck 报 protected 成员不可赋值）。
   '@deepseek-ai/dsh-attachment': 0.2.0-rc.2
