@@ -70,46 +70,49 @@ describe('client bundle load contract', () => {
   })
 })
 
-describe('client apply wiring', () => {
-  /** Apply the bundle against a recording context. */
-  function applyWith(services) {
-    const registrations = []
-    const injected = []
-    const effects = []
+/**
+ * Apply the bundle against a recording context.
+ *
+ * Shared by the wiring suite and the row-marker suite: both need the effects
+ * the plugin registers, and the marker effect is registered through a nested
+ * `inject`, so the callback has to hand it back a context with `effect` on it.
+ */
+function applyWith(services) {
+  const registrations = []
+  const injected = []
+  const effects = []
 
-    const slots = {
-      inject: (name, callback) => {
-        injected.push(name)
-        callback()
-      },
-      register: (options, component) => {
-        registrations.push({ options, component })
-        return () => {}
-      },
-    }
-
-    const ctx = {
-      slots,
-      locale: { register: () => () => {}, bind: () => (key) => key },
-      effect: (callback) => effects.push(callback),
-      inject: (names, callback) => callback({ slots, locale: ctx.locale, ...services }),
-      ...services,
-    }
-
-    registration.factory(requireStub).apply(ctx)
-    return { registrations, injected, effects }
+  const slots = {
+    inject: (name, callback) => {
+      injected.push(name)
+      callback()
+    },
+    register: (options, component) => {
+      registrations.push({ options, component })
+      return () => {}
+    },
   }
 
-  it('registers the composer picker and the sidebar badge', () => {
+  const ctx = {
+    slots,
+    locale: { register: () => () => {}, bind: () => (key) => key },
+    effect: (callback) => effects.push(callback),
+    inject: (names, callback) => callback({ slots, locale: ctx.locale, effect: ctx.effect, ...services }),
+    ...services,
+  }
+
+  registration.factory(requireStub).apply(ctx)
+  return { registrations, injected, effects }
+}
+
+describe('client apply wiring', () => {
+  it('registers the composer picker', () => {
     const { registrations, injected } = applyWith({})
 
-    assert.deepEqual(injected, ['conversation.input.left', 'sidebar.session.row.leading'])
-    assert.equal(registrations.length, 2)
-
-    const bySlot = {}
-    for (const entry of registrations) bySlot[entry.options.name] = entry
-    assert.equal(bySlot['conversation.input.left'].options.id, 'worktree-entry')
-    assert.equal(bySlot['sidebar.session.row.leading'].options.id, 'worktree-badge')
+    assert.deepEqual(injected, ['conversation.input.left'])
+    assert.equal(registrations.length, 1)
+    assert.equal(registrations[0].options.name, 'conversation.input.left')
+    assert.equal(registrations[0].options.id, 'worktree-entry')
   })
 
   it('declares its locale namespace on every entry, so the framework injects t', () => {
@@ -118,26 +121,185 @@ describe('client apply wiring', () => {
     for (const entry of registrations) assert.equal(entry.options.locale, 'worktreeSession')
   })
 
-  it('injects the workspace services into the composer picker only', () => {
+  it('injects the workspace services into the composer picker', () => {
     const workspaces = { create: () => {} }
     const uiWorkspace = { connectWorkspace: () => {} }
     const { registrations } = applyWith({ workspaces, uiWorkspace })
 
     const picker = registrations.find((entry) => entry.options.name === 'conversation.input.left')
-    const badge = registrations.find((entry) => entry.options.name === 'sidebar.session.row.leading')
 
     const share = picker.options.inject()
     assert.equal(share.workspaces, workspaces)
     assert.equal(share.uiWorkspace, uiWorkspace)
-    // The badge only reads the Session list, so it carries no share.
-    assert.equal(badge.options.inject, undefined)
   })
 
-  it('registers its dictionaries through an effect', () => {
+  it('registers its dictionaries and its row markers through effects', () => {
     const { effects } = applyWith({})
 
-    assert.equal(effects.length, 1)
+    // The marker effect needs a DOM; driving it is the row-marker suite's job.
+    assert.equal(effects.length, 2)
     assert.equal(typeof effects[0](), 'function')
+  })
+})
+
+describe('workspace row markers', () => {
+  const originalFetch = globalThis.fetch
+  const originalDocument = globalThis.document
+  const originalObserver = globalThis.MutationObserver
+
+  after(() => {
+    globalThis.fetch = originalFetch
+    globalThis.document = originalDocument
+    globalThis.MutationObserver = originalObserver
+  })
+
+  /**
+   * A DOM just large enough for the marker pass: workspace rows, one `<style>`
+   * registry, and a MutationObserver that records what it was asked to watch.
+   */
+  function makeDom() {
+    const rows = []
+    const styles = []
+    const observers = []
+
+    const document = {
+      querySelectorAll: (selector) =>
+        selector === '[data-row-key^="workspace:"]'
+          ? rows.filter((row) => String(row.getAttribute('data-row-key')).startsWith('workspace:'))
+          : [],
+      querySelector: (selector) => {
+        const match = /^style\[data-plugin-css="(.*)"\]$/.exec(selector)
+        if (match === null) return null
+        return styles.find((style) => style.dataset.pluginCss === match[1]) || null
+      },
+      createElement: () => ({ dataset: {}, textContent: '' }),
+      head: { appendChild: (tag) => styles.push(tag) },
+      body: {},
+    }
+
+    class MutationObserver {
+      constructor(callback) {
+        this.callback = callback
+        observers.push(this)
+      }
+      observe(target, options) {
+        this.target = target
+        this.options = options
+      }
+      disconnect() {
+        this.disconnected = true
+      }
+    }
+
+    return {
+      document,
+      MutationObserver,
+      styles,
+      observers,
+      addRow: (workspaceId) => {
+        const attrs = { 'data-row-key': `workspace:${workspaceId}` }
+        const row = {
+          getAttribute: (name) => (name in attrs ? attrs[name] : null),
+          setAttribute: (name, value) => {
+            attrs[name] = value
+          },
+          removeAttribute: (name) => {
+            delete attrs[name]
+          },
+        }
+        rows.push(row)
+        return row
+      },
+    }
+  }
+
+  /** A status read answering "is this directory a linked worktree". */
+  function statusFetch(worktreePaths) {
+    return (url) => {
+      const cwd = decodeURIComponent(String(url).split('cwd=')[1])
+      const worktrees = [{ path: '/repo', isMain: true, name: 'repo' }]
+      if (worktreePaths.includes(cwd)) worktrees.push({ path: cwd, isMain: false, name: cwd.split('/').pop() })
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ isRepo: true, repoRoot: '/repo', worktrees }),
+      })
+    }
+  }
+
+  /** Let the queued status promises run. */
+  async function settle() {
+    for (let i = 0; i < 8; i += 1) await Promise.resolve()
+  }
+
+  const listOf = (items) => ({ list: { getSnapshot: () => ({ phase: 'ready', items }) } })
+
+  /** Run the row-marker effect against one workspace list and DOM. */
+  async function mountRows(workspaces, dom) {
+    globalThis.document = dom.document
+    globalThis.MutationObserver = dom.MutationObserver
+    const { effects } = applyWith({ workspaces })
+    const cleanup = effects[1]()
+    await settle()
+    return cleanup
+  }
+
+  it('marks a worktree row and leaves the main checkout alone', async () => {
+    globalThis.fetch = statusFetch(['/repo/.worktrees/wt-abc123'])
+    const dom = makeDom()
+    const mainRow = dom.addRow('w-main')
+    const worktreeRow = dom.addRow('w-wt')
+
+    await mountRows(
+      listOf([
+        { workspaceId: 'w-main', path: '/repo' },
+        { workspaceId: 'w-wt', path: '/repo/.worktrees/wt-abc123' },
+      ]),
+      dom,
+    )
+
+    assert.equal(worktreeRow.getAttribute('data-dsh-worktree'), 'branch')
+    assert.equal(mainRow.getAttribute('data-dsh-worktree'), null)
+  })
+
+  it('drops the marker when the directory is no longer a worktree', async () => {
+    globalThis.fetch = statusFetch([])
+    const dom = makeDom()
+    const row = dom.addRow('w-wt')
+    row.setAttribute('data-dsh-worktree', 'branch')
+
+    await mountRows(listOf([{ workspaceId: 'w-wt', path: '/repo/.worktrees/wt-abc123' }]), dom)
+
+    assert.equal(row.getAttribute('data-dsh-worktree'), null)
+  })
+
+  it('injects its stylesheet once and re-stamps rows the sidebar re-creates', async () => {
+    globalThis.fetch = statusFetch(['/repo/.worktrees/wt-abc123'])
+    const dom = makeDom()
+    const workspaces = listOf([{ workspaceId: 'w-wt', path: '/repo/.worktrees/wt-abc123' }])
+
+    await mountRows(workspaces, dom)
+    // A second activation must not append a second copy of the stylesheet.
+    await mountRows(workspaces, dom)
+
+    assert.equal(dom.styles.length, 1)
+    assert.ok(dom.styles[0].textContent.includes('[data-dsh-worktree]'))
+
+    // React re-creates a row as groups expand; the observer re-stamps it.
+    const later = dom.addRow('w-wt')
+    await dom.observers[dom.observers.length - 1].callback()
+    await settle()
+    assert.equal(later.getAttribute('data-dsh-worktree'), 'branch')
+  })
+
+  it('disconnects its observer when the effect is disposed', async () => {
+    globalThis.fetch = statusFetch([])
+    const dom = makeDom()
+
+    const cleanup = await mountRows(listOf([]), dom)
+    cleanup()
+
+    assert.equal(dom.observers[0].disconnected, true)
+    assert.deepEqual(dom.observers[0].options, { childList: true, subtree: true })
   })
 })
 
@@ -220,7 +382,7 @@ describe('composer picker status handling', () => {
       slots,
       locale: { register: () => () => {}, bind: () => (key) => key },
       effect: () => {},
-      inject: (names, callback) => callback({ slots, locale: ctx.locale }),
+      inject: (names, callback) => callback({ slots, locale: ctx.locale, effect: ctx.effect }),
     }
     reactImpl = react.api
     primitivesImpl = new Proxy(
@@ -355,107 +517,47 @@ describe('composer picker status handling', () => {
 
     assert.equal(labelOf(mounted), 'entry.main')
   })
-})
 
-describe('sidebar badge', () => {
-  /** Install a hook runtime and capture the badge component in one go. */
-  function loadBadge() {
-    const hooks = []
-    let cursor = 0
-    // Set before `apply`: the factory captures these modules when it runs.
-    reactImpl = {
-      createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
-      useRef: (initial) => {
-        const i = cursor++
-        if (!(i in hooks)) hooks[i] = { current: initial }
-        return hooks[i]
-      },
-      useState: (initial) => {
-        const i = cursor++
-        if (!(i in hooks)) hooks[i] = initial
-        return [
-          hooks[i],
-          (value) => {
-            hooks[i] = typeof value === 'function' ? value(hooks[i]) : value
-          },
-        ]
-      },
-      useEffect: (fn) => {
-        cursor += 1
-        fn()
-      },
-    }
-    primitivesImpl = new Proxy(
-      { IconBranchOutlineRegular: function IconBranchOutlineRegular() {} },
-      { get: (t, k) => (k in t ? t[k] : () => null) },
-    )
+  it('lands on the new worktree after creating it, without a manual switch', async () => {
+    // The regression: `connectWorkspace` only connects, so the user was left
+    // in the blank composer they started in and had to find the new workspace
+    // in the sidebar and start a second conversation there.
+    const opened = []
+    globalThis.fetch = (url) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          url === '/api/dsh-worktree/create'
+            ? Promise.resolve({ path: '/repo-nav/.worktrees/wt-abc123' })
+            : Promise.resolve({
+                isRepo: true,
+                repoRoot: '/repo-nav',
+                worktrees: [{ path: '/repo-nav', name: 'repo-nav', isMain: true, prunable: false }],
+              }),
+      })
 
-    let component
-    const slots = {
-      inject: (name, callback) => callback(),
-      register: (options, registered) => {
-        if (options.name === 'sidebar.session.row.leading') component = registered
-        return () => {}
+    const react = makeReact()
+    const Component = pickerComponent(react)
+    const props = pickerProps('/repo-nav')
+    props.workspaces = { create: () => Promise.resolve({ workspaceId: 'w-new' }) }
+    props.uiWorkspace = {
+      connectWorkspace: () => {
+        throw new Error('create must navigate, not merely connect')
+      },
+      openWorkspace: (workspaceId) => {
+        opened.push(workspaceId)
+        return Promise.resolve()
       },
     }
-    const ctx = {
-      slots,
-      locale: { register: () => () => {}, bind: () => (key) => key },
-      effect: () => {},
-      inject: (names, callback) => callback({ slots, locale: ctx.locale }),
-    }
-    registration.factory(requireStub).apply(ctx)
+    let tree = react.render(Component, props)
+    react.setOnRender(() => {
+      tree = react.render(Component, props)
+    })
+    await settle()
 
-    return async (cwd, response, { reject = false } = {}) => {
-      globalThis.fetch = () =>
-        reject ? Promise.reject(new Error('404')) : Promise.resolve({ ok: true, json: () => Promise.resolve(response) })
+    tree.props.onSelect('__new__')
+    await settle()
 
-      const props = {
-        t: (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key),
-        sessionId: 'session-1',
-        useSessions: (selector) => selector({ byId: { 'session-1': { cwd } } }),
-      }
-      cursor = 0
-      component(props)
-      for (let i = 0; i < 8; i += 1) await Promise.resolve()
-      cursor = 0
-      return component(props)
-    }
-  }
-
-  /** The status payload for a repository whose worktrees are as given. */
-  function statusOf(worktrees) {
-    return { isRepo: true, repoRoot: worktrees[0].path, worktrees }
-  }
-
-  it('marks a Session working in a linked worktree', async () => {
-    const render = loadBadge()
-
-    const tree = await render(
-      '/repo/.worktrees/wt-abc123',
-      statusOf([
-        { path: '/repo', name: 'repo', isMain: true, prunable: false },
-        { path: '/repo/.worktrees/wt-abc123', name: 'wt-abc123', isMain: false, prunable: false },
-      ]),
-    )
-
-    assert.notEqual(tree, null)
-    assert.equal(tree.props['aria-label'], 'badge.title:{"name":"wt-abc123"}')
-  })
-
-  it('stays silent on the main checkout', async () => {
-    const render = loadBadge()
-
-    const tree = await render('/repo', statusOf([{ path: '/repo', name: 'repo', isMain: true, prunable: false }]))
-
-    assert.equal(tree, null)
-  })
-
-  it('stays silent when the status read fails, rather than guessing', async () => {
-    const render = loadBadge()
-
-    const tree = await render('/repo/.worktrees/wt-abc123', undefined, { reject: true })
-
-    assert.equal(tree, null)
+    assert.deepEqual(opened, ['w-new'])
   })
 })

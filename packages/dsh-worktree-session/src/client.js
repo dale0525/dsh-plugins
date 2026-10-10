@@ -33,7 +33,6 @@ window.__ModuleLoader__.load({
       'menu.failed': '操作失败：{message}',
       'menu.draft': '输入框有内容，切换工作目录会清空它。再点一次确认。',
       'menu.unavailable': '无法读取工作目录状态，点击重试',
-      'badge.title': '工作树 {name}',
     }
 
     var en = {
@@ -48,7 +47,6 @@ window.__ModuleLoader__.load({
       'menu.failed': 'Failed: {message}',
       'menu.draft': 'The composer has text; switching clears it. Click again to confirm.',
       'menu.unavailable': 'Could not read the working directory status; click to retry',
-      'badge.title': 'Worktree {name}',
     }
 
     /** API paths, mirroring the host half's `API`. */
@@ -144,10 +142,10 @@ window.__ModuleLoader__.load({
     /**
      * One worktree picker.
      *
-     * Switching reuses `uiWorkspace.connectWorkspace`, the same reuse-or-create
-     * path the Workspace picker uses: it lands on an existing blank Session for
-     * the target Workspace when one exists, so opening the same worktree twice
-     * does not pile up empty Sessions.
+     * Switching goes through `uiWorkspace.openWorkspace`, which connects the
+     * target Workspace and then navigates into it. Connecting reuses an
+     * existing blank Session for that Workspace when one exists, so opening
+     * the same worktree twice does not pile up empty Sessions.
      *
      * `t` is framework-injected (the registration declares `locale`).
      */
@@ -239,7 +237,7 @@ window.__ModuleLoader__.load({
       var attachmentCount = (input && input.attachmentIds && input.attachmentIds.length) || 0
       var hasDraft = draft.trim() !== '' || attachmentCount > 0
 
-      /** Open (or reuse) a Session whose cwd is `path`. */
+      /** Open a Session whose cwd is `path`, and put the user in it. */
       var switchTo = function (path) {
         setOpen(false)
         setNotice(null)
@@ -249,7 +247,9 @@ window.__ModuleLoader__.load({
         return workspaces
           .create({ path: path })
           .then(function (workspace) {
-            return uiWorkspace.connectWorkspace(workspace.workspaceId)
+            // `openWorkspace` navigates; `connectWorkspace` only connects and
+            // would leave the user staring at the composer they started in.
+            return uiWorkspace.openWorkspace(workspace.workspaceId)
           })
           .catch(function (error) {
             setNotice(t('menu.failed', { message: String(error && error.message ? error.message : error) }))
@@ -358,52 +358,131 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /* ------------------------------------------------- workspace row markers */
+
+    /** Stylesheet id guarding the single injection of the row-marker CSS. */
+    var ROW_CSS_ID = 'worktree-session/rows.css'
+
     /**
-     * The sidebar badge marking a Session that works in a linked worktree.
+     * The branch glyph, carried as a mask so the row's own colour still applies.
      *
-     * A Session's `cwd` is the only durable evidence of which checkout it uses,
-     * so the badge asks the host about that directory and stays silent for the
-     * main checkout — a marker on every row would say nothing. A failed read
-     * (`FAILED`) carries no `isRepo` either, so it falls into the same silence:
-     * the badge never guesses that a Session is in a worktree.
+     * Same artwork as `IconBranchOutlineRegular` (16x16, 1px `currentColor`
+     * strokes). A mask rather than a background image because the workspace row
+     * tints its icon when it is the active one, and a baked-in colour would
+     * lose that.
      */
-    function WorktreeBadge(props) {
-      var t = props.t
-      var sessionId = props.sessionId
+    var BRANCH_MASK =
+      'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 16 16\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1\'%3E' +
+      '%3Cpath d=\'M1.01503 8.0001L5.6964 8.0001C6.41913 8.0001 6.78049 8.0001 7.12115 7.91951C7.4232 7.84804 7.71233 7.73014 7.97821 7.57C8.27809 7.38939 8.5364 7.13669 9.05303 6.63129L11.3281 4.40564\'/%3E' +
+      '%3Cpath d=\'M1.01221 7.9999L5.6964 7.9999C6.41913 7.9999 6.78049 7.9999 7.12115 8.08049C7.4232 8.15196 7.71233 8.26986 7.97821 8.43C8.27809 8.61061 8.5364 8.86331 9.05303 9.36871L11.3281 11.5944\'/%3E' +
+      '%3Ccircle cx=\'12.4502\' cy=\'3.3079\' r=\'1.56962\'/%3E' +
+      '%3Ccircle cx=\'12.4502\' cy=\'12.6921\' r=\'1.56962\'/%3E%3C/svg%3E")'
 
-      var cwd = props.useSessions(function (state) {
-        if (!sessionId || !state || !state.byId) return undefined
-        var row = state.byId[sessionId]
-        return row ? row.cwd : undefined
-      })
-      var status = useStatus(cwd)
+    /**
+     * Replace a worktree row's folder glyph with the branch glyph.
+     *
+     * The sidebar renders a workspace row as plain markup: it has no plugin
+     * slot, and a Workspace carries no icon of its own. So a worktree's row can
+     * only be told apart by marking the element and restyling it. The marker
+     * rides on the row itself, and the rule is scoped to the row's first child
+     * — the icon slot — because the sidebar's class names are build-local
+     * hashes that this plugin cannot name.
+     */
+    var ROW_CSS = [
+      '[data-dsh-worktree]>span:first-child{background-color:currentColor;',
+      '-webkit-mask:' + BRANCH_MASK + ' center/16px 16px no-repeat;',
+      'mask:' + BRANCH_MASK + ' center/16px 16px no-repeat}',
+      '[data-dsh-worktree]>span:first-child>svg{display:none}',
+    ].join('')
 
-      if (!cwd || !status || !status.isRepo) return null
-      var entry = (status.worktrees || []).find(function (item) {
-        return item.path === cwd
-      })
-      if (entry === undefined || entry.isMain) return null
+    /** Attribute this plugin stamps on a workspace row that is a worktree. */
+    var ROW_ATTR = 'data-dsh-worktree'
 
-      return React.createElement(
-        'span',
-        {
-          'aria-label': t('badge.title', { name: entry.name }),
-          title: t('badge.title', { name: entry.name }),
-          style: {
-            display: 'inline-flex',
-            alignItems: 'center',
-            marginRight: '4px',
-            color: 'var(--dsw-alias-text-secondary, currentColor)',
-            flexShrink: 0,
+    /**
+     * Mark every sidebar workspace row whose directory is a linked worktree.
+     *
+     * Rows are addressed by their `data-row-key` (`workspace:<id>`), which is
+     * the only stable handle the row exposes. Whether a directory is a worktree
+     * is the host's answer, not a guess from the path, so this reuses the same
+     * per-directory status read the picker and the badge share.
+     * @param workspaces - the client Workspace service, for its snapshot.
+     * @returns a disposer, or undefined when there is no DOM to mark.
+     */
+    function applyWorkspaceRowMarkers(workspaces) {
+      if (typeof document === 'undefined') return undefined
+
+      if (document.querySelector('style[data-plugin-css="' + ROW_CSS_ID + '"]') === null) {
+        var tag = document.createElement('style')
+        tag.dataset.plugin = 'worktree-session'
+        tag.dataset.pluginCss = ROW_CSS_ID
+        tag.textContent = ROW_CSS
+        document.head.appendChild(tag)
+      }
+
+      var mark = function () {
+        var snapshot = workspaces.list.getSnapshot()
+        var items = (snapshot && snapshot.items) || []
+        var rows = document.querySelectorAll('[data-row-key^="workspace:"]')
+        for (var i = 0; i < rows.length; i += 1) {
+          var row = rows[i]
+          var key = row.getAttribute('data-row-key') || ''
+          var workspaceId = key.slice('workspace:'.length)
+          var item = undefined
+          for (var j = 0; j < items.length; j += 1) {
+            if (items[j].workspaceId === workspaceId) item = items[j]
+          }
+          if (item === undefined) continue
+          markRow(row, item.path)
+        }
+      }
+
+      /** Stamp or clear one row once the host has answered for its directory. */
+      var markRow = function (row, path) {
+        loadStatus(path).then(
+          function (status) {
+            var entry = (status.worktrees || []).find(function (candidate) {
+              return candidate.path === path
+            })
+            var wanted = entry !== undefined && !entry.isMain
+            // The observer re-runs this on every DOM change, so an unchanged
+            // row must not be rewritten: the write would invalidate style for
+            // every row on every keystroke in the composer.
+            if (wanted === (row.getAttribute(ROW_ATTR) !== null)) return
+            if (wanted) row.setAttribute(ROW_ATTR, 'branch')
+            else row.removeAttribute(ROW_ATTR)
           },
-        },
-        React.createElement(Primitives.IconBranchOutlineRegular, null),
-      )
+          function () {
+            // An unreadable directory is not evidence of a worktree.
+            if (row.getAttribute(ROW_ATTR) !== null) row.removeAttribute(ROW_ATTR)
+          },
+        )
+      }
+
+      mark()
+      // Expanding a workspace, renaming it, or a fresh snapshot all rebuild the
+      // rows, so the pass re-runs whenever the list's DOM changes. Attribute
+      // writes are deliberately not observed, or marking a row would re-enter.
+      // The observation is app-wide, so passes are coalesced to one per tick:
+      // typing in the composer re-renders continuously, and a full row scan per
+      // mutation would be real work for no new information.
+      var scheduled = false
+      var schedule = function () {
+        if (scheduled) return
+        scheduled = true
+        queueMicrotask(function () {
+          scheduled = false
+          mark()
+        })
+      }
+      var observer = new MutationObserver(schedule)
+      observer.observe(document.body, { childList: true, subtree: true })
+      return function () {
+        observer.disconnect()
+      }
     }
 
     /**
-     * Register the picker at the left of the composer tool row, and the badge
-     * beside each worktree Session's name.
+     * Register the picker at the left of the composer tool row.
      *
      * The workspace services are required through a nested `inject` rather than
      * the plugin's own `inject` list: a plugin whose `inject` cannot be
@@ -419,6 +498,14 @@ window.__ModuleLoader__.load({
         'worktree-session: dictionaries',
       )
       ctx.inject(['workspaces', 'uiWorkspace'], function (scoped) {
+        // A worktree's sidebar row is plain markup with no plugin seat, so it
+        // is marked and restyled rather than rendered by a slot.
+        scoped.effect(
+          function () {
+            return applyWorkspaceRowMarkers(scoped.workspaces)
+          },
+          'worktree-session: workspace row markers',
+        )
         scoped.slots.inject('conversation.input.left', function () {
           return scoped.slots.register(
             {
@@ -431,17 +518,6 @@ window.__ModuleLoader__.load({
               },
             },
             WorktreeEntry,
-          )
-        })
-        scoped.slots.inject('sidebar.session.row.leading', function () {
-          return scoped.slots.register(
-            {
-              name: 'sidebar.session.row.leading',
-              id: 'worktree-badge',
-              order: 10,
-              locale: NS,
-            },
-            WorktreeBadge,
           )
         })
       })
