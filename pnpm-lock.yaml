@@ -59,6 +59,9 @@ importers:
       '@logictan/dsh-todo-goal':
         specifier: ^0.1.0
         version: link:../dsh-todo-goal
+      '@logictan/dsh-worktree-session':
+        specifier: ^0.1.0
+        version: link:../dsh-worktree-session
 
   packages/dsh-better-reasoning-effort:
     dependencies:
@@ -459,6 +462,25 @@ importers:
         version: 0.2.0-rc.2(f4d67997db82188fba4a070d3b317192)
 
   packages/dsh-todo-goal: {}
+
+  packages/dsh-worktree-session:
+    dependencies:
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.2
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@deepseek-ai/dsh-host-webserver':
+        specifier: ^0.2.0-rc.2
+        version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.3
+      typescript:
+        specifier: ~5.7.2
+        version: 5.7.3
 
 packages:
 

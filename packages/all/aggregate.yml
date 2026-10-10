@@ -16,6 +16,7 @@ patchFrom:
   - ../dsh-force-rules
   - ../dsh-reasoning-strip
   - ../dsh-stitch-designer
+  - ../dsh-worktree-session
 deps:
   - ../dsh-config-manager
   - ../dsh-easyrewrite
@@ -44,3 +45,4 @@ deps:
   # `$DSH_HOME/cordis.patch.yml` before installing this bundle; the API key moves
   # to the `STITCH_API_KEY` credential (set it on the Plugins page).
   - ../dsh-stitch-designer
+  - ../dsh-worktree-session
