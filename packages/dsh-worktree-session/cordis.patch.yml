@@ -1,0 +1,14 @@
+# The dsh-worktree-session bundle patch.
+#
+# One bare plugin row by package name: the host half (exports ".") owns the git
+# plumbing and the /api/dsh-worktree routes, and the `dsh.client` declaration in
+# package.json loads the browser half (exports "./client"). Row id equals the
+# host plugin's `export const name` in src/index.ts.
+#
+# The row carries no config. Worktrees always go to `<repo>/.worktrees` and that
+# directory is always recorded in the repository's `.gitignore`, so there is
+# nothing for a deployment to decide.
+
+- insert:
+    - id: worktree-session
+      name: '@logictan/dsh-worktree-session'
