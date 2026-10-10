@@ -15,7 +15,7 @@
  * ```
  *
  * 安全约束：
- *  - token 只存在于请求体内（同源 loopback，与导入 secretInputs 同策略），由 Host 写入
+ *  - token 只存在于请求体内（同源请求，与导入 secretInputs 同策略），由 Host 写入
  *    DSH credentials（credentialRef），绝不落同步文件/日志/URL；响应永不回传 token；
  *  - GitHub device flow：浏览器只持有 flowId（随机 id）+ user_code + 授权页 URL；
  *    device_code 与 access token 只存在于宿主（内存 / DSH credentials），永不回传；

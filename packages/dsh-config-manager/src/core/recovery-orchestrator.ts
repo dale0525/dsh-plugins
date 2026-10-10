@@ -3,7 +3,7 @@
  *
  * 职责：把 recovery 路由的编排逻辑（decision / confirmation / authority / snapshot 校验 /
  * journal 状态机 / 原子 verification+terminal / dismiss）提取为可测纯编排层。
- * 路由（index.ts）只负责：loopback fence + withMutationLock + 把结果映射为 HTTP 响应。
+ * 路由（index.ts）只负责：connection fence + withMutationLock + 把结果映射为 HTTP 响应。
  *
  * 安全不变量（§9.4 / §11）：
  *  - **权威 snapshotId 只来自 j.snapshotId**（不接受请求体覆盖）。

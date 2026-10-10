@@ -15,9 +15,9 @@
  *   $DSH_HOME files        -> FileSystemFacade    (node:fs, home-relative)
  *   resolveDshHome()       -> homeDir             (@deepseek-ai/dsh-home-paths)
  *
- * Security posture (mirrors the verified @linxin666/dsh-ssh@0.1.12 routes):
- *  - every route carries the loopback-only + same-origin trust fence
- *    (isLoopbackRequest); LAN-exposed deployments never serve these endpoints;
+ * Security posture:
+ *  - every route delegates to the composition's trust fence (refuseUntrusted);
+ *    LAN-exposed deployments serve endpoints according to connection's policy;
  *  - uploads/exported ZIPs are staged under $DSH_HOME/dsh-config-manager/{tmp,exports}
  *    and every `path`/`zipPath` reference is confined to those roots;
  *  - there is no encryption layer: every backup is plaintext, and secret values are
@@ -48,8 +48,10 @@ import type { SettingsForms } from '@deepseek-ai/dsh-settings'
 import * as dshCredentials from '@deepseek-ai/dsh-credentials'
 import type { CredentialProvider } from '@deepseek-ai/dsh-credentials'
 import { dshHomePath, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-// Type-only: pull the Cordis Context augmentations (webServer / workspaceRegistry)
+// Type-only: pull the Cordis Context augmentations (webServer / workspaceRegistry / connection)
 // and the WebRoute contract without any runtime import.
+import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WebRoute, WebServer } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-workspace'
@@ -144,7 +146,7 @@ export const name = 'config-manager'
 export const inject = ['settings', 'credentials']
 
 /** Plugin version, kept in sync with package.json ("version"). */
-const PLUGIN_VERSION = '0.1.78'
+const PLUGIN_VERSION = '0.1.79'
 
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
@@ -201,7 +203,7 @@ export interface Config {
 
 /** Route family — must match the browser half's CONFIG_MANAGER_API exactly. */
 const API = {
-  // 设置页页脚版本行（pluginVersion / dshVersion）。只读，loopback fence。
+  // 设置页页脚版本行（pluginVersion / dshVersion）。只读，connection fence。
   status: '/api/dsh-config-manager/status',
   // m-sync-ui：远程同步（Git 私有仓库通道）
   syncStatus: '/api/dsh-config-manager/sync/status',
@@ -265,30 +267,42 @@ const MAX_JSON_BODY_BYTES = 4 * 1024 * 1024
 /** Cap on raw upload bodies (staged to the controlled tmp dir). */
 const MAX_UPLOAD_BYTES = 256 * 1024 * 1024
 
-/* ---------------------------------------------------------- loopback fence */
+/* ---------------------------------------------------------- trust fence */
 
-/** Loopback literal check plus browser same-origin markers (dsh-ssh's fence). */
-function isLoopbackRequest(request: IncomingMessage): boolean {
-  const address = request.socket.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let hostUrl: URL
-  try {
-    hostUrl = new URL(`http://${host}`)
-  } catch {
-    return false
+/**
+ * Ask the composition whether one request may be served.
+ *
+ * `connection.requestRejection` is the deployment's single trust fence: it
+ * applies the Host/Origin checks (loopback plus the LAN authorities the
+ * deployment declares) and the browser authentication that rides with them.
+ * This plugin answers with the verdict instead of re-deriving it, because the
+ * declared LAN authorities live in `connection`'s config and a local check
+ * cannot see them.
+ *
+ * A missing `connection` refuses rather than serves: these routes sit in front
+ * of Connection's `/api` prefix route, so serving them without its fence would
+ * serve them unfenced.
+ * @param connection - the composition's Connection service, when it is up.
+ * @param req - the incoming request.
+ * @param res - the response, written to when the request is refused.
+ * @returns whether the request was refused.
+ */
+function refuseUntrusted(
+  connection: HostConnectionHandle | undefined,
+  req: IncomingMessage,
+  res: ServerResponse,
+): boolean {
+  if (connection === undefined) {
+    writeJson(res, 403, { error: 'forbidden' })
+    return true
   }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    return new URL(origin).host === hostUrl.host
-  } catch {
-    return false
-  }
+  const rejection = connection.requestRejection(req)
+  if (rejection === undefined) return false
+  writeJson(res, rejection, { error: rejection === 401 ? 'unauthorized' : 'forbidden' })
+  return true
 }
+
+export { refuseUntrusted }
 
 /* ---------------------------------------------------------------- responses */
 
@@ -883,6 +897,12 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
 }
 
 interface RoutesDeps {
+  /**
+   * The composition's trust fence, resolved per request rather than captured:
+   * a composed row order does not imply an activation order, so the service
+   * can legitimately still be absent when the routes are built.
+   */
+  connection: () => HostConnectionHandle | undefined
   host: ConfigManagerHostContext
   adapters: ConfigAdapter[]
   exportsDir: string
@@ -1193,7 +1213,7 @@ export function isGitHubAuthMissing(error: unknown): boolean {
 
 /** Build the /api/dsh-config-manager route family. */
 function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cfg: SyncConfig) => SyncEngine; lifecycle: ConfigLifecycle } {
-  const { host, adapters, exportsDir, tmpDir, snapshotsDir, runs, syncDir, dataDir, credentials, githubClientId, githubClientSecret, history } = deps
+  const { connection, host, adapters, exportsDir, tmpDir, snapshotsDir, runs, syncDir, dataDir, credentials, githubClientId, githubClientSecret, history } = deps
   /**
    * Phase 1 P0-1/P0-2：配置生命周期服务（自动快照 / 撤销 / 重做）。
    *
@@ -1311,12 +1331,9 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
     }),
   })
 
-  /** Fence + method guard (mirrors dsh-ssh). */
+  /** Fence + method guard: the composition's verdict first, then the method. */
   const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
-    if (!isLoopbackRequest(req)) {
-      writeJson(res, 403, { error: 'forbidden: loopback-only' })
-      return false
-    }
+    if (refuseUntrusted(connection(), req, res)) return false
     if (req.method !== method) {
       writeJson(res, 405, { error: `method not allowed: ${req.method}` })
       return false
@@ -1443,7 +1460,7 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
 
   // ============================================================ Phase 5 recovery orchestration
   // Recovery 路由**禁用 withMutationGate**（避免 double-journal：recovery 复用被恢复 operation 的
-  // 现有 journal，不新建）。mutation 路由只经 withMutationLock（Phase 2 GLOBAL 锁）+ loopback fence，
+  // 现有 journal，不新建）。mutation 路由只经 withMutationLock（Phase 2 GLOBAL 锁）+ connection fence，
   // **不传 isBlocked**（recovery 是解决 SAFE MODE 的机制，若被 SAFE MODE 阻断会死锁）。
   // 只读路由（status/preview）不持锁。权威 snapshotId 只来自 j.snapshotId（不接受请求体覆盖）。
   // 编排逻辑在 src/core/recovery-orchestrator.ts（可测纯编排层）。
@@ -1509,7 +1526,7 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
 
   const routesList: WebRoute[] = [
     // ------------------------------------------------------------- status
-    // 设置页页脚版本行：插件版本 + DSH 版本。只读、无 secret，loopback fence。
+    // 设置页页脚版本行：插件版本 + DSH 版本。只读、无 secret，connection fence。
     {
       kind: 'exact',
       path: API.status,
@@ -2157,6 +2174,7 @@ export function apply(ctx: Context, config?: Config): void {
   const runs = new RunRegistry({ msg: host.msg })
   const secretScanner = createConfiguredSecretScanner(config?.personalPatterns)
   const { routes, makeSyncEngine, lifecycle } = makeRoutes({
+    connection: () => readService<HostConnectionHandle>(ctx, 'connection'),
     host,
     adapters,
     exportsDir,

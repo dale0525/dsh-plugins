@@ -8,11 +8,18 @@
  * shells out to git itself, because a browser cannot and because the
  * repository root has to be resolved from the same `cwd` the tools use.
  *
- * The routes are registered on the optional `webServer` service: a deployment
- * without the Web UI keeps its Sessions and its worktrees, it just has no
- * picker to drive them. That is why `webServer` is awaited through a nested
- * `inject` instead of being named in the top-level `inject` list — naming it
- * would turn "no Web UI" into "this plugin never loads".
+ * The routes are registered on the optional `webServer` service and fenced by
+ * the optional `connection` service, both awaited through a nested `inject`
+ * instead of being named in the top-level `inject` list — naming them would
+ * turn "no Web UI" into "this plugin never loads".
+ *
+ * The fence is the composition's, never this plugin's own: `connection` owns
+ * the Host/Origin trust policy (loopback plus the LAN authorities the
+ * deployment declares) and the browser authentication that goes with it. A
+ * plugin-local loopback check cannot see those declared authorities, so it
+ * answers 403 to every LAN browser — which is exactly the bug this delegation
+ * fixes. The routes are `exact`, so they sit in front of Connection's `/api`
+ * prefix route and have to ask for the same verdict themselves.
  */
 
 import { execFile } from 'node:child_process'
@@ -23,8 +30,9 @@ import { join, relative } from 'node:path'
 import { promisify } from 'node:util'
 
 import type { Context } from '@deepseek-ai/cordis'
-// Type-only: pull the Cordis Context augmentation (webServer) and the WebRoute
-// contract without any runtime import.
+// Type-only: pull the Cordis Context augmentations (webServer / connection) and
+// the WebRoute contract without any runtime import.
+import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 
@@ -270,29 +278,31 @@ export async function createWorktree(
   return { ok: true, value: { path: created.path, branch: created.branch, repoRoot, gitignoreAdded } }
 }
 
-/* ---------------------------------------------------------- loopback fence */
+/* ---------------------------------------------------------- trust fence */
 
-/** Loopback literal check plus browser same-origin markers. */
-function isLoopbackRequest(request: IncomingMessage): boolean {
-  const address = request.socket.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let hostUrl: URL
-  try {
-    hostUrl = new URL(`http://${host}`)
-  } catch {
-    return false
-  }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    return new URL(origin).host === hostUrl.host
-  } catch {
-    return false
-  }
+/**
+ * Ask the composition whether one request may be served.
+ *
+ * `connection.requestRejection` is the deployment's single trust fence: it
+ * applies the Host/Origin checks (loopback plus the LAN authorities the
+ * deployment declares) and the browser authentication that rides with them.
+ * This plugin answers with the verdict instead of re-deriving it, because the
+ * declared LAN authorities live in `connection`'s config and a local check
+ * cannot see them.
+ * @param connection - the composition's Connection service.
+ * @param req - the incoming request.
+ * @param res - the response, written to when the request is refused.
+ * @returns whether the request was refused.
+ */
+function refuseUntrusted(
+  connection: HostConnectionHandle,
+  req: IncomingMessage,
+  res: ServerResponse,
+): boolean {
+  const rejection = connection.requestRejection(req)
+  if (rejection === undefined) return false
+  writeJson(res, rejection, { error: rejection === 401 ? 'unauthorized' : 'forbidden' })
+  return true
 }
 
 /* ---------------------------------------------------------------- responses */
@@ -342,18 +352,17 @@ export const API = {
 
 /**
  * Build the plugin's HTTP routes.
+ * @param connection - the composition's Connection service, whose trust fence
+ * every request is put through before the route's own work begins.
  * @returns the routes to register.
  */
-export function makeRoutes(): WebRoute[] {
+export function makeRoutes(connection: HostConnectionHandle): WebRoute[] {
   return [
     {
       kind: 'exact',
       path: API.status,
       handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden' })
-          return
-        }
+        if (refuseUntrusted(connection, req, res)) return
         if (req.method !== 'GET') {
           writeJson(res, 405, { error: 'method not allowed' })
           return
@@ -376,10 +385,7 @@ export function makeRoutes(): WebRoute[] {
       kind: 'exact',
       path: API.create,
       handler: async (req, res) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden' })
-          return
-        }
+        if (refuseUntrusted(connection, req, res)) return
         if (req.method !== 'POST') {
           writeJson(res, 405, { error: 'method not allowed' })
           return
@@ -402,21 +408,23 @@ export function makeRoutes(): WebRoute[] {
 }
 
 /**
- * Mount the plugin's routes when a Web server is present.
+ * Mount the plugin's routes when a Web server and a trust fence are present.
  *
- * `webServer` is awaited through a nested `inject` rather than read with
+ * Both services are awaited through one nested `inject` rather than read with
  * `ctx.get` at apply time. A composed row order does not imply an activation
  * order, so a plain read can legitimately see `undefined` and silently drop
- * the routes; waiting on the service is the pattern the host's own Web-facing
- * plugins use. Keeping it nested (rather than in the top-level `inject` list)
- * is what lets a deployment with no Web UI still load this plugin.
+ * the routes; waiting on the services is the pattern the host's own Web-facing
+ * plugins use. Keeping the `inject` nested (rather than in the top-level
+ * `inject` list) is what lets a deployment with no Web UI still load this
+ * plugin. `connection` is required alongside `webServer` on purpose: these
+ * routes sit in front of Connection's `/api` prefix route, so serving them
+ * without its fence would serve them unfenced.
  * @param ctx - host plugin context.
  */
 export function apply(ctx: Context): void {
-  const routes = makeRoutes()
-  ctx.inject(['webServer'], (webCtx) => {
+  ctx.inject(['webServer', 'connection'], (webCtx) => {
     webCtx.effect(() => {
-      const disposers = routes.map((route) => webCtx.webServer.register(route))
+      const disposers = makeRoutes(webCtx.connection).map((route) => webCtx.webServer.register(route))
       return () => {
         for (const dispose of disposers) dispose()
       }

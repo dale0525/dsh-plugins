@@ -243,8 +243,8 @@ describe('route mounting', () => {
     }
   }
 
-  it('waits for webServer instead of reading it at apply time', () => {
-    // The Web server's plugin may activate after this one, so a service read
+  it('waits for the Web server and the trust fence instead of reading them at apply time', () => {
+    // Both services' plugins may activate after this one, so a service read
     // during apply can legitimately be undefined — which is exactly how the
     // routes were silently dropped before.
     const { registered, waits, ctx } = makeCtx()
@@ -253,10 +253,10 @@ describe('route mounting', () => {
 
     assert.deepEqual(registered, [])
     assert.equal(waits.length, 1)
-    assert.deepEqual(waits[0].names, ['webServer'])
+    assert.deepEqual(waits[0].names, ['webServer', 'connection'])
   })
 
-  it('registers both routes once the service is available', () => {
+  it('registers both routes once the services are available', () => {
     const { registered, waits, ctx } = makeCtx()
 
     apply(ctx)
@@ -267,6 +267,7 @@ describe('route mounting', () => {
           return () => {}
         },
       },
+      connection: { requestRejection: () => undefined },
       effect: (callback) => {
         callback()
       },
@@ -285,5 +286,116 @@ describe('route mounting', () => {
 
     assert.deepEqual(registered, [])
     assert.equal(typeof waits[0].callback, 'function')
+  })
+})
+
+describe('request fence', () => {
+  /**
+   * Mount the routes against a recording fence and drive one request through
+   * the route at `path`.
+   *
+   * The fence belongs to the composition's `connection` service, so what these
+   * tests pin is the plugin's half of that contract: it asks the composition
+   * instead of deciding for itself, and it honours the verdict.
+   */
+  function harness(rejection) {
+    const registered = []
+    const seen = []
+    const waits = []
+    apply({
+      get: () => undefined,
+      inject: (names, callback) => waits.push({ names, callback }),
+      effect: (callback) => {
+        callback()
+      },
+    })
+    waits[0].callback({
+      webServer: {
+        register: (route) => {
+          registered.push(route)
+          return () => {}
+        },
+      },
+      connection: {
+        requestRejection: (request) => {
+          seen.push(request)
+          return rejection
+        },
+      },
+      effect: (callback) => {
+        callback()
+      },
+    })
+
+    const responses = []
+    return {
+      seen,
+      responses,
+      async call(path, { method = 'GET', url = path, body } = {}) {
+        const route = registered.find((candidate) => candidate.path === path)
+        const request = {
+          method,
+          url,
+          headers: { host: '192.168.123.230:10000' },
+          async *[Symbol.asyncIterator]() {
+            if (body !== undefined) yield Buffer.from(body)
+          },
+        }
+        const response = {
+          statusCode: undefined,
+          headers: undefined,
+          payload: undefined,
+          writeHead(status, headers) {
+            this.statusCode = status
+            this.headers = headers
+          },
+          end(payload) {
+            this.payload = payload
+          },
+        }
+        responses.push(response)
+        await route.handler(request, response)
+        return response
+      },
+    }
+  }
+
+  it('asks the composition fence, not a loopback literal of its own', async () => {
+    // A LAN browser is not loopback, and the deployment declares its LAN
+    // authority to `connection` — which is why the verdict has to come from
+    // there. A plugin-local loopback check answered 403 to every LAN client.
+    const probe = harness(undefined)
+
+    await probe.call('/api/dsh-worktree/status', { url: '/api/dsh-worktree/status?cwd=/repo' })
+
+    assert.equal(probe.seen.length, 1)
+    assert.equal(probe.seen[0].headers.host, '192.168.123.230:10000')
+  })
+
+  it('answers the fence verdict and never reaches the handler', async () => {
+    const probe = harness(403)
+
+    const response = await probe.call('/api/dsh-worktree/status', { url: '/api/dsh-worktree/status?cwd=/repo' })
+
+    assert.equal(response.statusCode, 403)
+    assert.deepEqual(JSON.parse(response.payload), { error: 'forbidden' })
+  })
+
+  it('reports an unauthenticated browser as 401 rather than 403', async () => {
+    const probe = harness(401)
+
+    const response = await probe.call('/api/dsh-worktree/create', { method: 'POST', body: '{}' })
+
+    assert.equal(response.statusCode, 401)
+    assert.deepEqual(JSON.parse(response.payload), { error: 'unauthorized' })
+  })
+
+  it('proceeds to the handler when the fence accepts', async () => {
+    const probe = harness(undefined)
+
+    const response = await probe.call('/api/dsh-worktree/status', { url: '/api/dsh-worktree/status?cwd=/definitely-not-a-repository' })
+
+    assert.equal(response.statusCode, 200)
+    assert.equal(JSON.parse(response.payload).isRepo, false)
   })
 })

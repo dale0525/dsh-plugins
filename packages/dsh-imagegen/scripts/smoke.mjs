@@ -717,7 +717,11 @@ const attachments = {
   },
 }
 const pendingConversationImages = new Map()
+// Mutable so the fence-rejection case below can swap in a refusing connection;
+// every other case runs against this admitting default.
+let connection = { requestRejection: () => undefined }
 const routes = host.makeRoutes({
+  connection: () => connection,
   settings: seam,
   resolve: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test' }),
   resolvePrompt: () => ({ apiUrl: `http://127.0.0.1:${upstreamPort}/v1`, apiKey: 'sk-test', model: 'chat-test' }),
@@ -754,6 +758,37 @@ const post = async (path, body, headers = {}) => {
     throw new Error(`HTTP ${response.status} returned non-JSON body: ${text || '<empty>'}`)
   }
 }
+
+await check('C0a the connection fence decides every route, and fails closed without it', async () => {
+  // A refusing fence must answer 401/403 verbatim, on a guarded route and on the
+  // prefix route that calls the fence directly.
+  const guarded = '/api/dsh-imagegen/prompt-enhance'
+  const prefixed = '/api/dsh-imagegen/agent-image'
+  const get = async path => {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`)
+    return { status: response.status, body: await response.json() }
+  }
+
+  connection = { requestRejection: () => 401 }
+  const unauthorized = await post(guarded, { prompt: 'x' })
+  assert.equal(unauthorized.status, 401)
+  assert.equal(unauthorized.body.error, 'unauthorized')
+  assert.equal((await get(prefixed)).status, 401)
+
+  connection = { requestRejection: () => 403 }
+  const forbidden = await post(guarded, { prompt: 'x' })
+  assert.equal(forbidden.status, 403)
+  assert.equal(forbidden.body.error, 'forbidden')
+  assert.equal((await get(prefixed)).status, 403)
+
+  // No connection service at all: refuse rather than admit.
+  connection = undefined
+  const absent = await post(guarded, { prompt: 'x' })
+  assert.equal(absent.status, 403)
+  assert.equal(absent.body.error, 'forbidden')
+
+  connection = { requestRejection: () => undefined }
+})
 
 await check('C0b prompt enhance strips reasoning-model <think> blocks', async () => {
   // Closed think block: only the visible answer may reach the prompt box.

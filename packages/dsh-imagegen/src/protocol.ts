@@ -10,7 +10,7 @@ export const IMAGEGEN_SETTINGS_NAMESPACE = 'imagegen'
 /** Published package version shared by the host updater and the client UI. */
 export const PLUGIN_VERSION = '1.5.13'
 
-/** Same-origin route family (loopback-only, mirroring the dsh-ssh fence). */
+/** Same-origin route family (fenced by the composition's connection service). */
 export const SETTINGS_API = {
   describe: '/api/dsh-imagegen/settings/describe',
   mutate: '/api/dsh-imagegen/settings/mutate',
@@ -95,7 +95,7 @@ export const IMAGE_MODEL_API = {
 /** Host-served built-in provider catalog (channels the user can instantiate). */
 export const PRESETS_API = '/api/dsh-imagegen/presets' as const
 
-/** Loopback-only image reader for Agent tool-result previews. */
+/** Image reader for Agent tool-result previews (fenced by the connection service). */
 export const AGENT_IMAGE_API = '/api/dsh-imagegen/agent-image' as const
 
 /** Store the current composer image for the direct edit_image command. */

@@ -10,12 +10,14 @@
  *
  * 凭据用内存 mock（记录 set 的 (ref, value)），不触碰真实 DSH credentials。
  */
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection';
 import {
   parseSyncBody, webdavBaseUrl, mergePersistedWebDavUsername, SyncRouteError,
-  SYNC_CREDENTIAL_REF, SYNC_WEBDAV_CREDENTIAL_REF,
+  SYNC_CREDENTIAL_REF, SYNC_WEBDAV_CREDENTIAL_REF, refuseUntrusted,
   type ParseSyncBodyDeps,
 } from './index.ts';
 import { isWebDavConfig, type SyncConfig } from './sync/sync-config.ts';
@@ -178,4 +180,108 @@ test('mergePersistedWebDavUsername: 持久化无 username / 非 webdav / 为 nul
 
   const gitCfg = mergePersistedWebDavUsername({ ...GIT_CFG }, { ...WEBDAV_WITH_USER });
   assert.deepEqual(gitCfg, GIT_CFG, 'git 请求体不受影响');
+});
+
+/* ---------------- refuseUntrusted ---------------- */
+
+test('refuseUntrusted: connection 缺失（undefined）→ 拒绝（403 forbidden）', () => {
+  let status: number | undefined;
+  let body: unknown;
+  const res = {
+    writeHead(code: number) {
+      status = code;
+      return this;
+    },
+    end(payload?: string) {
+      if (payload !== undefined) body = JSON.parse(payload);
+    },
+  } as unknown as ServerResponse;
+
+  const req = {} as IncomingMessage;
+  const refused = refuseUntrusted(undefined, req, res);
+
+  assert.equal(refused, true);
+  assert.equal(status, 403);
+  assert.deepEqual(body, { error: 'forbidden' });
+});
+
+test('refuseUntrusted: connection 存在且 requestRejection 返回 401 → 401 unauthorized', () => {
+  let status: number | undefined;
+  let body: unknown;
+  const res = {
+    writeHead(code: number) {
+      status = code;
+      return this;
+    },
+    end(payload?: string) {
+      if (payload !== undefined) body = JSON.parse(payload);
+    },
+  } as unknown as ServerResponse;
+
+  const req = {} as IncomingMessage;
+  const connection = {
+    requestRejection(_req: IncomingMessage) {
+      return 401 as const;
+    },
+  } as unknown as HostConnectionHandle;
+
+  const refused = refuseUntrusted(connection, req, res);
+
+  assert.equal(refused, true);
+  assert.equal(status, 401);
+  assert.deepEqual(body, { error: 'unauthorized' });
+});
+
+test('refuseUntrusted: connection 存在且 requestRejection 返回 403 → 403 forbidden', () => {
+  let status: number | undefined;
+  let body: unknown;
+  const res = {
+    writeHead(code: number) {
+      status = code;
+      return this;
+    },
+    end(payload?: string) {
+      if (payload !== undefined) body = JSON.parse(payload);
+    },
+  } as unknown as ServerResponse;
+
+  const req = {} as IncomingMessage;
+  const connection = {
+    requestRejection(_req: IncomingMessage) {
+      return 403 as const;
+    },
+  } as unknown as HostConnectionHandle;
+
+  const refused = refuseUntrusted(connection, req, res);
+
+  assert.equal(refused, true);
+  assert.equal(status, 403);
+  assert.deepEqual(body, { error: 'forbidden' });
+});
+
+test('refuseUntrusted: connection 存在且 requestRejection 返回 undefined → 放行（返回 false，不写响应）', () => {
+  let status: number | undefined;
+  let body: unknown;
+  const res = {
+    writeHead(code: number) {
+      status = code;
+      return this;
+    },
+    end(payload?: string) {
+      if (payload !== undefined) body = JSON.parse(payload);
+    },
+  } as unknown as ServerResponse;
+
+  const req = {} as IncomingMessage;
+  const connection = {
+    requestRejection(_req: IncomingMessage) {
+      return undefined;
+    },
+  } as unknown as HostConnectionHandle;
+
+  const refused = refuseUntrusted(connection, req, res);
+
+  assert.equal(refused, false);
+  assert.equal(status, undefined);
+  assert.equal(body, undefined);
 });

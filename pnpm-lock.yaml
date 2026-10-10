@@ -24,10 +24,10 @@ importers:
         specifier: ^0.2.2
         version: link:../dsh-browser-agent
       '@logictan/dsh-config-manager':
-        specifier: ^0.1.78
+        specifier: ^0.1.79
         version: link:../dsh-config-manager
       '@logictan/dsh-desktop-agent':
-        specifier: ^0.1.5
+        specifier: ^0.1.6
         version: link:../dsh-desktop-agent
       '@logictan/dsh-easyrewrite':
         specifier: ^2.7.1
@@ -42,7 +42,7 @@ importers:
         specifier: ^0.1.1
         version: link:../dsh-goal-resume
       '@logictan/dsh-imagegen':
-        specifier: ^2.0.3
+        specifier: ^2.0.4
         version: link:../dsh-imagegen
       '@logictan/dsh-loop-guard':
         specifier: ^1.1.6
@@ -60,7 +60,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-todo-goal
       '@logictan/dsh-worktree-session':
-        specifier: ^0.1.1
+        specifier: ^0.1.2
         version: link:../dsh-worktree-session
 
   packages/dsh-better-reasoning-effort:
@@ -258,6 +258,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: ^4.0.2
         version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@deepseek-ai/dsh-client-connection':
+        specifier: ^0.2.0-rc.2
+        version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-scope@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)))
       '@deepseek-ai/dsh-llm':
         specifier: ^0.2.0-rc.2
         version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)
@@ -472,6 +475,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: ^4.0.2
         version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@deepseek-ai/dsh-client-connection':
+        specifier: ^0.2.0-rc.2
+        version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-scope@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-invariants@0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)))
       '@deepseek-ai/dsh-host-webserver':
         specifier: ^0.2.0-rc.2
         version: 0.2.0-rc.2(@deepseek-ai/cordis@4.0.4)

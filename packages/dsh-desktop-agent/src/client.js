@@ -14,7 +14,7 @@
  *
  * Two catalogs feed this card, and they are not interchangeable:
  *
- *  - The VISION list comes from this plugin's own loopback route
+ *  - The VISION list comes from this plugin's own same-origin route
  *    (`/api/dsh-desktop-agent/vision-models`). It has to: the host's
  *    `session.modelCatalog` does not carry `inputModalities` at all — its
  *    builder maps a fixed set of fields off the resolved model info and drops

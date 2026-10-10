@@ -1,7 +1,7 @@
 {
   "name": "@logictan/dsh-worktree-session",
   "description": "Git-worktree sessions for dsh: pick 'work on the main checkout', an existing linked worktree, or 'create a new worktree' right beside the composer's workspace picker, then land in a Session whose cwd is that worktree. The host half owns the git plumbing (worktree add, worktree list, .gitignore entry); the browser half registers the picker and the sidebar row badge.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -43,10 +43,14 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-connection": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
     "@deepseek-ai/dsh-host-webserver": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
     "react": "^18.2.0"
   },
   "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-host-webserver": {
       "optional": true
     },
@@ -57,6 +61,7 @@
   "dependencies": {},
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-connection": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-host-webserver": "^0.2.0-rc.2",
     "@types/node": "^22.20.0",
     "typescript": "~5.7.2"

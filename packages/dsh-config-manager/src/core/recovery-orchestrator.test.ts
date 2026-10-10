@@ -190,7 +190,7 @@ test('源码守卫：/sync/lock/recover 路由不经 mutation gate（否则回�
   assert.equal(route.includes('withMutationGate'), false, '回收路由绝不能被 withMutationGate 包裹（acquire 必失败 → 回收恒 423）');
   assert.equal(route.includes('runWithMutationLock'), false, '回收路由绝不 acquire 锁');
   assert.ok(route.includes('recoverStaleLock(true)'), '必须显式以 userConfirmed=true 调用回收');
-  assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 loopback + method 围栏');
+  assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 connection + method 围栏');
 });
 
 // ---------- issue #32：dismiss 是 SAFE MODE 的唯一出口 ----------
@@ -238,7 +238,7 @@ test('源码守卫：/sync/recovery/dismiss 路由不经 mutation gate（它就�
   assert.equal(route.includes('withMutationGate'), false, '解除保护路由绝不能被 withMutationGate 包裹（必 423 → 出口不可达）');
   assert.equal(route.includes('runWithMutationLock'), false, '解除保护路由绝不 acquire 锁（残留锁与 SAFE MODE 可并存）');
   assert.ok(route.includes('dismiss(operationId, true)'), '必须以 userConfirmed=true 调用 dismiss');
-  assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 loopback + method 围栏');
+  assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 connection + method 围栏');
 });
 
 
@@ -319,5 +319,5 @@ test('源码守卫：/sync/recovery/release 路由不经 mutation gate（否则�
   assert.equal(route.includes('withMutationGate'), false, '解除保护路由绝不能被 withMutationGate 包裹（必 423 → 出口不可达）');
   assert.equal(route.includes('runWithMutationLock'), false, '解除保护路由绝不 acquire 锁（残留锁与 SAFE MODE 可并存）');
   assert.ok(route.includes('releaseProtection(true)'), '必须以 userConfirmed=true 调用 releaseProtection');
-  assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 loopback + method 围栏');
+  assert.ok(route.includes("guard(req, res, 'POST')"), '必须走 connection + method 围栏');
 });

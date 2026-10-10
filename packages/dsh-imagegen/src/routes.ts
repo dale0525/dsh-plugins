@@ -1,5 +1,5 @@
 /**
- * The /api/dsh-imagegen route family: a loopback-only settings bridge for the
+ * The /api/dsh-imagegen route family: a same-origin settings bridge for the
  * plugin's own namespace (describe/mutate, mirroring the dsh-web-ui family
  * bridge wire) and the generate proxy that forwards to the configured
  * OpenAI-compatible endpoint with the API key held host-side.
@@ -7,6 +7,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
+import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
@@ -54,6 +55,12 @@ export interface CredentialsSeam {
 
 /** Route dependencies. */
 export interface ImageGenRoutesDeps {
+  /**
+   * The composition's trust fence, resolved per request rather than captured:
+   * a composed row order does not imply an activation order, so the service
+   * can legitimately still be absent when the routes are built.
+   */
+  connection: () => HostConnectionHandle | undefined
   /** The settings seam (namespace storage). */
   settings: SettingsSeam
   /**
@@ -85,27 +92,37 @@ export interface ImageGenRoutesDeps {
   /** Subscription login/status manager; absent on hosts without Credentials. */
   subscriptions?: SubscriptionManager
 }
-/** Loopback literal check plus browser same-origin markers (mirrors dsh-ssh). */
-function isLoopbackRequest(request: IncomingMessage): boolean {
-  const address = request.socket.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let hostUrl: URL
-  try {
-    hostUrl = new URL(`http://${host}`)
-  } catch {
-    return false
+/**
+ * Ask the composition whether one request may be served.
+ *
+ * `connection.requestRejection` is the deployment's single trust fence: it
+ * applies the Host/Origin checks (loopback plus the LAN authorities the
+ * deployment declares) and the browser authentication that rides with them.
+ * This plugin answers with the verdict instead of re-deriving it, because the
+ * declared LAN authorities live in `connection`'s config and a local check
+ * cannot see them.
+ *
+ * A missing `connection` refuses rather than serves: these routes sit in front
+ * of Connection's `/api` prefix route, so serving them without its fence would
+ * serve them unfenced.
+ * @param connection - the composition's Connection service, when it is up.
+ * @param req - the incoming request.
+ * @param res - the response, written to when the request is refused.
+ * @returns whether the request was refused.
+ */
+function refuseUntrusted(
+  connection: HostConnectionHandle | undefined,
+  req: IncomingMessage,
+  res: ServerResponse,
+): boolean {
+  if (connection === undefined) {
+    writeJson(res, 403, { error: 'forbidden' })
+    return true
   }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    return new URL(origin).host === hostUrl.host
-  } catch {
-    return false
-  }
+  const rejection = connection.requestRejection(req)
+  if (rejection === undefined) return false
+  writeJson(res, rejection, { error: rejection === 401 ? 'unauthorized' : 'forbidden' })
+  return true
 }
 
 /** One JSON response. */
@@ -363,10 +380,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
     return { ok: true, request: { ...request, model: asked, upstream: mapping.id, channelId: picked.id, channel: picked.name } }
   }
   const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
-    if (!isLoopbackRequest(req)) {
-      writeJson(res, 403, { error: 'forbidden: loopback-only' })
-      return false
-    }
+    if (refuseUntrusted(deps.connection(), req, res)) return false
     if (req.method !== method) {
       writeJson(res, 405, { error: `method not allowed: ${req.method}` })
       return false
@@ -406,10 +420,7 @@ export function makeRoutes(deps: ImageGenRoutesDeps): WebRoute[] {
       kind: 'prefix' as const,
       path: AGENT_IMAGE_API,
       handler: async (req: IncomingMessage, res: ServerResponse) => {
-        if (!isLoopbackRequest(req)) {
-          writeJson(res, 403, { error: 'forbidden: loopback-only' })
-          return
-        }
+        if (refuseUntrusted(deps.connection(), req, res)) return
         if (req.method !== 'GET') {
           writeJson(res, 405, { error: `method not allowed: ${req.method}` })
           return

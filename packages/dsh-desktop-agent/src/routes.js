@@ -1,5 +1,5 @@
 /**
- * The /api/dsh-desktop-agent route family: a loopback-only bridge that answers
+ * The /api/dsh-desktop-agent route family: a bridge that answers
  * one question the browser half cannot answer for itself.
  *
  * The settings card must list only models that can actually see, and the fact it
@@ -23,32 +23,33 @@ import { visionCatalog } from './route.js';
 export const VISION_MODELS_API = '/api/dsh-desktop-agent/vision-models';
 
 /**
- * Loopback literal check plus browser same-origin markers (mirrors the imagegen
- * bridge and dsh-ssh).
+ * Ask the composition whether one request may be served.
  *
+ * `connection.requestRejection` is the deployment's single trust fence: it
+ * applies the Host/Origin checks (loopback plus the LAN authorities the
+ * deployment declares) and the browser authentication that rides with them.
+ * This plugin answers with the verdict instead of re-deriving it, because the
+ * declared LAN authorities live in `connection`'s config and a local check
+ * cannot see them.
+ *
+ * A missing `connection` refuses rather than serves: these routes sit in front
+ * of Connection's `/api` prefix route, so serving them without its fence would
+ * serve them unfenced.
+ *
+ * @param connection - the composition's Connection service, when it is up.
  * @param request - the incoming request.
- * @returns whether the request may be served.
+ * @param response - the response, written to when the request is refused.
+ * @returns whether the request was refused.
  */
-function isLoopbackRequest(request) {
-  const address = request.socket.remoteAddress;
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false;
-  const host = request.headers.host;
-  if (typeof host !== 'string') return false;
-  let hostUrl;
-  try {
-    hostUrl = new URL(`http://${host}`);
-  } catch {
-    return false;
+function refuseUntrusted(connection, request, response) {
+  if (connection === undefined) {
+    writeJson(response, 403, { error: 'forbidden' });
+    return true;
   }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false;
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false;
-  const origin = request.headers.origin;
-  if (origin === undefined) return true;
-  try {
-    return new URL(origin).host === hostUrl.host;
-  } catch {
-    return false;
-  }
+  const rejection = connection.requestRejection(request);
+  if (rejection === undefined) return false;
+  writeJson(response, rejection, { error: rejection === 401 ? 'unauthorized' : 'forbidden' });
+  return true;
 }
 
 /** Write one JSON response. */
@@ -66,7 +67,11 @@ function writeJson(response, status, body) {
 /**
  * Build the route family.
  *
- * @param deps - the host's `ctx.llm` service.
+ * @param deps - the host dependencies.
+ * @param deps.llm - the host's `ctx.llm` service.
+ * @param deps.connection - resolves the composition's trust fence per request.
+ *   Resolved per call rather than captured: a composed row order does not imply
+ *   an activation order, so the service can still be absent when routes are built.
  * @returns the routes to register.
  */
 export function makeRoutes(deps) {
@@ -75,10 +80,7 @@ export function makeRoutes(deps) {
       kind: 'exact',
       path: VISION_MODELS_API,
       async handler(request, response) {
-        if (!isLoopbackRequest(request)) {
-          writeJson(response, 403, { error: 'loopback-only' });
-          return;
-        }
+        if (refuseUntrusted(deps.connection(), request, response)) return;
         if (request.method !== 'GET' && request.method !== 'POST') {
           writeJson(response, 405, { error: 'method-not-allowed' });
           return;

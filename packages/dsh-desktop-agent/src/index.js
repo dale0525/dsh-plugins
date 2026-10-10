@@ -2,7 +2,7 @@
  * dsh-desktop-agent — host half.
  *
  * Registers one model-facing tool, `desktop_agent`, that runs a native-vision
- * decision loop against the host desktop, plus the loopback route the settings
+ * decision loop against the host desktop, plus the same-origin route the settings
  * card reads its model list from.
  *
  * The plugin owns no execution engine of its own. Every action is dispatched to
@@ -220,7 +220,7 @@ export async function apply(ctx, config, loadSdk) {
   ctx.inject(['webServer'], (scoped) => {
     scoped.effect(
       () => {
-        const disposers = makeRoutes({ llm }).map((route) => scoped.webServer.register(route));
+        const disposers = makeRoutes({ llm, connection: () => scoped.get('connection') }).map((route) => scoped.webServer.register(route));
         return () => {
           for (const dispose of disposers) dispose();
         };

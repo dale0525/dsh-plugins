@@ -1,12 +1,13 @@
 /**
  * dsh-imagegen — host half. Mounts the plugin's settings section (channels
  * with per-channel model catalogs on the host settings seam), the
- * /api/dsh-imagegen route family (loopback-only settings bridge, presets and
+ * /api/dsh-imagegen route family (same-origin settings bridge, presets and
  * the image-generation proxy that keeps every API key host-side), the Agent
  * image tools, and a system-prompt announcement.
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type CredentialProvider from '@deepseek-ai/dsh-credentials'
 import { installSettingsSectionCompat, settingsNamespaceCompat } from './settings-compat.ts'
@@ -314,6 +315,7 @@ export function apply(ctx: Context, config?: ConfigRef<Config>): void {
     sctx.effect(
       () => {
         const routes = makeRoutes({
+          connection: () => sctx.get('connection') as HostConnectionHandle | undefined,
           settings: seam,
           credentials: credentialsSeam,
           resolve: () => {
