@@ -154,6 +154,19 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
 
 ### 雷区
 
+- **插件自己的 `/api/...` 路由会绕过宿主信任围栏，别再自造访问控制**：宿主
+  `dsh-host-webserver` 匹配路由时**先查 exact 表、再查 prefix 表**，而信任围栏
+  `connection`（`@deepseek-ai/dsh-client-connection`）注册的是 `/api` **prefix** 路由。
+  于是插件注册的 exact `/api/dsh-*/...` 排在围栏**之前**，围栏根本没机会执行。
+  实测：四个插件各自手写「只允许 loopback」检查（认来源 IP 与 `Host` 是 localhost），
+  不认识 profile 里 `connection` 声明的 `trustedHosts` 局域网地址，把合法局域网浏览器
+  全部拒掉 —— 症状是局域网打开 DSH 时这些插件报「读取失败」，而 `127.0.0.1` 一切正常。
+  修法：删掉自造检查，**每次请求**向 `connection.requestRejection(req)` 要结论
+  （`undefined` 放行 / `401` / `403`；服务缺失时一律 `403` 拒绝）。
+  两个必须遵守的点：① `connection` **按请求现取**，不要写进 `inject` —— 写进去会让
+  「宿主没装该服务」从「少一个功能」升级成**整个插件静默消失**；② 浏览器半边不要
+  用 `connection.isLoopback` 自行判断要不要发请求，它只认 `localhost` / `[::1]` / `127/8`，
+  同样会拒掉围栏已放行的局域网页面（被拒时让请求失败并降级为 `unavailable` 即可）。
 - **registry 404 不等于未发布**：发布后短时间内查询会命中 CDN 缓存。核验时带
   `Cache-Control: no-cache` 与时间戳查询串，并以 npm 日志的 `PUT 200` / 退出码 0 为准。
 - **换包一律先删再加，不要并存**：两个包若声明同一个 patch 行 `id`，全新启动即
