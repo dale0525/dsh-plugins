@@ -1,14 +1,12 @@
 # @logictan/dsh-stitch-designer
 
 Google Stitch (AI UI generation) inside DSH: the 15 `mcp__stitch__*` tools, plus
-an in-session preview panel that shows each generated design, keeps a local
-screenshot/HTML cache, and exports the 1:1 HTML source.
+the design conventions that keep one code project bound to one Stitch project.
 
 Ported from [liuxinlongwa-hue/dsh-stitch-designer](https://github.com/liuxinlongwa-hue/dsh-stitch-designer)
-(MIT, © 2026 liuxinlongwa-hue): the preview panel, the screenshot cache, the
-`state.json` persistence and the 1:1 HTML export come from that project. What
-changed here is the tool surface, the key storage, and the design conventions —
-see below.
+(MIT, © 2026 liuxinlongwa-hue). What changed here is the tool surface, the key
+storage, and the scope — that project's preview panel, screenshot cache and
+1:1 HTML export endpoint have been removed; see below.
 
 ## What it gives the model
 
@@ -75,47 +73,18 @@ Only the id is stored. The title is not, because it is a second copy of a fact
 Stitch already owns and would go stale as soon as the project is renamed
 upstream — while the binding rule reads the id alone.
 
-## The preview panel
-
-The **AI 设计** button in the session header opens a panel showing the newest
-design for the current project: a project picker, the full-size screenshot, a
-thumbnail strip, and **导出 1:1 HTML 源码**.
-
-Generation is driven from the conversation — ask for a design, and the model
-calls `generate_screen_from_text`; ask for a change, and it calls
-`edit_screens`. Then press **刷新** in the panel.
-
-The panel exists because Stitch's `list_screens` index lags a generation by up
-to a couple of minutes. This plugin reads the finished screen out of the
-generation result, caches the screenshot and HTML under `~/.stitch`, and
-remembers screen ids per project in `~/.stitch/state.json`, so a design appears
-as soon as it exists instead of after the index catches up.
-
-## HTTP routes
-
-Served on the DSH web server, for the panel:
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/stitch/api/state` | Projects, screens and the cached preview for the current (or `?projectId=`) project |
-| GET | `/stitch/api/html/<screenId>` | Fetch and cache a screen's 1:1 HTML, returning its local URL |
-| GET | `/stitch/screens/<screenId>.png` | Cached screenshot |
-| GET | `/stitch/html/<screenId>.html` | Exported HTML source |
-
 ## Local files
 
 | Path | Contents |
 | --- | --- |
 | `$DSH_HOME/.credentials.yaml` | The API key, under `STITCH_API_KEY` |
 | `<project>/.stitch.json` | The Stitch project this code project owns (see above) |
-| `~/.stitch/state.json` | Last used project and the remembered screen ids per project |
-| `~/.stitch/screens/` | Cached screenshots |
-| `~/.stitch/html/` | The panel's copy of the exported HTML |
 
-`<project>/docs/design/` — where the announced convention puts the exported
-HTML — is written by the model following that convention, not by the plugin; it
-travels with the repository, so a later session or a teammate can read the
-design the code was built from.
+`~/.stitch` — the previous generation's screenshot/HTML cache under the user's
+home directory — is no longer written or read by this plugin. Exporting a
+design to `<project>/docs/design/` is the model following the announced
+convention, not a plugin action; it travels with the repository, so a later
+session or a teammate can read the design the code was built from.
 
 ## Replacing the `mcp-stitch` row
 

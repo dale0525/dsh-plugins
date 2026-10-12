@@ -1,7 +1,7 @@
 {
   "name": "@logictan/dsh-stitch-designer",
   "version": "1.0.0",
-  "description": "DSH Stitch designer: Google Stitch AI UI generation as native mcp__stitch__* tools, plus an in-session preview panel with screenshot cache and 1:1 HTML export. DSH Stitch 界面设计子插件。",
+  "description": "DSH Stitch designer: Google Stitch AI UI generation as native mcp__stitch__* tools, plus the design conventions that keep one code project bound to one Stitch project. DSH Stitch 界面设计子插件。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -42,8 +42,7 @@
     "ai-design",
     "ui-generation",
     "generative-ui",
-    "mcp",
-    "preview"
+    "mcp"
   ],
   "license": "MIT",
   "repository": {

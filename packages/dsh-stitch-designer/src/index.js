@@ -3,7 +3,7 @@
  *
  * Google Stitch (AI UI generation) as a first-class part of the harness. It
  * registers the same 15 `mcp__stitch__*` tools the retired `mcp-stitch` patch
- * row used to provide, and serves the preview panel's HTTP API.
+ * row used to provide.
  *
  * Three design choices are load-bearing, and each replaces something that was
  * tried and failed elsewhere in this repository:
@@ -13,8 +13,7 @@
  *    15 input schemas and 13 of 15 output schemas are rejected by
  *    `assertSupportedJsonSchema` — so the bridge has to decide per field what
  *    to keep. Owning the transport is also what keeps the API key out of a
- *    patch row (see below) and what lets the tools and the panel share one
- *    client.
+ *    patch row (see below).
  *
  *  - **The API key is a credential, not configuration.** It lives in
  *    `$DSH_HOME/.credentials.yaml` under the ref `STITCH_API_KEY`, resolved
@@ -26,21 +25,18 @@
  *    section exports refs from the credentials file), and it never appears in a
  *    patch row.
  *
- *  - **Each half waits for the services it needs; `credentials` is read per
- *    call.** `ctx.get(name)` returns only a service whose providing fiber is
- *    already ACTIVE, and providers come up asynchronously — `webServer` waits on
- *    `webStartup`, so at `apply` time it is still `undefined` even though its
- *    row precedes this one in the patch list. Reading it once in `apply`
- *    silently dropped the entire panel API. The registrations therefore nest
- *    under `ctx.inject` so each waits for its own providers; the tools half
- *    additionally waits for `credentials`, because its first `tools/list` needs
- *    the key and nothing re-fires that fetch at boot (the initial attempt ran
- *    before the credential store was live and failed as "key not configured").
- *    The key itself is read at call time, so setting it later still works.
+ *  - **The tools half waits for the services it needs.** `ctx.get(name)`
+ *    returns only a service whose providing fiber is already ACTIVE, and
+ *    providers come up asynchronously — so a service read once in `apply` can
+ *    silently be `undefined`. The registration therefore nests under
+ *    `ctx.inject` so it waits for its own providers; it waits for `credentials`
+ *    in particular, because its first `tools/list` needs the key and nothing
+ *    re-fires that fetch at boot (the initial attempt ran before the credential
+ *    store was live and failed as "key not configured"). The key itself is read
+ *    at call time, so setting it later still works.
  *
  * @module @logictan/dsh-stitch-designer
  */
-import { makeRoutes } from './routes.js';
 import { createStitchClient } from './stitch.js';
 import { createInvoker } from './conventions.js';
 import { SECTION_NAME, SECTION_ORDER, STITCH_GUIDANCE } from './guidance.js';
@@ -62,7 +58,7 @@ export const API_KEY_REF = 'STITCH_API_KEY';
 export const SERVER_NAME = 'stitch';
 
 /**
- * Register the Stitch tools and the panel API.
+ * Register the Stitch tools and announce the design conventions.
  *
  * @param ctx - the plugin context.
  */
@@ -146,18 +142,6 @@ export function apply(ctx) {
         disposers = [];
       };
     }, 'stitch-designer: Stitch tools');
-  });
-
-  // --------------------------------------------------------------- routes
-  ctx.inject(['webServer'], (webCtx) => {
-    const webServer = webCtx.get('webServer');
-
-    webCtx.effect(() => {
-      const disposers = makeRoutes({ stitch }).map((route) => webServer.register(route));
-      return () => {
-        for (const dispose of disposers) dispose();
-      };
-    }, 'stitch-designer: panel routes');
   });
 
   // ------------------------------------------------------------- guidance

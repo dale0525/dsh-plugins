@@ -31,7 +31,7 @@ export const SECTION_ORDER = 150;
  * acted on.
  */
 export const STITCH_GUIDANCE = [
-  '本机已安装 dsh-stitch-designer 插件（Google Stitch AI 界面设计）：提供 15 个 `mcp__stitch__*` 工具（建/删/列项目、列/取界面、生成界面、改界面、生成变体、设计系统与设计稿上传），以及会话头部的「AI 设计」预览面板。',
+  '本机已安装 dsh-stitch-designer 插件（Google Stitch AI 界面设计）：提供 15 个 `mcp__stitch__*` 工具（建/删/列项目、列/取界面、生成界面、改界面、生成变体、设计系统与设计稿上传）。',
   '',
   '用 Stitch 设计稿实现界面时，遵守以下规范：',
   '1. 一个代码项目只对应一个 Stitch 项目，对应关系记录在该代码项目根目录的 `.stitch.json`。继续沿用已记录的那个项目，不要为同一个代码项目再调 `create_project`——插件会直接报错拒绝，并告知已绑定的项目 id。记录指向的 Stitch 项目已被删除时，插件会自动清掉记录，可重新创建。',

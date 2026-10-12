@@ -68,5 +68,7 @@ test('a missing systemPrompt service does not take the plugin down with it', () 
   };
 
   assert.doesNotThrow(() => apply(ctx));
-  assert.deepEqual(registered, [['tools', 'credentials'], ['webServer']]);
+  // Only the tools half: the plugin no longer serves any HTTP route, so a host
+  // without `webServer` costs it nothing.
+  assert.deepEqual(registered, [['tools', 'credentials']]);
 });
