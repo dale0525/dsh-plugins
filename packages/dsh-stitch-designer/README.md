@@ -7,7 +7,8 @@ screenshot/HTML cache, and exports the 1:1 HTML source.
 Ported from [liuxinlongwa-hue/dsh-stitch-designer](https://github.com/liuxinlongwa-hue/dsh-stitch-designer)
 (MIT, © 2026 liuxinlongwa-hue): the preview panel, the screenshot cache, the
 `state.json` persistence and the 1:1 HTML export come from that project. What
-changed here is the tool surface and the key storage — see below.
+changed here is the tool surface, the key storage, and the design conventions —
+see below.
 
 ## What it gives the model
 
@@ -44,6 +45,36 @@ in a plugin config row, so it never appears in plaintext in
 
 Setting the key registers the tools immediately; no restart is needed.
 
+## Design conventions
+
+Three rules apply when a Stitch design is implemented as code in a repository.
+
+| Rule | How it reaches the model |
+| --- | --- |
+| One code project owns exactly one Stitch project | **Enforced.** The id is recorded in the code project's `.stitch.json`; a second `create_project` from an already-bound directory is refused with the existing id. |
+| Implement with TailwindCSS, the way Stitch builds its screens | Announced in the system prompt. Unless the repository already has an architecture that cannot accommodate TailwindCSS, in which case the model is told to explain that first. |
+| Implement from Stitch's exported HTML for pixel-level fidelity | Announced in the system prompt. The export goes to `<project>/docs/design/<screenId>.html`; anywhere the implementation would differ from the design, the model is told to ask first and give the reason. |
+
+The first rule is enforced in code and the other two are announced, because only
+the first has a computable predicate. "Did you use TailwindCSS?" and "is this
+pixel-perfect?" cannot be checked, so a validator for them would be a lie — they
+are delivered the way this repository delivers every other non-computable rule,
+as a system-prompt section the plugin registers itself (`src/guidance.js`).
+
+`.stitch.json` is the project's own file — commit it. It is small and
+hand-editable on purpose: it is the escape hatch when a Stitch project was
+deleted, or when the wrong one was recorded. A record pointing at a project
+that no longer exists is cleared automatically rather than obeyed, so the
+refusal can never become a permanent dead end; `delete_project` clears it too.
+
+```json
+{ "projectId": "15445722684773602632" }
+```
+
+Only the id is stored. The title is not, because it is a second copy of a fact
+Stitch already owns and would go stale as soon as the project is renamed
+upstream — while the binding rule reads the id alone.
+
 ## The preview panel
 
 The **AI 设计** button in the session header opens a panel showing the newest
@@ -76,9 +107,15 @@ Served on the DSH web server, for the panel:
 | Path | Contents |
 | --- | --- |
 | `$DSH_HOME/.credentials.yaml` | The API key, under `STITCH_API_KEY` |
+| `<project>/.stitch.json` | The Stitch project this code project owns (see above) |
 | `~/.stitch/state.json` | Last used project and the remembered screen ids per project |
 | `~/.stitch/screens/` | Cached screenshots |
-| `~/.stitch/html/` | Exported 1:1 HTML sources |
+| `~/.stitch/html/` | The panel's copy of the exported HTML |
+
+`<project>/docs/design/` — where the announced convention puts the exported
+HTML — is written by the model following that convention, not by the plugin; it
+travels with the repository, so a later session or a teammate can read the
+design the code was built from.
 
 ## Replacing the `mcp-stitch` row
 

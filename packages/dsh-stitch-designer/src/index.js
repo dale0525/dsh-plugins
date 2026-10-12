@@ -42,6 +42,8 @@
  */
 import { makeRoutes } from './routes.js';
 import { createStitchClient } from './stitch.js';
+import { createInvoker } from './conventions.js';
+import { SECTION_NAME, SECTION_ORDER, STITCH_GUIDANCE } from './guidance.js';
 import { createToolDefinition, publicToolName } from './tools.js';
 
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
@@ -83,6 +85,13 @@ export function apply(ctx) {
 
   const stitch = createStitchClient({ resolveApiKey });
 
+  // One code project ↔ one Stitch project is enforced here rather than merely
+  // announced: this wrapper is the only seam that sees which code project a
+  // call belongs to, and therefore the only one that can refuse a second
+  // `create_project`. The other two conventions are prose and live in the
+  // system-prompt section below. See `src/conventions.js`.
+  const invoke = createInvoker({ stitch });
+
   // ---------------------------------------------------------------- tools
   // The upstream descriptors ARE the tool contract — names, descriptions and
   // input schemas all come from Stitch — so registration follows a successful
@@ -109,7 +118,7 @@ export function apply(ctx) {
             description: tool.description ?? '',
             inputSchema: tool.inputSchema,
             outputSchema: tool.outputSchema,
-            call: (args, exec) => stitch.callTool(tool.name, args, exec),
+            call: (args, exec) => invoke(tool.name, args, exec),
           }),
         );
         for (const dispose of disposers) dispose();
@@ -150,4 +159,25 @@ export function apply(ctx) {
       };
     }, 'stitch-designer: panel routes');
   });
+
+  // ------------------------------------------------------------- guidance
+  // The design conventions that cannot be enforced are announced instead, the
+  // way this repository delivers every other non-computable rule. Read through
+  // `ctx.get` rather than `inject`: `inject` treats a service as REQUIRED and
+  // silently skips the whole plugin when it is missing, which would turn "no
+  // system prompt" into "no Stitch tools at all".
+  const systemPrompt = ctx.get('systemPrompt');
+  if (systemPrompt === undefined || systemPrompt === null) {
+    ctx.logger?.warn?.('stitch-designer: the systemPrompt service is unavailable; the design conventions were not announced.');
+    return;
+  }
+  ctx.effect(
+    () =>
+      systemPrompt.section({
+        name: SECTION_NAME,
+        order: SECTION_ORDER,
+        text: STITCH_GUIDANCE,
+      }),
+    'stitch-designer: design conventions',
+  );
 }
