@@ -169,6 +169,13 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   同样会拒掉围栏已放行的局域网页面（被拒时让请求失败并降级为 `unavailable` 即可）。
 - **registry 404 不等于未发布**：发布后短时间内查询会命中 CDN 缓存。核验时带
   `Cache-Control: no-cache` 与时间戳查询串，并以 npm 日志的 `PUT 200` / 退出码 0 为准。
+- **发布时的 `PUT ... E404` 是「缺 trusted publisher」，不是缓存**：与上面那条相反 ——
+  缓存只会让人**读到**旧版本，不会让**写入**被拒；且同一次 run 里其余包都正常处理。
+  判据是发布者身份：`npm view <pkg>@<ver> _npmUser` 显示
+  `GitHub Actions <npm-oidc-no-reply@github.com>` 才说明该包走过 CI，
+  显示人名则是人工发的。实测 `dsh-stitch-designer` 1.0.0 由人工发布、从未走过 CI，
+  于是 CI 首次发它时 `PUT` 被拒 —— 这是**当初漏配 trust**，不是 CDN。
+  修法：让用户在该包设置页补配 trusted publisher，然后 `gh run rerun <id> --failed` 续跑。
 - **换包一律先删再加，不要并存**：两个包若声明同一个 patch 行 `id`，全新启动即
   `duplicate loader entry id` 硬崩；运行中并存则只有先加载的那个在服务。
 - **`pnpm/action-setup` 必须显式给 `version`**：本仓库没有 `packageManager` 字段，
