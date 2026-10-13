@@ -230,10 +230,13 @@
 #
 # One bare plugin row. The package has a host half only: it registers no tool
 # and no client surface. It listens on the host's `tools/pre-execute` seam to
-# refuse the one-shot delegation path before dispatch, on `subagent/start` and
-# `subagent/end` to bound how long a delegating session may wait, and on
-# `agent/turn-stopping` to steer the plain-speech mandate back in at the turn
-# boundary.
+# refuse the one-shot delegation path before dispatch, and on `subagent/start`
+# and `subagent/end` to bound how long a delegating session may wait.
+#
+# How an answer is written is not enforced here: that is prose in the operating
+# instructions, delivered by the system prompt on every step. A listener at the
+# turn boundary would have to send the model back for a second step, and the
+# user would read two answers.
 #
 # Row id `force-rules` equals the host half's `export const name` in
 # src/index.js. It is checked by hand against every other row id in this
