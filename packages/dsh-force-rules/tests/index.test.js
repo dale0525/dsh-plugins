@@ -3,12 +3,14 @@
  *
  * The plugin turns the delegation rules into deterministic mechanisms: a seat is
  * never one-shot, a delegating session does not spin, silence has an upper
- * bound, a seat gets only the authority its instruction declares, a delegation
- * names the child route it runs on, and the answer is plain speech. Every case
- * below pins one half of one rule against the seams the host actually exposes:
- * the tool registry (what a delegation tool is), the live agent registry (whose
- * child a seat is), the LLM runtime (what a route can do), and the reminder
- * service (the wait bound).
+ * bound, a seat gets only the authority its instruction declares, and a
+ * delegation names the child route it runs on. Every case below pins one half of
+ * one rule against the seams the host actually exposes: the tool registry (what
+ * a delegation tool is), the live agent registry (whose child a seat is), the
+ * LLM runtime (what a route can do), and the reminder service (the wait bound).
+ *
+ * How an answer is written is deliberately not pinned here: it is prose in the
+ * operating instructions, not a mechanism this plugin delivers.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -806,152 +808,3 @@ test('the route requirement lands exactly once across repeated assemblies', asyn
   assert.equal(first.tools[0].description.split('child route').length - 1, 1);
 });
 
-
-//
-// The turn boundary cannot reach a question: `ask_user_question` suspends the
-// turn while it waits for the human, so `agent/turn-stopping` does not fire
-// before the question is read. The tool description is the one place in front of
-// the model at the moment it writes that question.
-// ---------------------------------------------------------------------------
-
-test('the question tool description carries the plain-speech requirement', async () => {
-  const { listeners } = harness({
-    definitions: { ask_user_question: PLAIN_TOOL, bash: PLAIN_TOOL },
-  });
-  const assembly = {
-    tools: [
-      { name: 'ask_user_question', description: 'Ask the user a question.', parameters: {} },
-      { name: 'bash', description: 'Run a command.', parameters: {} },
-    ],
-  };
-  const assembled = await fireAssembly(listeners, assembly, { agent: undefined }, async () => assembly);
-  const byName = new Map(assembled.tools.map((tool) => [tool.name, tool]));
-  const description = byName.get('ask_user_question').description;
-  assert.match(description, /plain Chinese/, 'the question must be written plainly');
-  assert.match(description, /non-technical person/);
-  assert.match(description, /Restore the premise/, 'a bare choice is not a question');
-  assert.equal(byName.get('bash').description, 'Run a command.', 'an unrelated tool is untouched');
-});
-
-test('the question requirement never lands on a delegation tool', async () => {
-  const { listeners } = harness({ definitions: { subagent: CONTINUABLE_TOOL } });
-  const assembly = { tools: [{ name: 'subagent', description: 'Delegate a task.', parameters: {} }] };
-  const assembled = await fireAssembly(listeners, assembly, { agent: undefined }, async () => assembly);
-  assert.doesNotMatch(assembled.tools[0].description, /non-technical person/);
-});
-// ---------------------------------------------------------------------------
-// Rule 5: the plain-speech mandate at the turn boundary.
-//
-// The rules governing how an answer is *delivered* lived only in a skill file,
-// which the model may never open and which nothing puts in front of it at the
-// moment it answers. A registered tool does not fix that: a tool is fetched by
-// the model on its own initiative, so it cannot cover "the turn is ending".
-//
-// `agent/turn-stopping` is the seam that does. The host dispatches it when the
-// turn is about to close and the model owes a response, and it is awaited
-// before the boundary commits, so a listener that steers sends the model back
-// for one more step with the mandate in hand.
-// ---------------------------------------------------------------------------
-
-/** One root agent whose turn is stopping. */
-function stoppingTurn(agent = rootAgent(), turn = 1) {
-  return { agent, turn, signal: { aborted: false } };
-}
-
-/** The text this plugin steered into one agent, in order. */
-function steered(agent) {
-  return (agent.steers ?? []).map((message) => message.content.map((block) => block.text).join(''));
-}
-/** An agent stub that records what a listener steers into it. */
-function steerableAgent(base = rootAgent()) {
-  return { ...base, steers: [], steer(message) { this.steers.push(message); } };
-}
-
-test('steers the mandate when a root turn is about to deliver an answer', async () => {
-  const { listeners } = harness();
-  const agent = steerableAgent();
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
-  const [text] = steered(agent);
-  assert.ok(text, 'the turn boundary must carry the mandate');
-  assert.match(text, /premise|前提/i, 'restore the missing premise');
-  assert.match(text, /plain Chinese|说人话|大白话/i, 'the answer must be plain speech');
-  assert.match(text, /CONTEXT\.md/, 'the project vocabulary is named');
-  assert.match(text, /broaden|扩大/i, 're-explaining must not widen scope');
-  assert.match(text, /re-pitch/i, 'the re-explanation rule migrated from the retired skill');
-});
-
-test('leaves a seat turn alone: the mandate is for answers to the user', async () => {
-  const { listeners } = harness();
-  const agent = steerableAgent(seatAgent({ prompt: '[只读] survey the codebase' }));
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
-  assert.deepEqual(steered(agent), [], 'a seat reports to its delegator, not to the user');
-});
-
-test('leaves a forked continuation alone: it is not a root session either', async () => {
-  const { listeners } = harness();
-  const agent = steerableAgent(forkAgent());
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
-  assert.deepEqual(steered(agent), []);
-});
-
-test('steers at most once per turn, so the extra step cannot re-arm it', async () => {
-  const { listeners } = harness();
-  const agent = steerableAgent();
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent, 1));
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent, 1));
-  assert.equal(steered(agent).length, 1, 'a second stop in the same turn must not steer again');
-});
-
-test('a later turn gets its own reminder', async () => {
-  const { listeners } = harness();
-  const agent = steerableAgent();
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent, 1));
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent, 2));
-  assert.equal(steered(agent).length, 2, 'each turn delivers its own answer');
-});
-
-test('two sessions do not share the once-per-turn guard', async () => {
-  const { listeners } = harness();
-  const first = steerableAgent();
-  const second = steerableAgent({ session: { id: 'root-2', header: {} } });
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(first, 1));
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(second, 1));
-  assert.equal(steered(first).length, 1);
-  assert.equal(steered(second).length, 1, 'the guard is per session, not global');
-});
-
-test('the steered message is a user message the host can accept', async () => {
-  const { listeners } = harness();
-  const agent = steerableAgent();
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
-  const [message] = agent.steers;
-  assert.equal(message.role, 'user', 'steering accepts a user message');
-  assert.ok(Array.isArray(message.content), 'content is block-shaped');
-  assert.equal(message.content[0].type, 'text');
-  assert.ok(message.source, 'the message carries its producer');
-});
-
-test('the steered message is attributed as a notice, not as a human turn', async () => {
-  const { listeners } = harness();
-  const agent = steerableAgent();
-  await fire(listeners, 'agent/turn-stopping', stoppingTurn(agent));
-  const [message] = agent.steers;
-  assert.equal(
-    message.source.form,
-    'notice',
-    'without `form: notice` the nudge renders as a prompt the user never wrote',
-  );
-  assert.ok(message.source.summary, 'a notice must carry its one-line account');
-  assert.match(message.source.kind, /^plugin:/, 'producers name themselves as a plugin');
-});
-
-test('does not attach the mandate to an unrelated root tool call', async () => {
-  const { listeners } = harness();
-  const decision = await fire(
-    listeners,
-    'tools/pre-execute',
-    { name: 'bash', arguments: { command: 'ls' }, agent: rootAgent() },
-    ALLOW,
-  );
-  assert.deepEqual(decision, { kind: 'allow' }, 'only the turn boundary carries the mandate');
-});

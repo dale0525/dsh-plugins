@@ -1,7 +1,7 @@
 /**
- * dsh-force-rules — deterministic enforcement of six prose rules.
+ * dsh-force-rules — deterministic enforcement of five prose rules.
  *
- * Six prose rules in the operating instructions are mechanized here, because
+ * Five prose rules in the operating instructions are mechanized here, because
  * prose is advisory and each of these has already failed in practice:
  *
  *  1. A subagent seat is never one-shot. `run_in_background: false` is the only
@@ -18,28 +18,7 @@
  *     default when no marker is present), `[审核]`, or `[编辑: <paths>]` --
  *     and every call the seat makes is checked against that profile.
  *
- *  5. An answer to the user must be plain speech, and must restore the premise
- *     the reader is missing. So must a question. That mandate lived only in a
- *     skill file, with nothing in front of the model at the moment it answers or
- *     asks. A registered tool cannot fix the answer half -- a tool is fetched on
- *     the model's own initiative, so it cannot cover "the turn is ending". The
- *     turn boundary itself can: this plugin listens on `agent/turn-stopping` and
- *     steers the mandate back into any user-facing session whose turn is about
- *     to close.
- *
- *     Unlike rules 1-4 this one only *reminds*. The host commits the answer
- *     before `agent/turn-stopping` fires, so the model must be sent back for one
- *     more step, and "is this plain enough" has no computable failure predicate
- *     to gate on. What is deterministic here is the delivery -- the right moment,
- *     every turn, regardless of what the model chose to do -- not the compliance.
- *
- *     A question is the other half, and the turn boundary cannot reach it:
- *     `ask_user_question` suspends the turn while it waits for the human, so
- *     `agent/turn-stopping` does not fire before the question is read. That half
- *     is carried on the question tool's own description instead, which is in
- *     front of the model at the moment it writes the question.
- *
- *  6. A delegation that can select the child's model must name the route it
+ *  5. A delegation that can select the child's model must name the route it
  *     selected. The host treats the selection as optional and lets the seat
  *     inherit a default, so an unnamed route silently runs the seat on a model
  *     the delegator never chose, and nothing surfaces that until its output is
@@ -53,14 +32,14 @@
  * a live seat. A seat that reports normally removes it; a seat that dies
  * silently leaves it to fire.
  *
- * The package is named for what it actually carries: five hard gates plus one
- * mandatory reminder. A name covering only the delegation half would send a
- * reader looking in the wrong place for the other rules.
+ * How an answer is *written* is deliberately not enforced here. That belongs to
+ * the prose rules in the operating instructions, which reach the model through
+ * the system prompt on every step; a listener at the turn boundary would have to
+ * send the model back for a second step, and the user would read two answers.
  *
  * @module @logictan/dsh-force-rules
  */
 
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
 export const name = 'force-rules';
 
@@ -128,24 +107,6 @@ function declaresContinuable(node) {
 function isDelegation(ctx, exec) {
   const schema = ctx.tools.get(exec.name, exec.agent)?.output?.schema;
   return schema !== undefined && declaresContinuable(schema);
-}
-
-/** The question tool's registered name, shared by its plain and timed variants. */
-const QUESTION_TOOL = 'ask_user_question';
-
-/**
- * Whether this tool asks the human a question.
- *
- * Matched by name because both of the host's variants — the plain tool and the
- * timed one — register under the same name, and neither advertises a schema
- * property that distinguishes it from an arbitrary tool that happens to take an
- * array argument.
- *
- * @param tool - the tool definition from the assembly.
- * @returns whether this is the question tool.
- */
-function isQuestionTool(tool) {
-  return tool.name === QUESTION_TOOL;
 }
 
 /**
@@ -593,84 +554,6 @@ const ROUTE_REQUIREMENT = [
 ].join(' ');
 
 /**
- * The plain-speech mandate, delivered at the turn boundary.
- *
- * Deliberately a fixed string. A reminder that varied with the answer would be a
- * check, and "is this plain enough" has no computable answer — which is exactly
- * why this is a reminder and not a validator. The rules are defined here, in the
- * plugin that delivers them, so there is one source and no file to drift from.
- */
-const PLAIN_SPEECH_MANDATE = [
-  'Your turn is about to close, and the answer above is what the user will read.',
-  'Re-read it against this mandate. If it already complies, reply with nothing at all.',
-  'Otherwise send the corrected answer:',
-  '1. Write plain Chinese, and treat the reader as a non-technical person.',
-  '   Translate jargon instead of naming it; if a term must stay, define it in the same sentence.',
-  '2. Restore the premise the reader is missing: what was being decided, where the boundary was,',
-  '   and why this conclusion follows. A bare conclusion is not an answer.',
-  '3. Keep exact code, commands, API names, file paths, and quoted source text unchanged.',
-  '   Plain speech applies to the explanation, never to the identifiers.',
-  '4. Use the project vocabulary from CONTEXT.md when it exists; that is the shared language.',
-  '5. Do not introduce a new decision, broaden the scope, or change a commitment while explaining.',
-  '6. Be shorter only after the explanation is clearer. Never collapse it into a',
-  '   context-free summary or a bare list.',
-  '7. When re-explaining something the reader did not follow, re-pitch it rather than',
-  '   repeating or truncating the previous wording.',
-].join('\n');
-
-/**
- * The plain-speech requirement appended to the question tool's own description.
- *
- * The turn boundary covers the answer; it cannot cover the question, because
- * `ask_user_question` suspends the turn while it waits for the human — so
- * `agent/turn-stopping` never fires before the question is read. The question is
- * the one moment the reader must understand without any surrounding explanation,
- * which makes it the worst place to spend jargon. The tool description is the one
- * place in front of the model at the moment it writes that question, so the
- * requirement is stated there, exactly as the marker requirement is for seats.
- */
-const QUESTION_REQUIREMENT = [
-  'Write every question, option label, and option description in plain Chinese,',
-  'treating the reader as a non-technical person: translate jargon instead of naming it,',
-  'and if a term must stay, define it in the same sentence.',
-  'Keep exact code, commands, API names, file paths, and quoted source text unchanged.',
-  'Restore the premise the reader is missing — what is being decided, where the boundary is,',
-  'and what each option leads to — because a bare choice is not a question.',
-].join(' ');
-
-/**
- * The mandate's producer identity.
- *
- * A message source is a merge-extensible sum type with no shared catch-all
- * `kind`, and `form: 'notice'` is what keeps a synthetic nudge from rendering
- * as a human turn — a bare plugin name would make the user see a prompt they
- * never wrote. `plugin:` is the host's documented mapping for a producer that
- * is not one of its same-name first-party plugins, and it is the same identity
- * `dsh-loop-guard` uses for its own notices.
- */
-const NOTICE_SOURCE = { kind: 'plugin:dsh-force-rules', form: 'notice' };
-
-/** What the collapsed transcript row shows for the mandate. */
-const NOTICE_SUMMARY = 'plain-speech mandate before the turn closes';
-
-/**
- * Whether one session is answering the user, as opposed to reporting to a
- * delegator.
- *
- * A seat reports to whoever delegated it, and a forked continuation likewise
- * reports back to its caller — neither answer is read by the user, so neither is
- * given the mandate. A root session is the one with no delegating parent.
- *
- * @param session - the session whose turn is closing.
- */
-function answersTheUser(session) {
-  const header = session?.header;
-  if (header === undefined) return false;
-  if (isSeat(session)) return false;
-  return header.parentSession === undefined;
-}
-
-/**
  * Remove every checkpoint this plugin owns on one session.
  *
  * Looked up by title rather than remembered in memory so that "at most one live
@@ -709,16 +592,6 @@ export function apply(ctx) {
   const reconciles = new Map();
   /** Seat session id -> the profile its delegating instruction declared. */
   const profiles = new Map();
-  /**
-   * Session id -> the last turn the mandate was steered into.
-   *
-   * The extra step a steer buys re-enters `agent/turn-stopping` with the same
-   * turn number, so remembering the turn — rather than a bare "already done"
-   * flag — is what keeps the reminder from re-arming itself while still letting
-   * the next turn deliver its own. Turn numbers rise monotonically within one
-   * session, so one number per live session is the whole state.
-   */
-  const reminded = new Map();
 
   /**
    * Drive one session's checkpoint to match its current live seats.
@@ -762,27 +635,6 @@ export function apply(ctx) {
     return next;
   }
 
-  // Rule 5: the plain-speech mandate is delivered at the turn boundary. The
-  // host dispatches `agent/turn-stopping` when the turn is about to close and
-  // the model owes a response, and awaits it before the boundary commits — so
-  // steering here sends the model back for exactly one more step with the
-  // mandate in hand. A session that reports to a delegator rather than to the
-  // user is left alone.
-  ctx.on('agent/turn-stopping', ({ agent, turn }) => {
-    const session = agent.session;
-    if (!answersTheUser(session)) return;
-    // The extra step this steer buys re-enters this listener with the same
-    // `turn`, so without this guard the reminder would re-arm itself forever.
-    if (reminded.get(session.id) === turn) return;
-    reminded.set(session.id, turn);
-    agent.steer(
-      createUserMessage({
-        content: [{ type: 'text', text: PLAIN_SPEECH_MANDATE }],
-        source: { ...NOTICE_SOURCE, summary: NOTICE_SUMMARY },
-      }),
-    );
-  });
-
   // Rule 1: the one-shot switch is refused before dispatch, so the delegating
   // session never enters the path that cannot report back. A denial here is a
   // tool error the model can correct on its next call.
@@ -801,7 +653,7 @@ export function apply(ctx) {
     };
   });
 
-  // Rule 6: a delegation that can select the child's model must name the route
+  // Rule 5: a delegation that can select the child's model must name the route
   // it selected. Registered after rule 1 so a one-shot call is refused by the
   // rule that explains the sharper failure first.
   ctx.on('tools/pre-execute', async (exec, next) => {
@@ -827,19 +679,12 @@ export function apply(ctx) {
   // down elsewhere; this puts it in front of the model at the moment it decides
   // to delegate. Only the description is touched, and only on delegation tools.
   //
-  // Rule 5, second half: the same treatment for the question tool, whose moment
-  // the turn boundary cannot reach.
-  //
-  // Rule 6, second half: the same treatment for the route requirement, which
-  // the host's own description presents as optional.
+  // Rule 5, second half: the route requirement, which the host's own description
+  // presents as optional.
   ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     const assembly = await next();
     let touched = false;
     const tools = assembly.tools.map((tool) => {
-      if (isQuestionTool(tool)) {
-        touched = true;
-        return { ...tool, description: tool.description + ' ' + QUESTION_REQUIREMENT };
-      }
       if (!isDelegation(ctx, tool)) return tool;
       touched = true;
       const requirement = advertisesRoute(ctx, tool)
@@ -873,11 +718,5 @@ export function apply(ctx) {
     seats.delete(info.id);
     if (seats.size === 0) liveSeats.delete(parentSessionId);
     return reconcile(parentSessionId);
-  });
-
-  // The reminder guard is the only state keyed by a session that outlives its
-  // turn, so it is dropped when the session is.
-  ctx.on('session/disposed', (session) => {
-    reminded.delete(session.id);
   });
 }
