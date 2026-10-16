@@ -198,7 +198,22 @@ describe('workspace row markers', () => {
       observers,
       addRow: (workspaceId) => {
         const attrs = { 'data-row-key': `workspace:${workspaceId}` }
+        // The row's title, where the worktree count is stamped. A real row
+        // always has one; `null` models the host re-rendering a row mid-pass.
+        const title = {
+          titleAttrs: {},
+          getAttribute: function (key) {
+            return key in this.titleAttrs ? this.titleAttrs[key] : null
+          },
+          setAttribute: function (key, value) {
+            this.titleAttrs[key] = value
+          },
+          removeAttribute: function (key) {
+            delete this.titleAttrs[key]
+          },
+        }
         const row = {
+          title,
           getAttribute: (name) => (name in attrs ? attrs[name] : null),
           setAttribute: (name, value) => {
             attrs[name] = value
@@ -206,6 +221,7 @@ describe('workspace row markers', () => {
           removeAttribute: (name) => {
             delete attrs[name]
           },
+          querySelector: (selector) => (selector === '[class*="_title"]' ? title : null),
         }
         rows.push(row)
         return row
@@ -291,6 +307,61 @@ describe('workspace row markers', () => {
     assert.equal(later.getAttribute('data-dsh-worktree'), 'branch')
   })
 
+  it('rewrites an already-injected stylesheet instead of keeping the old build', async () => {
+    // The client HMR swaps this plugin's fiber without reloading the page. An
+    // "inject once" guard left the previous build's CSS in the document, so a
+    // stylesheet change stayed invisible until a manual refresh — measured with
+    // the worktree count rule, which never appeared.
+    globalThis.fetch = statusFetch([])
+    const dom = makeDom()
+    const stale = { dataset: { pluginCss: 'worktree-session/rows.css' }, textContent: 'old build' }
+    dom.styles.push(stale)
+
+    await mountRows(listOf([]), dom)
+
+    assert.equal(dom.styles.length, 1, 'the stale tag must be reused, not duplicated')
+    assert.notEqual(stale.textContent, 'old build')
+    assert.ok(stale.textContent.includes('[data-dsh-worktree-count]'))
+  })
+
+  it('gives a session row a glyph naming the card it lives in', async () => {
+    // The design drew five per-session glyphs keyed to what the session is
+    // *about* (星芒/羽毛笔/信标…), but no such signal reaches the client: the
+    // host's `SessionSummary` carries only id/title/cwd/parentId/origin/running/
+    // retainedBy/blank/updatedAt, and `origin` is just `'subagent'`. The card a
+    // row sits in *is* derivable, so that is what the glyph encodes.
+    globalThis.fetch = statusFetch(['/repo/.worktrees/wt-abc123'])
+    const dom = makeDom()
+
+    await mountRows(listOf([{ workspaceId: 'w-main', path: '/repo' }]), dom)
+    const css = dom.styles[0].textContent
+
+    // The glyph hangs off the leading cell instead of filling it: that cell is
+    // the sidebar's indent reference, so replacing its contents would flatten a
+    // session against its workspace row (the host's own status dot already
+    // takes it over while a session runs).
+    assert.match(css, /\[data-row-key\^="session:"\]>span:first-child\{position:relative\}/)
+    assert.match(css, /\[data-row-key\^="session:"\]>span:first-child::after\{content:""/)
+    assert.match(css, /left:100%/, 'the glyph must sit beside the leading cell, not inside it')
+    // The title has to reserve the glyph's width, or the two would overlap.
+    assert.match(css, /\[data-row-key\^="session:"\]>span:nth-child\(2\)\{margin-left:20px\}/)
+    // A worktree card's sessions take the branch glyph and the card's blue; a
+    // plain card's sessions keep the document glyph in slate.
+    assert.match(
+      css,
+      /\[class\*='groupSection'\]:has\(> \* > \[data-row-key\^="workspace:"\]\[data-dsh-worktree\]\) \[data-row-key\^="session:"\]>span:first-child::after\{background-color:#60a5fa/,
+    )
+    // Read the base rule by its exact selector rather than by substring: the
+    // worktree override *contains* this selector, so an unanchored pattern
+    // matches the blue rule and the assertion can never fail.
+    const base = css
+      .split('}')
+      .map((chunk) => chunk.split('{'))
+      .find(([selector]) => selector === '[data-row-key^="session:"]>span:first-child::after')
+    assert.ok(base, 'the session glyph needs a base rule')
+    assert.match(base[1], /background-color:#94a3b8/, 'a plain card\'s sessions stay slate')
+    assert.equal(/#60a5fa/.test(base[1]), false, 'only a worktree card may tint the glyph blue')
+  })
   it('disconnects its observer when the effect is disposed', async () => {
     globalThis.fetch = statusFetch([])
     const dom = makeDom()
@@ -300,6 +371,103 @@ describe('workspace row markers', () => {
 
     assert.equal(dom.observers[0].disconnected, true)
     assert.deepEqual(dom.observers[0].options, { childList: true, subtree: true })
+  })
+
+  it('counts the repository worktrees on the plain workspace row', async () => {
+    // Three linked worktrees plus a prunable leftover: the prunable one is not
+    // counted, matching the picker's menu, which also filters it out.
+    globalThis.fetch = () =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            isRepo: true,
+            repoRoot: '/repo',
+            worktrees: [
+              { path: '/repo', isMain: true, name: 'repo' },
+              { path: '/repo/.worktrees/wt-a', isMain: false, name: 'wt-a' },
+              { path: '/repo/.worktrees/wt-b', isMain: false, name: 'wt-b' },
+              { path: '/repo/.worktrees/wt-c', isMain: false, name: 'wt-c' },
+              { path: '/repo/.worktrees/wt-gone', isMain: false, prunable: true, name: 'wt-gone' },
+            ],
+          }),
+      })
+    const dom = makeDom()
+    const mainRow = dom.addRow('w-main')
+
+    await mountRows(listOf([{ workspaceId: 'w-main', path: '/repo' }]), dom)
+
+    assert.equal(mainRow.title.getAttribute('data-dsh-worktree-count'), '3')
+  })
+
+  it('leaves the count off a workspace with no worktrees', async () => {
+    globalThis.fetch = statusFetch([])
+    const dom = makeDom()
+    const row = dom.addRow('w-main')
+
+    await mountRows(listOf([{ workspaceId: 'w-main', path: '/repo' }]), dom)
+
+    assert.equal(row.title.getAttribute('data-dsh-worktree-count'), null)
+  })
+
+  it('never counts worktrees on a worktree row itself', async () => {
+    globalThis.fetch = () =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            isRepo: true,
+            repoRoot: '/repo',
+            worktrees: [
+              { path: '/repo', isMain: true, name: 'repo' },
+              { path: '/repo/.worktrees/wt-a', isMain: false, name: 'wt-a' },
+              { path: '/repo/.worktrees/wt-b', isMain: false, name: 'wt-b' },
+            ],
+          }),
+      })
+    const dom = makeDom()
+    const worktreeRow = dom.addRow('w-wt')
+
+    await mountRows(listOf([{ workspaceId: 'w-wt', path: '/repo/.worktrees/wt-a' }]), dom)
+
+    assert.equal(worktreeRow.getAttribute('data-dsh-worktree'), 'branch')
+    assert.equal(worktreeRow.title.getAttribute('data-dsh-worktree-count'), null)
+  })
+
+  it('rewrites the count only when it changes', async () => {
+    globalThis.fetch = () =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            isRepo: true,
+            repoRoot: '/repo',
+            worktrees: [
+              { path: '/repo', isMain: true, name: 'repo' },
+              { path: '/repo/.worktrees/wt-a', isMain: false, name: 'wt-a' },
+            ],
+          }),
+      })
+    const dom = makeDom()
+    const row = dom.addRow('w-main')
+    const workspaces = listOf([{ workspaceId: 'w-main', path: '/repo' }])
+
+    await mountRows(workspaces, dom)
+    assert.equal(row.title.getAttribute('data-dsh-worktree-count'), '1')
+
+    // A second pass over unchanged data must not touch the attribute: the write
+    // would invalidate style for every row on every composer keystroke.
+    let writes = 0
+    const originalSet = row.title.setAttribute.bind(row.title)
+    row.title.setAttribute = (key, value) => {
+      writes += 1
+      originalSet(key, value)
+    }
+    await dom.observers[dom.observers.length - 1].callback()
+    await settle()
+
+    assert.equal(writes, 0)
+    assert.equal(row.title.getAttribute('data-dsh-worktree-count'), '1')
   })
 })
 

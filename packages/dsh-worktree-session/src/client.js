@@ -379,7 +379,17 @@ window.__ModuleLoader__.load({
       '%3Ccircle cx=\'12.4502\' cy=\'12.6921\' r=\'1.56962\'/%3E%3C/svg%3E")'
 
     /**
-     * Replace a worktree row's folder glyph with the branch glyph.
+     * The document glyph the design drew for a session ("会话脸部小图标"), drawn
+     * on a 24-unit grid like the branch mark so both scale from one mask box.
+     */
+    var DOC_MASK =
+      'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.8\'%3E' +
+      '%3Cpath d=\'M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z\'/%3E%3C/svg%3E")'
+
+    /**
+     * Replace a worktree row's folder glyph with the branch glyph, hang a
+     * worktree count off every plain workspace's name, and give each session row
+     * a glyph naming the card it lives in.
      *
      * The sidebar renders a workspace row as plain markup: it has no plugin
      * slot, and a Workspace carries no icon of its own. So a worktree's row can
@@ -387,16 +397,74 @@ window.__ModuleLoader__.load({
      * rides on the row itself, and the rule is scoped to the row's first child
      * — the icon slot — because the sidebar's class names are build-local
      * hashes that this plugin cannot name.
+     *
+     * The count rides on the row's *title* element instead, because that is the
+     * only spot where it lands next to the name. Two other candidates were
+     * measured and rejected: the row itself is a flex strip, so a `::after`
+     * there lands at the far right beside the row's action buttons; and the
+     * title's parent is `flex-direction: column` at sidebar width, so a
+     * `::after` there drops onto a second line and stretches across the row.
      */
     var ROW_CSS = [
       '[data-dsh-worktree]>span:first-child{background-color:currentColor;',
       '-webkit-mask:' + BRANCH_MASK + ' center/16px 16px no-repeat;',
       'mask:' + BRANCH_MASK + ' center/16px 16px no-repeat}',
       '[data-dsh-worktree]>span:first-child>svg{display:none}',
+      '[data-dsh-worktree-count]::after{content:attr(data-dsh-worktree-count);',
+      'display:inline-flex;align-items:center;justify-content:center;',
+      'height:17px;min-width:17px;padding:0 5px;margin-left:6px;',
+      'border-radius:9999px;background:rgba(226,232,240,.8);color:#64748b;',
+      'font-size:10px;line-height:1;vertical-align:middle}',
+      'body[data-ds-dark-theme] [data-dsh-worktree-count]::after{',
+      'background:rgba(255,255,255,.1);color:#cbd5e1}',
+      // Session rows: a glyph naming the card the row lives in. It hangs off the
+      // leading 16px cell rather than replacing its contents, so the host's own
+      // status dot keeps that cell and the row's indentation is untouched — the
+      // leading cell is what the sidebar's indent reads from, and filling it
+      // would flatten a session against its workspace row.
+      '[data-row-key^="session:"]>span:first-child{position:relative}',
+      // `left:100%` puts the glyph's left edge on the leading cell's right edge,
+      // with no extra offset: the title's 20px margin is then exactly the glyph's
+      // 16px plus a 4px gap, matching the design's `w-4 h-4 mr-1`. Any offset
+      // here would eat into that gap and run the text into the glyph (measured:
+      // a 4px offset left the two flush at 0px).
+      '[data-row-key^="session:"]>span:first-child::after{content:"";position:absolute;',
+      'left:100%;top:50%;transform:translateY(-50%);width:16px;height:16px;',
+      'background-color:#94a3b8;',
+      '-webkit-mask:' + DOC_MASK + ' center/14px 14px no-repeat;',
+      'mask:' + DOC_MASK + ' center/14px 14px no-repeat}',
+      // The glyph is out of flow, so the title reserves the room it occupies.
+      // Margin rather than padding: the host clips the title at its padding box
+      // and scrolls it on hover, so padding would let a long title slide its text
+      // under the glyph, while margin keeps the clip edge exactly where the glyph
+      // ends.
+      '[data-row-key^="session:"]>span:nth-child(2){margin-left:20px}',
+      '[data-row-key^="session:"]:hover>span:first-child::after{background-color:#475569}',
+      // A session inside a worktree card is a checkout of the branch its owner
+      // is on, so it takes the branch glyph and the card's blue.
+      '[class*=\'groupSection\']:has(> * > [data-row-key^="workspace:"][data-dsh-worktree]) ' +
+        '[data-row-key^="session:"]>span:first-child::after{background-color:#60a5fa;',
+      '-webkit-mask:' + BRANCH_MASK + ' center/14px 14px no-repeat;',
+      'mask:' + BRANCH_MASK + ' center/14px 14px no-repeat}',
+      '[class*=\'groupSection\']:has(> * > [data-row-key^="workspace:"][data-dsh-worktree]) ' +
+        '[data-row-key^="session:"]:hover>span:first-child::after{background-color:#2563eb}',
+      'body[data-ds-dark-theme] [data-row-key^="session:"]>span:first-child::after{',
+      'background-color:#64748b}',
+      'body[data-ds-dark-theme] [data-row-key^="session:"]:hover>span:first-child::after{',
+      'background-color:#94a3b8}',
+      'body[data-ds-dark-theme] [class*=\'groupSection\']:has(> * > ' +
+        '[data-row-key^="workspace:"][data-dsh-worktree]) ' +
+        '[data-row-key^="session:"]>span:first-child::after{background-color:#93c5fd}',
+      'body[data-ds-dark-theme] [class*=\'groupSection\']:has(> * > ' +
+        '[data-row-key^="workspace:"][data-dsh-worktree]) ' +
+        '[data-row-key^="session:"]:hover>span:first-child::after{background-color:#bfdbfe}',
     ].join('')
 
     /** Attribute this plugin stamps on a workspace row that is a worktree. */
     var ROW_ATTR = 'data-dsh-worktree'
+
+    /** Attribute carrying the worktree count on a plain workspace's name box. */
+    var COUNT_ATTR = 'data-dsh-worktree-count'
 
     /**
      * Mark every sidebar workspace row whose directory is a linked worktree.
@@ -411,7 +479,15 @@ window.__ModuleLoader__.load({
     function applyWorkspaceRowMarkers(workspaces) {
       if (typeof document === 'undefined') return undefined
 
-      if (document.querySelector('style[data-plugin-css="' + ROW_CSS_ID + '"]') === null) {
+      // The stylesheet is rewritten on every activation, never skipped when a
+      // tag already exists: the client HMR replaces this plugin's fiber without
+      // reloading the page, so a "inject once" guard would leave the *previous*
+      // build's CSS in the document and any stylesheet change would be invisible
+      // until a manual refresh.
+      var existing = document.querySelector('style[data-plugin-css="' + ROW_CSS_ID + '"]')
+      if (existing !== null) {
+        existing.textContent = ROW_CSS
+      } else {
         var tag = document.createElement('style')
         tag.dataset.plugin = 'worktree-session'
         tag.dataset.pluginCss = ROW_CSS_ID
@@ -447,9 +523,28 @@ window.__ModuleLoader__.load({
             // The observer re-runs this on every DOM change, so an unchanged
             // row must not be rewritten: the write would invalidate style for
             // every row on every keystroke in the composer.
-            if (wanted === (row.getAttribute(ROW_ATTR) !== null)) return
-            if (wanted) row.setAttribute(ROW_ATTR, 'branch')
-            else row.removeAttribute(ROW_ATTR)
+            if (wanted !== (row.getAttribute(ROW_ATTR) !== null)) {
+              if (wanted) row.setAttribute(ROW_ATTR, 'branch')
+              else row.removeAttribute(ROW_ATTR)
+            }
+
+            // The count belongs to the repository, not the checkout: it is the
+            // number of *other* worktrees this one's owner has, so it is shown
+            // on the plain workspace row and cleared from worktree rows. It
+            // comes from the same answer the picker lists, filtered the same
+            // way, so the badge can never disagree with the menu.
+            var title = row.querySelector('[class*="_title"]')
+            if (title === null) return
+            var count = 0
+            if (!wanted) {
+              count = (status.worktrees || []).filter(function (candidate) {
+                return !candidate.isMain && !candidate.prunable
+              }).length
+            }
+            var next = count === 0 ? null : String(count)
+            if (next === title.getAttribute(COUNT_ATTR)) return
+            if (next === null) title.removeAttribute(COUNT_ATTR)
+            else title.setAttribute(COUNT_ATTR, next)
           },
           function () {
             // An unreadable directory is not evidence of a worktree.
