@@ -1,0 +1,17 @@
+# The dsh-macos-theme bundle patch.
+#
+# One bare plugin row by package name: the host half (exports ".") is an empty
+# apply so the plugin appears in the host cordis.yml / Loader, and the
+# `dsh.client` declaration in package.json loads the browser half (exports
+# "./client"), which owns the whole theme. Row id equals the host plugin's
+# `export const name` in src/index.ts.
+#
+# The row itself carries no config: the light and dark palettes both ship inside
+# the client bundle and follow the user's existing light/dark/system preference.
+# The one deployment-facing knob (`replaceChatFont`) is declared by the host
+# half's Config and is set by the profile layer, which renders it as the plugin's
+# settings card.
+
+- insert:
+    - id: macos-theme
+      name: '@logictan/dsh-macos-theme'

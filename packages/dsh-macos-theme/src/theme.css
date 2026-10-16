@@ -1,0 +1,983 @@
+/**
+ * dsh-macos-theme — structural stylesheet.
+ *
+ * Written in the design's own Tailwind utility strings and compiled to plain
+ * CSS at build time (see `tailwind.config.cjs`). The compiled output is inlined
+ * into `lib/client.js`; Tailwind itself never reaches the browser.
+ *
+ * ## Division of labour
+ *
+ * Colour comes from the token layer (`ctx.theme.overrideTokens`), geometry and
+ * typography come from here. So colour-bearing declarations read `var(--dsw-*)`
+ * where a matching token exists, which is what lets one stylesheet serve both
+ * palettes. The literal colours that remain are the brand blue (identical in
+ * both palettes) and the components with a fixed identity — the user bubble and
+ * the thinking bar. Those carry an explicit dark-mode override in section 9.
+ *
+ * ## Why `@apply` and not runtime utilities
+ *
+ * Measured on the live host: a plain runtime utility (`.rounded-[20px]`, one
+ * class, specificity 0-1-0) loses to the host's own single-class rules, which
+ * are injected later in the document. Only `!`-prefixed utilities win — and
+ * even then React overwrites `className` wholesale on re-render, so a
+ * transplanted class disappears the moment the component re-renders (measured:
+ * a marker class on the selected session row vanished when the selection
+ * changed). Compiling to a plain rule anchored on a stable hook avoids both
+ * problems while keeping the design's own utility strings as the source.
+ *
+ * ## Specificity
+ *
+ * Every rule that competes with a host class is prefixed with `body`, lifting
+ * it to 0-1-1 against the host's 0-1-0. This is load-bearing, not cosmetic:
+ * three rules were measured losing to the base sheet before the prefix was
+ * added (tab strip kept `gap:36px`, composer card kept its 28px radius, sidebar
+ * nav row kept 36px height).
+ *
+ * ## Anchors
+ *
+ * Class names carry a build-path-derived hash (`Wcetya_*` locally, `A55DgG_*`
+ * in CI), so only build-stable hooks are used: `[data-slot="..."]`,
+ * `[data-row-key^="..."]`, `[data-chat-flow-kind="..."]`, `[data-turn-process]`,
+ * `[data-composer-card]`, `[data-window-drag]`, and `[class*="_localName"]`
+ * where the local name after the underscore is stable across builds.
+ */
+@tailwind utilities;
+
+/* ==========================================================================
+   -1. Self-hosted chat typeface.
+   The chat's type is Fira Code (Latin) with LXGW WenKai Mono / 落霞孤鹜等宽
+   (CJK) behind it. Both are served from this plugin's own `/dsh-macos-theme/fonts`
+   prefix route — never from a locally installed font, because the UI is reached
+   over the LAN from machines that have neither face installed, and never through
+   `/plugins/`, which serves only `client*.js` bundles.
+   The CJK face is subsetted to GB2312 plus kana, CJK punctuation, fullwidth
+   forms and the general-punctuation / arrow / geometric blocks (8156 glyphs,
+   1.55 MB instead of the full 7.7 MB); measured against a 2.6 MB corpus of this
+   repo's own prose it misses 3 characters in 1314 distinct CJK codepoints.
+   Fira Code ships as the upstream variable font (wght 300–700), so one file
+   covers every weight the theme asks for.
+   ========================================================================== */
+@font-face {
+  font-family: 'Fira Code';
+  src: url('/dsh-macos-theme/fonts/FiraCode-VF.woff2') format('woff2');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'LXGW WenKai Mono';
+  src: url('/dsh-macos-theme/fonts/LXGWWenKaiMono-GB.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* The CJK face's bold. LXGW WenKai Mono ships Regular (400) and Medium (500)
+   only — there is no Bold upstream, and Medium is the heaviest cut. With the
+   Regular face alone, `font-weight: 600` (what the host's `strong` rule asks
+   for) had no matching face, so the browser SYNTHESISED it by smearing the 400
+   outline: measured at 56px, `加粗文字测试` gained only +15.25% ink from
+   400→600 and gained exactly NOTHING from 600→700, i.e. synthetic weight
+   saturates. Latin was unaffected (Fira Code is variable to 700, +38% at 600),
+   so the whole asymmetry showed up as "bold looks weak in dark mode" on CJK
+   prose. Registering the real Medium face for 500-700 replaces the smear with a
+   drawn weight.
+   The range starts at 500, not 600, so a 500 request also gets the real cut
+   instead of a synthesised one. */
+@font-face {
+  font-family: 'LXGW WenKai Mono';
+  src: url('/dsh-macos-theme/fonts/LXGWWenKaiMono-Medium-GB.woff2') format('woff2');
+  font-weight: 500 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* The chat typeface is opt-out. `--dsh-chat-font` is the single indirection
+   every font rule below reads, and it is DEFINED ONLY when the replacement is
+   on. Each of those rules reads it as `var(--dsh-chat-font, inherit)`, so with
+   the toggle off the property is unset and every one of them falls back to
+   `inherit` — the parent's own stack, i.e. exactly "leave the host's font
+   alone". Gating the definition rather than each rule keeps the opt-out to one
+   declaration and cannot drift as font rules are added.
+   The `@font-face` blocks above stay declared either way: a face is only
+   fetched when rendered text actually uses it, so leaving them costs nothing
+   when the toggle is off. The attribute is written by the browser half from the
+   plugin's own `Config.replaceChatFont` and is absent by default, so the themed
+   font is the behaviour when the host has no settings UI at all. */
+body:not([data-dsh-native-chat-font]) {
+  --dsh-chat-font: 'Fira Code', 'LXGW WenKai Mono', ui-monospace, monospace;
+}
+
+/* ==========================================================================
+   0. Restore `border-style` for the elements this stylesheet gives a border.
+   Tailwind's preflight normally sets `*, ::before, ::after { border-style: solid }`,
+   and `@apply border` emits only `border-width`. With preflight disabled (see
+   `tailwind.config.cjs`) `border-style` stays at its initial `none`, so every
+   bordered component below renders with no visible border at all — measured:
+   the frame, sidebar divider, header divider, selected session row, active tab,
+   thinking bar, composer card and code block all reported `border-style: none`
+   with the right width and colour.
+   The global reset cannot be re-added (it is exactly the preflight damage this
+   theme refuses to inject), so it is scoped to the selectors that need it.
+
+   `border-width: 0` is not optional and must follow `border-style`. Setting
+   `border-style: solid` alone leaves the three sides that have no explicit
+   width at the initial `border-width: medium`, which computes to 3px — measured:
+   the sidebar and the header each grew a 3px solid border on every side but one.
+   Zeroing the width here, then letting each component rule below set its own
+   (later in the file at equal specificity), yields exactly the intended divider.
+
+   `box-sizing: border-box` is the third thing preflight was supplying. Without
+   it these elements are `content-box`, so each border adds to the box: measured,
+   the 32px selected session row grew to 34px. Scoping it to this list keeps the
+   dimensions the design specifies without the global reset.
+   ========================================================================== */
+body [data-slot='root'] > div,
+body div:has(> [data-slot='sidebar']),
+body div:has(> [data-slot='rightbar']),
+body [data-row-key^='session:'][aria-selected='true'],
+body [data-step-process]:not([hidden]),
+body header[data-window-drag],
+body [data-conversation-tabs] > [role='tab'][aria-selected='true'],
+body [data-turn-process],
+body [data-chat-flow-kind='assistant-step'] code,
+body .md-code-block,
+body [class*='groupSection']:has(> * > [data-row-key^='workspace:']),
+body [data-composer-card] {
+  box-sizing: border-box;
+  border-style: solid;
+  border-width: 0;
+}
+
+/* ==========================================================================
+   1. Desktop canvas — the gradient the window floats on.
+   Plain CSS: `@apply` cannot express a multi-stop radial stack.
+
+   The padding is what insets the window, and the height chain is what makes it
+   fill the padded desktop: the frame's ancestors are plain blocks whose height
+   is auto, which would otherwise collapse a percentage-height frame to nothing.
+   The ring steps down with the viewport (16px desktop → 12px tablet → 8px
+   phone, see section 10). The desktop value was 24px; it is 16px now, which is
+   the smallest that still reads as a floating window rather than a full-bleed
+   page. On a 390px phone the original 24px band consumed 48px of a 390px width
+   — 12% of the screen — for nothing.
+
+   The height is scoped to the app root, NOT to every `body > div`: the host
+   portals its menus, dropdowns and hover cards straight into `body`, so a bare
+   `body > div` gave each of those a definite height. Their own
+   viewport-relative `max-height` then resolved against a full-viewport box
+   instead of the padded one, and every popup rendered as a full-height column.
+   ========================================================================== */
+body {
+  padding: 16px;
+  box-sizing: border-box;
+  background-image:
+    radial-gradient(circle at 18% 20%, rgba(56, 189, 248, 0.85) 0%, transparent 45%),
+    radial-gradient(circle at 82% 15%, rgba(6, 182, 212, 0.75) 0%, transparent 42%),
+    radial-gradient(circle at 50% 85%, rgba(14, 165, 233, 0.8) 0%, transparent 50%),
+    radial-gradient(circle at 88% 80%, rgba(2, 132, 199, 0.9) 0%, transparent 45%),
+    linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+  background-attachment: fixed;
+}
+
+body > div:has(> [data-slot='root']),
+body [data-slot='root'] {
+  height: 100%;
+}
+
+/* Dark desktop: the dark design's own washes over its base gradient. */
+body[data-ds-dark-theme] {
+  background-image:
+    radial-gradient(circle at 15% 15%, rgba(30, 58, 138, 0.22), transparent 55%),
+    radial-gradient(circle at 85% 20%, rgba(14, 116, 144, 0.18), transparent 50%),
+    radial-gradient(circle at 80% 85%, rgba(67, 56, 202, 0.2), transparent 60%),
+    radial-gradient(circle at 20% 80%, rgba(2, 132, 199, 0.15), transparent 55%),
+    linear-gradient(145deg, #070b12 0%, #0b111d 50%, #080d17 100%);
+}
+
+/* ==========================================================================
+   1b. Elevation, re-declared on every element.
+   ==========================================================================
+   The elevation tokens cannot be themed through `overrideTokens`. The host's
+   own theme plugin declares them on a UNIVERSAL selector:
+
+     body, body * { --dsw-elevation-stroke: …; --dsw-elevation-panel: …;
+                    --dsw-elevation-prominent: …; --dsw-elevation-soft: … }
+
+   A token override lands on `body` alone, so on `body` itself it wins — but
+   every descendant also matches `body *`, which is MORE specific, and therefore
+   re-defines those four properties back to the host's values. Measured on the
+   live host: a fresh child of `body` resolved `--dsw-elevation-prominent` to
+   the host's `0 0 0 .5px rgba(15,23,42,.04), 0 3px 8px 0 #0000000a, …` while
+   `body` itself resolved the plugin's value — and menus, dialogs and tooltips
+   are portalled to a direct child of `body`, so not one of them ever saw the
+   theme. That is why the dropdowns kept the host's shadow.
+   The same universal rule also re-defines `--dsw-elevation-stroke`, which is
+   what carries the stroke colour, so the popup hairline was wrong too.
+
+   Re-declaring on `html body, html body *` puts the theme ABOVE the host: the
+   extra type selector raises specificity to (0,0,3) against the host's (0,0,2),
+   which is what makes it stick regardless of which stylesheet the host appends
+   last. A plain `body, body *` at equal specificity was measured LOSING the tie
+   — the popup still resolved the host's shadow — so the extra `html` is
+   load-bearing, not decoration. `html body *` also covers the portalled popups,
+   which are children of `body` rather than descendants of the surfaces that
+   spawned them. */
+html body,
+html body * {
+  --dsw-elevation-stroke: 0 0 0 0.5px var(--dsw-elevation-stroke-color);
+  --dsw-elevation-panel: var(--dsw-elevation-stroke), 0 8px 24px -4px rgba(15, 23, 42, 0.12);
+  --dsw-elevation-prominent: var(--dsw-elevation-stroke), 0 8px 28px -6px rgba(15, 23, 42, 0.18);
+  --dsw-elevation-soft: var(--dsw-elevation-stroke), 0 2px 8px -2px rgba(15, 23, 42, 0.08);
+}
+
+html body[data-ds-dark-theme],
+html body[data-ds-dark-theme] * {
+  --dsw-elevation-panel: var(--dsw-elevation-stroke), 0 8px 24px -4px rgba(0, 0, 0, 0.55);
+  --dsw-elevation-prominent: var(--dsw-elevation-stroke), 0 8px 28px -6px rgba(0, 0, 0, 0.6);
+  --dsw-elevation-soft: var(--dsw-elevation-stroke), 0 2px 8px -2px rgba(0, 0, 0, 0.4);
+}
+
+/* ==========================================================================
+   2. Floating window chrome — the 24px translucent sheet.
+   `[data-slot="root"]` is `display:contents`, so `:has()` resolves the real
+   boxed frame that owns it.
+   ========================================================================== */
+body [data-slot='root'] > div {
+  @apply rounded-[24px] border backdrop-blur-[40px];
+  border-color: rgba(255, 255, 255, 0.6);
+  background-color: rgba(248, 250, 252, 0.95);
+  box-shadow: 0 25px 60px -15px rgba(15, 23, 42, 0.28);
+  backdrop-filter: blur(40px) saturate(160%);
+  -webkit-backdrop-filter: blur(40px) saturate(160%);
+  overflow: hidden;
+}
+
+/* ==========================================================================
+   3. Column surfaces — recessed sidebar tint vs. paper conversation.
+   The frame, centre column and conversation root all share one token, so the
+   columns are separated here rather than in the token layer.
+   ========================================================================== */
+body div:has(> [data-slot='sidebar']) {
+  @apply border-r;
+  border-color: var(--dsw-alias-border-l3);
+  background-color: var(--dsw-specific-sidebar-fill);
+}
+
+body div:has(> [data-slot='main']) {
+  background-color: var(--dsw-alias-bg-base);
+}
+
+body div:has(> [data-slot='rightbar']) {
+  @apply border-l;
+  border-color: var(--dsw-alias-border-l3);
+  background-color: var(--dsw-specific-sidebar-fill);
+}
+
+/* ==========================================================================
+   4. Sidebar
+   ========================================================================== */
+
+/* Brand row (the host renders 60px; the design keeps it) */
+body [class*='_logoRow'] {
+  @apply h-[60px];
+}
+
+/* New Session — full-width primary button.
+   `button[...]` is load-bearing, not decoration: `[class*='_newSession']` is a
+   *substring* match, so it also matched the button's four descendants
+   (`_newSessionLabelMask`, `_newSessionContent`, `_newSessionLabel`,
+   `_newSessionShortcut`) — 5 elements. The 32px height then applied to the
+   label span as well, whose 22px line-height put its ink at cy=106 against the
+   button's cy=111, which is the vertical misalignment this rule used to cause.
+   Qualifying to the button element measured n=1 with 0 nested matches. */
+body [data-slot='sidebar'] button[class*='_newSession'] {
+  @apply h-[32px] rounded-[12px] text-[12px] font-medium;
+  background-color: #2563eb;
+  color: #ffffff;
+}
+
+body [data-slot='sidebar'] button[class*='_newSession']:hover {
+  background-color: #1d4ed8;
+}
+
+/* Nav rows: 插件 / 自动化任务 */
+body [class*='_panelRow'] {
+  @apply h-[32px] min-h-[32px] rounded-[12px] text-[12px];
+}
+
+/* Section header row (工作区 plus its three trailing icon buttons) */
+body [class*='_sectionHeader'] {
+  @apply h-[36px];
+}
+
+body [class*='_sectionLabel'] {
+  @apply text-[11px] font-semibold tracking-wider uppercase;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* ==========================================================================
+   Sidebar workspace cards.
+   A workspace and its sessions live in one `groupSection` (exactly one
+   workspace row + that workspace's session rows). Nested worktrees are
+   *separate* `groupSection`s placed inside their parent's, so the same element
+   type appears at both levels and the two must be told apart.
+
+   The discriminator is the direct workspace row, not any descendant: a parent
+   card also *contains* worktree rows, so a plain `:has([data-dsh-worktree])`
+   would match the parent too. `> * > ` reaches the row through the host's
+   `display:contents` wrapper (measured: the row is the wrapper's only child).
+   Measured with this pair: 8 plain cards, 5 worktree cards, 0 overlap.
+   ========================================================================== */
+body [class*='groupSection']:has(> * > [data-row-key^='workspace:']:not([data-dsh-worktree])) {
+  @apply rounded-[14px] border p-2;
+  background-color: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.06);
+}
+
+/* Worktree card: the brand-blue tint marks "this is a checkout, not a repo".
+   Indentation is deliberately NOT added — the host already indents worktree
+   rows and their sessions by +12px via `--dsh-workspace-indent`, so a second
+   indent here would read as two levels. */
+body [class*='groupSection']:has(> * > [data-row-key^='workspace:'][data-dsh-worktree]) {
+  @apply rounded-[10px] border p-1.5;
+  background-color: #eff6ff;
+  border-color: rgba(37, 99, 235, 0.18);
+}
+
+/* Workspace rows */
+body [data-row-key^='workspace:'] {
+  @apply h-[34px] rounded-[12px];
+}
+
+/* Session rows */
+body [data-row-key^='session:'] {
+  @apply h-[32px] rounded-[12px];
+}
+
+/* Selected session row: raised card with the brand-blue hairline */
+body [data-row-key^='session:'][aria-selected='true'] {
+  @apply border shadow-sm;
+  border-color: rgba(37, 99, 235, 0.3);
+  background-color: var(--dsw-alias-bg-base);
+}
+
+/* ==========================================================================
+   Sidebar session status. Only three states are ever visible here: idle paints
+   nothing (the host renders an empty leading slot), ongoing is a spinning ring,
+   and warning is the "waiting for your answer" dot. `done` and `error` are
+   deliberately left alone — a finished session should read as quiet, not as a
+   green/red badge competing with the workspace cards.
+
+   Waiting dot: the host's state dot is a 10px slot painting a 6px `currentColor`
+   core through `::after { inset: 20% }`. Recolouring `color` moves the core; the
+   2px halo is a spread-only ring, so it sits outside the slot without changing
+   the row's measured width.
+
+   Both rules anchor on `data-state`, never on the class: `dot` / `spinner` are
+   CSS-Module local names and compile to build-path hashes (measured
+   `_spinner_1i3xo_37`), which this repo forbids anchoring on. `data-state` is
+   emitted by the host's own JSX and is stable across builds.
+   ========================================================================== */
+body [data-slot='sidebar'] [data-state='warning'] {
+  color: #fbbf24;
+  box-shadow: 0 0 0 2px #fef3c7;
+}
+
+/* Ongoing ring: the host paints it with the tertiary label grey. */
+body [data-slot='sidebar'] [data-state='ongoing'] {
+  color: #2563eb;
+}
+
+/* Settings entry. `[data-slot="sidebar.settings"]` is a `display:contents`
+   wrapper, so the styled row is its child. The host's own class for that row
+   carries a build-path hash (`VOzbGW_*` locally), which cannot be anchored on. */
+body [data-slot='sidebar.settings'] > div {
+  @apply h-[34px] rounded-[12px];
+}
+
+/* ==========================================================================
+   5. Conversation header — single 56px row.
+   The host ships a 76px two-row grid. Measured: switching to a single row with
+   `grid-template-columns: minmax(0,1fr) auto` and the tabs pinned to column 2
+   yields a 57px header with the title still 917px wide. An earlier attempt with
+   `display:flex` collapsed the title to 0px — the grid form is required.
+   ========================================================================== */
+body header[data-window-drag] {
+  @apply h-[56px] min-h-[56px] border-b;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: 56px;
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-color: var(--dsw-alias-border-l3);
+}
+
+body header[data-window-drag] [class*='_titleRow'] {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+/* ==========================================================================
+   6. 对话 / 轨迹 segmented control — hidden.
+   The two buttons sit at the header's right edge and, measured live, the strip
+   is 104px wide at x=1243 while the sidebar toggle occupies x=1231–1259: a 16px
+   overlap that literally covers the toggle. They are unused in practice, so the
+   strip is removed and the toggle is reachable again.
+   The anchor stays on the stable `data-conversation-tabs` attribute.
+   ========================================================================== */
+body [data-conversation-tabs] {
+  display: none;
+}
+
+/* ==========================================================================
+   7. Conversation flow
+   ========================================================================== */
+body [data-conversation-scroll] {
+  background-color: transparent;
+}
+
+/* Chat typeface. Set on the conversation container so the merged process cards,
+   tool rows and turn summaries inherit it. The two surfaces that do NOT inherit
+   are re-asserted explicitly: the markdown renderer gives its prose container an
+   explicit `font-family`, and the composer's editable carries its own. */
+body [data-conversation-scroll] {
+  font-family: var(--dsh-chat-font, inherit);
+}
+
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'],
+body [data-composer-card] [class*='_input'] {
+  font-family: var(--dsh-chat-font, inherit);
+}
+
+/* Bold. The host asks for `font-weight: 600`, which our LXGW WenKai Mono Medium
+   face satisfies only marginally heavier than Regular, so emphasis read as barely
+   different from body text. The user asked for an underline alongside the weight.
+   Neither design export contains a `strong` element or any underline, so this has
+   no design counterpart — an accepted divergence. */
+body [data-conversation-scroll] [class*='_markdown'] strong {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* User bubble. Three surfaces paint a user-authored bubble, and all three pair
+   `background: var(--dsw-specific-bubble)` with `color: var(--dsw-alias-label-primary)`:
+   `dsh-client-ui-chat` (`.Sixlwa_bubble`, used by steering rows), `dsh-client-ui-goal`
+   (`.oRe1gG_bubble`) and `dsh-client-ui-user-questions` (`.ROF66W_bubble`).
+
+   Our palette sets the fill to the design's dark slate `#1E293B` but leaves
+   `--dsw-alias-label-primary` as the ordinary light-mode body colour `#0F172A`, so
+   the two tokens disagree and the text lands dark-on-dark. Steering rows are the
+   visible case: they bypass `dsh-easyrewrite` entirely, so nothing else corrects
+   them. Declared here because `--dsw-alias-label-primary` cannot be changed — it is
+   the global body colour — while the fill must stay dark to match the design. */
+body [class*='_bubble'] {
+  color: #f1f5f9;
+}
+
+/* The easyrewrite bubble. It is a fourth surface for the same thing and is styled
+   by its own stable class.
+
+   `!important` is required, not stylistic: the plugin sets fill, radius, padding
+   and colour as an **inline** `style` attribute on this element (measured:
+   `style="... background: var(--dsw-alias-interactive-bg-hover, ...); border-radius: 14px; ..."`),
+   and an inline declaration outranks any stylesheet rule regardless of
+   specificity. Without it the bubble stayed at the host's `rgba(15,23,42,0.04)`
+   wash and 14px radius instead of the design's dark slate bubble. */
+body .dsh-easyrewrite-bubble {
+  @apply shadow-sm;
+  border-radius: 16px 16px 6px 16px !important;
+  padding: 10px 16px !important;
+  background-color: #1e293b !important;
+  color: #f1f5f9 !important;
+  font-size: 13px !important;
+  line-height: 1.6 !important;
+}
+
+body .dsh-easyrewrite-bubble code {
+  @apply rounded px-1 font-mono text-[12px];
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  color: #67e8f9 !important;
+}
+
+/* Completed pill — a collapsed summary row, not a card.
+   The host's own rule is `padding: 0 0 8px` because it renders this row as a
+   bottom-bordered separator. Restyled as a filled pill the 8px is no longer a
+   separator gap but visible off-centre whitespace, so the design's `px-3` and a
+   symmetric vertical padding replace it.
+   The fill was violet; the design (`d5bb5fb1a2144c029900c8d113017d79`) draws it
+   in the same neutral slate as the rest of the chrome, so the row reads as a
+   settled state rather than as a second accent colour. */
+body [data-turn-process] {
+  @apply h-[33px] rounded-lg border text-[12px];
+  padding: 0 12px;
+  border-color: rgba(15, 23, 42, 0.08);
+  background-color: #f1f5f9;
+}
+
+body [data-turn-process] [class*='_label'] {
+  @apply text-[12px] font-medium;
+  color: #475569;
+}
+
+/* The leading chevron/status glyph is the one coloured mark left on the row. */
+body [data-turn-process] [class*='_chevron'] {
+  color: #94a3b8;
+}
+
+/* In-progress hint ("深度求索中，用时 …"). The host colours the whole row from
+   `--dsw-alias-label-deep-diving`, which resolves to indigo `#4338CA` — the last
+   indigo surface in the chat. The design puts it on the theme's blue instead, so
+   the running state and the completed pill read as one family.
+   `[data-chat-running]` is the host's own stable attribute on this row. */
+body [data-chat-running] {
+  color: #2563eb;
+}
+
+/* The animated sweep is a separate token (`--dsw-alias-label-shimmer`) and paints
+   its own spans, so it has to be re-pointed where it lands rather than inherited
+   from the row. */
+body [data-chat-running] [class*='_sweep'],
+body [data-chat-running] [class*='_highlight'] {
+  color: #93c5fd;
+}
+
+/* ==========================================================================
+   Merged process cards.
+   The host already merges adjacent thinking steps and tool calls into one
+   `[data-step-process]` group per run — measured 170 groups on a live session.
+   That merging is the structure the design asks for; what is missing is its card
+   chrome, so the group is dressed as the design's card here.
+
+   Both kinds share ONE card identity. The earlier violet thinking card is gone:
+   the user asked for the chat's status surfaces to match the theme's macOS slate
+   + black-blue palette, and violet/indigo belonged to neither. The new design
+   (`d5bb5fb1a2144c029900c8d113017d79`) draws a white card with a hairline border
+   for both kinds, and lets the leading icon carry the only colour difference.
+
+   `:not([hidden])` is load-bearing. The conversation is virtualized, and an
+   off-screen group is a `hidden="until-found"` placeholder whose own box is 0px;
+   padding on it produced a phantom 8px row for each of the 26 placeholders
+   (measured 208px of dead space). Only a real, on-screen group gets the card.
+
+   Height is already bounded by the host: measured on an 8-member group the
+   expanded body carries `max-height: 400px; overflow-y: auto`, so a long group
+   scrolls inside the card instead of growing without limit. No cap is declared
+   here, because duplicating it would only risk drifting from the host's own value.
+   ========================================================================== */
+body [data-step-process]:not([hidden]) {
+  @apply rounded-[12px] border px-2.5 py-1;
+  border-color: var(--dsw-alias-border-l3);
+  background-color: var(--dsw-alias-bg-layer-2);
+}
+
+/* The card title. The host sets `--dsw-alias-label-tertiary` (#94A3B8), which the
+   design reserves for the chevron; the title itself is the primary text colour. */
+body [data-step-process]:not([hidden]) [data-process-activity] {
+  color: #1e293b;
+}
+
+/* Thinking groups lead with the theme's blue rather than violet, so the two kinds
+   stay distinguishable without a second card colour. */
+body [data-step-process]:not([hidden]):has([data-process-activity='thinking']) [data-step-process-icon] {
+  color: #2563eb;
+}
+
+/* The reasoning body. The host renders the thinking text in a left-ruled block
+   already; the design sets that rule in the theme's blue and the copy in slate. */
+body [data-step-process]:not([hidden]):has([data-process-activity='thinking']) [class*='_content'] {
+  color: #475569;
+}
+
+/* Tool-call rows already render as a single 24px line; only the type scale
+   needs pinning. */
+body [data-chat-flow-kind='tool-call'] [class*='_callRow'] {
+  @apply text-[12px];
+}
+
+/* Assistant body copy. The prose container is `_markdown_*` (a CSS-module local
+   name from the markdown renderer), not `_body_*` — `_body_` is a different
+   component that also appears 141 times under assistant steps, so anchoring
+   there restyled the wrong element and left the prose at 14px. */
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] {
+  @apply text-[13px] leading-[1.7];
+}
+
+body [data-chat-flow-kind='assistant-step'] code {
+  @apply rounded border px-1.5 py-0.5 text-[12px];
+  border-color: var(--dsw-alias-border-l3);
+  background-color: var(--dsw-alias-bg-layer-3);
+  font-family: var(--dsh-chat-font, inherit);
+}
+
+/* Code blocks (`md-code-block` is a stable, non-hashed host class) */
+body .md-code-block {
+  @apply rounded-[16px] border shadow-sm;
+  border-color: var(--dsw-alias-border-l3);
+  background-color: var(--dsw-alias-bg-layer-2);
+}
+
+body .md-code-block [class*='_content'] {
+  @apply p-3.5;
+}
+
+body .md-code-block pre {
+  /* `m-0` is load-bearing: the UA sheet gives `pre` a `1em 0` margin, which at
+     this 12px font size measured as 12px of extra space above and below the
+     code, inside the block's own 14px padding. */
+  @apply m-0 text-[12px] leading-relaxed;
+  background-color: transparent;
+  border-radius: 0;
+  /* The host's `--ds-font-family-code` leads with SF Mono / JetBrains Mono, which
+     only exist if the viewing machine has them installed — the same
+     local-installation dependency the chat font exists to avoid. Fira Code is a
+     programming font and is already bundled, so code uses it too. */
+  font-family: var(--dsh-chat-font, inherit);
+}
+
+/* ==========================================================================
+   8. Composer
+   ========================================================================== */
+body [data-composer-card] {
+  @apply rounded-[16px] border p-3;
+  border-color: var(--dsw-alias-border-l3);
+  background-color: var(--dsw-alias-bg-base);
+  box-shadow: 0 4px 12px -4px rgba(15, 23, 42, 0.08);
+}
+
+/* "+" affordance */
+body [data-composer-card] [class*='_add'] {
+  @apply h-7 w-7 shrink-0 rounded-full text-white shadow-sm;
+  background-color: #1e293b;
+}
+
+/* 完全权限 / 主检出 — the design draws both as the same grey chip.
+   `button[...]` is load-bearing: `[class*='_trigger']` is a *substring* match and
+   matched 7 elements (5 of them nested spans — `_triggerIcon`, `_triggerLabel`,
+   `_triggerEffort`, …), so `px-3` was being applied to the icon and the label
+   instead of only to the button. Measured with the `button` qualifier: n=2,
+   0 nested.
+   The two chips are different host components (完全权限 is `iWlSmW_trigger` at
+   13px/500, 主检出 is a `_ghost_ _sm_` button at 12px/400 with no background at
+   all), which is why the design's single chip style has to be applied here
+   rather than inherited. 主检出 carries no `_trigger` class whatsoever, so the
+   slot it lives in is what anchors it. */
+body [data-composer-card] button[class*='_trigger'],
+body [data-composer-card] [data-slot='conversation.input.left'] button {
+  @apply h-7 rounded-[8px] px-3 text-[13px] font-medium;
+  background-color: #f1f5f9;
+  color: #334155;
+}
+
+body [data-composer-card] button[class*='_trigger']:hover,
+body [data-composer-card] [data-slot='conversation.input.left'] button:hover {
+  background-color: rgba(226, 232, 240, 0.8);
+}
+
+/* Model pill — the design sets it in `font-mono`; it uses the bundled stack for
+   the same reason the code surfaces do.
+   `button[...]` is load-bearing here for the reason spelled out above: the host
+   nests `_triggerLabel` (the model name) and `_triggerEffort` (推理等级) inside
+   this same button, and both class names contain `_trigger` as a substring. Left
+   unqualified, the pill's fill and colour landed on those two spans as well, so
+   the button carried three independent backgrounds — measured, hovering turned
+   the button and the label `#dbeafe` while the effort span stayed `#eff6ff` and
+   showed through as a lighter block. The design draws ONE pill with plain text
+   inside it, so the fill belongs to the button alone and the two spans inherit
+   it. Measured with the qualifier: n=1 button, 0 nested. */
+body [data-composer-card] [class*='_standardControls'] button[class*='_trigger'] {
+  @apply rounded-full text-[12px] font-medium;
+  background-color: #eff6ff;
+  color: #2563eb;
+  font-family: var(--dsh-chat-font, inherit);
+}
+
+body [data-composer-card] [class*='_standardControls'] button[class*='_trigger']:hover {
+  background-color: #dbeafe;
+}
+
+/* Send button. `transform: none` neutralises the host's own `translateY(-2px)`,
+   which put this 34px button's centre at cy=836 while every other control in the
+   28px-tall row sat at cy=838. */
+body [data-composer-card] [class*='_primary'] {
+  @apply h-[34px] w-[34px] shrink-0 rounded-full text-white shadow-sm;
+  background-color: #2563eb;
+  transform: none;
+}
+
+/* The composer's bottom row is not vertically centred out of the box: measured
+   `padding: 2px 8px 6px`, an asymmetry that lifts its contents by 2px. Neutralised
+   here rather than offset with a compensating margin, so the row centres on its
+   own box. */
+body [data-composer-card] [class*='_row'] {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* ==========================================================================
+   9. Dark palette overrides for the fixed-identity components.
+   Everything else adapts through `var(--dsw-*)`; these few carry literal
+   colours, so they are re-pointed here.
+   ========================================================================== */
+body[data-ds-dark-theme] [data-slot='root'] > div {
+  border-color: rgba(255, 255, 255, 0.12);
+  background-color: rgba(14, 21, 36, 0.95);
+  box-shadow: 0 30px 80px -15px rgba(0, 0, 0, 0.8), inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+
+body[data-ds-dark-theme] [data-turn-process] {
+  border-color: rgba(255, 255, 255, 0.1);
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+body[data-ds-dark-theme] [data-turn-process] [class*='_label'] {
+  color: #cbd5e1;
+}
+
+/* The merged cards carry no literal colour any more — their fill and border are
+   tokens that already adapt — so the dark palette only re-points the text the
+   light rules pin to slate, plus the thinking group's blue mark. */
+body[data-ds-dark-theme] [data-step-process]:not([hidden]) [data-process-activity] {
+  color: #e2e8f0;
+}
+
+body[data-ds-dark-theme] [data-step-process]:not([hidden]):has([data-process-activity='thinking']) [data-step-process-icon] {
+  color: #60a5fa;
+}
+
+body[data-ds-dark-theme] [data-step-process]:not([hidden]):has([data-process-activity='thinking']) [class*='_content'] {
+  color: #cbd5e1;
+}
+
+body[data-ds-dark-theme] [data-chat-running] {
+  color: #60a5fa;
+}
+
+body[data-ds-dark-theme] [data-chat-running] [class*='_sweep'],
+body[data-ds-dark-theme] [data-chat-running] [class*='_highlight'] {
+  color: #bfdbfe;
+}
+
+body[data-ds-dark-theme] [data-composer-card] {
+  box-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.5);
+}
+
+/* Sidebar workspace cards. Both fills are literal light tints, so the dark
+   palette re-points them: the plain card to a lifted surface, the worktree card
+   to the same blue at low alpha rather than a second light tint. */
+body[data-ds-dark-theme] [class*='groupSection']:has(> * > [data-row-key^='workspace:']:not([data-dsh-worktree])) {
+  background-color: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+body[data-ds-dark-theme] [class*='groupSection']:has(> * > [data-row-key^='workspace:'][data-dsh-worktree]) {
+  background-color: rgba(37, 99, 235, 0.16);
+  border-color: rgba(96, 165, 250, 0.28);
+}
+
+/* Waiting dot: the light halo is a near-white tint that would read as a bright
+   ring on a dark sidebar, so it becomes the same amber at low alpha. */
+body[data-ds-dark-theme] [data-slot='sidebar'] [data-state='warning'] {
+  color: #fbbf24;
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.22);
+}
+
+body[data-ds-dark-theme] [data-slot='sidebar'] [data-state='ongoing'] {
+  color: #60a5fa;
+}
+
+body[data-ds-dark-theme] [data-composer-card] [class*='_standardControls'] button[class*='_trigger'] {
+  background-color: rgba(37, 99, 235, 0.18);
+  color: #93c5fd;
+}
+
+/* The 完全权限 / 主检出 chips carry a literal light fill, so the dark palette
+   re-points it. Both selectors are repeated from section 8 to match its
+   specificity; without this the chips stay `#f1f5f9` on a dark card. */
+body[data-ds-dark-theme] [data-composer-card] button[class*='_trigger'],
+body[data-ds-dark-theme] [data-composer-card] [data-slot='conversation.input.left'] button {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #cbd5e1;
+}
+
+body[data-ds-dark-theme] [data-composer-card] button[class*='_trigger']:hover,
+body[data-ds-dark-theme] [data-composer-card] [data-slot='conversation.input.left'] button:hover {
+  background-color: rgba(255, 255, 255, 0.14);
+}
+
+/* ==========================================================================
+   10. Mobile and tablet adaptation.
+   ==========================================================================
+   The host ships no layout breakpoints of its own — the only `@media` rules in
+   its client bundles are `prefers-reduced-motion` and `hover`. So the whole
+   responsive layer lives here, and it only ever narrows the desktop design
+   rather than inventing a second one.
+
+   Two things step down with the viewport:
+
+   1. The gradient ring (`body` padding). Measured before this section existed:
+      a 390px phone still paid the full 24px ring, so the window was 342px wide
+      — 12% of the screen spent on the desktop backdrop. The ring is the one
+      piece of the design that has no job on a phone.
+   2. The header's status cluster. The host renders the session title and three
+      status chips (subagent count / mode / background task) into a two-column
+      grid whose second column is `auto`. Measured, that cluster is 310px wide
+      and the two utility buttons beside it add ~84px; on a phone the whole
+      centre column is only ~294px, so the grid squeezed the title to 12px and
+      the chips overflowed the frame. The cluster is dropped at phone width only
+      — at 600px and up it fits with room for the title, so tablets keep it.
+
+   Breakpoints follow the widths the mobile designs were drawn at: 8px ring and
+   the chip cluster hidden ≤ 600px (phone, portrait and landscape), 12px ring
+   and a tighter header ≤ 900px (tablet). Everything wider keeps the desktop
+   24px ring untouched.
+   ========================================================================== */
+@media (max-width: 900px) {
+  body {
+    padding: 12px;
+  }
+
+  body [data-slot='root'] > div {
+    @apply rounded-[22px];
+  }
+
+  /* "移动端" in this project means phone *and* tablet, so these three follow the
+     same 900px line as the tablet ring rather than the 600px phone line.
+
+     The two slots carry an inline `display: contents` (the host writes it on the
+     slot element itself), which beats any `display` a stylesheet can declare on
+     that same element. So the rule hides the slot's children instead: with the
+     wrapper contributing no box of its own, removing its contents removes the
+     control. Measured, each slot holds exactly one child. */
+  body [data-slot='settings.launcher'] > *,
+  body [data-slot='conversation.input.permission'] > *,
+  body [data-open-target='directory'] {
+    display: none;
+  }
+
+  /* The sidebar's two panel entries ("插件" / "自动化任务") are desktop
+     destinations: on a phone or tablet the collapsed rail has no room for them
+     and both screens are reached by other routes. They are addressed through the
+     `sidebar.panellist` slot the host publishes inside each row button, which is
+     what makes this a rule about those two rows rather than about "some button
+     in the sidebar". */
+  body button:has([data-slot='sidebar.panellist']) {
+    display: none;
+  }
+
+  /* Reclaim the collapsed rail. The host writes the track list as an INLINE
+     `grid-template-columns: 56px minmax(0px, 1fr) minmax(0px, 0px)` on the frame,
+     so an ordinary rule cannot outrank it — hence `!important`. Measured at
+     390px: the middle column moves from x=65 to x=9 and widens 316px → 372px,
+     which is the whole point of the change.
+
+     Only the COLLAPSED state is touched. Expanded, the sidebar is a real 280px
+     drawer and the host's own track list is already what the design wants. */
+  body [data-slot='root'] > div[data-sidebar-collapsed='true'] {
+    grid-template-columns: minmax(0px, 0px) minmax(0px, 1fr) minmax(0px, 0px) !important;
+  }
+
+  /* A zero-width track does not remove its contents: measured, the rail's
+     buttons keep their 36x36 boxes, stay in the tab order and still report
+     `visibility: visible`. Hiding them is a separate, necessary step.
+
+     `visibility` rather than `display` because the toggle below has to be
+     brought back, and `visibility: visible` on a descendant overrides a hidden
+     ancestor while `display: none` cannot be undone at all. */
+  body [data-slot='root'] > div[data-sidebar-collapsed='true'] [data-slot='sidebar'] > * {
+    visibility: hidden;
+  }
+
+  /* The toggle, moved out of the rail and into the header's left edge — the rail
+     it used to occupy no longer exists. `position: absolute` resolves against the
+     frame, which is the nearest positioned ancestor (measured `position:
+     relative`, no transform/filter/contain anywhere up the chain), and the frame
+     does not clip (measured `overflow: hidden` on the column, not the frame), so
+     the button escapes the 0px track.
+
+     It is re-shown here, in the same breakpoint, because the rule above hid the
+     whole rail including this button. */
+  body [data-slot='root'] > div[data-sidebar-collapsed='true'] button:has([data-slot='sidebar.toggle.badge']) {
+    visibility: visible;
+    position: absolute;
+    left: 12px;
+    top: 14px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    z-index: 2;
+  }
+
+  /* The header's own left padding makes room for the button now sitting over it,
+     so the title does not start underneath. Only in the collapsed state: the
+     expanded header starts to the right of the drawer and needs no inset. */
+  body [data-slot='root'] > div[data-sidebar-collapsed='true'] header[data-window-drag] {
+    padding-left: 48px;
+  }
+}
+
+@media (max-width: 600px) {
+  body {
+    padding: 8px;
+  }
+
+  body [data-slot='root'] > div {
+    @apply rounded-[20px];
+  }
+
+  /* The sidebar toggle sits at the header's right edge and is the only control
+     that must survive; the status cluster beside it is what overflows. */
+  body [data-slot='conversation.session.header.actions'] > * {
+    display: none;
+  }
+
+  /* The header's own 20px/28px horizontal padding is calibrated for a desktop
+     row that also carries the title cluster; at phone width it is dead space. */
+  body header[data-window-drag] {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+
+/* Landscape phones are wider than 600px but have almost no vertical room, so
+   the ring tightens on height rather than width. `100vh` on a phone browser
+   includes the retracted URL bar; `dvh` tracks the visible viewport, which is
+   what the ring must fit inside. */
+@media (max-height: 480px) {
+  body {
+    padding: 8px;
+  }
+}
+
+
+/* ==========================================================================
+   11. Controls the design does not carry
+
+   Three controls are dropped from the interface outright, and three more on a
+   phone. Each is addressed by a stable attribute the host or the owning plugin
+   publishes, never by a class-name hash.
+
+   1. The header's "more actions" menu (download session log / feedback), hidden
+      at every width. It is rendered by `dsh-session-log-export` into the
+      `conversation.session.header.utilities` slot as a bare `<span>` wrapping a
+      single button, with no `data-*` of its own. Its sibling in that slot is the
+      Finder open-target group, which does carry `data-open-target`, so the menu
+      is the child span that has no such attribute. That is the whole
+      discriminator: measured, the slot holds exactly two spans, one with two
+      buttons (Finder + "more open with") and one with a single button (this one).
+   2. The sidebar's settings button, on mobile only. It lives in the
+      `settings.launcher` slot at the foot of the sidebar; once the sidebar is
+      collapsed to its 56px icon rail there is no room for a full-width settings
+      row, and the sidebar is collapsed at both phone and tablet width.
+   3. The composer's permission menu ("完全权限") and the header's Finder menu, on
+      mobile only. The composer row carries four controls, and at 390px that is
+      277px of width for all of them; the Finder group is two buttons on top of
+      the menu dropped above.
+   ========================================================================== */
+body [data-slot='conversation.session.header.utilities'] > span:not(:has([data-open-target])) {
+  display: none;
+}
+

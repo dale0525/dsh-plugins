@@ -17,6 +17,11 @@ patchFrom:
   - ../dsh-reasoning-strip
   - ../dsh-stitch-designer
   - ../dsh-worktree-session
+  # dsh-macos-theme re-paints the whole UI: it stacks a token override layer on
+  # whichever base theme is active and injects the structural CSS for the desktop
+  # gradient, the floating window and the per-column surfaces. It is cosmetic and
+  # additive, so it coexists with every other plugin here.
+  - ../dsh-macos-theme
 deps:
   - ../dsh-config-manager
   - ../dsh-easyrewrite
@@ -46,3 +51,8 @@ deps:
   # to the `STITCH_API_KEY` credential (set it on the Plugins page).
   - ../dsh-stitch-designer
   - ../dsh-worktree-session
+  # dsh-macos-theme re-paints the whole UI: it stacks a token override layer on
+  # whichever base theme is active and injects the structural CSS for the desktop
+  # gradient, the floating window and the per-column surfaces. It is cosmetic and
+  # additive, so it coexists with every other plugin here.
+  - ../dsh-macos-theme
