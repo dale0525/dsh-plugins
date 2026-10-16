@@ -220,6 +220,26 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   左边缘齐平。宿主在会话忙碌时会**抢占**这一格显示转圈/状态点（`showStatus`），此时插件图标
   不显示 —— 所以该症状只在会话空闲时出现，忙碌时表现为宿主自己的图标同样齐平。
   结论：想让会话行保持缩进，就不要在这一格常驻图标；要标识会话属性，改用行的其他位置。
+  **可行位置已实测**：挂在那一格的 `::after` 上并给 `left:100%`（绝对定位，不改槽位内容），
+  图标便落在槽位右侧、缩进仍由空着的槽位提供；标题再用 `margin-left` 让出图标宽度
+  （**不要用 `padding-left`**——标题的 hover 走马灯按 padding 盒裁剪，padding 会让长标题
+  的文字滑到图标底下，margin 才把裁剪边正好留在图标右缘）。
+
+- **插件的 `<style>` 注入不能写成「已存在就跳过」**：客户端 HMR 替换的是插件 fiber，
+  不会重新执行整段启动逻辑，于是「已存在就跳过」的守卫让新构建的 CSS 永远注不进页面，
+  样式改动直到手动刷新才可见 —— 违反「改 client 源码后不刷新即见新 UI」的承诺。
+  正确做法是每次激活都重写已有标签的 `textContent`（复用标签，不重复追加）。
+  实测症状：新加的规则在页面样式表里 0 处命中，而测试全绿。
+
+- **本地验证脚手架发布后要清三处，漏一处就还在读本地**：`pnpm-workspace.yaml` 的
+  `overrides:` 块、`package.json` 里聚合包的 `file:` 指针、以及重装后的 `pnpm-lock.yaml`。
+  判据：`grep "<仓库绝对路径>" pnpm-lock.yaml` 无输出，且包目录是真目录（非软链）、
+  版本等于线上版本。只删 overrides 而不改 `package.json` 的 `file:`，聚合包仍指向本地目录。
+
+> **`npm trust list <pkg>` 无法免交互核验**：它要求 OTP（`npm error code EOTP`），
+> Agent 跑不了。所以「trust 是否配好」不能靠它判定 —— 真正的判据是**看该包历史版本的发布者身份**：
+> `npm view <pkg>@<ver> _npmUser` 显示 `GitHub Actions <npm-oidc-no-reply@github.com>` 即已走过 CI，
+> 显示人名则只被人工发过。新包在人工首发+配 trust 后，判据只能是**下一次 CI 发布是否成功**。
 
 ## ➖ 移除子插件
 
