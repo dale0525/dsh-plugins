@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>DeepSeek Harness (DSH) · macOS Native Studio</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#EFF6FF',
+              500: '#3B82F6',
+              600: '#2563EB',
+              700: '#1D4ED8',
+            }
+          },
+          borderRadius: {
+            "DEFAULT": "0.5rem",
+            "lg": "1rem",
+            "xl": "1.5rem",
+            "full": "9999px"
+          },
+          fontFamily: {
+            headline: ["-apple-system", "BlinkMacSystemFont", "PingFang SC", "Segoe UI", "sans-serif"],
+            display: ["-apple-system", "BlinkMacSystemFont", "PingFang SC", "Segoe UI", "sans-serif"],
+            body: ["-apple-system", "BlinkMacSystemFont", "PingFang SC", "Segoe UI", "sans-serif"],
+            label: ["ui-monospace", "SF Mono", "Menlo", "Monaco", "Consolas", "monospace"],
+            mono: ["ui-monospace", "SF Mono", "Menlo", "Monaco", "Consolas", "monospace"]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    .font-code {
+      font-family: ui-monospace, "SF Mono", Monaco, Menlo, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+    .desktop-canvas {
+      background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%),
+                  radial-gradient(circle at 20% 20%, #38BDF8 0%, transparent 50%),
+                  radial-gradient(circle at 80% 30%, #06B6D4 0%, transparent 45%),
+                  radial-gradient(circle at 50% 80%, #0EA5E9 0%, transparent 50%);
+      background-blend-mode: normal, screen, screen, screen;
+    }
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(148, 163, 184, 0.35);
+      border-radius: 9999px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: rgba(100, 116, 139, 0.55);
+    }
+    @keyframes pulse-subtle {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.92); }
+    }
+    .pulse-dot {
+      animation: pulse-subtle 2s infinite ease-in-out;
+    }
+  </style>
+
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/></head>
+<body class="desktop-canvas h-screen w-screen m-0 p-0 overflow-hidden flex items-center justify-center select-none text-[#1E293B]">
+<!-- macOS Window Container -->
+<div class="w-[1480px] max-w-[96vw] h-[942px] min-h-[760px] rounded-[24px] bg-[#F8FAFC]/95 backdrop-blur-[40px] border border-white/60 shadow-[0_25px_60px_-15px_rgba(15,23,42,0.28),0_0_0_1px_rgba(15,23,42,0.05)] overflow-hidden flex flex-col">
+<!-- Titlebar (44px) -->
+<header class="h-11 bg-white/70 backdrop-blur-md border-b border-slate-900/10 flex justify-between items-center px-4 shrink-0 z-30 select-none">
+<!-- Left: macOS Traffic Lights & Sidebar Toggle -->
+<div class="flex items-center gap-3">
+<div class="flex items-center gap-2 group">
+<button aria-label="Close" class="w-3 h-3 rounded-full bg-[#FF5F56] border border-[#E0443E]/60 shadow-[inset_0_1px_1px_rgba(255,255,255,0.4)] flex items-center justify-center focus:outline-none transition-transform active:scale-95">
+<svg class="w-2 h-2 text-black/60 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" stroke-width="3" viewbox="0 0 24 24">
+<line x1="18" x2="6" y1="6" y2="18"></line>
+<line x1="6" x2="18" y1="6" y2="18"></line>
+</svg>
+</button>
+<button aria-label="Minimize" class="w-3 h-3 rounded-full bg-[#FFBD2E] border border-[#DEA123]/60 shadow-[inset_0_1px_1px_rgba(255,255,255,0.4)] flex items-center justify-center focus:outline-none transition-transform active:scale-95">
+<svg class="w-2 h-2 text-black/60 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" stroke-width="3" viewbox="0 0 24 24">
+<line x1="5" x2="19" y1="12" y2="12"></line>
+</svg>
+</button>
+<button aria-label="Zoom" class="w-3 h-3 rounded-full bg-[#27C93F] border border-[#1AAB29]/60 shadow-[inset_0_1px_1px_rgba(255,255,255,0.4)] flex items-center justify-center focus:outline-none transition-transform active:scale-95">
+<svg class="w-2 h-2 text-black/60 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" stroke-width="3" viewbox="0 0 24 24">
+<polygon points="5 5 19 5 19 19 5 19"></polygon>
+</svg>
+</button>
+</div>
+<div class="h-3.5 w-px bg-slate-900/10 mx-1"></div>
+<!-- Sidebar Toggle Icon -->
+<button class="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-900/5 transition-colors" title="切换侧边栏">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<rect height="18" rx="2" ry="2" width="18" x="3" y="3"></rect>
+<line x1="9" x2="9" y1="3" y2="21"></line>
+</svg>
+</button>
+</div>
+<!-- Center: App Brand & Path Capsule -->
+<div class="flex items-center gap-2.5 px-3 py-1 bg-slate-900/[0.03] border border-slate-900/5 rounded-full text-xs">
+<span class="w-2 h-2 rounded-full bg-blue-600 shadow-sm shadow-blue-500/50"></span>
+<span class="font-semibold text-slate-800 tracking-tight font-headline">DeepSeek Harness</span>
+<span class="text-slate-300 font-normal">/</span>
+<div class="flex items-center gap-1.5 text-slate-500 font-label">
+<span class="hover:text-slate-800 transition-colors cursor-pointer">工作区</span>
+<span class="text-slate-300">/</span>
+<span class="hover:text-slate-800 transition-colors cursor-pointer text-slate-600">dsh-plugins</span>
+<span class="text-slate-300">/</span>
+<span class="text-slate-800 font-medium truncate max-w-[220px]">重构 Agent 任务调度与状态机</span>
+</div>
+</div>
+<!-- Right: Action Icons -->
+<div class="flex items-center gap-1">
+<button class="p-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-900/5 transition-colors" title="分屏查看">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<rect height="18" rx="2" ry="2" width="18" x="3" y="3"></rect>
+<line x1="12" x2="12" y1="3" y2="21"></line>
+</svg>
+</button>
+<button class="p-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-900/5 transition-colors" title="打开终端">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<polyline points="4 17 10 11 4 5"></polyline>
+<line x1="12" x2="20" y1="19" y2="19"></line>
+</svg>
+</button>
+<button class="p-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-900/5 transition-colors" title="工作区配置">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<line x1="4" x2="4" y1="21" y2="14"></line>
+<line x1="4" x2="4" y1="10" y2="3"></line>
+<line x1="12" x2="12" y1="21" y2="12"></line>
+<line x1="12" x2="12" y1="8" y2="3"></line>
+<line x1="20" x2="20" y1="21" y2="16"></line>
+<line x1="20" x2="20" y1="12" y2="3"></line>
+<line x1="1" x2="7" y1="14" y2="14"></line>
+<line x1="9" x2="15" y1="8" y2="8"></line>
+<line x1="17" x2="23" y1="16" y2="16"></line>
+</svg>
+</button>
+<button class="p-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-900/5 transition-colors" title="折叠右侧栏">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<rect height="18" rx="2" ry="2" width="18" x="3" y="3"></rect>
+<line x1="15" x2="15" y1="3" y2="21"></line>
+</svg>
+</button>
+</div>
+</header>
+<!-- Main Workspace: Three-Column Grid -->
+<div class="flex-1 flex overflow-hidden">
+<!-- 1. LEFT SIDEBAR (288px) -->
+<aside class="w-72 bg-[#F8FAFC] border-r border-slate-900/10 flex flex-col shrink-0 select-none">
+<!-- Search & New Session -->
+<div class="p-3 pb-2 space-y-2">
+<div class="relative">
+<svg class="w-4 h-4 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<circle cx="11" cy="11" r="8"></circle>
+<line x1="21" x2="16.65" y1="21" y2="16.65"></line>
+</svg>
+<input class="w-full h-9 pl-8 pr-3 bg-slate-200/60 hover:bg-slate-200/80 focus:bg-white text-xs rounded-xl border border-transparent focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 text-slate-800 placeholder-slate-400 transition-all outline-none" placeholder="搜索会话、智能体、记录…" type="text"/>
+</div>
+<button class="w-full h-8 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white text-xs font-medium flex items-center justify-center gap-1.5 transition-all shadow-sm shadow-blue-500/20">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<line x1="12" x2="12" y1="5" y2="19"></line>
+<line x1="5" x2="19" y1="12" y2="12"></line>
+</svg>
+<span>New Session</span>
+</button>
+</div>
+<!-- Sessions List -->
+<div class="flex-1 overflow-y-auto custom-scrollbar px-2 space-y-4 pt-1">
+<div>
+<!-- Section Header -->
+<div class="flex items-center justify-between px-2.5 py-1 text-[11px] font-semibold text-slate-400">
+<span class="tracking-wider">工作区</span>
+<span class="bg-slate-200 text-slate-600 font-mono text-[10px] px-1.5 py-0.2 rounded-full">4</span>
+</div>
+<!-- Workspace Tree Accordion -->
+<div class="mt-1 space-y-1">
+<div class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-slate-700 text-xs font-medium hover:bg-slate-200/50 cursor-pointer transition-colors">
+<svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="6 9 12 15 18 9"></polyline>
+</svg>
+<svg class="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+</svg>
+<span class="truncate">Core Agent Runtime</span>
+</div>
+<!-- Sessions Subtree -->
+<div class="pl-2.5 space-y-1">
+<!-- Session Item: Active -->
+<div class="relative bg-white rounded-xl p-2.5 shadow-sm border border-slate-900/5 ring-1 ring-blue-500/30 cursor-pointer">
+<div class="flex items-start gap-2.5">
+<div class="pt-0.5">
+<svg class="w-3.5 h-3.5 text-blue-600 animate-spin" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2.5" viewbox="0 0 24 24">
+<path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+</svg>
+</div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between gap-1">
+<h4 class="text-xs font-semibold text-slate-900 truncate">重构 Agent 任务调度与状态机</h4>
+<span class="text-[10px] text-blue-600 font-mono shrink-0">刚刚</span>
+</div>
+<p class="text-[11px] text-slate-500 truncate mt-0.5">执行 Cordis 生命周期挂钩迁移验证...</p>
+</div>
+</div>
+</div>
+<!-- Session Item 2 -->
+<div class="hover:bg-slate-200/50 rounded-xl p-2.5 cursor-pointer transition-colors group">
+<div class="flex items-start gap-2.5">
+<div class="w-3.5 h-3.5 rounded-full bg-slate-300 group-hover:bg-slate-400 mt-0.5 shrink-0 transition-colors"></div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between gap-1">
+<h4 class="text-xs font-medium text-slate-700 group-hover:text-slate-900 truncate">优化 AST 插件解析流</h4>
+<span class="text-[10px] text-slate-400 font-mono shrink-0">2小时前</span>
+</div>
+<p class="text-[11px] text-slate-400 truncate mt-0.5">测试 Babel 与 SWC 在边缘函数容器的表现</p>
+</div>
+</div>
+</div>
+<!-- Session Item 3 -->
+<div class="hover:bg-slate-200/50 rounded-xl p-2.5 cursor-pointer transition-colors group">
+<div class="flex items-start gap-2.5">
+<div class="w-3.5 h-3.5 rounded-full bg-slate-300 group-hover:bg-slate-400 mt-0.5 shrink-0 transition-colors"></div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between gap-1">
+<h4 class="text-xs font-medium text-slate-700 group-hover:text-slate-900 truncate">修复并发上下文丢失问题</h4>
+<span class="text-[10px] text-slate-400 font-mono shrink-0">昨天</span>
+</div>
+<p class="text-[11px] text-slate-400 truncate mt-0.5">AsyncLocalStorage 状态隔离异常回归排查</p>
+</div>
+</div>
+</div>
+<!-- Session Item 4 -->
+<div class="hover:bg-slate-200/50 rounded-xl p-2.5 cursor-pointer transition-colors group">
+<div class="flex items-start gap-2.5">
+<div class="w-3.5 h-3.5 rounded-full bg-slate-300 group-hover:bg-slate-400 mt-0.5 shrink-0 transition-colors"></div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between gap-1">
+<h4 class="text-xs font-medium text-slate-700 group-hover:text-slate-900 truncate">接入 MCP 协议扩展工具</h4>
+<span class="text-[10px] text-slate-400 font-mono shrink-0">3天前</span>
+</div>
+<p class="text-[11px] text-slate-400 truncate mt-0.5">构建 Model Context Protocol 标准端点</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Sidebar Footer -->
+<div class="p-3 border-t border-slate-900/10 flex items-center justify-between bg-slate-100/70">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white text-[11px] font-bold shadow-sm">
+              DS
+            </div>
+<div>
+<div class="flex items-center gap-1.5">
+<span class="text-xs font-semibold text-slate-800">Developer</span>
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.8)]"></span>
+</div>
+<p class="text-[10px] text-slate-400 font-mono">Local Runtime v2.4</p>
+</div>
+</div>
+<button class="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors" title="设置">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<circle cx="12" cy="12" r="3"></circle>
+<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+</svg>
+</button>
+</div>
+</aside>
+<!-- 2. CENTER STAGE (Main Canvas) -->
+<main class="flex-1 bg-white flex flex-col min-w-0 overflow-hidden">
+<!-- Session Subheader (56px) -->
+<div class="h-14 px-6 border-b border-slate-900/10 flex items-center justify-between shrink-0 bg-white/80 backdrop-blur-sm select-none">
+<div class="flex items-center gap-3 min-w-0">
+<h2 class="text-sm font-bold text-slate-900 truncate hover:text-blue-600 cursor-pointer flex items-center gap-1.5 group transition-colors">
+<span>重构 Agent 任务调度与状态机</span>
+<svg class="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-600 transition-colors opacity-0 group-hover:opacity-100" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
+</svg>
+</h2>
+<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-blue-50 text-blue-600 border border-blue-200/50">
+<span class="w-1.5 h-1.5 rounded-full bg-blue-600 pulse-dot"></span>
+              运行中
+            </span>
+</div>
+<!-- Segmented Control & Actions -->
+<div class="flex items-center gap-3">
+<div class="flex items-center p-0.5 bg-slate-100 rounded-xl border border-slate-900/5 text-xs font-medium">
+<button class="px-3 py-1 rounded-[9px] bg-white text-slate-900 shadow-sm transition-all">对话</button>
+<button class="px-3 py-1 rounded-[9px] text-slate-500 hover:text-slate-800 transition-colors">轨迹</button>
+</div>
+<div class="h-4 w-px bg-slate-200"></div>
+<button class="p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors" title="更多动作">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<circle cx="12" cy="12" r="1"></circle>
+<circle cx="19" cy="12" r="1"></circle>
+<circle cx="5" cy="12" r="1"></circle>
+</svg>
+</button>
+</div>
+</div>
+<!-- Chat Conversation Stream -->
+<div class="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6 bg-[#F8FAFC]/40">
+<!-- User Prompt -->
+<div class="flex justify-end">
+<div class="max-w-[75%] bg-[#1E293B] text-white px-4 py-3 rounded-2xl rounded-br-md text-xs leading-relaxed shadow-sm">
+              请检查 <code class="px-1.5 py-0.5 bg-slate-800 text-blue-200 font-mono rounded text-[11px]">packages/all/cordis.patch.yml</code> 的钩子配置，并运行构建验证 Agent 是否能够正常自举启动。
+            </div>
+</div>
+<!-- Assistant Response Stream -->
+<div class="space-y-4 max-w-[90%]">
+<!-- Agent Header Indicator -->
+<div class="flex items-center gap-2">
+<div class="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold shadow-sm">
+                ✦
+              </div>
+<span class="text-xs font-semibold text-slate-800">DeepSeek-V3</span>
+<span class="text-[10px] text-slate-400 font-mono">15:42:09</span>
+</div>
+<!-- Thinking Process Block -->
+<div class="rounded-xl border border-indigo-100 bg-gradient-to-b from-[#F5F3FF] to-white p-3.5 space-y-2 shadow-sm">
+<div class="flex items-center justify-between text-xs text-indigo-900 font-medium cursor-pointer">
+<div class="flex items-center gap-2">
+<svg class="w-3.5 h-3.5 text-indigo-600 transition-transform" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="6 9 12 15 18 9"></polyline>
+</svg>
+<span>思考过程</span>
+<span class="text-[10px] text-indigo-400 font-normal">已完成深度推理</span>
+</div>
+<span class="text-[11px] font-mono text-indigo-500">耗时 23 秒</span>
+</div>
+<div class="text-[11px] font-code text-indigo-950/80 pl-5 leading-relaxed border-l-2 border-indigo-200/60 ml-1.5 space-y-1">
+<p>1. Analyzing lifecycle events in `cordis.patch.yml`...</p>
+<p>2. Detected deprecated hook invocation in `agent.scheduler` pipeline.</p>
+<p>3. Applied unified emitter pattern with strict async context binding.</p>
+<p>4. Validated compatibility with runtime container bootstrap hook.</p>
+</div>
+</div>
+<!-- Tool Call Card -->
+<div class="bg-white rounded-xl border border-slate-900/10 p-3 shadow-sm hover:border-slate-300 transition-colors">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center text-slate-700">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="4 17 10 11 4 5"></polyline>
+<line x1="12" x2="20" y1="19" y2="19"></line>
+</svg>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<span class="text-xs font-medium text-slate-900">执行本地命令</span>
+<span class="text-[10px] font-mono bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">bash</span>
+</div>
+<code class="text-[11px] font-mono text-blue-600">npm run build</code>
+</div>
+</div>
+<div class="flex items-center gap-2 text-right">
+<span class="text-[11px] font-mono text-emerald-600">1.4s</span>
+<span class="w-4 h-4 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px]">
+<svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="3" viewbox="0 0 24 24">
+<polyline points="20 6 9 17 4 12"></polyline>
+</svg>
+</span>
+</div>
+</div>
+</div>
+<!-- File Edit Diff Card -->
+<div class="bg-white rounded-xl border border-slate-900/10 overflow-hidden shadow-sm">
+<div class="p-3 flex items-center justify-between bg-slate-50/70 border-b border-slate-900/5">
+<div class="flex items-center gap-2 font-mono text-xs text-slate-800">
+<svg class="w-3.5 h-3.5 text-amber-500" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+<polyline points="14 2 14 8 20 8"></polyline>
+<line x1="16" x2="8" y1="13" y2="13"></line>
+<line x1="16" x2="8" y1="17" y2="17"></line>
+<polyline points="10 9 9 9 8 9"></polyline>
+</svg>
+<span class="font-medium">packages/all/cordis.patch.yml</span>
+</div>
+<div class="flex items-center gap-2 text-[11px] font-mono">
+<span class="text-emerald-600 font-semibold">+12</span>
+<span class="text-rose-600 font-semibold">-3</span>
+<button class="ml-2 text-slate-400 hover:text-slate-600 text-xs transition-colors">查看 Diff</button>
+</div>
+</div>
+<div class="p-3 text-[11px] font-code bg-slate-900 text-slate-200 overflow-x-auto">
+<div class="text-rose-400 line-through opacity-80">-   hooks: ['before:startup', 'deprecated:lifecycle']</div>
+<div class="text-emerald-400">+   hooks: ['service:init', 'cordis:ready', 'agent:bootstrap']</div>
+<div class="text-emerald-400">+   isolation: process.env.DSH_SANDBOX_STRICT === 'true'</div>
+</div>
+</div>
+<!-- Assistant Formal Summary & Code Block -->
+<div class="text-xs text-slate-800 leading-relaxed space-y-3 pt-1">
+<p>
+                已完成对 <code class="font-mono text-blue-700 bg-blue-50 px-1 py-0.5 rounded text-[11px]">cordis.patch.yml</code> 钩子声明的重构，解决了生命周期竞争冲突。随后调用 <code class="font-mono text-blue-700 bg-blue-50 px-1 py-0.5 rounded text-[11px]">agent.bootstrap()</code> 进行了热插拔自举测试，全部测试用例均已通过。
+              </p>
+<!-- Code Preview Block -->
+<div class="rounded-xl border border-slate-900/10 overflow-hidden bg-slate-50 shadow-sm">
+<div class="px-3 py-1.5 bg-slate-100/90 border-b border-slate-900/5 flex items-center justify-between text-[11px]">
+<span class="font-mono text-slate-600 font-medium">typescript · src/core/agent.ts</span>
+<button class="flex items-center gap-1 text-slate-500 hover:text-slate-900 transition-colors" title="复制代码">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<rect height="13" rx="2" ry="2" width="13" x="9" y="9"></rect>
+<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+</svg>
+<span>Copy</span>
+</button>
+</div>
+<div class="p-3 font-code text-[11px] text-slate-800 space-y-1 overflow-x-auto bg-white/70">
+<div><span class="text-indigo-600 font-semibold">import</span> { CordisHost, AgentHarness } <span class="text-indigo-600 font-semibold">from</span> <span class="text-emerald-600">'@dsh/runtime'</span>;</div>
+<div><span class="text-indigo-600 font-semibold">export async function</span> <span class="text-blue-600 font-semibold">initAgentScheduler</span>(config: HarnessConfig) {</div>
+<div class="pl-4 text-slate-500">// 绑定生命周期安全钩子与事件总线</div>
+<div class="pl-4"><span class="text-indigo-600 font-semibold">const</span> harness = <span class="text-indigo-600 font-semibold">new</span> AgentHarness(config);</div>
+<div class="pl-4"><span class="text-indigo-600 font-semibold">await</span> harness.bootstrap();</div>
+<div class="pl-4"><span class="text-indigo-600 font-semibold">return</span> harness.listen(<span class="text-emerald-600">'cordis:ready'</span>);</div>
+<div>}</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Chat Input Area (Fixed Bottom) -->
+<div class="p-4 border-t border-slate-900/10 bg-white shrink-0">
+<div class="border border-slate-900/15 focus-within:border-blue-600 focus-within:ring-2 focus-within:ring-blue-500/20 rounded-2xl p-2.5 transition-all bg-white shadow-sm">
+<textarea class="w-full resize-none border-0 p-1 text-xs text-slate-900 placeholder-slate-400 focus:ring-0 outline-none leading-relaxed" placeholder="给 DeepSeek Harness 发消息…" rows="2"></textarea>
+<div class="flex items-center justify-between pt-1">
+<div class="flex items-center gap-1 text-slate-500">
+<button class="p-1.5 rounded-lg hover:bg-slate-100 hover:text-slate-800 transition-colors" title="添加附件或文件引用">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+</svg>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-slate-100 hover:text-slate-800 transition-colors font-mono text-xs" title="斜杠命令">
+<span class="font-bold text-xs">/</span>
+</button>
+<button class="p-1.5 rounded-lg hover:bg-slate-100 hover:text-slate-800 transition-colors" title="关联知识库上下文">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+<path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+<path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+</svg>
+</button>
+</div>
+<div class="flex items-center gap-2">
+<!-- Model Selector Capsule -->
+<button class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 hover:bg-slate-200/80 text-[11px] font-mono font-medium text-slate-700 transition-colors">
+<span>DeepSeek-V3</span>
+<svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="6 9 12 15 18 9"></polyline>
+</svg>
+</button>
+<!-- Primary Send Action -->
+<button class="w-8 h-8 rounded-full bg-blue-600 hover:bg-blue-700 active:scale-95 text-white flex items-center justify-center transition-all shadow-sm shadow-blue-600/30">
+<svg class="w-3.5 h-3.5 translate-x-px -translate-y-px" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" viewbox="0 0 24 24">
+<line x1="22" x2="11" y1="2" y2="13"></line>
+<polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+</svg>
+</button>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- 3. RIGHT SIDEBAR (300px) -->
+<aside class="w-[300px] bg-white border-l border-slate-900/10 flex flex-col shrink-0 select-none">
+<!-- Files Header (44px) -->
+<div class="h-11 px-3 border-b border-slate-900/10 flex items-center justify-between text-xs text-slate-700 font-semibold bg-white">
+<div class="flex items-center gap-2">
+<svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75" viewbox="0 0 24 24">
+<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+</svg>
+<span>文件列表</span>
+</div>
+<div class="flex items-center gap-0.5 text-slate-400">
+<button class="p-1 rounded hover:bg-slate-100 hover:text-slate-700 transition-colors" title="新建文件">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<line x1="12" x2="12" y1="5" y2="19"></line>
+<line x1="5" x2="19" y1="12" y2="12"></line>
+</svg>
+</button>
+<button class="p-1 rounded hover:bg-slate-100 hover:text-slate-700 transition-colors" title="刷新文件树">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="23 4 23 10 17 10"></polyline>
+<polyline points="1 20 1 14 7 14"></polyline>
+<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+</svg>
+</button>
+</div>
+</div>
+<!-- File Tree -->
+<div class="flex-1 overflow-y-auto custom-scrollbar p-2 font-mono text-xs space-y-0.5">
+<!-- Folder: src -->
+<div>
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-700 hover:bg-slate-100 cursor-pointer">
+<svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="6 9 12 15 18 9"></polyline>
+</svg>
+<svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" stroke-width="1.75" viewbox="0 0 24 24">
+<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+</svg>
+<span class="font-medium text-slate-800">src</span>
+</div>
+<div class="pl-4 space-y-0.5">
+<!-- Subfolder: core -->
+<div>
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-700 hover:bg-slate-100 cursor-pointer">
+<svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="6 9 12 15 18 9"></polyline>
+</svg>
+<svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" stroke-width="1.75" viewbox="0 0 24 24">
+<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+</svg>
+<span>core</span>
+</div>
+<div class="pl-4 space-y-0.5">
+<!-- Active File: agent.ts -->
+<div class="flex items-center justify-between px-2 py-1 rounded-md bg-blue-50 text-blue-700 font-medium cursor-pointer">
+<div class="flex items-center gap-1.5 truncate">
+<span class="text-[10px] text-blue-500 font-bold">TS</span>
+<span class="truncate">agent.ts</span>
+</div>
+<span class="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+</div>
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-600 hover:bg-slate-100 cursor-pointer">
+<span class="text-[10px] text-slate-400 font-bold">TS</span>
+<span class="truncate">scheduler.ts</span>
+</div>
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-600 hover:bg-slate-100 cursor-pointer">
+<span class="text-[10px] text-slate-400 font-bold">TS</span>
+<span class="truncate">state-machine.ts</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Folder: packages -->
+<div>
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-700 hover:bg-slate-100 cursor-pointer">
+<svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="6 9 12 15 18 9"></polyline>
+</svg>
+<svg class="w-3.5 h-3.5 text-blue-500" fill="none" stroke="currentColor" stroke-width="1.75" viewbox="0 0 24 24">
+<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+</svg>
+<span class="font-medium text-slate-800">packages</span>
+</div>
+<div class="pl-4 space-y-0.5">
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-700 hover:bg-slate-100 cursor-pointer">
+<svg class="w-3 h-3 text-slate-400" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="6 9 12 15 18 9"></polyline>
+</svg>
+<svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" stroke-width="1.75" viewbox="0 0 24 24">
+<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+</svg>
+<span>all</span>
+</div>
+<div class="pl-4">
+<div class="flex items-center justify-between px-2 py-1 rounded-md text-slate-700 hover:bg-slate-100 cursor-pointer">
+<div class="flex items-center gap-1.5 truncate">
+<span class="text-[10px] text-amber-500 font-bold">YML</span>
+<span class="truncate">cordis.patch.yml</span>
+</div>
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500" title="已修改"></span>
+</div>
+</div>
+</div>
+</div>
+<!-- Root Configuration Files -->
+<div class="pt-1 space-y-0.5">
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-600 hover:bg-slate-100 cursor-pointer">
+<span class="text-[10px] text-yellow-600 font-bold">{}</span>
+<span class="truncate">package.json</span>
+</div>
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-600 hover:bg-slate-100 cursor-pointer">
+<span class="text-[10px] text-blue-500 font-bold">TS</span>
+<span class="truncate">tsconfig.json</span>
+</div>
+<div class="flex items-center gap-1.5 px-2 py-1 rounded-md text-slate-600 hover:bg-slate-100 cursor-pointer">
+<span class="text-[10px] text-indigo-500 font-bold">TS</span>
+<span class="truncate">dsh.config.ts</span>
+</div>
+</div>
+</div>
+<!-- Mini Embedded Terminal Widget -->
+<div class="p-2.5 border-t border-slate-900/10 bg-slate-50/70">
+<div class="rounded-xl border border-slate-900/10 bg-white shadow-sm overflow-hidden flex flex-col">
+<div class="px-2.5 py-1.5 bg-slate-100/90 border-b border-slate-900/5 flex items-center justify-between text-[11px] select-none">
+<div class="flex items-center gap-1.5 text-slate-700 font-medium">
+<svg class="w-3 h-3 text-slate-500" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="4 17 10 11 4 5"></polyline>
+<line x1="12" x2="20" y1="19" y2="19"></line>
+</svg>
+<span>终端输出</span>
+</div>
+<span class="font-mono text-[10px] text-emerald-600 font-medium">● 实时</span>
+</div>
+<div class="p-2.5 font-code text-[10px] leading-tight space-y-1.5 text-slate-600 bg-white">
+<div class="text-emerald-600">✓ Built in 420ms (esbuild target node20)</div>
+<div class="text-slate-500">[DSH-Agent] Listening on IPC socket</div>
+<div class="text-blue-600 flex items-center gap-1">
+<span>➜ ready in 35ms</span>
+<span class="w-1.5 h-3 bg-blue-600 inline-block animate-pulse"></span>
+</div>
+</div>
+</div>
+</div>
+</aside>
+</div>
+</div>
+</body></html>

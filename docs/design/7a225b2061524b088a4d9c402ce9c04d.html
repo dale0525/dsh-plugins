@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeepSeek Harness · 侧边栏层级与状态规范</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .font-mono-num {
+      font-family: "JetBrains Mono", -apple-system, monospace;
+      font-feature-settings: "tnum" on, "lnum" on;
+    }
+    @keyframes spin-slow {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .animate-spin-custom {
+      animation: spin-slow 1.1s linear infinite;
+    }
+  </style>
+</head>
+<body class="bg-[#F1F5F9] min-h-screen flex items-center justify-center p-0 m-0">
+
+  <!-- 画布容器: 300px 宽，总高度 1000px，左右各 10px 边距 -->
+  <div class="w-[300px] h-[1000px] bg-[#F1F5F9] px-[10px] py-4 flex flex-col box-border">
+
+    <!-- 侧栏本体: 280px 宽，自适应撑满，极简柔和白色卡片面板 -->
+    <aside class="w-[280px] h-full bg-[#FFFFFF] rounded-2xl border border-slate-200/90 shadow-[0_4px_24px_-4px_rgba(15,23,42,0.06),0_1px_3px_rgba(15,23,42,0.04)] flex flex-col overflow-hidden select-none">
+      
+      <!-- 1. 顶部工作区组头: 38px 高，左右两端对齐 -->
+      <div class="h-[38px] px-3.5 flex items-center justify-between border-b border-slate-100 flex-shrink-0">
+        <span class="text-[11px] font-semibold text-slate-400 tracking-wider uppercase">工作区</span>
+        <div class="flex items-center gap-0.5">
+          <!-- 搜索 -->
+          <button class="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100/70 transition-colors" title="搜索会话">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="7" cy="7" r="4.5"></circle>
+              <line x1="10.5" y1="10.5" x2="14" y2="14"></line>
+            </svg>
+          </button>
+          <!-- 筛选 -->
+          <button class="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100/70 transition-colors" title="视图选项">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="2" y1="4" x2="14" y2="4"></line>
+              <line x1="4.5" y1="8" x2="11.5" y2="8"></line>
+              <line x1="7" y1="12" x2="9" y2="12"></line>
+            </svg>
+          </button>
+          <!-- 新建 -->
+          <button class="w-6 h-6 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100/70 transition-colors" title="添加工作区">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <line x1="8" y1="3" x2="8" y2="13"></line>
+              <line x1="3" y1="8" x2="13" y2="8"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- 滚动主体列表区 -->
+      <div class="flex-1 overflow-y-auto px-2 py-2.5 space-y-3.5">
+
+        <!-- ======================= 组 1: 普通工作区「小说」 ======================= -->
+        <section class="space-y-1">
+          <!-- 工作区行 (普通): 文件夹图标 + 纯黑主标题 + 悬浮操作 -->
+          <div class="group h-[32px] px-2 rounded-lg flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer">
+            <div class="flex items-center gap-2 min-w-0">
+              <!-- 普通文件夹图标 (Slate-500) -->
+              <svg class="w-4 h-4 text-slate-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+              </svg>
+              <span class="text-[13px] font-semibold text-slate-800 tracking-tight truncate">小说</span>
+            </div>
+            <!-- 右侧悬浮操作 -->
+            <div class="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 text-slate-400 transition-opacity">
+              <button class="w-5 h-5 flex items-center justify-center hover:text-slate-600 rounded">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><circle cx="4" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12" cy="8" r="1.2"/></svg>
+              </button>
+              <button class="w-5 h-5 flex items-center justify-center hover:text-slate-600 rounded">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- 普通会话列表 (无工作树浅蓝背景卡底，纯净底色) -->
+          <div class="space-y-0.5">
+            <!-- 会话 1.1: 状态 = 进行中 (蓝色转圈) -->
+            <!-- 严格约束：左内边距 px-2，与工作区行天然左对齐；行首固定 16px 槽位 -->
+            <div class="group h-[30px] px-2 rounded-lg flex items-center justify-between hover:bg-slate-100/70 transition-colors cursor-pointer">
+              <div class="flex items-center gap-1.5 min-w-0 pr-1">
+                <!-- 16px 槽位: 放入 14px 蓝色转圈图标 -->
+                <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                  <svg class="w-3.5 h-3.5 text-blue-600 animate-spin-custom" viewBox="0 0 16 16" fill="none">
+                    <circle cx="8" cy="8" r="6" stroke="#DBEAFE" stroke-width="2" />
+                    <path d="M8 2a6 6 0 0 1 6 6" stroke="#2563EB" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                </div>
+                <span class="text-[13px] text-slate-700 truncate tracking-tight">重构侧边栏层级</span>
+              </div>
+              <span class="font-mono-num text-[10.5px] text-blue-600 font-medium flex-shrink-0">刚刚</span>
+            </div>
+
+            <!-- 会话 1.2: 状态 = 等待用户回答 (黄色实心圆点) -->
+            <div class="group h-[30px] px-2 rounded-lg flex items-center justify-between hover:bg-slate-100/70 transition-colors cursor-pointer">
+              <div class="flex items-center gap-1.5 min-w-0 pr-1">
+                <!-- 16px 槽位: 放入 10px 黄色实心圆点 -->
+                <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                  <span class="w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-amber-100"></span>
+                </div>
+                <span class="text-[13px] text-slate-700 truncate tracking-tight">验证键位改动</span>
+              </div>
+              <span class="font-mono-num text-[10.5px] text-amber-600 font-medium flex-shrink-0">2分钟</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ======================= 组 2: 普通工作区「Telegramail」 ======================= -->
+        <section class="space-y-1">
+          <!-- 工作区行 (普通) -->
+          <div class="group h-[32px] px-2 rounded-lg flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer">
+            <div class="flex items-center gap-2 min-w-0">
+              <svg class="w-4 h-4 text-slate-500 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+              </svg>
+              <span class="text-[13px] font-semibold text-slate-800 tracking-tight truncate">Telegramail</span>
+            </div>
+            <div class="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 text-slate-400 transition-opacity">
+              <button class="w-5 h-5 flex items-center justify-center hover:text-slate-600 rounded">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><circle cx="4" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12" cy="8" r="1.2"/></svg>
+              </button>
+              <button class="w-5 h-5 flex items-center justify-center hover:text-slate-600 rounded">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- 普通会话列表 -->
+          <div class="space-y-0.5">
+            <!-- 会话 2.1: 状态 = 空闲 (槽位严格留空，不画任何点) -->
+            <div class="group h-[30px] px-2 rounded-lg flex items-center justify-between hover:bg-slate-100/70 transition-colors cursor-pointer">
+              <div class="flex items-center gap-1.5 min-w-0 pr-1">
+                <!-- 16px 槽位: 留空 -->
+                <div class="w-4 h-4 flex-shrink-0"></div>
+                <span class="text-[13px] text-slate-700 truncate tracking-tight">优化 AST 插件解析流</span>
+              </div>
+              <span class="font-mono-num text-[10.5px] text-slate-400 flex-shrink-0">1天</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- 细分隔线: 区分普通区与 Git 工作树区 -->
+        <div class="border-t border-slate-100/80 my-1"></div>
+
+        <!-- ======================= 组 3: 工作树工作区「dsh-plugins · feat/sidebar」 ======================= -->
+        <!-- 核心识别手法：工作树拥有统一的「柔和天蓝浅底卡片容器」，左侧带 Git 活跃分支色条，从根本上区分单机文件夹与 Git 检出容器 -->
+        <section class="bg-blue-50/50 rounded-xl p-1 border border-blue-100/80 space-y-1">
+          <!-- 工作区行 (工作树): Git 分支图标 + 工作树专属「工作树」蓝白微胶囊 + 蓝色字色 -->
+          <div class="group h-[32px] px-1.5 rounded-lg flex items-center justify-between hover:bg-white/80 transition-colors cursor-pointer">
+            <div class="flex items-center gap-1.5 min-w-0 pr-1">
+              <!-- Git 分支图标 (主蓝 #2563EB) -->
+              <svg class="w-4 h-4 text-blue-600 flex-shrink-0" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="4.5" cy="4" r="2"></circle>
+                <circle cx="4.5" cy="12" r="2"></circle>
+                <circle cx="11.5" cy="7" r="2"></circle>
+                <path d="M4.5 6v4"></path>
+                <path d="M4.5 8.5C6.5 8.5 8 7 11.5 7"></path>
+              </svg>
+              <span class="text-[12.5px] font-semibold text-slate-900 tracking-tight truncate">dsh-plugins · feat/sidebar</span>
+            </div>
+            <!-- 工作树专属标识: 蓝底微胶囊 -->
+            <span class="px-1.5 py-0.5 text-[9.5px] font-medium bg-blue-100 text-blue-700 rounded flex-shrink-0">工作树</span>
+          </div>
+
+          <!-- 工作树下的会话列表 (受父级工作树卡片包裹，自带左侧树枝微导轨视觉) -->
+          <div class="space-y-0.5">
+            <!-- 会话 3.1: 状态 = 进行中 (转圈) + 当前选中态(高亮白底微投影) -->
+            <!-- 严格约束：左内边距与工作区同样对齐，槽位 16px -->
+            <div class="h-[30px] px-1.5 rounded-lg bg-white shadow-sm border border-blue-200/60 flex items-center justify-between cursor-pointer">
+              <div class="flex items-center gap-1.5 min-w-0 pr-1">
+                <!-- 16px 槽位: 放入 14px 蓝色转圈 -->
+                <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                  <svg class="w-3.5 h-3.5 text-blue-600 animate-spin-custom" viewBox="0 0 16 16" fill="none">
+                    <circle cx="8" cy="8" r="6" stroke="#DBEAFE" stroke-width="2" />
+                    <path d="M8 2a6 6 0 0 1 6 6" stroke="#2563EB" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                </div>
+                <span class="text-[13px] font-medium text-blue-900 truncate tracking-tight">重构侧边栏层级与规范</span>
+                <!-- 工作树下的会话特征：标题右侧带微型分支 tag，秒懂此会话绑定于 worktree -->
+                <span class="w-1.5 h-1.5 rounded-full bg-blue-500/80 flex-shrink-0 ml-0.5" title="工作树会话"></span>
+              </div>
+              <span class="font-mono-num text-[10.5px] text-blue-600 font-medium flex-shrink-0">刚刚</span>
+            </div>
+
+            <!-- 会话 3.2: 状态 = 空闲 (槽位留空) -->
+            <div class="group h-[30px] px-1.5 rounded-lg flex items-center justify-between hover:bg-white/70 transition-colors cursor-pointer">
+              <div class="flex items-center gap-1.5 min-w-0 pr-1">
+                <!-- 16px 槽位: 留空 -->
+                <div class="w-4 h-4 flex-shrink-0"></div>
+                <span class="text-[13px] text-slate-700 truncate tracking-tight">验证键位改动</span>
+                <span class="w-1.5 h-1.5 rounded-full bg-blue-300 flex-shrink-0 ml-0.5" title="工作树会话"></span>
+              </div>
+              <span class="font-mono-num text-[10.5px] text-slate-400 flex-shrink-0">3分钟</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ======================= 组 4: 工作树工作区「dsh-plugins · fix/composer」 ======================= -->
+        <section class="bg-blue-50/50 rounded-xl p-1 border border-blue-100/80 space-y-1">
+          <!-- 工作区行 (工作树) -->
+          <div class="group h-[32px] px-1.5 rounded-lg flex items-center justify-between hover:bg-white/80 transition-colors cursor-pointer">
+            <div class="flex items-center gap-1.5 min-w-0 pr-1">
+              <svg class="w-4 h-4 text-blue-600 flex-shrink-0" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="4.5" cy="4" r="2"></circle>
+                <circle cx="4.5" cy="12" r="2"></circle>
+                <circle cx="11.5" cy="7" r="2"></circle>
+                <path d="M4.5 6v4"></path>
+                <path d="M4.5 8.5C6.5 8.5 8 7 11.5 7"></path>
+              </svg>
+              <span class="text-[12.5px] font-semibold text-slate-900 tracking-tight truncate">dsh-plugins · fix/composer</span>
+            </div>
+            <span class="px-1.5 py-0.5 text-[9.5px] font-medium bg-blue-100 text-blue-700 rounded flex-shrink-0">工作树</span>
+          </div>
+
+          <!-- 工作树下的会话列表 -->
+          <div class="space-y-0.5">
+            <!-- 会话 4.1: 状态 = 等待用户回答 (黄色圆点) -->
+            <div class="group h-[30px] px-1.5 rounded-lg flex items-center justify-between hover:bg-white/70 transition-colors cursor-pointer">
+              <div class="flex items-center gap-1.5 min-w-0 pr-1">
+                <!-- 16px 槽位: 放入 10px 黄色圆点 -->
+                <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                  <span class="w-2.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-amber-100"></span>
+                </div>
+                <span class="text-[13px] text-slate-700 truncate tracking-tight">评估 DeepSeek 主题设计</span>
+                <span class="w-1.5 h-1.5 rounded-full bg-blue-300 flex-shrink-0 ml-0.5" title="工作树会话"></span>
+              </div>
+              <span class="font-mono-num text-[10.5px] text-amber-600 font-medium flex-shrink-0">2分钟</span>
+            </div>
+
+            <!-- 会话 4.2: 状态 = 空闲 (槽位留空) -->
+            <div class="group h-[30px] px-1.5 rounded-lg flex items-center justify-between hover:bg-white/70 transition-colors cursor-pointer">
+              <div class="flex items-center gap-1.5 min-w-0 pr-1">
+                <!-- 16px 槽位: 留空 -->
+                <div class="w-4 h-4 flex-shrink-0"></div>
+                <span class="text-[13px] text-slate-700 truncate tracking-tight">接入 MCP 协议扩展工具</span>
+                <span class="w-1.5 h-1.5 rounded-full bg-blue-300 flex-shrink-0 ml-0.5" title="工作树会话"></span>
+              </div>
+              <span class="font-mono-num text-[10.5px] text-slate-400 flex-shrink-0">2天</span>
+            </div>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- 2. 底部规范说明面板 (满足交付要求：核对 5 类视觉手段) -->
+      <div class="px-3 py-2.5 bg-slate-50 border-t border-slate-100 text-[11px] leading-relaxed text-slate-500 space-y-1 flex-shrink-0">
+        <div class="flex items-center gap-1.5 font-semibold text-slate-700 text-[11.5px] mb-1">
+          <svg class="w-3.5 h-3.5 text-blue-600" viewBox="0 0 16 16" fill="currentColor">
+            <path fill-rule="evenodd" d="M8 15A7 7 0 1 0 8 1a7 7 0 0 0 0 14zm.75-10.25a.75.75 0 0 0-1.5 0v3.5a.75.75 0 0 0 1.5 0v-3.5zm-.75 6.5a.875.875 0 1 0 0-1.75.875.875 0 0 0 0 1.75z"/>
+          </svg>
+          <span>层级与状态 5 类视觉手段核对</span>
+        </div>
+        <p><b class="text-slate-700">1. 普通工作区：</b>文件夹图标 + 纯白底色平铺 + 13px 粗体黑字。</p>
+        <p><b class="text-slate-700">2. 工作树工作区：</b>Git 分支图标 + 专属「工作树」胶囊 + 独立柔和浅蓝包容卡片。</p>
+        <p><b class="text-slate-700">3. 普通会话：</b>纯净背景，左内边距与组头天然对齐，行首 16px 固定槽位。</p>
+        <p><b class="text-slate-700">4. 工作树会话：</b>嵌入浅蓝工作树父容器内，行尾标题后带微型联动蓝点。</p>
+        <p><b class="text-slate-700">5. 状态：</b>空闲槽位完全留空；进行中=14px 纯蓝转圈；等待回答=10px 琥珀黄圆点。</p>
+      </div>
+
+      <!-- 3. 底部设置入口: 38px 高 -->
+      <div class="h-[38px] px-3.5 border-t border-slate-100 flex items-center justify-between text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-colors cursor-pointer flex-shrink-0">
+        <div class="flex items-center gap-2">
+          <svg class="w-4 h-4 text-slate-400" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" />
+          </svg>
+          <span class="text-[12px] font-medium">设置</span>
+        </div>
+        <span class="font-mono-num text-[10px] text-slate-400">⌘,</span>
+      </div>
+
+    </aside>
+
+  </div>
+
+</body>
+</html>

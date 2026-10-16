@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=1280, initial-scale=1.0" name="viewport"/>
+<title>DeepSeek Harness · macOS 原生工作台</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Inter", sans-serif;
+    }
+    .font-mono {
+      font-family: "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
+    }
+    .bg-mesh-canvas {
+      background: linear-gradient(135deg, #0284C7 0%, #0369A1 100%);
+      background-image: 
+        radial-gradient(circle at 18% 20%, rgba(56, 189, 248, 0.85) 0%, transparent 45%),
+        radial-gradient(circle at 82% 15%, rgba(6, 182, 212, 0.75) 0%, transparent 42%),
+        radial-gradient(circle at 50% 85%, rgba(14, 165, 233, 0.8) 0%, transparent 50%),
+        radial-gradient(circle at 88% 80%, rgba(2, 132, 199, 0.9) 0%, transparent 45%);
+    }
+  </style>
+</head>
+<body class="m-0 p-0 w-[1280px] h-[982px] bg-mesh-canvas overflow-hidden flex items-center justify-center p-6 box-border select-none antialiased text-slate-800">
+<!-- 悬浮窗口 -->
+<div class="w-full h-full rounded-[24px] bg-[#F8FAFC]/95 backdrop-blur-[40px] border border-white/60 shadow-[0_25px_60px_-15px_rgba(15,23,42,0.28)] flex overflow-hidden">
+<!-- 左侧栏 (288px) -->
+<aside class="w-[288px] min-w-[288px] max-w-[288px] h-full bg-[#F8FAFC] border-r border-slate-900/[0.08] flex flex-col justify-between pt-3 pb-3 px-3 box-border"><div class="flex flex-col gap-2.5">
+<!-- 品牌行 (h-[60px]) -->
+<div class="h-[60px] flex items-center justify-between px-1">
+<div class="flex items-center gap-2">
+<div class="w-6 h-6 rounded-lg bg-[#2563EB] flex items-center justify-center text-white shadow-xs">
+<svg class="w-4 h-4" fill="currentColor" viewbox="0 0 24 24">
+<path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"></path>
+</svg>
+</div>
+<span class="text-[14px] font-semibold text-slate-900 tracking-tight">deepseek</span>
+</div>
+<button class="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-200/50 text-slate-400 hover:text-slate-600 transition-colors">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewbox="0 0 24 24">
+<path d="M18.75 19.5l-7.5-7.5 7.5-7.5m-6 15L5.25 12l7.5-7.5" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div>
+<!-- 搜索与 New Session 操作行 -->
+<button class="w-full h-8 bg-[#2563EB] hover:bg-blue-700 text-white rounded-xl flex items-center justify-center gap-1.5 shadow-sm transition-colors text-[12px] font-medium">
+<svg class="w-3.5 h-3.5 stroke-white" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<path d="M12 4.5v15m7.5-7.5h-15" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span>新会话</span>
+</button>
+<!-- 新增全宽导航按钮 -->
+<div class="flex flex-col gap-0.5 mt-1">
+<button class="w-full h-8 px-2.5 rounded-xl flex items-center gap-2.5 text-[12px] text-slate-600 hover:bg-slate-200/50 transition-colors">
+<svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewbox="0 0 24 24">
+<path d="M14.25 6.087c0-.355.186-.676.401-.959.221-.29.349-.634.349-1.003 0-1.036-1.007-1.875-2.25-1.875s-2.25.84-2.25 1.875c0 .369.128.713.349 1.003.215.283.401.604.401.959v0a.64.64 0 01-.657.643 48.39 48.39 0 01-4.163-.3c.186 1.613 1.24 2.944 2.658 3.518a2.625 2.625 0 011.662 2.457c0 1.036-1.007 1.875-2.25 1.875s-2.25-.84-2.25-1.875a2.625 2.625 0 011.662-2.457A5.992 5.992 0 016.75 9.75" stroke-linecap="round" stroke-linejoin="round"></path>
+<path d="M14.25 6.087V7.5a2.25 2.25 0 002.25 2.25h1.5a2.25 2.25 0 012.25 2.25v2.25a2.25 2.25 0 01-2.25 2.25h-1.5a2.25 2.25 0 00-2.25 2.25v1.5a2.25 2.25 0 01-2.25 2.25h-4.5a2.25 2.25 0 01-2.25-2.25v-1.5a2.25 2.25 0 00-2.25-2.25H4.5A2.25 2.25 0 012.25 15v-2.25A2.25 2.25 0 014.5 10.5h1.5a2.25 2.25 0 002.25-2.25V7.5" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span class="font-medium">插件</span>
+</button>
+<button class="w-full h-8 px-2.5 rounded-xl flex items-center gap-2.5 text-[12px] text-slate-600 hover:bg-slate-200/50 transition-colors">
+<svg class="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewbox="0 0 24 24">
+<path d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span class="font-medium">自动化任务</span>
+</button>
+</div>
+<!-- 工作区列表区 -->
+<div class="mt-1 flex flex-col gap-1.5">
+<div class="h-9 px-2 flex items-center justify-between">
+<span class="text-[11px] font-semibold text-slate-400 tracking-wider uppercase">工作区</span>
+<div class="flex items-center gap-1">
+<button class="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-800 hover:bg-slate-200/50 transition-colors" title="搜索会话">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+<button class="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-800 hover:bg-slate-200/50 transition-colors" title="视图选项">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+<button class="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 hover:text-slate-800 hover:bg-slate-200/50 transition-colors" title="添加工作区">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<path d="M12 4.5v15m7.5-7.5h-15" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div>
+</div>
+<div class="flex flex-col gap-1">
+<!-- 工作区行 -->
+<div class="w-full h-[34px] rounded-[12px] hover:bg-slate-200/50 flex items-center justify-between px-2.5 cursor-pointer group transition-colors">
+<div class="flex items-center gap-2 truncate">
+<svg class="w-4 h-4 text-[#64748B] shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewbox="0 0 24 24">
+<path d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span class="text-[12px] font-medium text-[#1E293B] truncate">Core Agent Runtime</span>
+</div>
+<!-- 两个常驻 28x28 圆角 8px 图标按钮 -->
+<div class="flex items-center gap-1 shrink-0">
+<button class="w-7 h-7 rounded-[8px] flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors" title="更多操作">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<path d="M6.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM12.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0zM18.75 12a.75.75 0 11-1.5 0 .75.75 0 011.5 0z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+<button class="w-7 h-7 rounded-[8px] flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors" title="新建会话">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<path d="M12 4.5v15m7.5-7.5h-15" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div>
+</div>
+<!-- 会话列表 -->
+<div class="flex flex-col gap-1 pl-1">
+<div class="w-full h-[32px] bg-white rounded-[12px] border border-[#2563EB]/30 shadow-xs flex items-center justify-between px-2.5 cursor-pointer">
+<span class="text-[12px] font-medium text-[#0F172A] truncate pr-2">重构 Agent 任务调度与状态机</span>
+<span class="text-[10px] font-mono text-[#2563EB] shrink-0">刚刚</span>
+</div>
+<div class="w-full h-[32px] rounded-[12px] hover:bg-slate-200/50 flex items-center justify-between px-2.5 cursor-pointer transition-colors">
+<span class="text-[12px] text-[#1E293B] truncate pr-2">优化 AST 插件解析流</span>
+<span class="text-[10px] font-mono text-[#94A3B8] shrink-0">2小时前</span>
+</div>
+<div class="w-full h-[32px] rounded-[12px] hover:bg-slate-200/50 flex items-center justify-between px-2.5 cursor-pointer transition-colors">
+<span class="text-[12px] text-[#1E293B] truncate pr-2">修复并发上下文丢失问题</span>
+<span class="text-[10px] font-mono text-[#94A3B8] shrink-0">昨天</span>
+</div>
+<div class="w-full h-[32px] rounded-[12px] hover:bg-slate-200/50 flex items-center justify-between px-2.5 cursor-pointer transition-colors">
+<span class="text-[12px] text-[#1E293B] truncate pr-2">接入 MCP 协议扩展工具</span>
+<span class="text-[10px] font-mono text-[#94A3B8] shrink-0">3天前</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- 侧栏底部：设置行 -->
+<div class="pt-2 border-t border-slate-900/[0.06]">
+<div class="w-full h-[34px] rounded-[12px] hover:bg-slate-200/50 flex items-center gap-2 px-2.5 cursor-pointer transition-colors">
+<svg class="w-4 h-4 text-[#64748B] shrink-0" fill="none" stroke="currentColor" stroke-width="1.5" viewbox="0 0 24 24">
+<path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" stroke-linecap="round" stroke-linejoin="round"></path>
+<path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span class="text-[12px] text-[#64748B]">设置</span>
+</div>
+</div></aside>
+<!-- 主区 (flex-1) -->
+<main class="flex-1 min-w-0 h-full bg-white flex flex-col justify-between">
+<!-- 顶部 56px 会话头 -->
+<div class="h-[56px] min-h-[56px] border-b border-slate-900/[0.08] px-7 flex items-center justify-between"><div class="flex items-center gap-4">
+<h1 class="text-[14px] font-semibold text-[#0F172A] tracking-tight m-0">重构 Agent 任务调度与状态机</h1>
+<span class="text-[12px] text-slate-500 font-normal">标准模式</span>
+<span class="text-[12px] text-slate-500 font-normal">1 个后台任务运行中</span>
+</div>
+<div class="flex items-center gap-4">
+<!-- 对话 / 轨迹 分段控件 -->
+<div class="flex items-center bg-[#F1F5F9] p-0.5 rounded-[12px]">
+<button class="px-3 py-1 rounded-[10px] bg-white text-[#0F172A] font-medium text-[12px] shadow-xs border border-slate-900/[0.08]">
+      对话
+    </button>
+<button class="px-3 py-1 rounded-[10px] text-slate-500 hover:text-slate-900 text-[12px] font-normal transition-colors">
+      轨迹
+    </button>
+</div>
+<!-- 右侧栏开关/Dock 图标按钮 -->
+<button class="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors">
+<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.5" viewbox="0 0 24 24">
+<path d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div></div>
+<!-- 会话流区域 -->
+<div class="flex-1 overflow-y-auto px-7 py-6 flex flex-col gap-5 bg-[#F8FAFC]/40">
+<!-- 1. 用户消息气泡 -->
+<div class="flex justify-end">
+<div class="max-w-[90%] bg-[#1E293B] text-white text-[13px] leading-relaxed rounded-2xl rounded-br-md py-2.5 px-4 shadow-sm">
+            请检查 <code class="font-mono text-cyan-300 text-[12px] px-1 bg-white/10 rounded">packages/all/cordis.patch.yml</code> 的钩子配置，并运行构建验证 Agent 是否能够正常自举启动。
+          </div>
+</div>
+<!-- 2. 思考过程块 -->
+<div class="h-[33px] px-3 rounded-lg bg-violet-50/70 border border-violet-100/60 flex items-center justify-between shadow-xs">
+<div class="flex items-center gap-2">
+<svg class="w-3.5 h-3.5 text-[#4338CA]" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span class="text-[12px] text-[#4338CA] font-medium">已完成，用时 12分48秒</span>
+</div>
+<svg class="w-3.5 h-3.5 text-[#4338CA] opacity-80" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M19.5 8.25l-7.5 7.5-7.5-7.5" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</div>
+<!-- 3. 工具调用卡片 -->
+<div class="h-6 flex items-center gap-2 text-[12px]">
+<svg class="w-3.5 h-3.5 text-slate-500 shrink-0" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M6.75 7.5l3 3-3 3m4.5 0h6m-12-9A2.25 2.25 0 003 6.75v10.5A2.25 2.25 0 005.25 19.5h13.5A2.25 2.25 0 0021 17.25V6.75A2.25 2.25 0 0018.75 4.5H5.25z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span class="text-slate-500">运行命令</span>
+<span class="text-slate-800 font-medium font-mono text-[12px]">Fetch real Tailwind preflight CSS</span>
+</div>
+<!-- 4. 文件编辑 diff 卡片 -->
+<!-- 5. 助手回复正文（无任何头像/模型/时间整行） -->
+<div class="text-[13px] text-[#1E293B] leading-[1.7]">
+          已完成对 <code class="font-mono text-[12px] bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">cordis.patch.yml</code> 钩子声明的重构，解决了生命周期竞争冲突。随后调用 <code class="font-mono text-[12px] bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">agent.bootstrap()</code> 进行了热插拔自举测试，全部测试用例均已通过。
+        </div>
+<!-- 6. 代码块 -->
+<div class="rounded-[16px] bg-[#F8FAFC] border border-slate-900/[0.08] p-3.5 shadow-xs flex flex-col gap-2">
+<div class="flex items-center justify-between"><span class="text-[11px] font-mono text-slate-500 font-semibold uppercase">CSS</span>
+<div class="flex items-center gap-1.5">
+<button class="text-slate-400 hover:text-slate-600 transition-colors p-1 rounded" title="自动换行">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M3.75 6.75h16.5M3.75 12h12.75a3 3 0 010 6h-3m0 0l2.25-2.25M13.5 18l2.25 2.25" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+<button class="text-slate-400 hover:text-slate-600 transition-colors p-1 rounded" title="复制">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 01-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 011.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 00-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 01-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 00-3.375-3.375h-1.5a1.125 1.125 0 01-1.125-1.125v-1.5a3.375 3.375 0 00-3.375-3.375H9.75" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div></div>
+<pre class="m-0 font-mono text-[12px] leading-relaxed text-[#1E293B] overflow-x-auto"><code><span class="text-blue-600 font-medium">import</span> { CordisHost, AgentHarness } <span class="text-blue-600 font-medium">from</span> <span class="text-emerald-600">'@dsh/runtime'</span>;
+
+<span class="text-blue-600 font-medium">export async function</span> <span class="text-indigo-600 font-semibold">initAgentScheduler</span>(config: HarnessConfig) {
+  <span class="text-slate-400">// 绑定生命周期安全钩子与事件总线</span>
+  <span class="text-blue-600 font-medium">const</span> harness = <span class="text-blue-600 font-medium">new</span> <span class="text-indigo-600">AgentHarness</span>(config);
+  <span class="text-blue-600 font-medium">return</span> harness.<span class="text-indigo-600">bootstrap</span>();
+}</code></pre>
+</div>
+</div>
+<!-- 底部输入区 -->
+<div class="px-7 pt-4 pb-5">
+<div class="rounded-[16px] bg-white border border-slate-900/[0.08] p-3 shadow-[0_4px_12px_-4px_rgba(15,23,42,0.08)] flex flex-col gap-3">
+<div class="text-[13px] text-[#94A3B8] px-1 select-none">
+            给 DeepSeek Harness 发送消息…
+          </div>
+<div class="flex items-center justify-between"><div class="flex items-center gap-2">
+<!-- 28x28 圆形 + 号按钮 -->
+<button class="w-7 h-7 rounded-full bg-[#1E293B] hover:bg-slate-800 text-white flex items-center justify-center shrink-0 transition-colors shadow-xs">
+<svg class="w-3.5 h-3.5 stroke-white" fill="none" stroke="currentColor" stroke-width="2.5" viewbox="0 0 24 24">
+<path d="M12 4.5v15m7.5-7.5h-15" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+<!-- 完全权限文字按钮 -->
+<button class="h-7 rounded-[8px] text-[13px] px-3 bg-slate-100 hover:bg-slate-200/80 text-slate-700 flex items-center gap-1.5 transition-colors font-medium">
+<span>完全权限</span>
+</button>
+<!-- 主检出文字按钮 -->
+<button class="h-7 rounded-[8px] text-[13px] px-3 bg-slate-100 hover:bg-slate-200/80 text-slate-700 flex items-center gap-1.5 transition-colors font-medium">
+<span>主检出</span>
+</button>
+</div>
+<div class="flex items-center gap-3">
+<!-- 模型选择胶囊 -->
+<div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#EFF6FF] text-[#2563EB] text-[12px] font-mono font-medium cursor-pointer hover:bg-blue-100 transition-colors">
+<span>DeepSeek-V3</span>
+<svg class="w-3 h-3 text-[#2563EB]" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<path d="M19.5 8.25l-7.5 7.5-7.5-7.5" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</div>
+<!-- 34x34 发送按钮 -->
+<button class="w-[34px] h-[34px] rounded-full bg-[#2563EB] hover:bg-blue-700 text-white flex items-center justify-center transition-colors shadow-sm shrink-0">
+<svg class="w-4 h-4 stroke-white" fill="none" stroke="currentColor" stroke-width="2.5" viewbox="0 0 24 24">
+<path d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+</div></div>
+</div>
+</div>
+</main>
+<!-- 右侧栏 (300px) -->
+</div>
+</body>
+</html>

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeepSeek Harness · 对话流状态组件规范</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['Geist Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+          },
+          colors: {
+            brand: {
+              DEFAULT: '#2563EB',
+              hover: '#DBEAFE',
+              light: '#EFF6FF',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+      -webkit-font-smoothing: antialiased;
+    }
+  </style>
+</head>
+<body class="bg-[#F8FAFC] min-h-screen py-12 px-6 flex flex-col items-center justify-start text-[#1E293B]">
+
+  <!-- 外层说明/头部规范标题 -->
+  <div class="w-[720px] mb-6 flex items-center justify-between select-none">
+    <div class="flex items-center gap-2.5">
+      <div class="w-2.5 h-2.5 rounded-full bg-[#2563EB]"></div>
+      <h1 class="text-xs font-semibold tracking-wider text-[#64748B] uppercase">DeepSeek Harness · 对话流状态组件集</h1>
+    </div>
+    <span class="text-[11px] text-[#94A3B8] font-mono">规范：720px / 亮色石板灰系统</span>
+  </div>
+
+  <!-- 主画布容器 720px，背景模拟对话流区域 -->
+  <main class="w-[720px] bg-white rounded-2xl border border-[rgba(15,23,42,0.08)] shadow-[0_1px_3px_rgba(15,23,42,0.05)] p-8 flex flex-col gap-6">
+
+    <!-- 组件一：思考聚合卡片（展开态） -->
+    <section class="flex flex-col gap-1.5">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] font-mono uppercase tracking-wider text-[#94A3B8]">01 · 思考聚合卡片（展开态）</span>
+        <span class="text-[10px] text-[#94A3B8] font-mono">Thinking Block (Expanded)</span>
+      </div>
+      
+      <!-- 卡片实体 -->
+      <div class="bg-white border border-[rgba(15,23,42,0.08)] rounded-[12px] p-3 transition-colors">
+        <!-- 标题行 -->
+        <div class="flex items-center justify-between cursor-pointer select-none">
+          <div class="flex items-center gap-2">
+            <!-- 细线闪光图标 -->
+            <svg class="w-4 h-4 text-[#2563EB]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+            </svg>
+            <span class="text-[13px] font-medium text-[#1E293B]">思考 · Let me plan. Two tasks:</span>
+          </div>
+          <!-- 14px 细线箭头 -->
+          <svg class="w-3.5 h-3.5 text-[#94A3B8]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m6 9 6 6 6-6"/>
+          </svg>
+        </div>
+
+        <!-- 内容区 -->
+        <div class="mt-2 flex">
+          <!-- 2px 竖线 -->
+          <div class="w-[2px] rounded-full bg-[rgba(37,99,235,0.25)] self-stretch"></div>
+          <!-- 推理文字列表 -->
+          <div class="ml-3 flex flex-col text-[12px] text-[#475569] leading-[1.7]">
+            <p>1. 分析 cordis.patch.yml 模块拓扑关系</p>
+            <p>2. 定位注册链中缺失的 bootstrap 签名</p>
+            <p>3. 补丁后触发本地构建流水线验证</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 组件二：工具调用聚合卡片（展开态） -->
+    <section class="flex flex-col gap-1.5">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] font-mono uppercase tracking-wider text-[#94A3B8]">02 · 工具调用聚合卡片（展开态）</span>
+        <span class="text-[10px] text-[#94A3B8] font-mono">Tool Invocation Group</span>
+      </div>
+
+      <!-- 卡片实体 -->
+      <div class="bg-white border border-[rgba(15,23,42,0.08)] rounded-[12px] p-3 transition-colors">
+        <!-- 顶部标题行 -->
+        <div class="flex items-center justify-between cursor-pointer select-none">
+          <div class="flex items-center gap-2">
+            <!-- 细线终端图标 -->
+            <svg class="w-4 h-4 text-[#64748B]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 17 10 11 4 5"/>
+              <line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
+            <span class="text-[13px] font-medium text-[#1E293B]">运行命令 · 执行了命令并已读取文件</span>
+          </div>
+          <!-- 14px 细线箭头 -->
+          <svg class="w-3.5 h-3.5 text-[#94A3B8]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m6 9 6 6 6-6"/>
+          </svg>
+        </div>
+
+        <!-- 内容区：两行工具调用 -->
+        <div class="mt-2 flex flex-col">
+          <!-- 行 1 -->
+          <div class="h-6 flex items-center">
+            <!-- 14px 细线终端图标 -->
+            <svg class="w-3.5 h-3.5 text-[#94A3B8] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 17 10 11 4 5"/>
+              <line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
+            <span class="ml-2 text-[12px] text-[#64748B] flex-shrink-0">运行命令</span>
+            <span class="ml-2 text-[12px] font-medium font-mono text-[#1E293B] truncate">pnpm -r run test</span>
+          </div>
+
+          <!-- 发丝分割线 -->
+          <div class="h-[1px] w-full bg-[rgba(15,23,42,0.05)] my-0.5"></div>
+
+          <!-- 行 2 -->
+          <div class="h-6 flex items-center">
+            <!-- 14px 细线文件图标 -->
+            <svg class="w-3.5 h-3.5 text-[#94A3B8] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+            <span class="ml-2 text-[12px] text-[#64748B] flex-shrink-0">读取</span>
+            <span class="ml-2 text-[12px] font-medium font-mono text-[#1E293B] truncate">packages/all/cordis.patch.yml</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 组件三：进行态提示 -->
+    <section class="flex flex-col gap-1.5">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] font-mono uppercase tracking-wider text-[#94A3B8]">03 · 进行态提示</span>
+        <span class="text-[10px] text-[#94A3B8] font-mono">Running State (In-progress)</span>
+      </div>
+
+      <!-- 进行态实体行：高 28px，不带底色不带边框 -->
+      <div class="h-7 flex items-center select-none">
+        <!-- 2px 宽、24px 高竖线 -->
+        <div class="w-[2px] h-6 rounded-full bg-[#2563EB] flex-shrink-0"></div>
+
+        <div class="ml-3 flex items-center">
+          <!-- 14px 细线闪光图标 -->
+          <svg class="w-3.5 h-3.5 text-[#2563EB] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+          </svg>
+          <span class="ml-2 text-[12px] font-medium text-[#2563EB]">深度求索中，用时 4分28秒</span>
+          
+          <!-- 3个 3px 圆点省略号 -->
+          <div class="ml-1.5 flex items-center gap-[3px]">
+            <span class="w-[3px] h-[3px] rounded-full bg-[#93C5FD]"></span>
+            <span class="w-[3px] h-[3px] rounded-full bg-[#93C5FD]"></span>
+            <span class="w-[3px] h-[3px] rounded-full bg-[#93C5FD]"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 组件四：完成态提示 -->
+    <section class="flex flex-col gap-1.5">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] font-mono uppercase tracking-wider text-[#94A3B8]">04 · 完成态提示</span>
+        <span class="text-[10px] text-[#94A3B8] font-mono">Completed State (Collapsed Pill)</span>
+      </div>
+
+      <!-- 完成态胶囊行：高 33px，圆角 8px，底 #F1F5F9，边框 1px rgba(15,23,42,0.08)，左右内边距 12px -->
+      <div class="h-[33px] bg-[#F1F5F9] border border-[rgba(15,23,42,0.08)] rounded-[8px] px-3 flex items-center justify-between select-none cursor-pointer hover:bg-[#E2E8F0]/70 transition-colors">
+        <!-- 左侧：对勾 + 文案 -->
+        <div class="flex items-center">
+          <!-- 14px 细线对勾图标 -->
+          <svg class="w-3.5 h-3.5 text-[#10B981] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+          <div class="ml-2 text-[12px] font-medium text-[#475569] flex items-center gap-0.5">
+            <span>已完成，用时</span>
+            <span class="font-mono ml-0.5">12</span>
+            <span>分</span>
+            <span class="font-mono">42</span>
+            <span>秒</span>
+          </div>
+        </div>
+
+        <!-- 右侧：14px 细线向下箭头 -->
+        <svg class="w-3.5 h-3.5 text-[#94A3B8] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </div>
+    </section>
+
+    <!-- 规范注释说明底条 -->
+    <div class="mt-2 pt-4 border-t border-[rgba(15,23,42,0.06)] flex items-center justify-between text-[11px] text-[#94A3B8]">
+      <span>配色体系：石板灰 Neutral Slate (#1E293B / #475569 / #64748B / #94A3B8) + 宿主黑蓝 (#2563EB)</span>
+      <span class="font-mono">Strictly Zero Violet / Indigo</span>
+    </div>
+
+  </main>
+</body>
+</html>
