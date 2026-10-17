@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-config-manager",
-  "version": "0.1.79",
+  "version": "0.1.80",
   "license": "MIT",
   "description": "Sync your DeepSeek Harness (DSH) configuration between machines over a private git or WebDAV channel: settings, plugins, MCP servers, skills, agent presets and provider credentials. DSH 配置远程同步插件（私有通道，明文自用）。",
   "keywords": [
@@ -62,7 +62,10 @@
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-renderer"
       ],
-      "platform": "web"
+      "platform": "web",
+      "external": [
+        "@logictan/dsh-plugins-shared-client"
+      ]
     }
   },
   "files": [
@@ -101,6 +104,7 @@
     "@deepseek-ai/dsh-system-prompt": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
     "@deepseek-ai/dsh-tools": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
     "@deepseek-ai/dsh-util-values": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
+    "@logictan/dsh-plugins-shared-client": "^0.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
@@ -145,6 +149,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-util-values": {
+      "optional": true
+    },
+    "@logictan/dsh-plugins-shared-client": {
       "optional": true
     },
     "react": {

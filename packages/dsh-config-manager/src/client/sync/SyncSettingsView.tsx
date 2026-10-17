@@ -27,12 +27,11 @@
  * 清空、需要时重新输入。
  */
 import { useEffect, useRef, useState } from 'react'
-import type { ChangeEvent } from 'react'
 import type { TranslateNS } from '../client-types.ts'
 import type { SyncPullApplyReport, SyncPushReport } from '../../sync/sync-engine.ts'
 import type { UiT } from '../../ui/i18n.ts'
 import type { SectionId } from '../../schema/types.ts'
-import { Badge, Banner, Button, Card, Checkbox, SectionTitle, Spinner } from '../common/ui.tsx'
+import { Banner, Button, Field, SecretField, Select, SettingsCard, Tag, TextField } from '@logictan/dsh-plugins-shared-client/client'
 import { ErrorBanner } from '../common/ErrorBanner.tsx'
 import { toast } from '../common/toast-store.ts'
 import { redact } from '../../security/redaction.ts'
@@ -656,7 +655,10 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
 
   return (
     <div className={css.viewBody}>
-      <SectionTitle title={t('section.label')} subtitle={t('section.description')} />
+      <div className={css.sectionTitleBlock}>
+        <h3 className={css.sectionTitle}>{t('section.label')}</h3>
+        <p className={css.sectionSubtitle}>{t('section.description')}</p>
+      </div>
 
           {/* M-16：页面级加载失败就地提示（此前 loadError 只写不读，宿主不可达时整页显示
               「未配置」假象）。此处保留可就地重试的 ErrorBanner —— 它是**页面是否可用**
@@ -672,19 +674,20 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
 
           {/* 同步通道入口卡：通道配置改为弹窗驱动（点按钮 → 弹窗内配置 Git/WebDAV 通道；
               弹窗样式复用市场操作弹窗体系，DESIGN.md §8.12） */}
-          <Card>
-            <span className={css.groupLabel}>{t('channel.title')}</span>
-            <span className={css.hint}>{t('channel.openHint')}</span>
+          <SettingsCard
+            title={t('channel.title')}
+            description={t('channel.openHint')}
+          >
             <div className={css.statRow}>
-              <Badge kind="info">{state.channel === 'webdav' ? t('channel.webdav') : t('channel.git')}</Badge>
-              <Badge kind={remoteReady ? 'ok' : 'warn'}>
+              <Tag kind="info">{state.channel === 'webdav' ? t('channel.webdav') : t('channel.git')}</Tag>
+              <Tag kind={remoteReady ? 'ok' : 'warn'}>
                 {remoteReady ? t('channel.configured') : t('channel.notConfigured')}
-              </Badge>
+              </Tag>
               {state.channel === 'git' && state.statusInfo?.credentialConfigured === true && (
-                <Badge kind="ok">{t('config.tokenSaved')}</Badge>
+                <Tag kind="ok">{t('config.tokenSaved')}</Tag>
               )}
               {state.channel === 'webdav' && state.statusInfo?.webdav?.passwordConfigured === true && (
-                <Badge kind="ok">{t('webdav.passwordSaved')}</Badge>
+                <Tag kind="ok">{t('webdav.passwordSaved')}</Tag>
               )}
             </div>
             {/* 状态事实行（Workbench：配置状态/上次同步/可同步分区——未配置时也要给硬事实） */}
@@ -725,7 +728,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                 {t('channel.open')}
               </Button>
             </div>
-          </Card>
+          </SettingsCard>
 
           {/* 残留环境锁入口（issue #27/#31）：可见性由 Host 的 lock.attention 唯一决定 ——
               只对 STALE_LOCK_DETECTED / UNKNOWN_STATE 为 true。此前 423 文案把用户指向
@@ -733,12 +736,13 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
               注意不能按 state 判断可见：所有权文件不存在时 Host 也报 LOCKED（空闲态），
               按 state 渲染会让空闲态常驻一条「另一任务持有」的假告警。 */}
           {lockPanel.visible && (
-            <Card>
-              <span className={css.groupLabel}>{uiT('sync.lock.title')}</span>
+            <SettingsCard
+              title={uiT('sync.lock.title')}
+              description={lockPanel.detail}
+            >
               <div className={css.statRow}>
-                <Badge kind={lockPanel.badgeKind}>{lockPanel.badgeLabel}</Badge>
+                <Tag kind={lockPanel.badgeKind}>{lockPanel.badgeLabel}</Tag>
               </div>
-              <span className={css.hint}>{lockPanel.detail}</span>
               <div className={css.actionRow}>
                 <Button
                   variant="primary"
@@ -746,10 +750,10 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                   loading={state.recovering}
                   onClick={() => { void recoverStaleLock() }}
                 >
-                  {state.recovering ? <Spinner label={lockPanel.label} /> : lockPanel.label}
+                  {lockPanel.label}
                 </Button>
               </div>
-            </Card>
+            </SettingsCard>
           )}
 
           {/* SAFE MODE 恢复入口（issue #32）：可见性由 Host 的闸门状态唯一决定 —— 它就是 423
@@ -759,12 +763,13 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
               quarantine 后恒为 []，而 durable 标记仍在，于是闸门关着却没有出口（用户报告
               「找不到解除保护按钮」）。无 incident 时提供整块「解除保护」清掉该残留标记。 */}
           {recoveryPanel.visible && (
-            <Card>
-              <span className={css.groupLabel}>{recoveryPanel.title}</span>
-              <span className={css.hint}>{recoveryPanel.detail}</span>
+            <SettingsCard
+              title={recoveryPanel.title}
+              description={recoveryPanel.detail}
+            >
               {recoveryPanel.items.map((item) => (
                 <div key={item.operationId} className={css.statRow}>
-                  <Badge kind={item.badgeKind}>{item.badgeLabel}</Badge>
+                  <Tag kind={item.badgeKind}>{item.badgeLabel}</Tag>
                   <span className={css.hint}>
                     {item.operationLabel} · {item.createdAt}
                     {item.reason === '' ? '' : ` · ${redact(item.reason)}`}
@@ -788,11 +793,11 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                     loading={state.releasing}
                     onClick={() => { void releaseProtection() }}
                   >
-                    {state.releasing ? <Spinner label={recoveryPanel.releaseLabel} /> : recoveryPanel.releaseLabel}
+                    {recoveryPanel.releaseLabel}
                   </Button>
                 </div>
               )}
-            </Card>
+            </SettingsCard>
           )}
 
           {/* 通道配置弹窗（Radix Modal 统一 a11y：focus-trap / Esc / 焦点还原 / 滚动锁；
@@ -837,41 +842,39 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             {state.channel === 'git' && (
               <>
                 <span className={css.groupLabel}>{t('config.title')}</span>
-                <label className={css.field}>
-                  <span className={css.fieldLabel}>{t('config.repoUrl')}</span>
-                  <input
-                    type="text"
-                    className={css.input}
+                <Field label={t('config.repoUrl')} hint={t('config.repoUrlHint')}>
+                  <TextField
                     value={state.repoUrl}
                     placeholder="https://github.com/user/private-repo.git"
                     disabled={state.busy !== null}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                      patch({ repoUrl: e.target.value })
+                    onValueChange={(val) => {
+                      patch({ repoUrl: val })
                       scheduleConfigSave() // 改动自动保存（防抖；关闭设置页不丢输入）
                     }}
                   />
-                  <span className={css.hint}>{t('config.repoUrlHint')}</span>
-                </label>
-                <label className={css.field}>
-                  <span className={css.fieldLabel}>
-                    {t('config.token')}
-                    {' '}
-                    {state.statusInfo?.credentialConfigured === true && <Badge kind="ok">{t('config.tokenSaved')}</Badge>}
-                  </span>
-                  <input
-                    type="password"
-                    className={css.input}
+                </Field>
+                <Field
+                  label={
+                    <>
+                      {t('config.token')}
+                      {' '}
+                      {state.statusInfo?.credentialConfigured === true && <Tag kind="ok">{t('config.tokenSaved')}</Tag>}
+                    </>
+                  }
+                  hint={t('config.tokenHint', { ref: SYNC_CREDENTIAL_REF })}
+                >
+                  <SecretField
                     value={state.token}
                     autoComplete="off"
                     placeholder={t('config.tokenPlaceholder')}
                     disabled={state.busy !== null}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                      patch({ token: e.target.value })
+                    configured={state.statusInfo?.credentialConfigured === true}
+                    onValueChange={(val) => {
+                      patch({ token: val })
                       scheduleConfigSave()
                     }}
                   />
-                  <span className={css.hint}>{t('config.tokenHint', { ref: SYNC_CREDENTIAL_REF })}</span>
-                </label>
+                </Field>
 
                 {/* GitHub OAuth 登录（device flow）：弹窗内仅 git 通道显示；已登录（token 有效）时整块隐藏 */}
                 {state.githubSignedIn === false && (
@@ -883,16 +886,14 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                     <span className={css.hint}>{t('github.description')}</span>
                     {githubView.showCode && (
                       <div className={css.statRow}>
-                        <Badge kind="info">{t('github.userCode')}：<strong>{githubView.userCode}</strong></Badge>
-                        <a
-                          className={css.ghostButton}
+                        <Tag kind="info">{t('github.userCode')}：<strong>{githubView.userCode}</strong></Tag>
+                        <Button
+                          variant="ghost"
                           href={githubView.verificationUri}
-                          target="_blank"
-                          rel="noreferrer"
-                          style={{ textDecoration: 'none' }}
+                          newTab
                         >
                           {t('github.openAuth')}
-                        </a>
+                        </Button>
                       </div>
                     )}
                     <div className={css.actionRow}>
@@ -910,9 +911,9 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                       )}
                     </div>
                     <div className={css.statRow}>
-                      <Badge kind={githubView.phase === 'success' ? 'ok' : githubView.phase === 'error' ? 'error' : 'warn'}>
+                      <Tag kind={githubView.phase === 'success' ? 'ok' : githubView.phase === 'error' ? 'error' : 'warn'}>
                         {githubView.statusText}
-                      </Badge>
+                      </Tag>
                     </div>
                     {githubView.phase === 'error' && (
                       <span className={css.hint}>{t('config.tokenHint', { ref: SYNC_CREDENTIAL_REF })}</span>
@@ -927,76 +928,73 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
               <>
                 <span className={css.groupLabel}>{t('webdav.title')}</span>
                 {/* 常见 WebDAV 服务器预设：选择后填充 url 模板（含占位符待替换） */}
-                <span className={css.hint}>{t('webdav.presetHint')}</span>
-                <select
-                  className={css.select}
-                  value={presetIdForUrl(state.webdavUrl)}
-                  disabled={state.busy !== null}
-                  onChange={(e: ChangeEvent<HTMLSelectElement>) => {
-                    const p = presetById(e.target.value)
-                    patch({ webdavUrl: p.url })
-                    scheduleConfigSave()
-                  }}
-                >
-                  {WEBDAV_PRESETS.map((p) => (
-                    <option key={p.id} value={p.id}>{p.label}</option>
-                  ))}
-                </select>
-                <label className={css.field}>
-                  <span className={css.fieldLabel}>{t('webdav.url')}</span>
-                  <input
-                    type="text"
-                    className={css.input}
+                <Field hint={t('webdav.presetHint')}>
+                  <Select
+                    value={presetIdForUrl(state.webdavUrl)}
+                    options={WEBDAV_PRESETS.map((p) => ({ value: p.id, label: p.label }))}
+                    disabled={state.busy !== null}
+                    onChange={(val) => {
+                      const p = presetById(val)
+                      patch({ webdavUrl: p.url })
+                      scheduleConfigSave()
+                    }}
+                    width="100%"
+                  />
+                </Field>
+                <Field label={t('webdav.url')} hint={t('webdav.urlHint')}>
+                  <TextField
                     value={state.webdavUrl}
                     placeholder="https://dav.example.com/dav/config"
                     disabled={state.busy !== null}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                      patch({ webdavUrl: e.target.value })
+                    onValueChange={(val) => {
+                      patch({ webdavUrl: val })
                       scheduleConfigSave()
                     }}
                   />
-                  <span className={css.hint}>{t('webdav.urlHint')}</span>
-                </label>
-                <label className={css.field}>
-                  <span className={css.fieldLabel}>
-                    {t('webdav.username')}
-                    {' '}
-                    {state.statusInfo?.webdav?.usernameConfigured === true && <Badge kind="ok">{t('config.tokenSaved')}</Badge>}
-                  </span>
-                  <input
-                    type="text"
-                    className={css.input}
+                </Field>
+                <Field
+                  label={
+                    <>
+                      {t('webdav.username')}
+                      {' '}
+                      {state.statusInfo?.webdav?.usernameConfigured === true && <Tag kind="ok">{t('config.tokenSaved')}</Tag>}
+                    </>
+                  }
+                  hint={t('webdav.usernameHint')}
+                >
+                  <TextField
                     value={state.webdavUsername}
                     autoComplete="off"
                     placeholder="alice"
                     disabled={state.busy !== null}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                      patch({ webdavUsername: e.target.value })
+                    onValueChange={(val) => {
+                      patch({ webdavUsername: val })
                       scheduleConfigSave()
                     }}
                   />
-                  <span className={css.hint}>{t('webdav.usernameHint')}</span>
-                </label>
-                <label className={css.field}>
-                  <span className={css.fieldLabel}>
-                    {t('webdav.password')}
-                    {' '}
-                    {state.statusInfo?.webdav?.passwordConfigured === true && <Badge kind="ok">{t('webdav.passwordSaved')}</Badge>}
-                  </span>
-                  <input
-                    type="password"
-                    className={css.input}
+                </Field>
+                <Field
+                  label={
+                    <>
+                      {t('webdav.password')}
+                      {' '}
+                      {state.statusInfo?.webdav?.passwordConfigured === true && <Tag kind="ok">{t('webdav.passwordSaved')}</Tag>}
+                    </>
+                  }
+                  hint={t('webdav.passwordHint', { ref: SYNC_WEBDAV_CREDENTIAL_REF })}
+                >
+                  <SecretField
                     value={state.webdavPassword}
                     autoComplete="off"
                     placeholder={t('webdav.passwordPlaceholder')}
                     disabled={state.busy !== null}
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                      patch({ webdavPassword: e.target.value })
+                    configured={state.statusInfo?.webdav?.passwordConfigured === true}
+                    onValueChange={(val) => {
+                      patch({ webdavPassword: val })
                       scheduleConfigSave()
                     }}
                   />
-                  <span className={css.hint}>{t('webdav.passwordHint', { ref: SYNC_WEBDAV_CREDENTIAL_REF })}</span>
-                </label>
+                </Field>
               </>
             )}
 
@@ -1005,9 +1003,10 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
               <Button
                 variant="primary"
                 disabled={state.busy !== null || state.savingConfig || !remoteReady}
+                loading={state.savingConfig}
                 onClick={() => { flushConfigSave(true) }}
               >
-                {state.savingConfig ? <Spinner label={t('config.saving')} /> : t('config.save')}
+                {t('config.save')}
               </Button>
             </div>
             <span className={css.hint}>{t('config.saveHint')}</span>
@@ -1016,11 +1015,12 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
 
           {/* 同步范围（固定）：不再有模式选择 —— 推送/拉取恒同步全部支持的分区，
               只排除 workspaces（平台相关）与 sessions（设备相关）。 */}
-          <Card>
-            <span className={css.groupLabel}>{t('scope.title')}</span>
-            <span className={css.hint}>{t('scope.hint')}</span>
+          <SettingsCard
+            title={t('scope.title')}
+            description={t('scope.hint')}
+          >
             <span className={css.hint}>{t('scope.excludedHint')}</span>
-          </Card>
+          </SettingsCard>
 
           {/* 两个同步按钮（当前通道）：拉取 = 直接覆盖本地；推送 = 直接覆盖远端。
               两者都不弹确认 —— 勾选即同步是本插件的产品语义。 */}
@@ -1028,15 +1028,17 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
             <Button
               variant="primary"
               disabled={!buttons.canPull || githubBusy || state.busy !== null}
+              loading={state.busy === 'pull'}
               onClick={() => { void runPull() }}
             >
-              {state.busy === 'pull' ? <Spinner label={buttons.pullLabel} /> : buttons.pullLabel}
+              {buttons.pullLabel}
             </Button>
             <Button
               disabled={!buttons.canPush || githubBusy || state.busy !== null}
+              loading={state.busy === 'push'}
               onClick={() => { void runPush() }}
             >
-              {state.busy === 'push' ? <Spinner label={buttons.pushLabel} /> : buttons.pushLabel}
+              {buttons.pushLabel}
             </Button>
           </div>
 
@@ -1063,8 +1065,13 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
               <Banner kind="warn">{t('rollback.body')}</Banner>
             </Modal.Body>
             <Modal.Footer>
-              <Button variant="danger" disabled={state.busy !== null} onClick={() => { void runRollback() }}>
-                {state.busy === 'rollback' ? <Spinner label={t('rollback.running')} /> : t('rollback.confirm')}
+              <Button
+                variant="danger"
+                disabled={state.busy !== null}
+                loading={state.busy === 'rollback'}
+                onClick={() => { void runRollback() }}
+              >
+                {t('rollback.confirm')}
               </Button>
               <Button disabled={state.busy !== null} onClick={() => { setRollbackOpen(false) }}>
                 {t('common.close')}

@@ -102,7 +102,7 @@ export default defineConfig({
   platform: 'browser',
   target: 'es2022',
   deps: {
-    neverBundle: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime'],
+    neverBundle: ['react', 'react-dom', 'react-dom/client', 'react/jsx-runtime', '@logictan/dsh-plugins-shared-client'],
     // lucide-react / @radix-ui/* are runtime `dependencies`, which tsdown would
     // otherwise externalize (→ require("lucide-react") at runtime, but the DSH
     // loader only fetches this single client.js and supplies no such module).

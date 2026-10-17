@@ -9,7 +9,7 @@ import type { ServiceStatus } from './api.ts'
 import { runStore } from './run-store.ts'
 import { SyncSettingsView } from './sync/SyncSettingsView.tsx'
 import { MODAL_ROOT_ID } from './common/Modal.tsx'
-import { StatusDot } from './common/ui.tsx'
+import { StatusDot } from '@logictan/dsh-plugins-shared-client/client'
 import { ToastViewport } from './common/ToastViewport.tsx'
 import css from './config-manager.module.css'
 
@@ -50,7 +50,7 @@ export function ConfigManagerSection({ api, syncApi, syncT, t }: ConfigManagerSe
 
       {/* 底部状态栏：运行状态 + 版本 */}
       <footer className={css.statusBar}>
-        <StatusDot kind={statusKind} pulse={runningCount > 0} />
+        <StatusDot kind={statusKind} />
         <span className={css.statusText}>{statusText}</span>
         <span className={css.statusSpacer} />
         {version !== null && (

@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-easyrewrite",
-  "version": "2.7.1",
+  "version": "2.7.2",
   "description": "DSH Web内目前最无感的消息撤回、重编辑插件，原版体验，兼容性强，功能简单可开关，设置丰富，现代化轻量ui框架。The most seamless message recall & re-edit plugin for DSH Web — native experience, strong compatibility, simple toggles, rich settings, modern lightweight UI. DSH Web で最もシームレスなメッセージ撤回・再編集プラグイン——ネイティブ体験、高い互換性、シンプルなトグル、充実した設定、モダンで軽量な UI。",
   "type": "module",
   "main": "lib/index.js",
@@ -14,6 +14,9 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
+      "external": [
+        "@logictan/dsh-plugins-shared-client"
+      ],
       "inject": [
         "slots",
         "sessions",
@@ -63,9 +66,17 @@
     "prepare": "node build.mjs",
     "prepack": "node build.mjs"
   },
+  "peerDependencies": {
+    "@logictan/dsh-plugins-shared-client": "^0.1.0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dale0525/dsh-plugins.git",
     "directory": "packages/dsh-easyrewrite"
+  },
+  "peerDependenciesMeta": {
+    "@logictan/dsh-plugins-shared-client": {
+      "optional": true
+    }
   }
 }
