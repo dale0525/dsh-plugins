@@ -15,6 +15,7 @@ window.__ModuleLoader__.load({
   id: "@logictan/dsh-stitch-designer",
   factory: function (require) {
     var React = require("react");
+    var UI = require("@logictan/dsh-plugins-shared-client");
 
     /** Loader entry id this card's row is keyed by; equals the host half's `export const name`. */
     var ROW_ID = "stitch-designer";
@@ -39,27 +40,6 @@ window.__ModuleLoader__.load({
      * `credentialsStatus` sync section instead.
      */
     var API_KEY_REF = "STITCH_API_KEY";
-
-    var CSS_ID = "stitch-designer/key-card.css";
-    var css = [
-      ".std-card{display:flex;flex-direction:column;gap:10px;padding:4px 0;font-size:13px}",
-      ".std-card-row{display:flex;align-items:center;gap:8px}",
-      ".std-btn{padding:2px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.3));background:transparent;color:var(--dsw-alias-label-tertiary, inherit);font-size:12px;cursor:pointer}",
-      ".std-btn:hover{color:var(--dsw-alias-label-primary, inherit)}",
-      ".std-btn:disabled{opacity:.5;cursor:default}",
-      ".std-input{flex:1;min-width:0;padding:5px 8px;border-radius:6px;border:1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.35));background:var(--dsw-alias-fill-l1, transparent);color:var(--dsw-alias-label-primary, inherit);font-size:12px;line-height:18px}",
-      ".std-note{font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary, inherit)}",
-      ".std-ok{color:var(--dsw-alias-success-fg, #22c55e)}",
-      ".std-bad{color:var(--dsw-alias-danger-fg, #ef4444)}"
-    ].join("");
-
-    if (typeof document !== "undefined" && document.querySelector('style[data-plugin-css="' + CSS_ID + '"]') === null) {
-      var tag = document.createElement("style");
-      tag.dataset.plugin = "stitch-designer";
-      tag.dataset.pluginCss = CSS_ID;
-      tag.textContent = css;
-      document.head.appendChild(tag);
-    }
 
     /**
      * The Stitch API-key card on the plugin's Plugins-page row.
@@ -156,45 +136,55 @@ window.__ModuleLoader__.load({
 
       var configured = status && status.configured === true;
       var statusLine = configured
-        ? React.createElement("div", { className: "std-note std-ok" }, "已配置（值不回读）。来源: " + (status.source || "file"))
-        : React.createElement("div", { className: "std-note std-bad" }, "未配置。设置后 15 个 mcp__stitch__* 工具即可用。");
+        ? React.createElement(UI.Banner, { kind: "ok" }, "已配置（值不回读）。来源: " + (status.source || "file"))
+        : React.createElement(UI.Banner, { kind: "error" }, "未配置。设置后 15 个 mcp__stitch__* 工具即可用。");
 
       return React.createElement(
-        "div",
-        { className: "std-card" },
-        React.createElement("div", { className: "std-note" }, "Stitch API Key"),
+        UI.SettingsCard,
+        {
+          title: "Stitch API Key",
+        },
         statusLine,
         React.createElement(
           "div",
-          { className: "std-card-row" },
-          React.createElement("input", {
-            className: "std-input",
-            type: "password",
-            value: value,
-            placeholder: configured ? "已设置（留空则不改）" : "粘贴 AQ. 开头的 key",
-            autoComplete: "off",
-            disabled: pending,
-            onChange: function (e) {
-              setValue(e.target.value);
-            },
-          }),
+          { style: { display: "flex", alignItems: "center", gap: "8px" } },
           React.createElement(
-            "button",
-            { className: "std-btn", disabled: pending || value === "", onClick: save },
+            "div",
+            { style: { flex: 1, minWidth: 0 } },
+            React.createElement(UI.TextField, {
+              type: "password",
+              value: value,
+              placeholder: configured ? "已设置（留空则不改）" : "粘贴 AQ. 开头的 key",
+              autoComplete: "off",
+              disabled: pending,
+              onValueChange: function (next) {
+                setValue(next);
+              },
+            }),
+          ),
+          React.createElement(
+            UI.Button,
+            { variant: "primary", disabled: pending || value === "", onClick: save },
             pending ? "保存中…" : "保存",
           ),
           React.createElement(
-            "button",
-            { className: "std-btn", disabled: pending || !configured, onClick: clear },
+            UI.Button,
+            { variant: "secondary", disabled: pending || !configured, onClick: clear },
             "清除",
           ),
         ),
         React.createElement(
-          "div",
-          { className: "std-note" },
+          UI.Banner,
+          { kind: "info" },
           "key 来自 https://stitch.withgoogle.com（头像 → Stitch Settings → API key）。存于 $DSH_HOME/.credentials.yaml 的 STITCH_API_KEY，不写入插件配置行，因此不会以明文出现在 cordis.patch.yml。",
         ),
-        message ? React.createElement("div", { className: "std-note" }, message) : null,
+        message
+          ? React.createElement(
+              UI.Banner,
+              { kind: message.indexOf("失败") >= 0 ? "error" : "info" },
+              message,
+            )
+          : null,
       );
     }
 

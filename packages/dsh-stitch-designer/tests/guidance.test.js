@@ -30,6 +30,24 @@ test('the announcement states all three conventions', () => {
   assert.match(STITCH_GUIDANCE, /docs\/design/);
 });
 
+test('the announcement carries the design brief, not only the implementation rules', () => {
+  // A Stitch screen is only useful if the brief let the model design rather
+  // than transcribe. These are the constraints the user set for how a screen
+  // is commissioned, and each one changes what gets generated.
+  assert.match(STITCH_GUIDANCE, /视觉效果/, 'the brief states what to show, not how to build it');
+  assert.match(STITCH_GUIDANCE, /自我发挥/, 'the model must be left room to design');
+  assert.match(STITCH_GUIDANCE, /无法实现/, 'the screen must not contain what the implementation cannot express');
+  assert.match(STITCH_GUIDANCE, /暗色/, 'every screen ships a dark variant');
+});
+
+test('the announcement names the design-language source and the reuse rule', () => {
+  // Screens in this repository follow an existing design language and reuse
+  // the host components; a screen that invents its own language cannot be
+  // implemented without either a rewrite or a second visual system.
+  assert.match(STITCH_GUIDANCE, /设计语言/, 'the brief names the language the screen must follow');
+  assert.match(STITCH_GUIDANCE, /复用/, 'existing components are reused rather than redrawn');
+});
+
 test('apply registers the announcement as one system-prompt section', () => {
   const sections = [];
   const ctx = {

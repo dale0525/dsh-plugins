@@ -45,7 +45,20 @@ Setting the key registers the tools immediately; no restart is needed.
 
 ## Design conventions
 
-Three rules apply when a Stitch design is implemented as code in a repository.
+Two groups of rules apply: how a screen is commissioned, and how it is then
+implemented.
+
+Commissioning:
+
+| Rule | Why |
+| --- | --- |
+| Say what it should look like and what it must show; put no other limits on it | A brief that fixes layout, spacing and colour turns design into transcription, and the result is no better than writing it by hand. |
+| Ask for nothing that cannot be built | The screen is going to be reproduced pixel for pixel, so a wish for an impossible interaction or unavailable data is a defect in the brief. |
+| Follow the project's existing design language | Screens in this repository follow `@logictan/dsh-macos-theme` unless told otherwise. A second visual language cannot be implemented without a rewrite. |
+| Compose it from components the project already has | Host components and the shared component layer exist; a redrawn lookalike is work spent twice. |
+| Ask for a dark variant every time | Dark is the same design language's dark values, not an inversion. Both are implemented from one set of tokens. |
+
+Implementation:
 
 | Rule | How it reaches the model |
 | --- | --- |
@@ -53,11 +66,11 @@ Three rules apply when a Stitch design is implemented as code in a repository.
 | Implement with TailwindCSS, the way Stitch builds its screens | Announced in the system prompt. Unless the repository already has an architecture that cannot accommodate TailwindCSS, in which case the model is told to explain that first. |
 | Implement from Stitch's exported HTML for pixel-level fidelity | Announced in the system prompt. The export goes to `<project>/docs/design/<screenId>.html`; anywhere the implementation would differ from the design, the model is told to ask first and give the reason. |
 
-The first rule is enforced in code and the other two are announced, because only
-the first has a computable predicate. "Did you use TailwindCSS?" and "is this
-pixel-perfect?" cannot be checked, so a validator for them would be a lie — they
-are delivered the way this repository delivers every other non-computable rule,
-as a system-prompt section the plugin registers itself (`src/guidance.js`).
+Only the one-project rule is enforced in code, because it is the only one with a
+computable predicate. "Did you use TailwindCSS?" and "is this pixel-perfect?"
+cannot be checked, so a validator for them would be a lie — they are delivered
+the way this repository delivers every other non-computable rule, as a
+system-prompt section the plugin registers itself (`src/guidance.js`).
 
 `.stitch.json` is the project's own file — commit it. It is small and
 hand-editable on purpose: it is the escape hatch when a Stitch project was

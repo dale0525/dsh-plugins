@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-stitch-designer",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "DSH Stitch designer: Google Stitch AI UI generation as native mcp__stitch__* tools, plus the design conventions that keep one code project bound to one Stitch project. DSH Stitch 界面设计子插件。",
   "type": "module",
   "main": "lib/index.js",
@@ -14,6 +14,9 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
+      "external": [
+        "@logictan/dsh-plugins-shared-client"
+      ],
       "inject": [
         "slots",
         "remote",
@@ -55,13 +58,17 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-tools": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2"
+    "@deepseek-ai/dsh-tools": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
+    "@logictan/dsh-plugins-shared-client": "^0.1.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
       "optional": true
     },
     "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@logictan/dsh-plugins-shared-client": {
       "optional": true
     }
   },
