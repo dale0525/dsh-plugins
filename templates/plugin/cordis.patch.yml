@@ -1,0 +1,23 @@
+# Patch row of @logictan/<name>.
+#
+# Copy this file to packages/<name>/cordis.patch.yml and replace <name>. Two
+# rules, both load-bearing and neither fully machine-checked:
+#
+#  - `name` is the BARE package name. A subpath (`@logictan/<name>/client`)
+#    resolves to no manifest, so the loader cannot read `dsh.bundle.patch` and
+#    the row never mounts. The browser half is reached through the package's
+#    `./client` export, which `dsh-client-modules` reads from the manifest —
+#    never from this row.
+#  - `id` equals the host half's `export const name` in src/index.ts.
+#    `node scripts/aggregate.mjs --check` does NOT validate row-id uniqueness;
+#    `pnpm run check:host` does, and a duplicate hard-crashes the host with
+#    `duplicate loader entry id`. The "equals `export const name`" half has no
+#    automated check at all and is verified by hand.
+#
+# The row carries no `config:`. A plugin's configuration surface is its host
+# half's `export const Config` schema, rendered by the browser half's
+# `plugins.row.config` entry — see src/index.ts and src/client.tsx.
+
+- insert:
+    - id: <name>
+      name: '@logictan/<name>'

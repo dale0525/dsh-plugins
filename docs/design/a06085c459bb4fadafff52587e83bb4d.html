@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1440, initial-scale=1.0">
+  <title>DeepSeek Harness · 插件设置页 · 控件与状态规范 (macOS 暗色 1440×1024)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0B101D',
+            surface: '#0F1626',
+            'surface-low': '#121927',
+            'surface-container': '#151D2E',
+            'surface-high': '#1E293B',
+            primary: '#3B82F6',
+            'primary-hover': '#60A5FA',
+            success: '#10B981',
+            warning: '#F59E0B',
+            danger: '#EF4444',
+            'txt-main': '#E2E8F0',
+            'txt-sec': '#94A3B8',
+            'txt-muted': '#64748B'
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei"', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace']
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    body {
+      background-color: #0B101D;
+      color: #E2E8F0;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    .spec-hairline {
+      height: 1px;
+      background: rgba(255, 255, 255, 0.08);
+      width: 100%;
+    }
+  </style>
+</head>
+<body class="bg-[#0B101D] text-[#E2E8F0] min-w-[1440px] w-[1440px] min-h-[1024px] p-8 flex flex-col justify-between selection:bg-blue-600/30">
+
+  <!-- 顶部标题与色彩规范元信息 -->
+  <header class="flex items-center justify-between pb-5 border-b border-white/[0.08]">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-[#1E293B] border border-white/10 flex items-center justify-center text-[#3B82F6]">
+        <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+          <polyline points="2 17 12 22 22 17"></polyline>
+          <polyline points="2 12 12 17 22 12"></polyline>
+        </svg>
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 class="text-base font-semibold text-[#E2E8F0] tracking-tight">插件设置页 · 控件与状态规范</h1>
+          <span class="px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-[#1E293B] text-[#60A5FA] border border-[#3B82F6]/30">DSH Dark Spec v2.4</span>
+          <span class="text-[11px] font-mono text-[#64748B]">1440 × 1024</span>
+        </div>
+        <p class="text-[11px] text-[#94A3B8] mt-0.5">DeepSeek Harness 官方插件设置面板暗色原子规范 · macOS 原生质感 · 严苛度量体系</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-4 text-[11px] font-mono text-[#94A3B8]">
+      <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#3B82F6]"></span>Primary #3B82F6</div>
+      <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#10B981]"></span>Success #10B981</div>
+      <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#F59E0B]"></span>Warning #F59E0B</div>
+      <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#EF4444]"></span>Danger #EF4444</div>
+      <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-[#0F1626] border border-white/20"></span>Bg #0B101D</div>
+    </div>
+  </header>
+
+  <!-- 主体网格分区 -->
+  <main class="grid grid-cols-2 gap-x-8 gap-y-6 my-5 flex-1">
+
+    <!-- 分区一「按钮」 -->
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-[13px] font-semibold text-[#E2E8F0] flex items-center gap-2">
+          <span class="w-1.5 h-3.5 bg-[#3B82F6] rounded-sm"></span>
+          分区一 · 按钮 Buttons
+        </h2>
+        <span class="text-[10px] text-[#64748B] font-mono">交互触发态 / 原子层级</span>
+      </div>
+      <div class="spec-hairline"></div>
+
+      <div class="grid grid-cols-4 gap-3 pt-1">
+        <!-- 主按钮 -->
+        <div class="flex flex-col gap-1.5">
+          <button class="h-[36px] px-4 rounded-[10px] bg-[#3B82F6] text-white text-[13px] font-medium flex items-center justify-center transition-colors">
+            保存
+          </button>
+          <span class="text-[10px] text-[#64748B] leading-tight">主按钮 · h:36px r:10px #3B82F6</span>
+        </div>
+
+        <!-- 主按钮悬停态 -->
+        <div class="flex flex-col gap-1.5">
+          <button class="h-[36px] px-4 rounded-[10px] bg-[#60A5FA] text-white text-[13px] font-medium flex items-center justify-center shadow-sm">
+            保存
+          </button>
+          <span class="text-[10px] text-[#64748B] leading-tight">主按钮(悬停) · #60A5FA</span>
+        </div>
+
+        <!-- 主按钮禁用态 -->
+        <div class="flex flex-col gap-1.5">
+          <button class="h-[36px] px-4 rounded-[10px] bg-[#3B82F6]/40 text-white/50 text-[13px] font-medium flex items-center justify-center cursor-not-allowed">
+            已同步
+          </button>
+          <span class="text-[10px] text-[#64748B] leading-tight">主按钮(禁用) · 40% 不透明</span>
+        </div>
+
+        <!-- 次要按钮 -->
+        <div class="flex flex-col gap-1.5">
+          <button class="h-[36px] px-4 rounded-[10px] bg-[#1E293B] border border-white/[0.12] text-[#E2E8F0] text-[13px] font-medium flex items-center justify-center hover:bg-[#1E293B]/80 transition-colors">
+            放弃修改
+          </button>
+          <span class="text-[10px] text-[#64748B] leading-tight">次要按钮 · #1E293B 1px描边</span>
+        </div>
+
+        <!-- 幽灵按钮 -->
+        <div class="flex flex-col gap-1.5 justify-center">
+          <button class="h-[36px] px-1 text-[13px] font-medium text-[#60A5FA] flex items-center gap-1 hover:underline">
+            <span>打开完整设置</span>
+            <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+          <span class="text-[10px] text-[#64748B] leading-tight">幽灵按钮 · 无底色+箭头</span>
+        </div>
+
+        <!-- 危险文字按钮 -->
+        <div class="flex flex-col gap-1.5 justify-center">
+          <button class="h-[36px] px-1 text-[13px] font-medium text-[#F87171] hover:underline flex items-center">
+            删除渠道
+          </button>
+          <span class="text-[10px] text-[#64748B] leading-tight">危险文字按钮 · 13px #F87171</span>
+        </div>
+
+        <!-- 图标按钮 -->
+        <div class="flex flex-col gap-1.5">
+          <div class="flex items-center gap-2">
+            <button class="w-[32px] h-[32px] rounded-[8px] flex items-center justify-center text-[#94A3B8] hover:bg-white/[0.05] transition-colors">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+            </button>
+            <span class="text-[11px] text-[#94A3B8]">删除图标</span>
+          </div>
+          <span class="text-[10px] text-[#64748B] leading-tight">图标按钮 · 32×32 r:8px 细线SVG</span>
+        </div>
+
+        <!-- 紧凑按钮 -->
+        <div class="flex flex-col gap-1.5 justify-center">
+          <button class="h-[28px] px-3 rounded-[8px] bg-[#1E293B] border border-white/[0.12] text-[#E2E8F0] text-[12px] font-medium flex items-center justify-center gap-1 hover:bg-[#1E293B]/80 transition-colors w-fit">
+            <svg class="w-3 h-3 text-[#3B82F6]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            测试
+          </button>
+          <span class="text-[10px] text-[#64748B] leading-tight">紧凑按钮 · h:28px r:8px 12px</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 分区二「输入控件」 -->
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-[13px] font-semibold text-[#E2E8F0] flex items-center gap-2">
+          <span class="w-1.5 h-3.5 bg-[#3B82F6] rounded-sm"></span>
+          分区二 · 输入控件 Input Fields
+        </h2>
+        <span class="text-[10px] text-[#64748B] font-mono">文本录入 / 格式掩码 / 校验态</span>
+      </div>
+      <div class="spec-hairline"></div>
+
+      <div class="grid grid-cols-2 gap-3 pt-1">
+        <!-- 文本输入框 -->
+        <div class="flex flex-col gap-1">
+          <div class="w-[320px] h-[36px] rounded-[10px] bg-[#151D2E] border border-white/[0.08] px-3 flex items-center text-[13px] text-[#E2E8F0] font-mono">
+            https://api.openai.com/v1
+          </div>
+          <span class="text-[10px] text-[#64748B]">文本输入框 · w:320px h:36px r:10px #151D2E</span>
+        </div>
+
+        <!-- 带前后缀的输入框 -->
+        <div class="flex flex-col gap-1">
+          <div class="w-[320px] h-[36px] rounded-[10px] bg-[#151D2E] border border-white/[0.08] flex items-center overflow-hidden">
+            <span class="px-2.5 text-[12px] text-[#64748B] font-mono border-r border-white/[0.08] bg-white/[0.02] h-full flex items-center">https://</span>
+            <span class="px-2.5 text-[13px] text-[#E2E8F0] font-mono">api.deepseek.com/v1</span>
+          </div>
+          <span class="text-[10px] text-[#64748B]">带前后缀输入框 · 灰色前缀+1px竖线分隔</span>
+        </div>
+
+        <!-- 密钥输入框 -->
+        <div class="flex flex-col gap-1">
+          <div class="w-[320px] h-[36px] rounded-[10px] bg-[#151D2E] border border-white/[0.08] px-3 flex items-center justify-between text-[13px]">
+            <span class="font-mono text-[#94A3B8] tracking-widest text-[15px]">••••••••••••••••••••••••••••••••</span>
+            <svg class="w-3.5 h-3.5 text-[#94A3B8] cursor-pointer hover:text-[#E2E8F0]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          </div>
+          <span class="text-[10px] text-[#64748B]">密钥输入框 · 等宽圆点掩码+14px眼睛图标</span>
+        </div>
+
+        <!-- 多行文本域 -->
+        <div class="flex flex-col gap-1 row-span-2">
+          <div class="w-[320px] h-[72px] rounded-[10px] bg-[#151D2E] border border-white/[0.08] p-2.5 flex flex-col justify-between">
+            <span class="text-[12px] text-[#E2E8F0]">输入系统引导提示词（Prompt）...</span>
+            <span class="text-[10px] text-[#64748B] font-mono self-end">128 / 500</span>
+          </div>
+          <span class="text-[10px] text-[#64748B]">多行文本域 · w:320px h:72px r:10px 字数计数</span>
+        </div>
+
+        <!-- 数字输入框与搜索框并列 -->
+        <div class="flex items-start gap-3">
+          <div class="flex flex-col gap-1">
+            <div class="w-[120px] h-[36px] rounded-[10px] bg-[#151D2E] border border-white/[0.08] px-3 flex items-center justify-between text-[13px] text-[#E2E8F0] font-mono">
+              <span>60</span>
+              <div class="flex flex-col text-[#94A3B8] -space-y-1">
+                <svg class="w-3 h-3 hover:text-white cursor-pointer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+                <svg class="w-3 h-3 hover:text-white cursor-pointer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+              </div>
+            </div>
+            <span class="text-[10px] text-[#64748B]">数字输入框 · w:120px</span>
+          </div>
+
+          <div class="flex flex-col gap-1">
+            <div class="w-[188px] h-[36px] rounded-[10px] bg-[#121927] border border-white/[0.08] px-2.5 flex items-center gap-2">
+              <svg class="w-3.5 h-3.5 text-[#64748B]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <span class="text-[12px] text-[#64748B]">搜索可用扩展...</span>
+            </div>
+            <span class="text-[10px] text-[#64748B]">搜索框 · w:240px</span>
+          </div>
+        </div>
+
+        <!-- 原生复选框与单选框组 -->
+        <div class="col-span-2 flex items-center gap-8 pt-1">
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-4">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <div class="w-[14px] h-[14px] rounded-[3px] bg-[#3B82F6] flex items-center justify-center text-white">
+                  <svg class="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5"><polyline points="20 6 9 17 4 12"/></svg>
+                </div>
+                <span class="text-[13px] text-[#E2E8F0]">替换聊天字体</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <div class="w-[14px] h-[14px] rounded-[3px] bg-[#0B101D] border border-white/[0.18]"></div>
+                <span class="text-[13px] text-[#94A3B8]">调试输出</span>
+              </label>
+            </div>
+            <span class="text-[10px] text-[#64748B]">原生复选框 · 14px 方形 + #3B82F6 对勾 / 未选态</span>
+          </div>
+
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-4">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <div class="w-[14px] h-[14px] rounded-full border border-[#3B82F6] flex items-center justify-center">
+                  <div class="w-[6px] h-[6px] rounded-full bg-[#3B82F6]"></div>
+                </div>
+                <span class="text-[13px] text-[#E2E8F0]">流式传输 (SSE)</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <div class="w-[14px] h-[14px] rounded-full border border-white/[0.18]"></div>
+                <span class="text-[13px] text-[#94A3B8]">轮询长连接</span>
+              </label>
+            </div>
+            <span class="text-[10px] text-[#64748B]">单选框组 · 14px 圆形单选 (选中/未选)</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- 分区三「选择与切换」 -->
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-[13px] font-semibold text-[#E2E8F0] flex items-center gap-2">
+          <span class="w-1.5 h-3.5 bg-[#3B82F6] rounded-sm"></span>
+          分区三 · 选择与切换 Selection & Toggles
+        </h2>
+        <span class="text-[10px] text-[#64748B] font-mono">下拉菜单 / 分段器 / 拨动开关</span>
+      </div>
+      <div class="spec-hairline"></div>
+
+      <div class="grid grid-cols-2 gap-4 pt-1">
+        <!-- 下拉触发器与展开浮层 -->
+        <div class="space-y-2">
+          <div class="flex flex-col gap-1">
+            <div class="w-[220px] h-[36px] rounded-[10px] bg-[#151D2E] border border-white/[0.08] px-3 flex items-center justify-between">
+              <span class="text-[13px] text-[#E2E8F0]">OpenAI 官方网关</span>
+              <svg class="w-3 h-3 text-[#94A3B8]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+            </div>
+            <span class="text-[10px] text-[#64748B]">下拉触发器 · w:220px h:36px r:10px</span>
+          </div>
+
+          <!-- 下拉展开浮层 -->
+          <div class="flex flex-col gap-1">
+            <div class="w-[220px] rounded-[10px] bg-[#1E293B] border border-white/[0.12] p-1 shadow-xl backdrop-blur-sm">
+              <div class="h-[32px] px-2.5 rounded-[8px] bg-[#60A5FA]/[0.16] flex items-center justify-between text-[13px] text-[#E2E8F0]">
+                <div class="flex items-center gap-1.5">
+                  <svg class="w-3 h-3 text-[#60A5FA]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                  <span class="font-medium">OpenAI 官方</span>
+                </div>
+                <span class="text-[10px] font-mono text-[#60A5FA]">v1</span>
+              </div>
+              <div class="h-[32px] px-2.5 rounded-[8px] hover:bg-white/[0.05] flex items-center justify-between text-[13px] text-[#94A3B8] cursor-pointer">
+                <span class="pl-4">Midjourney 代理</span>
+                <span class="text-[10px] font-mono text-[#64748B]">Proxy</span>
+              </div>
+              <div class="h-[32px] px-2.5 rounded-[8px] hover:bg-white/[0.05] flex items-center justify-between text-[13px] text-[#94A3B8] cursor-pointer">
+                <span class="pl-4">本地 ComfyUI</span>
+                <span class="text-[10px] font-mono text-[#64748B]">WS</span>
+              </div>
+            </div>
+            <span class="text-[10px] text-[#64748B]">下拉浮层 · #1E293B 1px边框 当前项#60A5FA/16% 顶高:32px</span>
+          </div>
+        </div>
+
+        <!-- 分段控件与拨动开关 -->
+        <div class="space-y-4">
+          <!-- 分段控件 -->
+          <div class="flex flex-col gap-1">
+            <div class="h-[32px] p-[2px] rounded-[10px] bg-[#0B101D] border border-white/[0.08] inline-flex items-center w-[220px]">
+              <button class="flex-1 h-full rounded-[8px] bg-[#1E293B] border border-white/[0.12] text-[12px] font-medium text-[#E2E8F0] flex items-center justify-center shadow-xs">
+                自动
+              </button>
+              <button class="flex-1 h-full rounded-[8px] text-[12px] text-[#94A3B8] hover:text-[#E2E8F0] flex items-center justify-center">
+                1K
+              </button>
+              <button class="flex-1 h-full rounded-[8px] text-[12px] text-[#94A3B8] hover:text-[#E2E8F0] flex items-center justify-center">
+                2K
+              </button>
+            </div>
+            <span class="text-[10px] text-[#64748B]">分段控件 · h:32px 底#0B101D r:10px 选中#1E293B</span>
+          </div>
+
+          <!-- 开关状态组合 -->
+          <div class="flex flex-col gap-1.5">
+            <div class="flex items-center gap-5">
+              <!-- 开启 -->
+              <div class="flex items-center gap-2">
+                <div class="w-[38px] h-[22px] rounded-full bg-[#3B82F6] p-[2px] flex items-center justify-end cursor-pointer">
+                  <div class="w-[18px] h-[18px] rounded-full bg-[#E2E8F0] shadow-sm"></div>
+                </div>
+                <span class="text-[12px] text-[#E2E8F0]">开启</span>
+              </div>
+              <!-- 关闭 -->
+              <div class="flex items-center gap-2">
+                <div class="w-[38px] h-[22px] rounded-full bg-[#475569] p-[2px] flex items-center justify-start cursor-pointer">
+                  <div class="w-[18px] h-[18px] rounded-full bg-[#E2E8F0] shadow-sm"></div>
+                </div>
+                <span class="text-[12px] text-[#94A3B8]">关闭</span>
+              </div>
+              <!-- 禁用 -->
+              <div class="flex items-center gap-2 opacity-40">
+                <div class="w-[38px] h-[22px] rounded-full bg-[#3B82F6] p-[2px] flex items-center justify-end cursor-not-allowed">
+                  <div class="w-[18px] h-[18px] rounded-full bg-[#E2E8F0]"></div>
+                </div>
+                <span class="text-[12px] text-[#94A3B8]">禁用</span>
+              </div>
+            </div>
+            <span class="text-[10px] text-[#64748B]">拨动开关 · 38×22 轨道圆角 (开启#3B82F6/关闭#475569/40%禁用)</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 分区四「状态与提示」 -->
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-[13px] font-semibold text-[#E2E8F0] flex items-center gap-2">
+          <span class="w-1.5 h-3.5 bg-[#3B82F6] rounded-sm"></span>
+          分区四 · 状态与提示 Status Badges & Banners
+        </h2>
+        <span class="text-[10px] text-[#64748B] font-mono">胶囊标签 / 状态指示点 / 业务反馈条</span>
+      </div>
+      <div class="spec-hairline"></div>
+
+      <div class="space-y-3 pt-1">
+        <!-- 胶囊与点 -->
+        <div class="flex items-center justify-between">
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-2">
+              <span class="h-[20px] px-2 rounded-full bg-[#12291F] border border-[#10B981]/30 text-[#34D399] text-[10px] font-medium flex items-center">已启用</span>
+              <span class="h-[20px] px-2 rounded-full bg-[#2A2113] border border-[#F59E0B]/30 text-[#FBBF24] text-[10px] font-medium flex items-center">未配置</span>
+              <span class="h-[20px] px-2 rounded-full bg-white/[0.04] border border-white/[0.08] text-[#94A3B8] text-[10px] font-medium flex items-center">需重启</span>
+              <span class="h-[20px] px-2 rounded-full bg-[#EF4444]/[0.14] border border-[#EF4444]/30 text-[#F87171] text-[10px] font-medium flex items-center">加载失败</span>
+            </div>
+            <span class="text-[10px] text-[#64748B]">状态胶囊 · 全圆角 h:20px 10px文字</span>
+          </div>
+
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-4">
+              <div class="flex items-center gap-1.5">
+                <span class="w-[6px] h-[6px] rounded-full bg-[#10B981]"></span>
+                <span class="text-[11px] text-[#94A3B8]">正常 (6px #10B981)</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="w-[6px] h-[6px] rounded-full bg-[#F59E0B] ring-2 ring-[#F59E0B]/25"></span>
+                <span class="text-[11px] text-[#94A3B8]">待决 (6px 琥珀 + 2px 光环)</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="w-[6px] h-[6px] rounded-full border border-[#475569]"></span>
+                <span class="text-[11px] text-[#94A3B8]">空闲 (6px 空心圈)</span>
+              </div>
+            </div>
+            <span class="text-[10px] text-[#64748B]">状态指示器 · 实心点 / 光环点 / 空心点</span>
+          </div>
+        </div>
+
+        <!-- 3 条提示条 -->
+        <div class="space-y-2">
+          <!-- 信息提示条 -->
+          <div class="p-2.5 rounded-[10px] bg-[#1E293B] border border-[#60A5FA]/20 flex items-center gap-2.5">
+            <svg class="w-3.5 h-3.5 text-[#60A5FA] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+            <span class="text-[12px] text-[#93C5FD]">凭证已保存在 ~/.dsh/credentials.yaml 本地存储中。</span>
+          </div>
+
+          <!-- 警告提示条 -->
+          <div class="p-2.5 rounded-[10px] bg-[#2A2113] border border-[#F59E0B]/30 flex items-center gap-2.5">
+            <svg class="w-3.5 h-3.5 text-[#F59E0B] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span class="text-[12px] text-[#FBBF24]">检测到高频重试，可能导致官方 API 配额提前耗尽。</span>
+          </div>
+
+          <!-- 错误提示条 -->
+          <div class="p-2.5 rounded-[10px] bg-[#EF4444]/[0.12] border border-[#EF4444]/30 flex items-center gap-2.5">
+            <svg class="w-3.5 h-3.5 text-[#EF4444] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span class="text-[12px] text-[#F87171]">代理地址格式错误：socks5 端口缺少合法前缀协议。</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 分区五「列表与卡片」 -->
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-[13px] font-semibold text-[#E2E8F0] flex items-center gap-2">
+          <span class="w-1.5 h-3.5 bg-[#3B82F6] rounded-sm"></span>
+          分区五 · 列表与卡片 Lists & Cards
+        </h2>
+        <span class="text-[10px] text-[#64748B] font-mono">折叠面板 / 表项条目 / 骨架占位 / 空态定义</span>
+      </div>
+      <div class="spec-hairline"></div>
+
+      <div class="grid grid-cols-2 gap-3 pt-1">
+        <!-- 左侧折叠卡片与展开卡片 -->
+        <div class="space-y-2">
+          <!-- 收起态 -->
+          <div class="h-[48px] rounded-[14px] bg-[#121927] border border-white/[0.07] px-3.5 flex items-center justify-between">
+            <span class="text-[13px] font-semibold text-[#E2E8F0]">高级设置</span>
+            <svg class="w-3 h-3 text-[#94A3B8]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+
+          <!-- 展开态 -->
+          <div class="rounded-[14px] bg-[#121927] border border-white/[0.07] p-3.5 space-y-2.5">
+            <div class="flex items-center justify-between">
+              <span class="text-[13px] font-semibold text-[#E2E8F0]">高级设置</span>
+              <svg class="w-3 h-3 text-[#94A3B8]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+            </div>
+            <div class="pt-2 border-t border-white/[0.06] space-y-1.5 font-mono text-[11px]">
+              <div class="flex justify-between">
+                <span class="text-[#94A3B8]">Keep-Alive 超时</span>
+                <span class="text-[#E2E8F0]">30000 ms</span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-[#94A3B8]">AST 解析安全沙箱</span>
+                <span class="text-[#34D399]">strict-mode (启用)</span>
+              </div>
+            </div>
+          </div>
+          <span class="text-[10px] text-[#64748B] block">可折叠卡片 · 底色 #121927 圆角 14px 展开含标签与等宽值</span>
+        </div>
+
+        <!-- 右侧：列表行、加载骨架、空态卡片 -->
+        <div class="space-y-2">
+          <!-- 列表行 -->
+          <div class="rounded-[10px] bg-[#151D2E] border border-white/[0.08] px-3 py-1">
+            <div class="h-[36px] flex items-center justify-between border-b border-white/[0.06]">
+              <span class="font-mono text-[12px] text-[#E2E8F0]">gpt-image-2</span>
+              <div class="flex items-center gap-3">
+                <span class="px-2 py-0.5 rounded-full bg-[#60A5FA]/[0.16] text-[#60A5FA] text-[10px] font-medium">默认</span>
+                <svg class="w-3.5 h-3.5 text-[#94A3B8] hover:text-[#EF4444] cursor-pointer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/></svg>
+              </div>
+            </div>
+            <div class="h-[36px] flex items-center justify-between">
+              <span class="font-mono text-[12px] text-[#E2E8F0]">dall-e-3</span>
+              <div class="flex items-center gap-3">
+                <span class="text-[11px] text-[#94A3B8] hover:text-[#E2E8F0] cursor-pointer">设为默认</span>
+                <svg class="w-3.5 h-3.5 text-[#94A3B8] hover:text-[#EF4444] cursor-pointer" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/></svg>
+              </div>
+            </div>
+          </div>
+
+          <!-- 加载骨架 -->
+          <div class="p-2.5 rounded-[10px] bg-[#121927] border border-white/[0.06] space-y-1.5">
+            <div class="h-[12px] w-[60%] rounded-[6px] bg-[#151D2E] animate-pulse"></div>
+            <div class="h-[12px] w-[40%] rounded-[6px] bg-[#151D2E] animate-pulse"></div>
+          </div>
+          <span class="text-[10px] text-[#64748B] block">加载骨架 · 圆角6px #151D2E 色块 (60% / 40%)</span>
+        </div>
+
+        <!-- 空态卡片 -->
+        <div class="col-span-2 rounded-[14px] bg-[#121927] border border-dashed border-white/[0.12] p-4 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-full bg-[#151D2E] flex items-center justify-center text-[#64748B]">
+              <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>
+            </div>
+            <div>
+              <div class="text-[13px] font-semibold text-[#E2E8F0]">尚未添加模型</div>
+              <div class="text-[11px] text-[#94A3B8]">配置 API 凭证后从注册表同步可用模型清单</div>
+            </div>
+          </div>
+          <button class="h-[30px] px-3.5 rounded-[8px] bg-[#1E293B] border border-white/[0.12] text-[#E2E8F0] text-[12px] font-medium hover:bg-[#1E293B]/80 transition-colors">
+            拉取模型
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 分区六「只读配置摘要」 -->
+    <section class="space-y-3">
+      <div class="flex items-center justify-between">
+        <h2 class="text-[13px] font-semibold text-[#E2E8F0] flex items-center gap-2">
+          <span class="w-1.5 h-3.5 bg-[#3B82F6] rounded-sm"></span>
+          分区六 · 只读配置摘要 Read-only Configuration Summary
+        </h2>
+        <span class="text-[10px] text-[#64748B] font-mono">元数据展示 / 双列等宽键值对</span>
+      </div>
+      <div class="spec-hairline"></div>
+
+      <div class="pt-1">
+        <div class="rounded-[10px] bg-[#151D2E] border border-white/[0.08] p-3 grid grid-cols-2 gap-x-6 gap-y-2 font-mono text-[11px]">
+          <div class="flex justify-between items-center py-1 border-b border-white/[0.04]">
+            <span class="text-[#94A3B8]">运行时协议版本</span>
+            <span class="text-[#E2E8F0]">DSH Protocol v2.4.0-arm64</span>
+          </div>
+          <div class="flex justify-between items-center py-1 border-b border-white/[0.04]">
+            <span class="text-[#94A3B8]">上下文窗口配额</span>
+            <span class="text-[#E2E8F0]">131,072 tokens (已占用 14.2%)</span>
+          </div>
+          <div class="flex justify-between items-center py-1 border-b border-white/[0.04]">
+            <span class="text-[#94A3B8]">凭证存储物理路径</span>
+            <span class="text-[#E2E8F0]">~/.dsh/credentials.yaml</span>
+          </div>
+          <div class="flex justify-between items-center py-1 border-b border-white/[0.04]">
+            <span class="text-[#94A3B8]">本地工作区隔离策略</span>
+            <span class="text-[#E2E8F0]">process.env.DSH_STRICT_SANDBOX</span>
+          </div>
+          <div class="flex justify-between items-center py-1">
+            <span class="text-[#94A3B8]">活跃连接 IPC 套接字</span>
+            <span class="text-[#E2E8F0]">unix:///var/run/dsh-mcp.sock</span>
+          </div>
+          <div class="flex justify-between items-center py-1">
+            <span class="text-[#94A3B8]">上次握手时延</span>
+            <span class="text-[#34D399]">35 ms (心跳包正常)</span>
+          </div>
+        </div>
+        <span class="text-[10px] text-[#64748B] mt-1.5 block">只读配置摘要 · 底色 #151D2E r:10px p:12px 左列11px #94A3B8 右列12px等宽 #E2E8F0</span>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 底部规范说明与设计原则注释栏 -->
+  <footer class="pt-4 border-t border-white/[0.08] flex items-center justify-between text-[11px] font-mono text-[#64748B]">
+    <div class="flex items-center gap-4">
+      <span>DeepSeek Harness Dark Component Spec Board</span>
+      <span>•</span>
+      <span>Dark macOS Tone (#0B101D / #151D2E / #1E293B)</span>
+      <span>•</span>
+      <span>Strict 10px / 14px Radius Scale</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <span>Zero Blur Stack</span>
+      <span>•</span>
+      <span>Inline Clean SVG Only</span>
+      <span>•</span>
+      <span>PingFang / SF Pro System Stack</span>
+    </div>
+  </footer>
+
+</body>
+</html>

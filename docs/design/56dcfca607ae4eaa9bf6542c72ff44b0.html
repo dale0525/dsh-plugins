@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1440, initial-scale=1.0">
+  <title>DeepSeek Harness · 插件中心 (暗色 macOS 1440×1024)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            app: {
+              bg: '#0B101D',
+              surface: '#0F1626',
+              surfaceLow: '#121927',
+              surfaceCont: '#151D2E',
+              surfaceHigh: '#1E293B',
+              primary: '#3B82F6',
+              primaryHover: '#60A5FA',
+              textMain: '#E2E8F0',
+              textSub: '#94A3B8',
+              textMuted: '#64748B',
+              success: '#10B981',
+              warning: '#F59E0B',
+              danger: '#EF4444',
+            }
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Text"', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei"', 'sans-serif'],
+            mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'Consolas', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #060913;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    /* 自定义滚动条 */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+  </style>
+</head>
+<body class="flex items-center justify-center min-h-screen bg-[#070b14] p-0 text-slate-200 select-none">
+
+  <!-- macOS 独立宿主窗口 1440 x 1024 -->
+  <div class="w-[1440px] h-[1024px] bg-[#0B101D] overflow-hidden flex flex-col border border-white/10 shadow-2xl relative">
+    
+    <!-- 主工作区：两栏布局 (260px 侧栏 + 伸缩主区) -->
+    <div class="flex-1 flex overflow-hidden">
+      
+      <!-- ==================== 左侧栏 260px ==================== -->
+      <aside class="w-[260px] flex-shrink-0 bg-[#0F1626] border-r border-white/[0.08] flex flex-col justify-between">
+        
+        <!-- 侧栏上部区域 -->
+        <div class="flex flex-col">
+          <!-- 顶部 macOS 窗口控制红黄绿 + 品牌标识 -->
+          <div class="h-[52px] px-4 flex items-center justify-between border-b border-white/[0.06]">
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-full bg-[#EF4444]/90 border border-black/20"></div>
+              <div class="w-3 h-3 rounded-full bg-[#F59E0B]/90 border border-black/20"></div>
+              <div class="w-3 h-3 rounded-full bg-[#10B981]/90 border border-black/20"></div>
+            </div>
+            <div class="flex items-center gap-1.5 text-slate-300">
+              <div class="w-4 h-4 rounded bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold">D</div>
+              <span class="text-xs font-semibold tracking-tight text-slate-200">DeepSeek Harness</span>
+              <span class="text-[9px] font-mono px-1 py-0.5 rounded bg-white/[0.06] text-slate-400">v2.4</span>
+            </div>
+          </div>
+
+          <!-- 新建会话主按钮 -->
+          <div class="px-3 pt-3 pb-2">
+            <button class="w-full h-8 rounded-[10px] bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-xs font-medium flex items-center justify-center gap-2 transition-colors shadow-sm">
+              <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <line x1="8" y1="3" x2="8" y2="13"></line>
+                <line x1="3" y1="8" x2="13" y2="8"></line>
+              </svg>
+              <span>新会话</span>
+            </button>
+          </div>
+
+          <!-- 导航项列表 -->
+          <div class="px-3 space-y-1">
+            <!-- 插件中心（选中态） -->
+            <div class="w-full h-8 px-2.5 rounded-[10px] bg-[#60A5FA]/15 text-[#60A5FA] flex items-center justify-between cursor-pointer">
+              <div class="flex items-center gap-2">
+                <!-- 拼图块细线 SVG -->
+                <svg class="w-4 h-4 text-[#60A5FA]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19.439 7.85c0-1.57.876-2.525 2.161-2.85-.357-1.468-1.077-2.766-2.073-3.762-1-1-2.298-1.72-3.766-2.077C15.436.446 14.48 1.322 12.91 1.322c-1.57 0-2.526-.876-2.85-2.161-1.468.357-2.766 1.077-3.766 2.077-1 1-1.72 2.298-2.077 3.766C5.502 5.325 6.378 6.28 6.378 7.85c0 1.57-.876 2.525-2.161 2.85.357 1.468 1.077 2.766 2.077 3.766 1 1 2.298 1.72 3.766 2.077.324-1.285 1.28-2.161 2.85-2.161 1.57 0 2.526.876 2.85 2.161 1.468-.357 2.766-1.077 3.766-2.077 1-1 1.72-2.298 2.077-3.766-1.285-.325-2.161-1.28-2.161-2.85z"/>
+                </svg>
+                <span class="text-xs font-medium">插件中心</span>
+              </div>
+              <span class="w-1.5 h-1.5 rounded-full bg-[#60A5FA]"></span>
+            </div>
+
+            <!-- 自动化任务 -->
+            <div class="w-full h-8 px-2.5 rounded-[10px] text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] flex items-center gap-2 cursor-pointer transition-colors">
+              <svg class="w-4 h-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+              </svg>
+              <span class="text-xs">自动化任务</span>
+            </div>
+          </div>
+
+          <!-- 分组：工作区 -->
+          <div class="px-3 pt-4">
+            <div class="flex items-center justify-between px-1 mb-2">
+              <span class="text-[10px] font-semibold text-slate-500 tracking-wider uppercase">工作区</span>
+              <div class="flex items-center gap-1">
+                <button class="w-5 h-5 rounded hover:bg-white/[0.06] text-slate-500 hover:text-slate-300 flex items-center justify-center">
+                  <svg class="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="7" cy="7" r="4.5"></circle>
+                    <line x1="10.5" y1="10.5" x2="14" y2="14"></line>
+                  </svg>
+                </button>
+                <button class="w-5 h-5 rounded hover:bg-white/[0.06] text-slate-500 hover:text-slate-300 flex items-center justify-center">
+                  <svg class="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <line x1="8" y1="3" x2="8" y2="13"></line>
+                    <line x1="3" y1="8" x2="13" y2="8"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- 工作区卡片容器 1 -->
+            <div class="bg-[#121927] border border-white/[0.06] rounded-[10px] p-2 space-y-1 mb-2">
+              <div class="flex items-center justify-between px-1.5 py-1 text-slate-300">
+                <div class="flex items-center gap-1.5 overflow-hidden">
+                  <svg class="w-3.5 h-3.5 text-slate-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                  </svg>
+                  <span class="text-[11px] font-medium truncate">Core Agent Runtime</span>
+                </div>
+                <span class="text-[10px] font-mono text-slate-500">2</span>
+              </div>
+              <div class="px-2 py-1 rounded-[6px] bg-white/[0.03] text-[11px] text-slate-400 flex items-center justify-between hover:bg-white/[0.06] cursor-pointer">
+                <span class="truncate">重构 Agent 调度器</span>
+                <span class="text-[9px] font-mono text-slate-500">刚刚</span>
+              </div>
+              <div class="px-2 py-1 rounded-[6px] text-[11px] text-slate-400 flex items-center justify-between hover:bg-white/[0.06] cursor-pointer">
+                <span class="truncate">优化 AST 语法解析流</span>
+                <span class="text-[9px] font-mono text-slate-500">2h</span>
+              </div>
+            </div>
+
+            <!-- 工作区卡片容器 2 -->
+            <div class="bg-[#121927] border border-white/[0.06] rounded-[10px] p-2 space-y-1">
+              <div class="flex items-center justify-between px-1.5 py-1 text-slate-300">
+                <div class="flex items-center gap-1.5 overflow-hidden">
+                  <svg class="w-3.5 h-3.5 text-blue-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+                    <line x1="6" y1="3" x2="6" y2="15"></line>
+                    <circle cx="18" cy="6" r="3"></circle>
+                    <circle cx="6" cy="18" r="3"></circle>
+                    <path d="M18 9a9 9 0 0 1-9 9"></path>
+                  </svg>
+                  <span class="text-[11px] font-medium truncate">dsh-plugins</span>
+                </div>
+                <span class="text-[10px] font-mono text-slate-500">1</span>
+              </div>
+              <div class="px-2 py-1 rounded-[6px] text-[11px] text-slate-400 flex items-center justify-between hover:bg-white/[0.06] cursor-pointer">
+                <span class="truncate">配置 ImageGen 凭据</span>
+                <span class="text-[9px] font-mono text-slate-500">1d</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 侧栏底部：设置入口 -->
+        <div class="p-3 border-t border-white/[0.06]">
+          <div class="w-full h-8 px-2.5 rounded-[8px] hover:bg-white/[0.05] text-slate-400 hover:text-slate-200 flex items-center justify-between cursor-pointer transition-colors">
+            <div class="flex items-center gap-2">
+              <svg class="w-4 h-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+              <span class="text-xs">宿主全局设置</span>
+            </div>
+            <span class="text-[10px] font-mono text-slate-500">⌘,</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- ==================== 右侧主区：插件中心 ==================== -->
+      <main class="flex-1 bg-[#0B101D] flex flex-col overflow-hidden">
+        
+        <!-- 1. 页头 (单行，左右对齐，底边 1px 发丝线) -->
+        <header class="h-[60px] px-8 flex items-center justify-between border-b border-white/[0.08] flex-shrink-0">
+          <div class="flex items-center gap-3">
+            <h1 class="text-base font-semibold text-[#E2E8F0] tracking-tight">插件中心</h1>
+            <span class="text-[10px] font-mono text-slate-400 px-2 py-0.5 rounded-full bg-white/[0.05] border border-white/[0.06]">Extensions Registry</span>
+          </div>
+
+          <!-- 右侧工具栏 -->
+          <div class="flex items-center gap-3">
+            <!-- 搜索输入框 -->
+            <div class="relative w-[220px]">
+              <div class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-500">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.75">
+                  <path d="M19 19l-4-4m0-7A7 7 0 1 1 1 8a7 7 0 0 1 14 0Z"></path>
+                </svg>
+              </div>
+              <input type="text" placeholder="搜索插件或功能" class="w-full h-[36px] pl-8 pr-3 bg-[#121927] border border-white/[0.08] rounded-[10px] text-xs text-[#E2E8F0] placeholder-[#64748B] focus:outline-none focus:border-blue-500 transition-colors">
+            </div>
+
+            <!-- 分段控件 (全部 / 已启用 / 已禁用) -->
+            <div class="h-[36px] p-1 bg-[#0B101D] border border-white/[0.08] rounded-[10px] flex items-center gap-1">
+              <button class="px-3 h-full rounded-[8px] bg-[#1E293B] border border-white/[0.12] text-xs font-medium text-[#E2E8F0] transition-colors">全部</button>
+              <button class="px-3 h-full rounded-[8px] text-xs font-medium text-[#94A3B8] hover:text-[#E2E8F0] transition-colors">已启用</button>
+              <button class="px-3 h-full rounded-[8px] text-xs font-medium text-[#94A3B8] hover:text-[#E2E8F0] transition-colors">已禁用</button>
+            </div>
+
+            <!-- 刷新幽灵按钮 -->
+            <button class="w-[36px] h-[36px] rounded-[10px] bg-transparent border border-white/[0.08] hover:bg-white/[0.04] active:bg-white/[0.08] text-[#94A3B8] hover:text-[#E2E8F0] flex items-center justify-center transition-colors">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <!-- 滚动主内容容器 -->
+        <div class="flex-1 overflow-y-auto px-8 py-6 space-y-4">
+          
+          <!-- 2. 统计行 (三枚小胶囊) -->
+          <div class="flex items-center gap-2">
+            <!-- 胶囊 1: 4 个插件包 -->
+            <div class="h-[20px] px-2.5 rounded-full bg-white/[0.04] flex items-center gap-1.5 text-[10px] text-[#94A3B8]">
+              <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+              <span>4 个插件包</span>
+            </div>
+            <!-- 胶囊 2: 17 个功能 -->
+            <div class="h-[20px] px-2.5 rounded-full bg-white/[0.04] flex items-center gap-1.5 text-[10px] text-[#94A3B8]">
+              <span class="w-1.5 h-1.5 rounded-full bg-[#10B981]"></span>
+              <span>17 个功能</span>
+            </div>
+            <!-- 胶囊 3: 2 项待配置 (黄色强调) -->
+            <div class="h-[20px] px-2.5 rounded-full bg-white/[0.04] flex items-center gap-1.5 text-[10px] text-[#FBBF24]">
+              <span class="w-1.5 h-1.5 rounded-full bg-[#F59E0B]"></span>
+              <span>2 项待配置</span>
+            </div>
+          </div>
+
+          <!-- 3. 插件包卡片列表 -->
+          <div class="space-y-3">
+            
+            <!-- ==================== 卡片 ①：图像生成扩展 (含内嵌展开摘要区) ==================== -->
+            <div class="bg-[#121927] border border-white/[0.07] rounded-[14px] p-4">
+              <!-- 卡片头部一行 -->
+              <div class="flex items-center justify-between pb-3 border-b border-white/[0.06]">
+                <div class="flex items-center gap-3">
+                  <!-- 28px 圆角方形图标位 -->
+                  <div class="w-7 h-7 rounded-[8px] bg-[#1E293B] flex items-center justify-center flex-shrink-0">
+                    <svg class="w-3.5 h-3.5 text-[#60A5FA]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 19l7-7 3 3-7 7-3-3z"></path>
+                      <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path>
+                      <path d="M2 2l7.586 7.586"></path>
+                      <circle cx="11" cy="11" r="2"></circle>
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-sm font-semibold text-[#E2E8F0]">图像生成扩展 (ImageGen)</span>
+                      <!-- 版本号胶囊 -->
+                      <span class="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-white/[0.04] text-[#94A3B8]">v1.4.2</span>
+                    </div>
+                    <div class="text-[11px] font-mono text-[#60A5FA] mt-0.5">@logictan/dsh-imagegen</div>
+                  </div>
+                </div>
+
+                <!-- 最右侧开关 (开启态) -->
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] text-[#94A3B8]">已启用</span>
+                  <div class="w-9 h-5 bg-[#3B82F6] rounded-full relative cursor-pointer p-0.5 transition-colors">
+                    <div class="w-4 h-4 bg-[#E2E8F0] rounded-full absolute right-0.5 top-0.5 shadow-sm"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 功能行列表 (卡片 1 含 2 个功能行) -->
+              <div class="divide-y divide-white/[0.06]">
+                
+                <!-- 功能行 1 (展开态) -->
+                <div class="pt-3 pb-3">
+                  <div class="h-[44px] flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                      <!-- 16px 状态槽: 未配置 = 6px 琥珀 #F59E0B 实心点外套 2px rgba(245,158,11,0.25) 光环 -->
+                      <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                        <div class="w-2.5 h-2.5 rounded-full bg-[#F59E0B]/25 flex items-center justify-center">
+                          <div class="w-1.5 h-1.5 rounded-full bg-[#F59E0B]"></div>
+                        </div>
+                      </div>
+                      <div>
+                        <div class="text-[13px] font-medium text-[#E2E8F0]">OpenAI DALL-E & Midjourney 渲染代理</div>
+                        <div class="text-[11px] text-[#94A3B8]">配置图像生成 API 地址与密钥</div>
+                      </div>
+                    </div>
+
+                    <!-- 行尾状态与配置按钮 -->
+                    <div class="flex items-center gap-3">
+                      <!-- 状态标签：未配置 -->
+                      <span class="px-2 py-0.5 rounded text-[10px] bg-[#2A2113] text-[#FBBF24] border border-[#F59E0B]/20">未配置</span>
+                      <button class="text-xs text-[#60A5FA] hover:underline flex items-center gap-1">
+                        <span>配置</span>
+                        <svg class="w-3 h-3 rotate-180" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="4 6 8 10 12 6"></polyline>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- 展开态内嵌区 (底色 #151D2E、圆角 10px、内边距 12px) -->
+                  <div class="mt-2 bg-[#151D2E] border border-white/[0.05] rounded-[10px] p-3 text-xs">
+                    <div class="grid grid-cols-2 gap-y-2">
+                      <!-- 行 1 -->
+                      <div class="flex items-center">
+                        <span class="w-24 text-[11px] text-[#94A3B8]">默认渠道</span>
+                        <span class="font-mono text-[12px] text-[#E2E8F0]">OpenAI 官方 (v1)</span>
+                      </div>
+                      <div class="flex items-center">
+                        <span class="w-24 text-[11px] text-[#94A3B8]">可用模型</span>
+                        <span class="font-mono text-[12px] text-[#E2E8F0]">gpt-image-2, dall-e-3</span>
+                      </div>
+                      <!-- 行 2 -->
+                      <div class="flex items-center">
+                        <span class="w-24 text-[11px] text-[#94A3B8]">密钥状态</span>
+                        <span class="font-mono text-[12px] text-[#34D399] flex items-center gap-1.5">
+                          <span class="w-1.5 h-1.5 rounded-full bg-[#10B981]"></span>
+                          <span>已设置 (sk-••••••••4a8f)</span>
+                        </span>
+                      </div>
+                      <div class="flex items-center">
+                        <span class="w-24 text-[11px] text-[#94A3B8]">Keep-Alive 超时</span>
+                        <span class="font-mono text-[12px] text-[#E2E8F0]">30000 ms</span>
+                      </div>
+                    </div>
+
+                    <!-- 展开区底部操作条 -->
+                    <div class="mt-3 pt-2.5 border-t border-white/[0.06] flex items-center justify-between">
+                      <span class="text-[11px] font-mono text-[#64748B]">凭据安全存储于 ~/.dsh/credentials.yaml</span>
+                      <button class="text-xs text-[#60A5FA] hover:text-blue-300 flex items-center gap-1 font-medium">
+                        <span>打开完整设置</span>
+                        <svg class="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                          <polyline points="6 12 10 8 6 4"></polyline>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 功能行 2 (已启用态) -->
+                <div class="h-[44px] flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <!-- 16px 状态槽: 已启用 = 6px 绿色 #10B981 实心点 -->
+                    <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                      <div class="w-1.5 h-1.5 rounded-full bg-[#10B981]"></div>
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-medium text-[#E2E8F0]">本地 ComfyUI 工作流管道</div>
+                      <div class="text-[11px] text-[#94A3B8]">通过 WebSocket 调度本地 Stable Diffusion 节点与实时画板</div>
+                    </div>
+                  </div>
+
+                  <div class="flex items-center gap-3">
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-[#12291F] text-[#34D399] border border-[#10B981]/20">已启用</span>
+                    <button class="text-xs text-[#60A5FA] hover:underline">配置</button>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- ==================== 卡片 ②：Model Context Protocol 网关 (3 个功能行全启用) ==================== -->
+            <div class="bg-[#121927] border border-white/[0.07] rounded-[14px] p-4">
+              <!-- 卡片头部一行 -->
+              <div class="flex items-center justify-between pb-3 border-b border-white/[0.06]">
+                <div class="flex items-center gap-3">
+                  <!-- 图标位 -->
+                  <div class="w-7 h-7 rounded-[8px] bg-[#1E293B] flex items-center justify-center flex-shrink-0">
+                    <svg class="w-3.5 h-3.5 text-[#60A5FA]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="18" cy="5" r="3"></circle>
+                      <circle cx="6" cy="12" r="3"></circle>
+                      <circle cx="18" cy="19" r="3"></circle>
+                      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+                      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-sm font-semibold text-[#E2E8F0]">Model Context Protocol 网关</span>
+                      <span class="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-white/[0.04] text-[#94A3B8]">v2.0.0</span>
+                    </div>
+                    <div class="text-[11px] font-mono text-[#60A5FA] mt-0.5">@dsh/mcp-gateway</div>
+                  </div>
+                </div>
+
+                <!-- 开关 (开启态) -->
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] text-[#94A3B8]">已启用</span>
+                  <div class="w-9 h-5 bg-[#3B82F6] rounded-full relative cursor-pointer p-0.5 transition-colors">
+                    <div class="w-4 h-4 bg-[#E2E8F0] rounded-full absolute right-0.5 top-0.5 shadow-sm"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 功能行列表 (3 个功能行，全部已启用) -->
+              <div class="divide-y divide-white/[0.06]">
+                <!-- 功能 1 -->
+                <div class="h-[44px] flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                      <div class="w-1.5 h-1.5 rounded-full bg-[#10B981]"></div>
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-medium text-[#E2E8F0]">文件系统隔离沙盒</div>
+                      <div class="text-[11px] text-[#94A3B8]">提供只读及工作区白名单目录授权，防止越界访问</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-[#12291F] text-[#34D399] border border-[#10B981]/20">已启用</span>
+                    <button class="text-xs text-[#60A5FA] hover:underline">配置</button>
+                  </div>
+                </div>
+
+                <!-- 功能 2 -->
+                <div class="h-[44px] flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                      <div class="w-1.5 h-1.5 rounded-full bg-[#10B981]"></div>
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-medium text-[#E2E8F0]">PostgreSQL 数据库探索器</div>
+                      <div class="text-[11px] text-[#94A3B8]">智能只读探测架构与执行只读分析 SQL</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-[#12291F] text-[#34D399] border border-[#10B981]/20">已启用</span>
+                    <button class="text-xs text-[#60A5FA] hover:underline">配置</button>
+                  </div>
+                </div>
+
+                <!-- 功能 3 -->
+                <div class="h-[44px] flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                      <div class="w-1.5 h-1.5 rounded-full bg-[#10B981]"></div>
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-medium text-[#E2E8F0]">Git 代码库版本感知</div>
+                      <div class="text-[11px] text-[#94A3B8]">跟踪当前 branch、worktree 与 stage 变更状态</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-[#12291F] text-[#34D399] border border-[#10B981]/20">已启用</span>
+                    <button class="text-xs text-[#60A5FA] hover:underline">配置</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ==================== 卡片 ③：旧版 AST 代码重构插件 (已禁用，55% 不透明) ==================== -->
+            <div class="bg-[#121927] border border-white/[0.07] rounded-[14px] p-4 opacity-55">
+              <!-- 卡片头部一行 -->
+              <div class="flex items-center justify-between pb-3 border-b border-white/[0.06]">
+                <div class="flex items-center gap-3">
+                  <!-- 图标位 -->
+                  <div class="w-7 h-7 rounded-[8px] bg-[#1E293B] flex items-center justify-center flex-shrink-0">
+                    <svg class="w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>
+                      <rect x="9" y="9" width="6" height="6"></rect>
+                      <line x1="9" y1="1" x2="9" y2="4"></line>
+                      <line x1="15" y1="1" x2="15" y2="4"></line>
+                      <line x1="9" y1="20" x2="9" y2="23"></line>
+                      <line x1="15" y1="20" x2="15" y2="23"></line>
+                      <line x1="20" y1="9" x2="23" y2="9"></line>
+                      <line x1="20" y1="14" x2="23" y2="14"></line>
+                      <line x1="1" y1="9" x2="4" y2="9"></line>
+                      <line x1="1" y1="14" x2="4" y2="14"></line>
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-sm font-semibold text-[#E2E8F0]">旧版 AST 代码重构插件</span>
+                      <span class="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-white/[0.04] text-[#94A3B8]">v0.9.8</span>
+                    </div>
+                    <div class="text-[11px] font-mono text-slate-400 mt-0.5">@dsh/legacy-ast-tools</div>
+                  </div>
+                </div>
+
+                <!-- 开关 (关闭态，轨道 #475569) -->
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] text-[#94A3B8]">已禁用</span>
+                  <div class="w-9 h-5 bg-[#475569] rounded-full relative cursor-pointer p-0.5 transition-colors">
+                    <div class="w-4 h-4 bg-[#E2E8F0] rounded-full absolute left-0.5 top-0.5 shadow-sm"></div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 功能行列表 (空心灰圈状态) -->
+              <div class="divide-y divide-white/[0.06]">
+                <div class="h-[44px] flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <!-- 16px 状态槽: 空心灰圈 1px #475569 -->
+                    <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                      <div class="w-1.5 h-1.5 rounded-full border border-[#475569]"></div>
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-medium text-[#94A3B8]">Babel 7 语法降级树</div>
+                      <div class="text-[11px] text-[#64748B]">已由核心 Rust 原生编译管道接管</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-white/[0.04] text-[#94A3B8]">已禁用</span>
+                    <button class="text-xs text-[#94A3B8] hover:text-[#E2E8F0]">配置</button>
+                  </div>
+                </div>
+
+                <div class="h-[44px] flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <div class="w-4 h-4 flex items-center justify-center flex-shrink-0">
+                      <div class="w-1.5 h-1.5 rounded-full border border-[#475569]"></div>
+                    </div>
+                    <div>
+                      <div class="text-[13px] font-medium text-[#94A3B8]">ESLint 自动修复钩子</div>
+                      <div class="text-[11px] text-[#64748B]">建议升级至 @dsh/linter-oxc 模块</div>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-white/[0.04] text-[#94A3B8]">已禁用</span>
+                    <button class="text-xs text-[#94A3B8] hover:text-[#E2E8F0]">配置</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ==================== 4. 虚线卡片：「安装新插件」 ==================== -->
+            <div class="border border-dashed border-white/[0.12] rounded-[14px] p-6 flex flex-col items-center justify-center gap-3 hover:border-white/20 transition-colors bg-white/[0.01]">
+              <div class="text-xs text-[#94A3B8] text-center">
+                可通过 npm 包名、Git 仓库地址或本地目录导入 DSH 插件模块
+              </div>
+              <button class="h-[36px] px-4 rounded-[10px] bg-[#1E293B] border border-white/[0.12] hover:bg-[#28364d] text-xs font-medium text-[#E2E8F0] flex items-center gap-2 transition-colors">
+                <svg class="w-3.5 h-3.5 text-[#60A5FA]" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <line x1="8" y1="3" x2="8" y2="13"></line>
+                  <line x1="3" y1="8" x2="13" y2="8"></line>
+                </svg>
+                <span>安装新插件包...</span>
+              </button>
+            </div>
+
+          </div>
+
+        </div>
+
+        <!-- 底部微状态条 -->
+        <footer class="h-8 px-8 border-t border-white/[0.06] bg-[#0B101D] flex items-center justify-between text-[11px] font-mono text-[#64748B] flex-shrink-0">
+          <div class="flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-[#10B981]"></span>
+            <span>Registry: registry.npmjs.org (Synced)</span>
+          </div>
+          <div>MCP Socket: unix:///var/run/dsh-mcp.sock</div>
+        </footer>
+
+      </main>
+
+    </div>
+
+  </div>
+
+</body>
+</html>

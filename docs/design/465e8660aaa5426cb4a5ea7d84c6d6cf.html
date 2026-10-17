@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="zh-CN"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>DeepSeek Harness - 插件中心</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "on-secondary": "#ffffff",
+            "primary-container": "#2563eb",
+            "surface": "#f7f9fb",
+            "secondary-fixed": "#c9e6ff",
+            "tertiary-fixed": "#e3dfff",
+            "secondary-container": "#39b8fd",
+            "on-error-container": "#93000a",
+            "inverse-primary": "#b4c5ff",
+            "primary-fixed": "#dbe1ff",
+            "surface-tint": "#0053db",
+            "surface-bright": "#f7f9fb",
+            "surface-container-highest": "#e0e3e5",
+            "outline": "#737686",
+            "on-surface": "#191c1e",
+            "inverse-surface": "#2d3133",
+            "tertiary-container": "#6058e7",
+            "error": "#ba1a1a",
+            "tertiary": "#463ccd",
+            "on-primary": "#ffffff",
+            "on-tertiary": "#ffffff",
+            "on-secondary-fixed-variant": "#004c6e",
+            "surface-container-low": "#f2f4f6",
+            "inverse-on-surface": "#eff1f3",
+            "surface-dim": "#d8dadc",
+            "on-secondary-container": "#004666",
+            "surface-container-high": "#e6e8ea",
+            "on-secondary-fixed": "#001e2f",
+            "on-primary-fixed": "#00174b",
+            "tertiary-fixed-dim": "#c3c0ff",
+            "secondary-fixed-dim": "#89ceff",
+            "on-primary-container": "#eeefff",
+            "primary-fixed-dim": "#b4c5ff",
+            "background": "#f7f9fb",
+            "on-tertiary-container": "#f2eeff",
+            "on-tertiary-fixed-variant": "#372abf",
+            "error-container": "#ffdad6",
+            "on-tertiary-fixed": "#100069",
+            "on-error": "#ffffff",
+            "primary": "#004ac6",
+            "on-background": "#191c1e",
+            "surface-container": "#eceef0",
+            "surface-container-lowest": "#ffffff",
+            "secondary": "#006591",
+            "surface-variant": "#e0e3e5",
+            "outline-variant": "#c3c6d7",
+            "on-surface-variant": "#434655",
+            "on-primary-fixed-variant": "#003ea8"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "space-lg": "1rem",
+            "space-sm": "0.5rem",
+            "margin": "1.5rem",
+            "space-xl": "1.5rem",
+            "space-md": "0.75rem",
+            "space-xs": "0.25rem",
+            "gutter": "1rem"
+          },
+          "fontFamily": {
+            "label-sm": ["Inter"],
+            "headline-md": ["Inter"],
+            "label-md": ["Inter"],
+            "body-md": ["Inter"],
+            "body-sm": ["Inter"],
+            "headline-sm": ["Inter"]
+          },
+          "fontSize": {
+            "label-sm": ["10px", { "lineHeight": "14px", "fontWeight": "500" }],
+            "headline-md": ["16px", { "lineHeight": "24px", "fontWeight": "600" }],
+            "label-md": ["11px", { "lineHeight": "16px", "fontWeight": "500" }],
+            "body-md": ["13px", { "lineHeight": "20px", "fontWeight": "400" }],
+            "body-sm": ["11px", { "lineHeight": "16px", "fontWeight": "400" }],
+            "headline-sm": ["14px", { "lineHeight": "20px", "fontWeight": "600" }]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Inter", sans-serif;
+    }
+    .font-mono-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    /* macOS Window Drop Shadow */
+    .macos-window-shadow {
+      box-shadow: 0 25px 60px -15px rgba(15, 23, 42, 0.28), 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+    }
+    /* Custom subtle scrollbar */
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background-color: rgba(148, 163, 184, 0.35);
+      border-radius: 9999px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(100, 116, 139, 0.5);
+    }
+  </style>
+</head>
+<body class="h-full bg-gradient-to-br from-[#dbeafe] via-[#e0e7ff] to-[#f1f5f9] flex items-center justify-center p-6 antialiased select-none">
+<!-- macOS Native Window Container (1440x1024) -->
+<div class="w-[1440px] h-[1024px] max-w-full max-h-[983px] rounded-[24px] border border-black/10 bg-white macos-window-shadow overflow-hidden flex flex-col relative">
+<!-- Subtle Top Window Bar / Shared TopNavBar Blueprint -->
+<header class="bg-white/70 backdrop-blur-md flex justify-between items-center w-full px-4 h-11 border-b border-slate-900/10 shrink-0 select-none">
+<!-- Left: macOS Traffic Lights + Product Title -->
+<div class="flex items-center gap-3">
+<div class="flex items-center gap-2 mr-2">
+<span class="w-3 h-3 rounded-full bg-[#FF5F56] border border-[#E0443E]/50 inline-block shadow-sm"></span>
+<span class="w-3 h-3 rounded-full bg-[#FFBD2E] border border-[#DEA123]/50 inline-block shadow-sm"></span>
+<span class="w-3 h-3 rounded-full bg-[#27C93F] border border-[#1AAB29]/50 inline-block shadow-sm"></span>
+</div>
+<div class="text-xs font-semibold tracking-tight text-slate-800 flex items-center gap-2">
+<svg class="w-4 h-4 text-blue-600" fill="currentColor" viewbox="0 0 24 24">
+<path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path>
+</svg>
+<span class="font-headline-sm text-headline-sm text-slate-900">DeepSeek Harness</span>
+<span class="text-[10px] font-mono-code px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200">v2.4</span>
+</div>
+</div>
+<!-- Center: Context Breadcrumb / Navigation Links -->
+<div class="flex items-center gap-1.5 text-[11px] font-label-md text-slate-500">
+<span class="hover:text-slate-900 transition-colors cursor-pointer">src/core/agent.ts</span>
+<span class="text-slate-300">/</span>
+<span class="hover:text-slate-900 transition-colors cursor-pointer">Workspace</span>
+<span class="text-slate-300">/</span>
+<span class="text-blue-600 font-medium font-label-md">插件中心</span>
+</div>
+<!-- Right Trailing Icon Actions -->
+<div class="flex items-center gap-1">
+<button class="w-7 h-7 flex items-center justify-center rounded text-slate-600 hover:bg-slate-900/5 active:scale-[0.98] transition-all" title="splitscreen">
+<span class="material-symbols-outlined text-[17px]">splitscreen</span>
+</button>
+<button class="w-7 h-7 flex items-center justify-center rounded text-slate-600 hover:bg-slate-900/5 active:scale-[0.98] transition-all" title="terminal">
+<span class="material-symbols-outlined text-[17px]">terminal</span>
+</button>
+<button class="w-7 h-7 flex items-center justify-center rounded text-slate-600 hover:bg-slate-900/5 active:scale-[0.98] transition-all" title="tune">
+<span class="material-symbols-outlined text-[17px]">tune</span>
+</button>
+<div class="w-px h-3.5 bg-slate-200 mx-1"></div>
+<button class="w-7 h-7 flex items-center justify-center rounded text-slate-600 hover:bg-slate-900/5 active:scale-[0.98] transition-all" title="account_circle">
+<span class="material-symbols-outlined text-[18px]">account_circle</span>
+</button>
+</div>
+</header>
+<!-- Main Content Horizontal Two-Column Body -->
+<div class="flex flex-1 overflow-hidden">
+<!-- LEFT SIDEBAR: 260px (SideNavBar spec) -->
+<aside class="w-[260px] shrink-0 bg-[#F8FAFC] border-r border-[rgba(15,23,42,0.08)] flex flex-col justify-between p-3 select-none">
+<div class="flex flex-col gap-3">
+<!-- Top App Brand Row -->
+<div class="px-2 py-1 flex items-center justify-between">
+<div class="flex items-center gap-2">
+<div class="w-5 h-5 rounded-md bg-blue-600 flex items-center justify-center text-white font-bold text-xs shadow-sm">
+                D
+              </div>
+<div>
+<div class="font-headline-sm text-headline-sm text-slate-900 leading-tight">DSH Desktop</div>
+<div class="text-[10px] text-slate-400 font-mono-code leading-tight">Local Runtime v2.4</div>
+</div>
+</div>
+<span class="w-2 h-2 rounded-full bg-emerald-500" title="Daemon Connected"></span>
+</div>
+<!-- New Session Primary Button -->
+<button class="w-full h-8 bg-[#2563EB] hover:bg-[#1D4ED8] active:scale-[0.99] text-white text-body-sm font-medium rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-sm">
+<svg class="w-3.5 h-3.5 stroke-[2.5]" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<path d="M12 4.5v15m7.5-7.5h-15" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span>New Session</span>
+</button>
+<!-- Core App Navigation Links -->
+<nav class="flex flex-col gap-1">
+<!-- Normal navigation: Workspaces -->
+<a class="text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 px-2.5 py-1.5 flex items-center gap-2 rounded-lg text-body-md transition-colors" href="#">
+<span class="material-symbols-outlined text-[17px] text-slate-500">folder</span>
+<span class="font-body-md text-body-md">Workspaces</span>
+</a>
+<!-- Normal navigation: Recent Sessions -->
+<a class="text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 px-2.5 py-1.5 flex items-center gap-2 rounded-lg text-body-md transition-colors" href="#">
+<span class="material-symbols-outlined text-[17px] text-slate-500">chat</span>
+<span class="font-body-md text-body-md">Recent Sessions</span>
+</a>
+<!-- Normal navigation: Agent Harness -->
+<a class="text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 px-2.5 py-1.5 flex items-center gap-2 rounded-lg text-body-md transition-colors" href="#">
+<span class="material-symbols-outlined text-[17px] text-slate-500">smart_toy</span>
+<span class="font-body-md text-body-md">Agent Harness</span>
+</a>
+<!-- ACTIVE ITEM: Extensions / 插件 (Current Screen) -->
+<a class="bg-blue-500/10 text-[#2563EB] font-medium rounded-lg px-2.5 py-1.5 flex items-center justify-between transition-colors" href="#">
+<div class="flex items-center gap-2">
+<!-- Precision puzzle line SVG -->
+<svg class="w-4 h-4 text-[#2563EB]" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M20.5 11H19a2 2 0 0 1-2-2V7.5a2.5 2.5 0 0 0-5 0V9a2 2 0 0 1-2 2H8.5a2.5 2.5 0 0 0 0 5H10a2 2 0 0 1 2 2v1.5a2.5 2.5 0 0 0 5 0V18a2 2 0 0 1 2-2h1.5a2.5 2.5 0 0 0 0-5z"></path>
+</svg>
+<span class="text-body-md font-body-md font-semibold text-[#2563EB]">插件中心 (Extensions)</span>
+</div>
+<span class="text-[10px] font-mono-code px-1.5 py-0.2 rounded-full bg-blue-100 text-[#2563EB]">4</span>
+</a>
+<!-- Normal navigation: 自动化任务 -->
+<a class="text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 px-2.5 py-1.5 flex items-center gap-2 rounded-lg text-body-md transition-colors" href="#">
+<svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<circle cx="12" cy="12" r="10"></circle>
+<polyline points="12 6 12 12 16 14"></polyline>
+</svg>
+<span class="font-body-md text-body-md">自动化任务</span>
+</a>
+</nav>
+<!-- Workspace Header Divider -->
+<div class="pt-2">
+<div class="flex items-center justify-between px-2 pb-1.5">
+<span class="text-[11px] font-semibold tracking-wider text-[#94A3B8]">工作区</span>
+<div class="flex items-center gap-1 text-slate-400">
+<button class="hover:text-slate-600 p-0.5 rounded transition-colors" title="搜索">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><circle cx="11" cy="11" r="8"></circle><line x1="21" x2="16.65" y1="21" y2="16.65"></line></svg>
+</button>
+<button class="hover:text-slate-600 p-0.5 rounded transition-colors" title="添加">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><line x1="12" x2="12" y1="5" y2="19"></line><line x1="5" x2="19" y1="12" y2="12"></line></svg>
+</button>
+</div>
+</div>
+<!-- Workspace Cards (DeepSeek Harness Design Spec) -->
+<div class="space-y-2 mt-1">
+<!-- Workspace Card 1: Core Agent Runtime -->
+<div class="bg-[#F8FAFC] border border-[rgba(15,23,42,0.06)] rounded-[14px] p-2 hover:border-slate-300/80 transition-all">
+<div class="flex items-center justify-between mb-1.5 px-1">
+<span class="text-xs font-semibold text-slate-800 truncate">Core Agent Runtime</span>
+<span class="inline-flex items-center justify-center h-[17px] min-w-[17px] px-1 bg-[rgba(226,232,240,0.8)] text-[#64748B] text-[10px] rounded-full font-mono-code font-medium">1</span>
+</div>
+<!-- Worktree Nested Card (Blue subtle inner card) -->
+<div class="bg-[#EFF6FF] border border-[rgba(37,99,235,0.18)] rounded-[10px] p-1.5 mb-1.5">
+<div class="flex items-center gap-1.5 text-[11px] text-[#2563EB] font-medium px-1">
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><line x1="6" x2="6" y1="3" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>
+<span class="truncate">feat/mcp-sandbox</span>
+</div>
+</div>
+<!-- Session item row with 16px status slot -->
+<div class="flex items-center justify-between text-xs px-1 py-1 rounded hover:bg-white/80 transition-colors">
+<div class="flex items-center gap-1.5 truncate">
+<div class="w-4 h-4 flex items-center justify-center shrink-0">
+<!-- Amber waiting dot with halo -->
+<span class="w-2 h-2 rounded-full bg-[#FBBF24] ring-2 ring-[#FEF3C7]"></span>
+</div>
+<svg class="w-3.5 h-3.5 text-[#94A3B8] shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+<span class="truncate text-slate-700">优化 AST 语法解析流</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono-code shrink-0">12m</span>
+</div>
+</div>
+<!-- Workspace Card 2: dsh-plugins -->
+<div class="bg-[#F8FAFC] border border-[rgba(15,23,42,0.06)] rounded-[14px] p-2 hover:border-slate-300/80 transition-all">
+<div class="flex items-center justify-between mb-1.5 px-1">
+<span class="text-xs font-semibold text-slate-800 truncate">dsh-plugins</span>
+</div>
+<div class="flex items-center justify-between text-xs px-1 py-1 rounded bg-white shadow-2xs border border-slate-200/60">
+<div class="flex items-center gap-1.5 truncate">
+<div class="w-4 h-4 flex items-center justify-center shrink-0">
+<span class="w-1.5 h-1.5 rounded-full bg-transparent border border-slate-300"></span>
+</div>
+<svg class="w-3.5 h-3.5 text-[#60A5FA] shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+<span class="truncate text-slate-800 font-medium">配置 ImageGen 凭据</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono-code shrink-0">2h</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Sidebar Footer: Minimalist Settings Entry & Doc Links -->
+<div class="pt-2 border-t border-[rgba(15,23,42,0.08)] flex flex-col gap-1">
+<a class="text-slate-600 hover:text-slate-900 hover:bg-slate-200/50 px-2.5 py-1.5 flex items-center justify-between rounded-lg text-body-sm transition-colors" href="#">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[17px] text-slate-500">settings</span>
+<span class="font-body-sm text-body-sm">全局设置 (Settings)</span>
+</div>
+<span class="text-[10px] font-mono-code text-slate-400">⌘,</span>
+</a>
+<a class="text-slate-500 hover:text-slate-800 hover:bg-slate-200/40 px-2.5 py-1 flex items-center gap-2 rounded-lg text-[11px] transition-colors" href="#">
+<span class="material-symbols-outlined text-[15px]">help</span>
+<span>Documentation</span>
+</a>
+</div>
+</aside>
+<!-- RIGHT MAIN AREA: bg-white flex-1 -->
+<main class="flex-1 bg-white flex flex-col overflow-hidden">
+<!-- 1. Header Toolbar (56px) -->
+<header class="h-14 px-8 border-b border-[rgba(15,23,42,0.08)] flex items-center justify-between shrink-0">
+<div class="flex items-center gap-3">
+<h1 class="text-headline-md font-headline-md text-[#0F172A] tracking-tight">插件中心</h1>
+<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-blue-50 text-blue-700 border border-blue-200/60 font-mono-code">
+              Extensions Registry
+            </span>
+</div>
+<!-- Right Toolbar Controls -->
+<div class="flex items-center gap-3">
+<!-- Search Input (w-220px, h-36px, rounded-12px) -->
+<div class="relative w-[220px]">
+<div class="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none text-slate-400">
+<svg class="w-3.5 h-3.5 text-[#94A3B8]" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<circle cx="11" cy="11" r="8"></circle>
+<line x1="21" x2="16.65" y1="21" y2="16.65"></line>
+</svg>
+</div>
+<input class="w-full h-9 pl-8 pr-3 bg-white border border-slate-200/90 rounded-[12px] text-body-sm text-slate-800 placeholder-[#94A3B8] focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all" placeholder="搜索插件或功能" type="text"/>
+</div>
+<!-- Segmented Control (h-36px, rounded-10px) -->
+<div class="h-9 bg-[#F1F5F9] rounded-[10px] p-1 flex items-center text-xs">
+<button class="h-7 px-3 bg-white rounded-[8px] text-[#0F172A] font-medium shadow-2xs transition-all">
+                全部
+              </button>
+<button class="h-7 px-3 text-[#64748B] hover:text-[#0F172A] font-normal transition-colors">
+                已启用
+              </button>
+<button class="h-7 px-3 text-[#64748B] hover:text-[#0F172A] font-normal transition-colors">
+                已禁用
+              </button>
+</div>
+<!-- Ghost Refresh Button (36x36, rounded-12px) -->
+<button class="w-9 h-9 flex items-center justify-center rounded-[12px] border border-slate-200/80 hover:bg-slate-50 text-slate-600 transition-all active:scale-[0.97]" title="刷新插件列表">
+<svg class="w-3.5 h-3.5 text-slate-600" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<polyline points="23 4 23 10 17 10"></polyline>
+<polyline points="1 20 1 14 7 14"></polyline>
+<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+</svg>
+</button>
+</div>
+</header>
+<!-- 2. Statistics Pills Bar -->
+<div class="px-8 py-3.5 flex items-center gap-2.5 border-b border-[rgba(15,23,42,0.04)] bg-slate-50/40">
+<div class="h-5 rounded-full px-2.5 text-[11px] font-medium bg-[#F1F5F9] text-[#475569] flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+<span>4 个插件包</span>
+</div>
+<div class="h-5 rounded-full px-2.5 text-[11px] font-medium bg-[#F1F5F9] text-[#475569] flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+<span>17 个功能</span>
+</div>
+<div class="h-5 rounded-full px-2.5 text-[11px] font-medium bg-[#FFFBEB] text-[#B45309] border border-[#FDE68A]/60 flex items-center gap-1.5 shadow-2xs">
+<span class="w-1.5 h-1.5 rounded-full bg-[#F59E0B]"></span>
+<span>2 项待配置</span>
+</div>
+</div>
+<!-- 3. Plugin Cards List (Scrollable Area) -->
+<div class="px-8 py-4 overflow-y-auto space-y-4 max-h-[840px] custom-scrollbar flex-1">
+<!-- CARD 1: 图像生成与多模态工具包 (ImageGen) -->
+<div class="bg-white border border-[rgba(15,23,42,0.08)] rounded-[16px] p-4 shadow-2xs transition-all hover:border-slate-300">
+<!-- Header Row -->
+<div class="flex items-center justify-between pb-3 border-b border-[rgba(15,23,42,0.06)]">
+<div class="flex items-center gap-3">
+<div class="w-7 h-7 rounded-[8px] bg-[#EFF6FF] flex items-center justify-center text-[#2563EB] shrink-0 border border-blue-100">
+<!-- Paintbrush / Art SVG -->
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"></path>
+<path d="M14 6l4 4"></path>
+<path d="M4 20h4"></path>
+</svg>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h2 class="text-headline-sm font-headline-sm text-[#1E293B]">图像生成扩展 (ImageGen)</h2>
+<span class="font-mono-code text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">v1.4.2</span>
+</div>
+<div class="font-mono-code text-body-sm text-[#2563EB] mt-0.5">@logictan/dsh-imagegen</div>
+</div>
+</div>
+<!-- Switch: Active/Enabled state -->
+<div class="flex items-center gap-3">
+<span class="text-label-sm font-label-sm text-slate-500">已启用</span>
+<div class="w-[38px] h-[22px] bg-[#2563EB] rounded-full p-[2px] cursor-pointer flex items-center transition-colors">
+<div class="w-[18px] h-[18px] bg-white rounded-full shadow-sm transform translate-x-4 transition-transform"></div>
+</div>
+</div>
+</div>
+<!-- Features Rows List -->
+<div class="divide-y divide-[rgba(15,23,42,0.05)] pt-1">
+<!-- Feature Row 1 (Expanded State) -->
+<div class="py-2.5">
+<div class="h-11 flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<!-- Status slot: 16px Amber Dot with Halo -->
+<div class="w-4 h-4 flex items-center justify-center shrink-0">
+<span class="w-[6px] h-[6px] rounded-full bg-[#F59E0B] ring-2 ring-[#FEF3C7]"></span>
+</div>
+<div>
+<div class="text-body-md font-medium text-[#1E293B]">OpenAI DALL-E &amp; Midjourney 渲染代理</div>
+<div class="text-body-sm text-[#64748B]">配置图像生成 API 地址与密钥</div>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200/70 font-medium">
+                      未配置
+                    </span>
+<button class="text-xs text-[#2563EB] hover:underline font-medium">配置</button>
+</div>
+</div>
+<!-- Expanded Read-only Configuration Summary Block -->
+<div class="mt-2 bg-[#F8FAFC] border border-slate-200/70 rounded-[12px] p-3 text-xs">
+<div class="grid grid-cols-2 gap-y-2 mb-2.5">
+<div class="flex items-center">
+<span class="w-20 text-[11px] text-[#64748B]">默认渠道:</span>
+<span class="font-mono-code text-body-md text-[#1E293B] font-medium">OpenAI 官方</span>
+</div>
+<div class="flex items-center">
+<span class="w-20 text-[11px] text-[#64748B]">可用模型:</span>
+<span class="font-mono-code text-body-md text-[#1E293B]">gpt-image-2</span>
+</div>
+<div class="flex items-center col-span-2">
+<span class="w-20 text-[11px] text-[#64748B]">密钥状态:</span>
+<span class="font-mono-code text-body-md text-amber-600 bg-amber-50/80 px-2 py-0.5 rounded border border-amber-200/50">已设置 (sk-••••••••4a8f)</span>
+</div>
+</div>
+<div class="pt-2 border-t border-slate-200/60 flex justify-end">
+<button class="text-xs text-[#2563EB] hover:text-[#1D4ED8] flex items-center gap-1 font-medium group">
+<span>打开完整设置</span>
+<svg class="w-3 h-3 transform group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24"><polyline points="9 18 15 12 9 6"></polyline></svg>
+</button>
+</div>
+</div>
+</div>
+<!-- Feature Row 2 (Collapsed State) -->
+<div class="h-11 flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<!-- Status slot: 6px Green Solid Dot -->
+<div class="w-4 h-4 flex items-center justify-center shrink-0">
+<span class="w-[6px] h-[6px] rounded-full bg-[#10B981]"></span>
+</div>
+<div>
+<div class="text-body-md font-medium text-[#1E293B]">本地 ComfyUI 工作流管道</div>
+<div class="text-body-sm text-[#64748B]">通过 WebSocket 调度本地 Stable Diffusion 节点</div>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70 font-medium">
+                    已启用
+                  </span>
+<button class="text-xs text-[#2563EB] hover:underline font-medium">配置</button>
+</div>
+</div>
+</div>
+</div>
+<!-- CARD 2: 模型上下文协议网关 (MCP Gateway) -->
+<div class="bg-white border border-[rgba(15,23,42,0.08)] rounded-[16px] p-4 shadow-2xs transition-all hover:border-slate-300">
+<!-- Header Row -->
+<div class="flex items-center justify-between pb-3 border-b border-[rgba(15,23,42,0.06)]">
+<div class="flex items-center gap-3">
+<div class="w-7 h-7 rounded-[8px] bg-[#EFF6FF] flex items-center justify-center text-[#2563EB] shrink-0 border border-blue-100">
+<!-- Network / Graph Node SVG -->
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<circle cx="18" cy="5" r="3"></circle>
+<circle cx="6" cy="12" r="3"></circle>
+<circle cx="18" cy="19" r="3"></circle>
+<line x1="8.59" x2="15.42" y1="13.51" y2="17.49"></line>
+<line x1="15.41" x2="8.59" y1="6.51" y2="10.49"></line>
+</svg>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h2 class="text-headline-sm font-headline-sm text-[#1E293B]">Model Context Protocol 网关</h2>
+<span class="font-mono-code text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">v2.0.0</span>
+</div>
+<div class="font-mono-code text-body-sm text-[#2563EB] mt-0.5">@dsh/mcp-gateway</div>
+</div>
+</div>
+<!-- Switch: Active -->
+<div class="flex items-center gap-3">
+<span class="text-label-sm font-label-sm text-slate-500">已启用</span>
+<div class="w-[38px] h-[22px] bg-[#2563EB] rounded-full p-[2px] cursor-pointer flex items-center transition-colors">
+<div class="w-[18px] h-[18px] bg-white rounded-full shadow-sm transform translate-x-4 transition-transform"></div>
+</div>
+</div>
+</div>
+<!-- Features Rows List (3 Items, All Enabled) -->
+<div class="divide-y divide-[rgba(15,23,42,0.05)] pt-1">
+<!-- MCP Row 1 -->
+<div class="h-11 flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-4 h-4 flex items-center justify-center shrink-0">
+<span class="w-[6px] h-[6px] rounded-full bg-[#10B981]"></span>
+</div>
+<div>
+<div class="text-body-md font-medium text-[#1E293B]">文件系统隔离沙盒</div>
+<div class="text-body-sm text-[#64748B]">提供只读及工作区白名单目录授权</div>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70 font-medium">
+                    已启用
+                  </span>
+<button class="text-xs text-[#2563EB] hover:underline font-medium">配置</button>
+</div>
+</div>
+<!-- MCP Row 2 -->
+<div class="h-11 flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-4 h-4 flex items-center justify-center shrink-0">
+<span class="w-[6px] h-[6px] rounded-full bg-[#10B981]"></span>
+</div>
+<div>
+<div class="text-body-md font-medium text-[#1E293B]">PostgreSQL 数据库探索器</div>
+<div class="text-body-sm text-[#64748B]">智能只读探测架构与执行只读分析 SQL</div>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70 font-medium">
+                    已启用
+                  </span>
+<button class="text-xs text-[#2563EB] hover:underline font-medium">配置</button>
+</div>
+</div>
+<!-- MCP Row 3 -->
+<div class="h-11 flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-4 h-4 flex items-center justify-center shrink-0">
+<span class="w-[6px] h-[6px] rounded-full bg-[#10B981]"></span>
+</div>
+<div>
+<div class="text-body-md font-medium text-[#1E293B]">Git 代码库版本感知</div>
+<div class="text-body-sm text-[#64748B]">跟踪当前 branch、worktree 与 stage 变更</div>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70 font-medium">
+                    已启用
+                  </span>
+<button class="text-xs text-[#2563EB] hover:underline font-medium">配置</button>
+</div>
+</div>
+</div>
+</div>
+<!-- CARD 3: 已禁用的旧版工具包 (Legacy AST Tools) -->
+<div class="bg-white border border-[rgba(15,23,42,0.08)] rounded-[16px] p-4 opacity-60 shadow-2xs transition-all hover:opacity-80">
+<!-- Header Row -->
+<div class="flex items-center justify-between pb-3 border-b border-[rgba(15,23,42,0.06)]">
+<div class="flex items-center gap-3">
+<div class="w-7 h-7 rounded-[8px] bg-slate-100 flex items-center justify-center text-slate-500 shrink-0 border border-slate-200">
+<!-- Terminal / Microchip SVG -->
+<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewbox="0 0 24 24">
+<rect height="16" rx="2" width="16" x="4" y="4"></rect>
+<rect height="6" width="6" x="9" y="9"></rect>
+<line x1="9" x2="9" y1="1" y2="4"></line>
+<line x1="15" x2="15" y1="1" y2="4"></line>
+<line x1="9" x2="9" y1="20" y2="23"></line>
+<line x1="15" x2="15" y1="20" y2="23"></line>
+<line x1="20" x2="23" y1="9" y2="9"></line>
+<line x1="20" x2="23" y1="14" y2="14"></line>
+<line x1="1" x2="4" y1="9" y2="9"></line>
+<line x1="1" x2="4" y1="14" y2="14"></line>
+</svg>
+</div>
+<div>
+<div class="flex items-center gap-2">
+<h2 class="text-headline-sm font-headline-sm text-slate-700">旧版 AST 代码重构插件</h2>
+<span class="font-mono-code text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">v0.9.8</span>
+</div>
+<div class="font-mono-code text-body-sm text-slate-500 mt-0.5">@dsh/legacy-ast-tools</div>
+</div>
+</div>
+<!-- Switch: Disabled/Off State (Track #CBD5E1, Knob to the left) -->
+<div class="flex items-center gap-3">
+<span class="text-label-sm font-label-sm text-slate-400">已禁用</span>
+<div class="w-[38px] h-[22px] bg-[#CBD5E1] rounded-full p-[2px] cursor-pointer flex items-center transition-colors">
+<div class="w-[18px] h-[18px] bg-white rounded-full shadow-sm transform translate-x-0 transition-transform"></div>
+</div>
+</div>
+</div>
+<!-- Features Rows List (Disabled styling) -->
+<div class="divide-y divide-[rgba(15,23,42,0.05)] pt-1">
+<!-- Legacy Row 1 -->
+<div class="h-11 flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-4 h-4 flex items-center justify-center shrink-0">
+<span class="w-[6px] h-[6px] rounded-full bg-transparent border border-[#CBD5E1]"></span>
+</div>
+<div>
+<div class="text-body-md font-normal text-slate-600">Babel 7 语法降级树</div>
+<div class="text-body-sm text-slate-400">已由核心 Rust 原生编译管道接管</div>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                    已禁用
+                  </span>
+<button class="text-xs text-slate-400 hover:text-slate-600 font-medium">配置</button>
+</div>
+</div>
+<!-- Legacy Row 2 -->
+<div class="h-11 flex items-center justify-between">
+<div class="flex items-center gap-2.5">
+<div class="w-4 h-4 flex items-center justify-center shrink-0">
+<span class="w-[6px] h-[6px] rounded-full bg-transparent border border-[#CBD5E1]"></span>
+</div>
+<div>
+<div class="text-body-md font-normal text-slate-600">ESLint 自动修复钩子</div>
+<div class="text-body-sm text-slate-400">建议升级至 @dsh/linter-oxc 模块</div>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
+                    已禁用
+                  </span>
+<button class="text-xs text-slate-400 hover:text-slate-600 font-medium">配置</button>
+</div>
+</div>
+</div>
+</div>
+<!-- 4. Dashed Bottom Card: 安装新插件 (Install Plugin) -->
+<div class="border border-dashed border-slate-300 rounded-[16px] p-5 flex items-center justify-between hover:bg-slate-50/50 hover:border-slate-400 transition-all cursor-pointer">
+<div class="flex items-center gap-3.5">
+<div class="w-9 h-9 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500 shrink-0">
+<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+<polyline points="7 10 12 15 17 10"></polyline>
+<line x1="12" x2="12" y1="15" y2="3"></line>
+</svg>
+</div>
+<div>
+<div class="text-body-md font-medium text-[#1E293B]">从外部来源扩展智能体能力</div>
+<div class="text-body-sm text-[#64748B]">通过 npm 包名、Git 仓库或本地目录安装社区扩展插件</div>
+</div>
+</div>
+<button class="h-9 px-4 bg-white border border-slate-200 rounded-[12px] text-body-md font-medium text-[#1E293B] hover:bg-slate-50 shadow-2xs active:scale-[0.98] transition-all flex items-center gap-1.5">
+<svg class="w-3.5 h-3.5 text-blue-600 stroke-[2.5]" fill="none" stroke="currentColor" viewbox="0 0 24 24">
+<line x1="12" x2="12" y1="5" y2="19"></line>
+<line x1="5" x2="19" y1="12" y2="12"></line>
+</svg>
+<span>安装新插件</span>
+</button>
+</div>
+</div>
+<!-- Foot Status Information Strip -->
+<footer class="h-8 px-8 bg-slate-50/80 border-t border-[rgba(15,23,42,0.06)] flex items-center justify-between text-[11px] text-[#94A3B8] font-mono-code shrink-0">
+<div class="flex items-center gap-4">
+<span class="flex items-center gap-1">
+<span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+<span>Registry: registry.npmjs.org (Synced)</span>
+</span>
+<span>MCP Socket: unix:///var/run/dsh-mcp.sock</span>
+</div>
+<div>
+<span>DSH Engine 2.4.0-arm64</span>
+</div>
+</footer>
+</main>
+</div>
+</div>
+</body></html>
