@@ -115,3 +115,44 @@ test('缺 name/version 的 package.json → 报错而非静默跳过', async () 
     assert.throws(() => resolvePublishPlan(root), /name|version/i)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+test('a peer dependency orders the publisher first, like a dependency does', async () => {
+  // A shared UI package is consumed through `peerDependencies` — it is the
+  // correct field for it, because pinning it as a hard dependency would install
+  // a second physical copy next to the host's. But peer edges are still
+  // install-time requirements: a consumer published before its peer makes the
+  // registry resolution fail, and every consumer that follows fails with it.
+  //
+  // This is not hypothetical: the first release carrying
+  // `@logictan/dsh-plugins-shared-client` put the shared package 13th while
+  // five of its consumers sat ahead of it.
+  const root = await fixture({
+    consumer: { name: '@x/consumer', version: '1.0.0', peerDependencies: { '@x/shared': '^1.0.0' } },
+    shared: { name: '@x/shared', version: '1.0.0' },
+  })
+  try {
+    const names = resolvePublishPlan(root).map((p) => p.name)
+    assert.deepEqual(names, ['@x/shared', '@x/consumer'])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('a peer pointing outside the workspace does not constrain the order', async () => {
+  // React is the common case: a real peer, not a workspace package. Treating it
+  // as an ordering edge would demand a plan entry that does not exist.
+  const root = await fixture({
+    ui: { name: '@x/ui', version: '1.0.0', peerDependencies: { react: '^18.0.0' } },
+  })
+  try {
+    assert.deepEqual(resolvePublishPlan(root).map((p) => p.name), ['@x/ui'])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('a cycle through peer edges is still reported', async () => {
+  const root = await fixture({
+    a: { name: '@x/a', version: '1.0.0', peerDependencies: { '@x/b': '^1.0.0' } },
+    b: { name: '@x/b', version: '1.0.0', peerDependencies: { '@x/a': '^1.0.0' } },
+  })
+  try {
+    assert.throws(() => resolvePublishPlan(root), /circular|cycle|循环/i)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

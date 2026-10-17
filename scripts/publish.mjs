@@ -5,9 +5,14 @@
  * The aggregate package depends on its child plugins, so a child MUST be on the
  * registry before the aggregate that names it -- otherwise installing the
  * aggregate fails to resolve its dependency. The order is therefore derived
- * from the packages' own dependencies edges (topological sort), never from a
+ * from the packages' own dependency edges (topological sort), never from a
  * hardcoded package list: adding a child plugin or a second aggregate needs no
  * change here.
+ *
+ * Both `dependencies` and `peerDependencies` count. A peer edge is just as real
+ * at install time, and it is the field this repository uses for the shared UI
+ * package: a consumer published first fails to resolve it, and the failure
+ * repeats for every consumer behind it.
  *
  * Usage:
  *   node scripts/publish.mjs              # print plan: dir<TAB>name<TAB>version per line
@@ -48,7 +53,13 @@ export function readPackages(root = REPO_ROOT) {
     if (typeof pkg.version !== 'string' || pkg.version === '') {
       throw new Error(manifestPath + ': missing "version"')
     }
-    out.push({ dir: abs, name: pkg.name, version: pkg.version, dependencies: pkg.dependencies ?? {} })
+    out.push({
+      dir: abs,
+      name: pkg.name,
+      version: pkg.version,
+      dependencies: pkg.dependencies ?? {},
+      peerDependencies: pkg.peerDependencies ?? {},
+    })
   }
   return out
 }
@@ -70,8 +81,16 @@ export function resolvePublishPlan(root = REPO_ROOT) {
       throw new Error('circular dependency among workspace packages: ' + [...chain, pkg.name].join(' -> '))
     }
     const nextChain = [...chain, pkg.name]
-    // Only workspace-internal dependencies constrain the order.
-    const internal = Object.keys(pkg.dependencies).filter((dep) => byName.has(dep)).sort()
+    // Only workspace-internal edges constrain the order, and a peer edge is one
+    // of them: a consumer published before its peer fails to resolve at install
+    // time, and every consumer after it fails the same way. Peer edges are how
+    // this repository declares the shared UI package (a hard `dependencies` edge
+    // would install a second physical copy beside the host's), so ignoring them
+    // would put that package after all five of its consumers.
+    const internal = [...new Set([
+      ...Object.keys(pkg.dependencies),
+      ...Object.keys(pkg.peerDependencies ?? {}),
+    ])].filter((dep) => byName.has(dep)).sort()
     for (const dep of internal) visit(byName.get(dep), nextChain)
     emitted.add(pkg.name)
     plan.push({ dir: pkg.dir, name: pkg.name, version: pkg.version })
