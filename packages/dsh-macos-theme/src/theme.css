@@ -240,6 +240,113 @@ html body[data-ds-dark-theme] * {
 }
 
 /* ==========================================================================
+   1c. Foreign surfaces that declare their own roles.
+
+   A plugin that draws its own components cannot read `--dsw-alias-*` directly:
+   in this deployment `--dsw-alias-brand-primary` resolves to a near-white
+   neutral, so an accent fill and the label on it collapse to the same colour.
+   Such a plugin instead declares one role per value it paints with and fills it
+   from a `--dsh-theme-*` variable of the same name, keeping its own value as the
+   fallback. This section is the theme side of that contract: it fills the roles
+   with this design's palette.
+
+   Why here and not in `overrideTokens`: the token layer is static — the host
+   projects `snapshot.active.tokens` onto `body` — while `--dsh-theme-*` has to
+   reach the consumer wherever it sits. Declaring on `html body, html body *`
+   puts these above the host exactly as section 1b does, and `*` is what carries
+   them into a consumer's own subtree.
+
+   Both palettes are given, and they are not one inverted: the light values are
+   this design's light slate, the dark values its dark slate. A role left
+   unfilled is not a fallback to the consumer's own colour — the consumer
+   substitutes its default first, and an unsupported keyword there voids the
+   custom property, taking every `var()` that reads it down with it. So every
+   role appears in both blocks. */
+html body,
+html body * {
+  /* Surfaces: paper, panel, raised. */
+  --dsh-theme-surface: #f8fafc;
+  --dsh-theme-surface-1: #ffffff;
+  --dsh-theme-surface-2: #f1f5f9;
+  /* Lines: hairline, soft, strong. */
+  --dsh-theme-line: #e2e8f0;
+  --dsh-theme-line-soft: #eef2f7;
+  --dsh-theme-line-strong: #cbd5e1;
+  /* Text: primary, secondary, tertiary, quaternary. */
+  --dsh-theme-ink: #0f172a;
+  --dsh-theme-ink-2: #475569;
+  --dsh-theme-ink-3: #94a3b8;
+  --dsh-theme-ink-4: #cbd5e1;
+  /* The accent is this theme's blue, not a teal: the point of the role layer is
+     that a consumer follows the host's identity, and this theme's identity is
+     macOS blue. */
+  --dsh-theme-accent: #2563eb;
+  --dsh-theme-accent-hover: #1d4ed8;
+  --dsh-theme-accent-ink: #ffffff;
+  --dsh-theme-ok: #10b981;
+  --dsh-theme-warn: #d97706;
+  --dsh-theme-danger: #dc2626;
+  /* The kind accents stay distinct hues: a reference chip is coloured by what it
+     points at, and one hue for every kind carries no information.
+     The node palette is deliberately NOT filled here. It is the workbench's own
+     category vocabulary (canon / chapter / volume / screenplay / shot / video),
+     not a surface this theme has an opinion about, and the workbench already
+     resolves it per scheme. */
+  --dsh-theme-kind-character: #4f46e5;
+  --dsh-theme-kind-location: #059669;
+  /* The canvas is a surface, so it does follow: left to the workbench's default
+     it would sit a shade away from the panels around it. */
+  --dsh-theme-canvas-bg: #f8fafc;
+  --dsh-theme-canvas-dot: #cbd5e1;
+  --dsh-theme-wire: #cbd5e1;
+  --dsh-theme-hover: #f1f5f9;
+  --dsh-theme-active: #e2e8f0;
+  /* A shadow has to be re-stated per palette, not tinted: the same black at 55%
+     over a white panel reads as a hole rather than as depth. */
+  --dsh-theme-scrim: rgba(15, 23, 42, 0.42);
+  --dsh-theme-shadow-overlay: 0 18px 48px rgba(15, 23, 42, 0.18);
+  --dsh-theme-shadow-float: 0 8px 24px rgba(15, 23, 42, 0.14);
+  --dsh-theme-shadow-soft: 0 1px 4px rgba(15, 23, 42, 0.12);
+  /* The radius ladder. This design's four steps are rounder than a default
+     workbench's, and a consumer that declares its ladder as roles follows. */
+  --dsh-theme-radius-xs: 6px;
+  --dsh-theme-radius-sm: 8px;
+  --dsh-theme-radius-md: 10px;
+  --dsh-theme-radius-lg: 14px;
+}
+
+html body[data-ds-dark-theme],
+html body[data-ds-dark-theme] * {
+  --dsh-theme-surface: #0b101d;
+  --dsh-theme-surface-1: #0f1626;
+  --dsh-theme-surface-2: #151d2e;
+  --dsh-theme-line: rgba(255, 255, 255, 0.07);
+  --dsh-theme-line-soft: rgba(255, 255, 255, 0.05);
+  --dsh-theme-line-strong: rgba(255, 255, 255, 0.14);
+  --dsh-theme-ink: #e2e8f0;
+  --dsh-theme-ink-2: #94a3b8;
+  --dsh-theme-ink-3: #64748b;
+  --dsh-theme-ink-4: #475569;
+  --dsh-theme-accent: #3b82f6;
+  --dsh-theme-accent-hover: #60a5fa;
+  --dsh-theme-accent-ink: #0b101d;
+  --dsh-theme-ok: #10b981;
+  --dsh-theme-warn: #f59e0b;
+  --dsh-theme-danger: #ef4444;
+  --dsh-theme-kind-character: #818cf8;
+  --dsh-theme-kind-location: #34d399;
+  --dsh-theme-canvas-bg: #0b101d;
+  --dsh-theme-canvas-dot: #1e293b;
+  --dsh-theme-wire: #1e293b;
+  --dsh-theme-hover: #151d2e;
+  --dsh-theme-active: #1e293b;
+  --dsh-theme-scrim: rgba(0, 0, 0, 0.55);
+  --dsh-theme-shadow-overlay: 0 18px 48px rgba(0, 0, 0, 0.55);
+  --dsh-theme-shadow-float: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --dsh-theme-shadow-soft: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* ==========================================================================
    2. Floating window chrome — the 24px translucent sheet.
    `[data-slot="root"]` is `display:contents`, so `:has()` resolves the real
    boxed frame that owns it.
