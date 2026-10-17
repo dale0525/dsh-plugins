@@ -34,17 +34,23 @@ test('the announcement carries the design brief, not only the implementation rul
   // A Stitch screen is only useful if the brief let the model design rather
   // than transcribe. These are the constraints the user set for how a screen
   // is commissioned, and each one changes what gets generated.
-  assert.match(STITCH_GUIDANCE, /视觉效果/, 'the brief states what to show, not how to build it');
-  assert.match(STITCH_GUIDANCE, /自我发挥/, 'the model must be left room to design');
+  assert.match(STITCH_GUIDANCE, /需要显示什么内容/, 'the brief states what to show');
+  assert.match(STITCH_GUIDANCE, /不需要显示什么/, 'the brief also states what must be absent');
+  assert.match(STITCH_GUIDANCE, /样式一律不写/, 'the brief must not fix layout, spacing or colour');
+  assert.match(STITCH_GUIDANCE, /自由发挥/, 'the model must be left room to design');
   assert.match(STITCH_GUIDANCE, /无法实现/, 'the screen must not contain what the implementation cannot express');
   assert.match(STITCH_GUIDANCE, /暗色/, 'every screen ships a dark variant');
 });
 
-test('the announcement names the design-language source and the reuse rule', () => {
-  // Screens in this repository follow an existing design language and reuse
-  // the host components; a screen that invents its own language cannot be
-  // implemented without either a rewrite or a second visual system.
-  assert.match(STITCH_GUIDANCE, /设计语言/, 'the brief names the language the screen must follow');
+test('the announcement names a design language only as the exception', () => {
+  // The default is no style constraint at all. Matching an existing visual
+  // system is the one case where style is specified — and a name alone is not
+  // enough, because Stitch does not know our package names or theme names.
+  assert.match(STITCH_GUIDANCE, /唯一例外/, 'the design-language rule is marked as an exception');
+  assert.match(STITCH_GUIDANCE, /@logictan\/dsh-macos-theme/, 'the exception names the language to match');
+  assert.match(STITCH_GUIDANCE, /只报名字没用/, 'a bare identifier cannot convey a visual language');
+  assert.match(STITCH_GUIDANCE, /颜色取值/, 'the language is conveyed by its actual values');
+  assert.match(STITCH_GUIDANCE, /没有这种一致性要求时，不要指定任何设计语言/, 'absent that constraint, nothing is named');
   assert.match(STITCH_GUIDANCE, /复用/, 'existing components are reused rather than redrawn');
 });
 

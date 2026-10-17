@@ -52,9 +52,9 @@ Commissioning:
 
 | Rule | Why |
 | --- | --- |
-| Say what it should look like and what it must show; put no other limits on it | A brief that fixes layout, spacing and colour turns design into transcription, and the result is no better than writing it by hand. |
+| Say what to show and what to leave out, and nothing about style | The brief names the content and the existing components, plus what must not appear. Layout, spacing, colour, type and motion are left to Stitch; a brief that fixes them turns design into transcription, no better than writing it by hand. |
 | Ask for nothing that cannot be built | The screen is going to be reproduced pixel for pixel, so a wish for an impossible interaction or unavailable data is a defect in the brief. |
-| Follow the project's existing design language | Screens in this repository follow `@logictan/dsh-macos-theme` unless told otherwise. A second visual language cannot be implemented without a rewrite. |
+| Describe a design language only when the implementation must match one — and describe it, don't name it | The one exception to "no style limits": when a screen has to fit an existing visual system (here, `@logictan/dsh-macos-theme`), the brief must say what that system actually looks like — colour values, radii, borders, type weights and sizes, spacing density, light/dark relationships. Stitch does not know our package or theme names; pass the theme's own design-system text verbatim when the project has one. With no such constraint, specify no design language at all. |
 | Compose it from components the project already has | Host components and the shared component layer exist; a redrawn lookalike is work spent twice. |
 | Ask for a dark variant every time | Dark is the same design language's dark values, not an inversion. Both are implemented from one set of tokens. |
 
