@@ -910,31 +910,112 @@ test('the header more-actions menu is dropped at every width', () => {
   }
 })
 
-test('the phone drops the settings button, the permission menu and the Finder menu', () => {
-  // All three are addressed by a stable data attribute, and all three hide the
-  // slot's CHILD rather than the slot: measured, both slots carry an inline
-  // `display: contents` written by the host on the slot element itself, which
-  // beats any `display` a stylesheet can declare on that same element.
+test('the phone drops the settings button and the Finder menu, and shrinks the chips', () => {
+  // Both are addressed by a stable data attribute, and both hide the slot's CHILD
+  // rather than the slot: measured, both slots carry an inline `display: contents`
+  // written by the host on the slot element itself, which beats any `display` a
+  // stylesheet can declare on that same element.
+  //
+  // The composer's permission chip is deliberately NOT in this list any more. It
+  // used to be dropped here while 主检出 kept its full label, so the row's left
+  // edge changed shape depending on which plugins were mounted; now every chip
+  // steps down to a 28px icon square together (asserted below).
   const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
   const mobile = /@media \(max-width: 900px\)\s*\{([\s\S]*?)\n\}/.exec(css)
   assert.ok(mobile, 'the mobile block must exist')
-  for (const slot of ['settings.launcher', 'conversation.input.permission']) {
+  for (const slot of ['settings.launcher']) {
     assert.ok(
       new RegExp(`\\[data-slot='${slot.replace('.', '\\.')}'\\]\\s*>\\s*\\*`).test(mobile[1]),
       `${slot} must hide its child, not the slot itself (the slot is display:contents)`,
     )
   }
   assert.match(mobile[1], /\[data-open-target='directory'\]/, 'the Finder menu must be hidden on mobile')
+  assert.equal(
+    /\[data-slot='conversation\.input\.permission'\]\s*>\s*\*/.test(mobile[1]),
+    false,
+    'the permission chip must not be dropped — it shrinks to an icon like its neighbours',
+  )
 
-  // Each must NOT be hidden unconditionally — a desktop still carries all three.
+  // Each must NOT be hidden unconditionally — a desktop still carries both.
   const outside = css.replace(mobile[0], '')
-  for (const sel of ["[data-slot='settings.launcher']", "[data-slot='conversation.input.permission']", "[data-open-target='directory']"]) {
+  for (const sel of ["[data-slot='settings.launcher']", "[data-open-target='directory']"]) {
     assert.equal(
       new RegExp(`${sel.replace(/[[\]]/g, '\\$&')}\\s*\\{[^}]*display:\\s*none`).test(outside),
       false,
       `${sel} must survive on the desktop`,
     )
   }
+})
+
+test('the composer chips step down to an icon square together on 移动端', () => {
+  // The label of 主检出 is a BARE TEXT NODE inside the button
+  // (`<span class=icon/><svg/></span>主检出`), so there is no element to hide —
+  // `font-size: 0` on the button is what removes it, and the icon keeps its size
+  // from the explicit `svg` rule in section 8 (a length, not an em).
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  const mobile = /@media \(max-width: 900px\)\s*\{([\s\S]*?)\n\}/.exec(css)
+  assert.ok(mobile, 'the mobile block must exist')
+
+  const square = /body \[data-composer-card\] \[data-slot='conversation\.input\.permission'\] button,\s*body \[data-composer-card\] \[data-slot='conversation\.input\.left'\] button\[class\*='_ghost']\s*\{([^}]*)\}/.exec(mobile[1])
+  assert.ok(square, 'both chips must share one 移动端 rule')
+  assert.match(square[1], /width:\s*1\.75rem/, 'the chip must become a 28px square')
+  assert.match(square[1], /justify-content:\s*center/, 'the icon must be centred once the label is gone')
+  assert.match(square[1], /font-size:\s*0/, "font-size:0 is the only way to drop 主检出's bare text node")
+  assert.equal(/display:\s*none/.test(square[1]), false, 'the chip itself must stay — it is the only permission control left')
+
+  // 完全权限's label IS a real span, so it is hidden by name as well rather than
+  // relying on the inherited zero.
+  assert.match(
+    mobile[1],
+    /\[data-slot='conversation\.input\.permission'\] button \[class\*='_triggerLabel'\]\s*\{[^}]*display:\s*none/,
+    'the permission label must be hidden by name too',
+  )
+
+  // Nothing of this may leak above the breakpoint.
+  const outside = css.replace(mobile[0], '')
+  assert.equal(/font-size:\s*0/.test(outside), false, 'the chips keep their labels on the desktop')
+  assert.equal(
+    /\[data-slot='conversation\.input\.permission'\] button \[class\*='_triggerLabel'\]\s*\{[^}]*display:\s*none/.test(outside),
+    false,
+    'the desktop keeps the permission label',
+  )
+})
+
+test('the two host chips are normalised to one shape', () => {
+  // They share the fill and height, but arrive from different components:
+  // 完全权限 is the permission preset's `_trigger` (14px icon, label span,
+  // chevron), 主检出 is the worktree picker's `_ghost_ _sm_` primitive (16px
+  // icon, a bare text node, no chevron). Measured at 1600px before this rule:
+  // 112x28 next to 83x28, with a 14px glyph beside a 16px one.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+
+  const icon = /body \[data-composer-card\] \[data-slot='conversation\.input\.left'\] button\[class\*='_ghost'] svg,\s*body \[data-composer-card\] \[data-slot='conversation\.input\.permission'\] button svg\s*\{([^}]*)\}/.exec(css)
+  assert.ok(icon, 'both chips must share one icon size')
+  assert.match(icon[1], /height:\s*0\.875rem/, 'the design draws both icons at 14px (w-3.5)')
+  assert.match(icon[1], /width:\s*0\.875rem/, 'the design draws both icons at 14px (w-3.5)')
+
+  // The chevron is the host's own affordance and the design draws neither chip
+  // with one, so it was the last structural difference between two controls the
+  // design treats as identical.
+  assert.match(
+    css,
+    /\[data-slot='conversation\.input\.permission'\] button \[class\*='chevron'\]\s*\{[^}]*display:\s*none/,
+    'the permission chevron must be dropped — the design draws neither chip with one',
+  )
+
+  // 主检出 is anchored through `_ghost`, not the whole slot: the slot also
+  // carries other plugins' buttons (the workbench entry is one).
+  assert.ok(
+    css.includes("[data-slot='conversation.input.left'] button[class*='_ghost']"),
+    '主检出 must be anchored through its own class, not the whole slot',
+  )
+
+  // The two labels sat in different line boxes — 完全权限 at 20px, 主检出 at 18px,
+  // each inherited from its own host component. Both centred on the same axis
+  // (measured cy=835.86), so this is about the box, not the baseline.
+  const lh = /body \[data-composer-card\] \[data-slot='conversation\.input\.left'\] button\[class\*='_ghost'\],\s*body \[data-composer-card\] \[data-slot='conversation\.input\.permission'\] button\s*\{([^}]*)\}/.exec(css)
+  assert.ok(lh, 'both chips must share one line box')
+  assert.match(lh[1], /line-height:\s*18px/, 'the two labels must sit in the same 18px line box')
 })
 
 /**

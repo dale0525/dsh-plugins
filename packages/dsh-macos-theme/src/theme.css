@@ -784,6 +784,54 @@ body [data-composer-card] [data-slot='conversation.input.left'] button:hover {
   background-color: rgba(226, 232, 240, 0.8);
 }
 
+/* The two host chips share the fill and height above, but arrive from different
+   components with different interiors: 完全权限 is the permission preset's
+   `_trigger` (14px icon, label span, chevron), 主检出 is the worktree picker's
+   `_ghost_ _sm_` primitive (16px icon, a bare text node, no chevron). Measured
+   at 1600px: 112x28 with a 14px glyph beside 83x28 with a 16px one, so the two
+   read as different control families at the same height.
+
+   主检出 is anchored through `_ghost_` rather than the whole slot on purpose:
+   the slot also carries other plugins' buttons (the workbench entry is one), and
+   those keep their own treatment. */
+body [data-composer-card] [data-slot='conversation.input.left'] button[class*='_ghost'] svg,
+body [data-composer-card] [data-slot='conversation.input.permission'] button svg {
+  @apply h-3.5 w-3.5;
+}
+
+/* One line box for both labels. They disagreed by 2px — 完全权限 at 20px, 主检出
+   at 18px — because each chip's line-height comes from its own component. The
+   labels still centred on the same axis (measured cy=835.86 for both), so this is
+   about the box, not the baseline: a 20px box next to an 18px one makes the two
+   chips respond differently to any later change of font size. */
+body [data-composer-card] [data-slot='conversation.input.left'] button[class*='_ghost'],
+body [data-composer-card] [data-slot='conversation.input.permission'] button {
+  line-height: 18px;
+}
+
+/* The permission chip's chevron is the host's own affordance, and the design
+   draws neither chip with one (`docs/design/336b89c1….html`: shield + label,
+   branch + label). Leaving it in made this chip 18px wider for a glyph the one
+   beside it does not carry — the last structural difference between two controls
+   the design treats as identical. */
+body [data-composer-card] [data-slot='conversation.input.permission'] button [class*='chevron'] {
+  display: none;
+}
+
+/* The host drops the permission chip's label through a CONTAINER query
+   (`@container (width<=460px)`), not a viewport one. Opening the workbench
+   squeezes the composer below 460px on a 1600px desktop, so that chip alone lost
+   its label while the chips beside it kept theirs — measured 56x28 next to
+   83x28 in the same row. Stepping down to icon-only belongs to the 900px
+   breakpoint below, where every chip does it together, so above that line the
+   label stays.
+
+   The selector has to outrank the host's `:has()` rule (0-3-0); this one is
+   0-4-2, which is why the `button[class*='_trigger']` hop looks redundant. */
+body [data-composer-card] [data-slot='conversation.input.permission'] button[class*='_trigger'] [class*='_triggerLabel'] {
+  display: block;
+}
+
 /* Model pill — the design sets it in `font-mono`; it uses the bundled stack for
    the same reason the code surfaces do.
    `button[...]` is load-bearing here for the reason spelled out above: the host
@@ -951,7 +999,7 @@ body[data-ds-dark-theme] [data-composer-card] [data-slot='conversation.input.lef
     @apply rounded-[22px];
   }
 
-  /* "移动端" in this project means phone *and* tablet, so these three follow the
+  /* "移动端" in this project means phone *and* tablet, so these two follow the
      same 900px line as the tablet ring rather than the 600px phone line.
 
      The two slots carry an inline `display: contents` (the host writes it on the
@@ -960,8 +1008,28 @@ body[data-ds-dark-theme] [data-composer-card] [data-slot='conversation.input.lef
      wrapper contributing no box of its own, removing its contents removes the
      control. Measured, each slot holds exactly one child. */
   body [data-slot='settings.launcher'] > *,
-  body [data-slot='conversation.input.permission'] > *,
   body [data-open-target='directory'] {
+    display: none;
+  }
+
+  /* The composer's two host chips step down to a 28x28 icon square. They used to
+     be handled two different ways — 完全权限 was hidden outright while 主检出 kept
+     its full label — so the row's left edge changed shape depending on which
+     plugin happened to be mounted.
+
+     `font-size: 0` is what does the work on 主检出: its label is a BARE TEXT NODE
+     inside the button (`<span class=icon/><svg/></span>主检出`), so there is no
+     element to target. The icon keeps its size from the explicit `svg` rule in
+     section 8, which is a length, not an em. 完全权限's label is a real span and is
+     hidden by name as well, so it does not rely on the inherited zero. */
+  body [data-composer-card] [data-slot='conversation.input.permission'] button,
+  body [data-composer-card] [data-slot='conversation.input.left'] button[class*='_ghost'] {
+    @apply w-7 justify-center px-0;
+    gap: 0;
+    font-size: 0;
+  }
+
+  body [data-composer-card] [data-slot='conversation.input.permission'] button [class*='_triggerLabel'] {
     display: none;
   }
 
@@ -1079,10 +1147,10 @@ body[data-ds-dark-theme] [data-composer-card] [data-slot='conversation.input.lef
       `settings.launcher` slot at the foot of the sidebar; once the sidebar is
       collapsed to its 56px icon rail there is no room for a full-width settings
       row, and the sidebar is collapsed at both phone and tablet width.
-   3. The composer's permission menu ("完全权限") and the header's Finder menu, on
-      mobile only. The composer row carries four controls, and at 390px that is
-      277px of width for all of them; the Finder group is two buttons on top of
-      the menu dropped above.
+   3. The header's Finder menu, on mobile only. The composer's own permission
+      chip is NOT in this list: it used to be dropped here along with it, but the
+      row now steps down to icon squares at the same breakpoint (section 10), so
+      the chip survives at 28px and the row keeps its left-to-right order.
    ========================================================================== */
 body [data-slot='conversation.session.header.utilities'] > span:not(:has([data-open-target])) {
   display: none;
