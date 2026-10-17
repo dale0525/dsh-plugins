@@ -46,6 +46,8 @@ export class OpenVikingRuntime {
       profileBlock: "",
       profileDelivered: false,
       toolNames: new Map(),
+      injectedTurn: undefined,
+      injectedUris: new Set(),
       writes: Promise.resolve(),
       initializationRetryable: false,
       hasPendingWrites: false,
@@ -161,11 +163,15 @@ export class OpenVikingRuntime {
     return pluginMessage(state.profileBlock, { form: "instructions" });
   }
 
-  async recallMessage(agent, messages) {
+  async recallMessage(agent, messages, position = {}) {
     const state = await this.initialize(agent);
     if (!state.ready || !isRecallEnabled(state.config)) return null;
     const query = promptText(messages);
     if (query.length < state.config.minQueryLength) return null;
+    if (position.turn !== state.injectedTurn) {
+      state.injectedTurn = position.turn;
+      state.injectedUris.clear();
+    }
     const block = await buildRecallBlock(
       (path, init, options) => this.client.fetchJSON(path, init, options),
       state.config,
@@ -178,7 +184,27 @@ export class OpenVikingRuntime {
         log: (stage, data) => this.log(stage, data),
       },
     );
-    return block ? pluginMessage(block, { form: "recall" }) : null;
+    if (!block) return null;
+    // Recall fires once per STEP, and the server answers each call with a full
+    // budgeted block: in a measured 51-turn session 217 firings carried 4242
+    // URI slots for 342 distinct URIs. What this turn already put in front of
+    // the model is not worth a second copy, so the repeats are dropped here —
+    // the server's `exclude_uris` was measured to change WHICH entries come
+    // back, not how much, so filtering the returned block is the only way to
+    // actually shrink the injection.
+    const kept = dropInjectedMemories(block, state.injectedUris);
+    if (!kept) return null;
+    return pluginMessage(kept, { form: "recall" });
+  }
+
+  /**
+   * Forget what this session already injected. Compaction rewrites the history
+   * those blocks were part of, so a URI dropped by the summary is no longer in
+   * front of the model and has to be injectable again — the same trade-off the
+   * loader makes for AGENTS.md.
+   */
+  forgetInjected(session) {
+    this.stateFor(session).injectedUris.clear();
   }
 
   capture(session, event) {
@@ -458,4 +484,40 @@ function hasStartupProfile(agent) {
 function isStartupProfile(message) {
   return isOpenVikingPluginMessage(message)
     && message.source.form === "instructions";
+}
+
+// The self-closing form must come FIRST: the server renders `detail="uri"` and
+// `detail="abstract"` entries as `<memory ... />`, and an alternation that tried
+// the paired form first would read such a tag as an opening one and swallow
+// every element up to the next `</memory>` — verified against a real block,
+// where it collapsed 20 elements into 15 and dropped a fresh entry's text.
+const MEMORY_ELEMENT_RE = /<memory\b[^>]*\/>|<memory\b[^>]*>[\s\S]*?<\/memory>/g;
+const MEMORY_URI_RE = /\buri="([^"]+)"/;
+
+/**
+ * Keep only the memories this turn has not injected yet, and return the block
+ * minus the repeated ones — or "" when nothing is left.
+ *
+ * The server renders the block, so the unit that can be dropped without
+ * breaking it is the `<memory>` element: the envelope and its instruction line
+ * are shared by every entry. A block with no element at all is passed through
+ * untouched, because then there is nothing to compare against.
+ */
+function dropInjectedMemories(block, injected) {
+  const elements = block.match(MEMORY_ELEMENT_RE);
+  if (!elements?.length) return block;
+  const kept = [];
+  for (const element of elements) {
+    const uri = MEMORY_URI_RE.exec(element)?.[1];
+    if (uri === undefined) {
+      kept.push(element);
+      continue;
+    }
+    if (injected.has(uri)) continue;
+    injected.add(uri);
+    kept.push(element);
+  }
+  if (kept.length === elements.length) return block;
+  if (kept.length === 0) return "";
+  return block.replace(MEMORY_ELEMENT_RE, () => kept.shift() ?? "");
 }

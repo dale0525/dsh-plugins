@@ -415,6 +415,139 @@ test("recall sends no exclude_uris when recallExcludeUris is unset", async () =>
   assert.equal("exclude_uris" in bodies[0], false);
 });
 
+// One turn fires recall once per step, not once per turn, and the server's own
+// `dedup_turns` window still answers with 10 entries per call. Measured over a
+// 51-turn session: 217 firings carried 4242 URI slots but only 342 distinct
+// URIs, 78% of the repeats one turn apart, and 142 of the firings shared a URI
+// with an earlier firing of the same turn. Re-injecting what this turn already
+// put in front of the model is pure dilution — the same reason the loader does
+// not re-send AGENTS.md before a compaction.
+test("a URI already injected in this turn is not injected again", async () => {
+  const bodies = [];
+  const runtime = new OpenVikingRuntime({
+    async fetchJSON(path, init) {
+      if (!/\/search\/search$/.test(path)) return { ok: true, result: {} };
+      bodies.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        result: {
+          entries: [],
+          rendered: [
+            '<memory uri="viking://user/dsh/a.md" score="0.9">\na\n</memory>',
+            '<memory uri="viking://user/dsh/b.md" score="0.9" detail="uri" />',
+          ].join("\n"),
+          stats: {},
+        },
+      };
+    },
+  }, config(), { debug() {} });
+  const session = { id: "same-turn", header: { cwd: "/workspace" } };
+  runtime.stateFor(session).ready = true;
+  runtime.initialize = async () => runtime.stateFor(session);
+
+  const first = await runtime.recallMessage({ session }, [{ role: "user", content: "what did we decide" }], { turn: 1 });
+  const second = await runtime.recallMessage({ session }, [{ role: "user", content: "what did we decide" }], { turn: 1 });
+
+  assert.match(first.content[0].text, /a\.md/);
+  assert.match(first.content[0].text, /b\.md/);
+  assert.equal(second, null);
+  // The server's exclude_uris was measured to change WHICH entries come back,
+  // not how many, so the repeat is dropped from the block, not the request.
+  assert.equal("exclude_uris" in bodies[1], false);
+});
+
+// The server renders `detail="uri"` and `detail="abstract"` entries as
+// `<memory ... />`, and a real block interleaves them with the paired form. An
+// alternation that tried the paired form first reads such a tag as an opening
+// one and swallows everything up to the next `</memory>`: measured on a real
+// block, 20 elements collapsed to 15 and one entry's text disappeared.
+test("a self-closing entry does not swallow the next one", async () => {
+  const rendered = [
+    '<memory uri="viking://user/dsh/self.md" score="0.9" detail="uri" />',
+    '<memory uri="viking://user/dsh/paired.md" score="0.9" detail="overview">\npaired body\n</memory>',
+  ].join("\n");
+  let served = 0;
+  const runtime = new OpenVikingRuntime({
+    async fetchJSON(path) {
+      if (!/\/search\/search$/.test(path)) return { ok: true, result: {} };
+      served += 1;
+      return {
+        ok: true,
+        result: {
+          entries: [],
+          rendered: served === 1
+            ? rendered
+            : rendered.replace('uri="viking://user/dsh/paired.md"', 'uri="viking://user/dsh/fresh.md"'),
+          stats: {},
+        },
+      };
+    },
+  }, config(), { debug() {} });
+  const session = { id: "self-closing", header: { cwd: "/workspace" } };
+  runtime.stateFor(session).ready = true;
+  runtime.initialize = async () => runtime.stateFor(session);
+
+  await runtime.recallMessage({ session }, [{ role: "user", content: "x" }], { turn: 1 });
+  const second = await runtime.recallMessage({ session }, [{ role: "user", content: "x" }], { turn: 1 });
+
+  // The fresh entry survived as its own element; the repeated self-closing one
+  // is gone, and the fresh body did not travel attached to it.
+  assert.match(second.content[0].text, /fresh\.md/u);
+  assert.doesNotMatch(second.content[0].text, /self\.md/u);
+  assert.match(second.content[0].text, /paired body/u);
+});
+
+test("a new turn may inject a URI an earlier turn already injected", async () => {
+  const runtime = new OpenVikingRuntime({
+    async fetchJSON(path) {
+      if (!/\/search\/search$/.test(path)) return { ok: true, result: {} };
+      return {
+        ok: true,
+        result: {
+          entries: [],
+          rendered: '<memory uri="viking://user/dsh/a.md" score="0.9">\na\n</memory>',
+          stats: {},
+        },
+      };
+    },
+  }, config(), { debug() {} });
+  const session = { id: "next-turn", header: { cwd: "/workspace" } };
+  runtime.stateFor(session).ready = true;
+  runtime.initialize = async () => runtime.stateFor(session);
+
+  await runtime.recallMessage({ session }, [{ role: "user", content: "what did we decide" }], { turn: 1 });
+  const second = await runtime.recallMessage({ session }, [{ role: "user", content: "what did we decide" }], { turn: 2 });
+
+  assert.match(second.content[0].text, /a\.md/);
+});
+
+// Compaction rewrites the surface history those blocks were part of, so what it
+// dropped is no longer in front of the model and must be injectable again.
+test("compaction/end forgets the URIs this turn injected", async () => {
+  const runtime = new OpenVikingRuntime({
+    async fetchJSON(path) {
+      if (!/\/search\/search$/.test(path)) return { ok: true, result: {} };
+      return {
+        ok: true,
+        result: {
+          entries: [],
+          rendered: '<memory uri="viking://user/dsh/a.md" score="0.9">\na\n</memory>',
+          stats: {},
+        },
+      };
+    },
+  }, config(), { debug() {} });
+  const session = { id: "compacted", header: { cwd: "/workspace" } };
+  runtime.stateFor(session).ready = true;
+  runtime.initialize = async () => runtime.stateFor(session);
+
+  await runtime.recallMessage({ session }, [{ role: "user", content: "what did we decide" }], { turn: 1 });
+  runtime.forgetInjected(session);
+  const after = await runtime.recallMessage({ session }, [{ role: "user", content: "what did we decide" }], { turn: 1 });
+
+  assert.match(after.content[0].text, /a\.md/);
+});
+
 test("syncTurns false sends nothing: no capture, no commit, no dispose flush, no replay", async () => {
   const pendingDir = await mkdtemp(join(tmpdir(), "dsh-memory-sync-off-"));
   tempDirs.push(pendingDir);

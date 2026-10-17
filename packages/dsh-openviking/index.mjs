@@ -69,13 +69,13 @@ export function apply(ctx, input = {}) {
   // Profile + recall are independent after `next()`; run them concurrently so
   // the agent/pre-step waterfall (which currently gates user/message push in
   // dsh-agent-loop) spends less wall time (#4515).
-  ctx.on("agent/pre-step", async ({ agent, messages, signal }, next) => {
+  ctx.on("agent/pre-step", async ({ agent, messages, signal, turn }, next) => {
     const decision = await next();
     if (skipMemory(agent.session)) return decision;
     if (decision.kind !== "enter" || signal.aborted) return decision;
     const [profile, recall] = await Promise.all([
       runtime.profileMessage(agent),
-      runtime.recallMessage(agent, decision.messages),
+      runtime.recallMessage(agent, decision.messages, { turn }),
     ]);
     if (signal.aborted) return decision;
     const additions = [profile, recall].filter(Boolean);
@@ -88,6 +88,9 @@ export function apply(ctx, input = {}) {
     if (skipMemory(session)) return;
     runtime.capture(session, event);
     runtime.maybeCommit(session, event);
+    // The summary just rewrote the history the injected recall blocks were part
+    // of, so what it dropped has to be injectable again.
+    if (event.type === "compaction/end") runtime.forgetInjected(session);
   });
 
   ctx.on("session/flush", async session => {
