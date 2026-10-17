@@ -22,6 +22,12 @@ patchFrom:
   # gradient, the floating window and the per-column surfaces. It is cosmetic and
   # additive, so it coexists with every other plugin here.
   - ../dsh-macos-theme
+  # The shared component layer every plugin's settings card imports. It has a row
+  # of its own so `dsh-client-modules` puts it into the browser module table — a
+  # package that is only a `dependencies` entry never gets there, and the
+  # consumer's `require` fails with `missed the module table`. Consumers declare
+  # it in `dsh.client.external`, which orders this row ahead of them.
+  - ../dsh-plugins-shared-client
 deps:
   - ../dsh-config-manager
   - ../dsh-easyrewrite
@@ -56,3 +62,9 @@ deps:
   # gradient, the floating window and the per-column surfaces. It is cosmetic and
   # additive, so it coexists with every other plugin here.
   - ../dsh-macos-theme
+  # The shared component layer every plugin's settings card imports. It has a row
+  # of its own so `dsh-client-modules` puts it into the browser module table — a
+  # package that is only a `dependencies` entry never gets there, and the
+  # consumer's `require` fails with `missed the module table`. Consumers declare
+  # it in `dsh.client.external`, which orders this row ahead of them.
+  - ../dsh-plugins-shared-client

@@ -132,24 +132,8 @@
       name: '@logictan/dsh-openviking'
 
 # from ../dsh-loop-guard
-# The dsh-loop-guard bundle patch: the guard needs no deployment-specific
-# config to mount (its defaults detect reasoning-only steps and steer on the
-# second strike). Every key below is also editable from the Plugins page — as of
-# the 0.1.7-alpha.1 settings redesign the guard's own `Config` schema is the one
-# configuration surface, and `dsh-settings` derives that page's form from it,
-# keyed by this row's id. There is no separate settings namespace and no
-# precedence rule between layers: the row's `config` IS the entry's config, and
-# the page edits that same entry. Use this file for values that must be baked
-# into the deployment; use the Plugins page for the rest.
-#
-#   - insert:
-#       - id: loop-guard
-#         config:
-#           maxThinkingSteps: 3
-#           minReasoningChars: 2048
-#           similarityThreshold: 0.8
-#           escalate: steer
-#           cancelCause: thinking-loop
+# The dsh-loop-guard bundle patch: mounts the loop guard plugin with its
+# built-in default constants. The guard requires no configuration.
 
 - insert:
     - id: loop-guard
@@ -317,3 +301,22 @@
 - insert:
     - id: macos-theme
       name: '@logictan/dsh-macos-theme'
+
+# from ../dsh-plugins-shared-client
+# The shared component layer's own row.
+#
+# It has no configuration and its host half does nothing — the row exists for
+# exactly one reason: `@deepseek-ai/dsh-client-modules` only ever puts a package
+# into its browser-side module table when the package is a real Loader entry
+# (`reconcilePackage` is driven by `internal/plugin` emissions and by the
+# loader's own entry list). A package that is merely a `dependencies` entry of
+# the aggregate bundle never reaches that table, so a consumer's
+# `require("@logictan/dsh-plugins-shared-client")` would throw
+# `missed the module table`.
+#
+# The id must stay unique across the repository and equal the host half's
+# `export const name`; a duplicate is a hard startup crash
+# (`duplicate loader entry id`).
+- insert:
+    - id: plugins-shared-client
+      name: '@logictan/dsh-plugins-shared-client'
