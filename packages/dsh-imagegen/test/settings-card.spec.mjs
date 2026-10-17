@@ -120,3 +120,51 @@ test('the card no longer carries its own save and discard controls', () => {
     'the per-card discard button must be gone',
   )
 })
+
+test('the card stages only the key, not the fields the schema renders', () => {
+  // The crash this pins: `projection()` kept reading `this.form.field('enabled')`
+  // for every migrated scalar after `CardForm` had been narrowed to the single
+  // `secretField('promptApiKey')` spec. `CardForm.specOf` throws on an unknown
+  // field, so the whole `plugins.row.config` slot rendered as an error node and
+  // the settings page showed the plugin's title with no controls under it.
+  //
+  // Field-by-field: any `form.field(...)` here must name a spec the card
+  // actually registers, and the migrated scalars must not appear at all.
+  const specs = [...card.matchAll(/secretField\('([^']+)'\)/g)].map(m => m[1])
+  const reads = [...card.matchAll(/this\.form\.field\('([^']+)'\)/g)].map(m => m[1])
+  assert.deepEqual(specs, ['promptApiKey'], 'the card registers exactly one staged field')
+  assert.deepEqual(reads, ['promptApiKey'], 'and reads exactly that one back')
+  for (const migrated of ['enabled', 'announceToAgent', 'allowAgentImageGeneration', 'promptApiUrl', 'promptModel']) {
+    assert.ok(
+      !new RegExp(`this\\.form\\.field\\('${migrated}'\\)`).test(card),
+      `${migrated} is rendered from the schema; staging it again throws`,
+    )
+  }
+})
+
+test('the form handle and its snapshot keep their identity between calls', () => {
+  // The crash this pins: `getSnapshot()` built a fresh object on every call, and
+  // `asConfigFormHandle()` was built inline in the render body. `useSyncExternal
+  // Store` compares snapshots by reference, so every call looked like a change,
+  // every render subscribed again, and React stopped at error #185 (maximum
+  // update depth exceeded). The slot rendered as an error node: the page showed
+  // the plugin's title with no controls under it.
+  //
+  // Both halves are pinned here: the handle must be memoized in the component,
+  // and the projection must be cached against the scope's own snapshot.
+  assert.match(
+    card,
+    /const formHandle = useMemo\(\s*\(\) => asConfigFormHandle\(/,
+    'the handle must be memoized, not rebuilt each render',
+  )
+  assert.match(card, /form=\{formHandle\}/, 'and the memoized handle is what the form receives')
+  assert.ok(
+    !/form=\{asConfigFormHandle\(/.test(card),
+    'building the handle inline re-renders forever',
+  )
+  assert.match(
+    card,
+    /if \(snapshot !== cachedFrom\) \{/,
+    'the projected snapshot must be cached against the scope snapshot identity',
+  )
+})

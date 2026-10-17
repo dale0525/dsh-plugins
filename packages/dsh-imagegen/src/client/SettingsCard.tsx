@@ -12,7 +12,7 @@
  * with detection.
  */
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { CardForm, secretField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
@@ -49,14 +49,12 @@ export interface ImageGenSettings {
 export interface ImageGenSettingsCardState extends CardShell {
   /** Channel list staging (channels + per-channel key edits + default). */
   channels: ChannelsFormState
-  /** Master switch. */
-  enabled: CardFieldState
-  /** System-prompt announcement flag. */
-  announceToAgent: CardFieldState
-  allowAgentImageGeneration: CardFieldState
-  promptApiUrl: CardFieldState
+  /**
+   * The prompt-enhancement key, the one scalar this card still stages itself.
+   * Every other scalar is rendered by the shared form straight from the
+   * schema, so it has no `CardFieldState` here.
+   */
   promptApiKey: CardFieldState
-  promptModel: CardFieldState
 }
 
 /**
@@ -114,15 +112,28 @@ function asConfigFormHandle(scope: ImageGenScope): {
   subscribe: (listener: () => void) => () => void
   mutate: (ops: ReadonlyArray<{ op: 'set'; path: readonly string[]; value: unknown } | { op: 'unset'; path: readonly string[] }>, expectedRevision?: number) => Promise<boolean>
 } {
+  // The projected snapshot is cached against the scope's own snapshot identity.
+  // `useSyncExternalStore` compares snapshots by reference and re-renders when
+  // they differ, so returning a fresh object from every `getSnapshot()` call
+  // re-renders forever (React error #185: maximum update depth exceeded). The
+  // scope already hands back a stable object per revision, so keying off it is
+  // both correct and cheap.
+  let cachedFrom: unknown
+  let cached: ReturnType<typeof project> | undefined
+  const project = (snapshot: ReturnType<ImageGenScope['getSnapshot']>) => ({
+    status: snapshot.status,
+    value: snapshot.value as Record<string, unknown> | undefined,
+    writable: snapshot.writable,
+    revision: snapshot.revision,
+  })
   return {
     getSnapshot() {
       const snapshot = scope.getSnapshot()
-      return {
-        status: snapshot.status,
-        value: snapshot.value as Record<string, unknown> | undefined,
-        writable: snapshot.writable,
-        revision: snapshot.revision,
+      if (snapshot !== cachedFrom) {
+        cachedFrom = snapshot
+        cached = project(snapshot)
       }
+      return cached!
     },
     subscribe(listener) {
       return scope.subscribe(listener)
@@ -151,6 +162,17 @@ export interface ImageGenSettingsCardFace extends CardActions {
 export class ImageGenSettingsCardController {
   private readonly form: CardForm<ImageGenSettings>
   private readonly channelsForm: ChannelsForm
+  /**
+   * The two face values that must keep their identity across `inject()` calls.
+   *
+   * The slot calls `inject()` on every render. Building either of these fresh
+   * there changes the prop identity the renderer subscribed with, which
+   * schedules another render, which calls `inject()` again — React reports that
+   * as error #185 (`Maximum update depth exceeded`) and the slot renders as an
+   * error node with no controls under it.
+   */
+  private readonly cardStore: SnapshotStore<ImageGenSettingsCardState>
+  private readonly schemaMirror: ReturnType<typeof createSchemaMirror>
 
   /** @param scope - the bound bridge scope for the dsh-imagegen namespace. */
   constructor(private readonly scope: ImageGenScope) {
@@ -165,6 +187,9 @@ export class ImageGenSettingsCardController {
       secretSettled: (field) => this.scope.getSecretSetSnapshot(field),
     })
     this.channelsForm = new ChannelsForm(scope)
+    this.schemaMirror = createSchemaMirror(scope)
+    this.cardStore = this.form.bind(() => this.projection())
+    this.channelsForm.subscribe(() => { this.cardStore.set(this.projection()) })
   }
 
   private projection(): ImageGenSettingsCardState {
@@ -173,12 +198,7 @@ export class ImageGenSettingsCardController {
       ...shell,
       dirty: shell.dirty || this.channelsForm.snapshot().dirty,
       channels: this.channelsForm.snapshot(),
-      enabled: this.form.field('enabled'),
-      announceToAgent: this.form.field('announceToAgent'),
-      allowAgentImageGeneration: this.form.field('allowAgentImageGeneration'),
-      promptApiUrl: this.form.field('promptApiUrl'),
       promptApiKey: this.form.field('promptApiKey'),
-      promptModel: this.form.field('promptModel'),
     }
   }
 
@@ -187,15 +207,13 @@ export class ImageGenSettingsCardController {
    * @returns the card's snapshot and the form/channel actions.
    */
   inject(): ImageGenSettingsCardFace {
-    const cardStore = this.form.bind(() => this.projection())
-    this.channelsForm.subscribe(() => { cardStore.set(this.projection()) })
     return {
       hooks: {
-        imageGenSettingsCard: cardStore,
+        imageGenSettingsCard: this.cardStore,
       },
       channels: this.channelsForm.actions(),
       settingsScope: this.scope,
-      schemaMirror: createSchemaMirror(this.scope),
+      schemaMirror: this.schemaMirror,
       ...this.form.actions(),
     }
   }
@@ -232,6 +250,14 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
   const t = tt
   useImageGenLanguageTick()
   const state = props.useImageGenSettingsCard(snapshot => snapshot)
+  // The shared form subscribes through this handle, so it must keep its identity
+  // across renders. Building it inline made `useSyncExternalStore` see a new
+  // subscribe/getSnapshot pair every render and re-render forever (React error
+  // #185), which surfaced as an empty `plugins.row.config` slot.
+  const formHandle = useMemo(
+    () => asConfigFormHandle(props.settingsScope),
+    [props.settingsScope],
+  )
   // `promptModel` belongs to the shared form now, so the detection picker below
   // reads it from the scope rather than from this card's staged state.
   const liveModel = props.settingsScope.getSnapshot().value?.promptModel ?? ''
@@ -330,7 +356,7 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
             <div className={css.schemaSection}>
               <ConfigForm
                 namespace={IMAGEGEN_SETTINGS_NAMESPACE}
-                form={asConfigFormHandle(props.settingsScope)}
+                form={formHandle}
                 describe={props.schemaMirror}
                 title={t('settings.scalarsTitle')}
               >

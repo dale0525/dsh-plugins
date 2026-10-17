@@ -220,21 +220,30 @@ export class CardForm<T> {
     }
   }
 
-  /** The actions the card's slot registration injects. */
+  /**
+   * The actions the card's slot registration injects.
+   *
+   * Built once. The slot calls `inject()` on every render, and a fresh object
+   * with fresh closures each time changes the props the renderer subscribed
+   * with, which re-renders forever (React error #185). These closures only ever
+   * capture `this`, so one instance serves every call.
+   */
+  private readonly actionSet: CardActions = {
+    edit: (field, text) => { this.stage(field, { text, clear: false }) },
+    resetField: (field) => {
+      this.stage(field, { text: this.specOf(field).format(this.baseValue(field)), clear: true })
+    },
+    save: () => { void this.save() },
+    discard: () => {
+      if (this.staged.size === 0 && !this.failed) return
+      this.staged.clear()
+      this.failed = false
+      this.publish()
+    },
+  }
+
   actions(): CardActions {
-    return {
-      edit: (field, text) => { this.stage(field, { text, clear: false }) },
-      resetField: (field) => {
-        this.stage(field, { text: this.specOf(field).format(this.baseValue(field)), clear: true })
-      },
-      save: () => { void this.save() },
-      discard: () => {
-        if (this.staged.size === 0 && !this.failed) return
-        this.staged.clear()
-        this.failed = false
-        this.publish()
-      },
-    }
+    return this.actionSet
   }
 
   /**

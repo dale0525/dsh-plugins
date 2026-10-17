@@ -45,7 +45,7 @@ importers:
         specifier: ^0.1.1
         version: link:../dsh-goal-resume
       '@logictan/dsh-imagegen':
-        specifier: ^2.0.5
+        specifier: ^2.0.6
         version: link:../dsh-imagegen
       '@logictan/dsh-loop-guard':
         specifier: ^1.1.7

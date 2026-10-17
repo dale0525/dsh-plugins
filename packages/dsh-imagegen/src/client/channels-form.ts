@@ -194,24 +194,33 @@ export class ChannelsForm {
     }
   }
 
-  /** The actions the card's slot registration injects. */
+  /**
+   * The actions the card's slot registration injects, built once.
+   *
+   * The slot calls `inject()` on every render, and a fresh object with fresh
+   * closures each time changes the props the renderer subscribed with, which
+   * re-renders forever (React error #185). These closures only ever capture
+   * `this`, so one instance serves every call.
+   */
+  private readonly actionSet: ChannelsFormActions = {
+    setChannels: (channels) => { this.stageChannels(channels) },
+    setChannelKey: (id, value) => { this.stageKey(id, value) },
+    setDefaultChannel: (id) => { this.stagedDefault = id; this.failed = false; this.publish() },
+    setDefaultModel: (model) => { this.stagedDefaultModel = model; this.failed = false; this.publish() },
+    commit: () => this.commit(),
+    discard: () => {
+      if (this.stagedChannels === null && this.stagedKeys.size === 0 && this.stagedDefault === null && this.stagedDefaultModel === null && !this.failed) return
+      this.stagedChannels = null
+      this.stagedKeys.clear()
+      this.stagedDefault = null
+      this.stagedDefaultModel = null
+      this.failed = false
+      this.publish()
+    },
+  }
+
   actions(): ChannelsFormActions {
-    return {
-      setChannels: (channels) => { this.stageChannels(channels) },
-      setChannelKey: (id, value) => { this.stageKey(id, value) },
-      setDefaultChannel: (id) => { this.stagedDefault = id; this.failed = false; this.publish() },
-      setDefaultModel: (model) => { this.stagedDefaultModel = model; this.failed = false; this.publish() },
-      commit: () => this.commit(),
-      discard: () => {
-        if (this.stagedChannels === null && this.stagedKeys.size === 0 && this.stagedDefault === null && this.stagedDefaultModel === null && !this.failed) return
-        this.stagedChannels = null
-        this.stagedKeys.clear()
-        this.stagedDefault = null
-        this.stagedDefaultModel = null
-        this.failed = false
-        this.publish()
-      },
-    }
+    return this.actionSet
   }
 
   // ------------------------------------------------------------------ staging
