@@ -161,6 +161,21 @@ async function publishTools(ctx, driver, lifetime, pending) {
     }));
   }
 
+  // These schemas are what makes the prompt expensive and the model no better:
+  // measured, they are 109,857 characters of a 220,021-character first request,
+  // and the 1,864-session log holds 509 model-direct calls against them, spread
+  // over 27 sessions — 25 of which never used `desktop_agent` at all. The work
+  // goes through `desktop_agent`, whose sub-dispatches carry a `parent` token
+  // and are resolved from the registry's own layers, never from the prompt. So
+  // the announcement is withdrawn while the definitions stay registered and
+  // executable: `resolveExecution` consults the layer visibility, not the
+  // assembly, so a model that names one anyway still gets it executed.
+  ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+    const assembly = await next();
+    const kept = assembly.tools.filter((tool) => !names.has(tool.name));
+    return kept.length === assembly.tools.length ? assembly : { ...assembly, tools: kept };
+  });
+
   const systemPrompt = ctx.get('systemPrompt');
   if (systemPrompt === null || systemPrompt === undefined) {
     ctx.logger?.warn?.('desktop-agent: the systemPrompt service is unavailable; the Cua Driver guidance was not registered.');

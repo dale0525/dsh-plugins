@@ -87,6 +87,7 @@ function host(options = {}) {
   const registered = [];
   const routes = [];
   const effects = [];
+  const handlers = new Map();
 
   const tools = {
     register(definition) {
@@ -142,6 +143,9 @@ function host(options = {}) {
   const ctx = {
     get: (service) => (services.includes(service) ? available[service] : undefined),
     logger: { warn: () => {} },
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
     effect(fn) {
       effects.push(fn());
       return () => {};
@@ -165,7 +169,7 @@ function host(options = {}) {
     }
   };
 
-  return { ctx, dispatches, registered, routes, effects, provide, deferred };
+  return { ctx, dispatches, registered, routes, effects, handlers, provide, deferred };
 }
 
 /** The window list the driver returns for target resolution. */

@@ -53,6 +53,11 @@ Only elements carrying both a token and a non-empty label become anchors.
 None beyond installing this plugin. It publishes the `cua_driver_native__*` tools
 itself, from the Cua Driver native SDK it depends on, and dispatches to them.
 
+Those tools are registered but **not announced**: their 56 schemas are 109,857
+characters of the first request, and the work goes through `desktop_agent` instead.
+The registry resolves a call from its own layers rather than from the prompt, so a
+call to one of these names still executes — it just is not advertised.
+
 A profile that still mounts the old
 `@deepseek-ai/dsh-experimental-computer-use-cua-driver-native` provider must drop
 that row and its `@deepseek-ai/dsh-computer-use` dependency first: both would
@@ -81,11 +86,8 @@ it uses the frontmost window.
 
 ### When to call it
 
-For any desktop task that takes more than about two steps, call `desktop_agent`
-rather than driving the `cua_driver_native__*` tools yourself. The loop's ~40
-captures and decisions stay inside this one call; driving the raw tools by hand
-puts every screenshot into the agent's own context instead. The raw tools remain
-the right choice for resolving a window, or for a single action already decided on.
+For any desktop task, call `desktop_agent`. The loop's ~40 captures and decisions
+stay inside this one call rather than entering the agent's own context.
 
 For a task that lives in a web page, `browser_agent` is the better tool — it
 drives the DOM over CDP and does not depend on reading pixels. This tool is for

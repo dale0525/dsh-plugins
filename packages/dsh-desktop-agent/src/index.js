@@ -154,10 +154,8 @@ export async function apply(ctx, config, loadSdk) {
       'asks the configured model what to do, and performs the click, key, or text entry it chose. ' +
       'Works on ordinary applications and on games that expose no usable accessibility tree, because it reads the ' +
       'picture rather than the element table. ' +
-      '\n\nPREFER THIS over calling the cua_driver_native__* tools yourself for any task that takes more than ' +
-      'about two steps. It runs the whole loop inside one call, so its 40 screenshots and decisions never enter ' +
-      'this conversation; driving those tools by hand puts every screenshot into the context instead. Reach for the ' +
-      'raw tools only to resolve a window, or for a single action you have already decided on. ' +
+      '\n\nPREFER THIS for any desktop task. It runs the whole loop inside one call, so its 40 screenshots ' +
+      'and decisions never enter this conversation. ' +
       '\n\nChoose this for native windows and desktop applications. For a task that lives in a web page, ' +
       'browser_agent is the better tool: it drives the DOM over CDP and is far more precise than a screenshot. ' +
       'Note that a covered window cannot be driven, and a game that filters injected input needs foreground ' +

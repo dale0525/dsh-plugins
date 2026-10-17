@@ -30,7 +30,7 @@ importers:
         specifier: ^0.1.80
         version: link:../dsh-config-manager
       '@logictan/dsh-desktop-agent':
-        specifier: ^0.1.7
+        specifier: ^0.1.8
         version: link:../dsh-desktop-agent
       '@logictan/dsh-easyrewrite':
         specifier: ^2.7.3
@@ -54,7 +54,7 @@ importers:
         specifier: ^0.1.1
         version: link:../dsh-macos-theme
       '@logictan/dsh-openviking':
-        specifier: ^0.4.7
+        specifier: ^0.4.8
         version: link:../dsh-openviking
       '@logictan/dsh-plugins-shared-client':
         specifier: ^0.1.0

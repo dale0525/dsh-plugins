@@ -63,6 +63,7 @@ function host(options = {}) {
   const effects = [];
   const warnings = [];
   const sections = [];
+  const handlers = new Map();
 
   const prompt = {
     getSectionOrder: (kind) => (kind === 'TOOL_COMPUTER_USE' ? 40 : 0),
@@ -78,6 +79,9 @@ function host(options = {}) {
       if (name === 'systemPrompt') return systemPrompt ? prompt : undefined;
       return undefined;
     },
+    on(name, handler) {
+      handlers.set(name, handler);
+    },
     effect(fn, label) {
       const disposer = fn();
       effects.push({ label, disposer });
@@ -88,7 +92,7 @@ function host(options = {}) {
     logger: { warn: (message) => warnings.push(message) },
   };
 
-  return { ctx, registered, effects, warnings, sections };
+  return { ctx, registered, effects, warnings, sections, handlers };
 }
 
 test('the runtime publishes one prefixed tool per catalog entry', async () => {
@@ -156,6 +160,31 @@ test('a host without the system prompt service warns instead of throwing', async
   assert.equal(registered.length, CATALOG.length, 'the tools still publish');
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /guidance was not registered/u);
+});
+
+// 56 schemas cost 109,857 chars — 52% of a measured first request, for calls no
+// session in the log ever made as a model-direct call: `desktop_agent` reaches
+// them through `tools.execute` with a `parent` token, which the registry
+// resolves from its own layers and never consults the prompt for. They stay
+// registered and executable; they stop being announced.
+test('the primitive schemas are announced to no one but stay registered', async () => {
+  const { ctx, registered, handlers } = host();
+  await mountDriver(ctx, async () => sdk().module);
+
+  const assemble = handlers.get('system-prompt/assemble');
+  assert.equal(typeof assemble, 'function');
+
+  const other = { name: 'desktop_agent', description: 'x', parameters: {} };
+  const primitives = registered.map((definition) => ({
+    name: definition.name,
+    description: definition.description,
+    parameters: definition.parameters,
+  }));
+  const assembly = { sections: [], contexts: [], tools: [...primitives, other], variables: {} };
+  const announced = await assemble(assembly, {}, async () => assembly);
+
+  assert.deepEqual(announced.tools, [other]);
+  assert.equal(registered.length, CATALOG.length, 'the primitives remain callable');
 });
 
 test('unloading aborts the runtime and releases the native handle', async () => {
