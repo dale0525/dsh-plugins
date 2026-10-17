@@ -236,6 +236,19 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   判据：`grep "<仓库绝对路径>" pnpm-lock.yaml` 无输出，且包目录是真目录（非软链）、
   版本等于线上版本。只删 overrides 而不改 `package.json` 的 `file:`，聚合包仍指向本地目录。
 
+- **`dsh plugin add` 还会往 `dsh.profile.bundles` 追加一行 —— 装聚合包时那是第 4 处要清的地方**：
+  `dsh plugin --profile <p> add file:<本地包>` 同时写 `dependencies` 与 `bundles`，而聚合包的 patch
+  已经带着该子插件的挂载行，于是同一 `id` 有了两个来源（机制见「换包一律先删再加，不要并存」）。
+  实测 2026-10-18：装 `file:…/dsh-better-reasoning-effort` 后 `bundles` 多出该项；摘掉它、只留
+  `dependencies` 里的 `file:` 指针后安装与加载都正常。**未验证**不摘是否会硬崩——本次在重启前就摘了。
+
+- **设置 UI 保存会重写整个 `<profile>/cordis.patch.yml` 行，把该行里的注释全部丢掉**：
+  官方设置表单按行重新序列化 config，不是就地改一个值。实测 2026-10-18（pi-ai 的
+  `maxRequestImageBytes` 经插件卡片保存一次）：全文注释 134 → 127 行，缺的正是 `llm-pi-ai`
+  行内那段理由注释；其他行的注释块原样保留，被改的键还从 profile 中部挪到了 profile 块末尾。
+  所以**理由不要写在可被设置 UI 编辑的行里**——那里只放值，因果写进代码注释、README 或记忆；
+  写进 patch 行的注释是一次性消耗品。
+
 - **槽位渲染崩溃在页面上是「空的」，原因只在控制台**：`plugins.row.config` 这类槽位的渲染
   抛错时，宿主把它换成 `<div data-slot-error="<slot>">`（空元素，无文案），页面表现为
   「插件标题在、下面什么都没有」，看起来像没配字段而不是报错。诊断只能去浏览器控制台取
