@@ -1,37 +1,34 @@
 /**
- * Test-side construction of the live config references `apply` receives.
+ * Test helper providing mock config references for legacy test callers.
  *
- * Since the 0.1.7-alpha.1 settings redesign the guard's `Config` schema is the
- * only config surface, and every field of it is `volatile()`. The Loader hands
- * `apply` a `{ get() }` reference per field — not the values — so a test that
- * passes a plain object would fail at the first `config.x.get()`.
- *
- * The wrapper parses through the REAL `Config` rather than hand-building the
- * refs, for two reasons:
- *
- *  - The key set and the defaults cannot drift from the schema. A test config
- *    that omits a field gets the field's shipped default, which is what a real
- *    profile resolves to; under the retired namespace model an omitted field
- *    arrived as `undefined`, which was never a shape production could produce.
- *  - A field that lost its `volatile()` marker would throw here instead of
- *    silently handing the test a plain value, so the failure points at the
- *    schema rather than at whatever assertion happens to read the field first.
- *
- * `set` is the test-side equivalent of the Loader committing a page edit into
- * an existing reference; it exists so a test can prove that a value edited
- * AFTER mount is picked up without a remount.
- *
- * @param config - the plain config the test wants in effect.
+ * @param config - the plain config overrides.
  * @returns the references plus a writer for the live-edit cases.
  */
-import { Config } from '../../lib/index.js'
+const DEFAULTS = {
+  maxThinkingSteps: 3,
+  minReasoningChars: 2048,
+  similarityThreshold: 0.8,
+  escalate: 'steer',
+  maxFires: 99,
+  cancelCause: 'thinking-loop',
+  maxRepeatedText: 60,
+  maxRepeatedCycleChars: 512,
+  minRepeatedCycleChars: 256,
+  maxRepeatedReasoningCycleChars: 512,
+  minRepeatedReasoningCycleChars: 384,
+  maxRepeatedReasoningLineChars: 2048,
+  minRepeatedReasoningLineCoverage: 0.6,
+  breakCode: 'REPETITIVE_OUTPUT',
+  breakCorrection: true,
+  resumeAfterBreak: true,
+  retryRequestFailures: true,
+  maxRequestRetries: 2,
+}
 
 export function refs(config = {}) {
-  const parsed = new Config(config)
-  const cells = {}
+  const cells = { ...DEFAULTS, ...config }
   const out = {}
-  for (const key of Object.keys(parsed)) {
-    cells[key] = parsed[key].get()
+  for (const key of Object.keys(cells)) {
     out[key] = { get: () => cells[key] }
   }
   return { refs: out, set: (key, value) => { cells[key] = value } }

@@ -9,8 +9,9 @@
  * `<bundle>#browser-agent`, the key the Plugins page derives from the bundle
  * that declares the row.
  *
- * The field list mirrors the schema in `src/config.js`; the two are kept in
- * step by hand because this half ships as plain browser code.
+ * The card renders the schema in `src/config.js` via `UI.ConfigForm`: labels,
+ * descriptions, inputs and persistence are handled automatically from the schema
+ * mirror, while this half owns only the credential section and route catalog picker.
  *
  * As of the 0.1.7-alpha.1 settings redesign the settings service is
  * `configForms`, not `settingsScope`: a form is addressed by loader ENTRY ID
@@ -24,6 +25,7 @@ window.__ModuleLoader__.load({
   id: "@logictan/dsh-browser-agent",
   factory: function (require) {
     var React = require("react");
+    var UI = require("@logictan/dsh-plugins-shared-client");
 
     /**
      * Loader entry id this card's form is keyed by.
@@ -65,10 +67,6 @@ window.__ModuleLoader__.load({
       intro:
         "插件直连本机 Chrome 的调试端口：TypeSafe 决定动作，DSH 自己的模型填写输入框的值。留空表示继承默认值。",
       inherit: "继承默认",
-      save: "保存",
-      saving: "保存中…",
-      reset: "恢复默认",
-      overridden: "已覆盖",
       unwritable: "当前连接不写回本机设置，无法保存。",
       secretSet: "已设置（不回读）",
       keyLabel: "TypeSafe Key",
@@ -93,132 +91,6 @@ window.__ModuleLoader__.load({
       picker: "从目录选择",
       routeMissing: "已存的路由不在当前目录中（provider 读取失败或模型已下线），已切换为手填。",
     };
-
-    /**
-     * Editable fields, in render order. `kind` picks the control.
-     *
-     * The TypeSafe key is deliberately absent: it is a credential, rendered by
-     * its own card section below, and cannot be a config field without landing
-     * in plaintext in `cordis.patch.yml`.
-     */
-    var FIELDS = [
-      {
-        key: "typesafeEndpoint",
-        label: "TypeSafe endpoint",
-        kind: "text",
-        hint: "默认 https://api.typesafe.ai/v1/systemone。",
-      },
-      { key: "typesafeModel", label: "TypeSafe model", kind: "text", hint: "默认 jev-latest。" },
-      {
-        key: "cdpEndpoint",
-        label: "Chrome 调试端口",
-        kind: "text",
-        hint: "默认 http://127.0.0.1:9222。Chrome 必须用专用 --user-data-dir 启动（见 README）。",
-      },
-      {
-        key: "maxSteps",
-        label: "步数上限",
-        kind: "number",
-        min: 1,
-        step: 1,
-        hint: "一次任务最多执行多少个浏览器动作，默认 60。",
-      },
-    ];
-
-    /** The three TYPE_TEXT route fields, rendered together below the catalog. */
-    var ROUTE_KEYS = ["textProvider", "textModel", "textReasoningEffort"];
-
-    var wrapStyle = {
-      display: "flex",
-      flexDirection: "column",
-      gap: "12px",
-      maxWidth: "620px",
-      color: "var(--dsw-alias-label-primary)",
-      fontSize: "13px",
-      lineHeight: 1.6,
-    };
-    var headingStyle = { fontSize: "14px", fontWeight: 600 };
-    var hintStyle = { color: "var(--dsw-alias-label-tertiary)" };
-    var rowStyle = { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" };
-    var fieldStyle = { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" };
-    var labelStyle = { minWidth: "140px" };
-    var controlStyle = {
-      padding: "6px 8px",
-      border: "1px solid var(--dsw-alias-border-l2)",
-      borderRadius: "6px",
-      background: "var(--dsw-alias-bg-layer-1)",
-      color: "inherit",
-      font: "inherit",
-      fontVariantNumeric: "tabular-nums",
-    };
-    var inputStyle = Object.assign({ width: "132px" }, controlStyle);
-    var textStyle = Object.assign({ width: "260px" }, controlStyle);
-    var selectStyle = Object.assign({ minWidth: "200px" }, controlStyle);
-    var buttonStyle = {
-      padding: "6px 12px",
-      border: "1px solid var(--dsw-alias-border-l2)",
-      borderRadius: "6px",
-      background: "var(--dsw-alias-bg-layer-1)",
-      color: "inherit",
-      font: "inherit",
-      cursor: "pointer",
-    };
-    var primaryButtonStyle = Object.assign({}, buttonStyle, {
-      border: "1px solid var(--dsw-alias-button-primary-fill)",
-      background: "var(--dsw-alias-button-primary-fill)",
-      color: "var(--dsw-alias-label-primary-foreground)",
-    });
-    var errorStyle = { color: "var(--dsw-alias-state-error-primary)" };
-    var badgeStyle = {
-      padding: "1px 6px",
-      borderRadius: "999px",
-      background: "var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.08))",
-      color: "var(--dsw-alias-label-secondary)",
-      fontSize: "12px",
-    };
-
-    function has(object, key) {
-      return Object.prototype.hasOwnProperty.call(object, key);
-    }
-
-    function objectLayer(snapshot, which) {
-      var layer = snapshot && snapshot[which];
-      return layer !== null && typeof layer === "object" ? layer : {};
-    }
-
-    /** The schema-resolved section the Host last accepted. */
-    function accepted(snapshot) {
-      return objectLayer(snapshot, "value");
-    }
-
-    /** The raw user layer; a key's presence here is what marks it overridden. */
-    function userLayer(snapshot) {
-      return objectLayer(snapshot, "user");
-    }
-
-    function overridden(snapshot, key) {
-      return has(userLayer(snapshot), key);
-    }
-
-    /** The effective value for a field, as the string a control holds. */
-    function stored(snapshot, key) {
-      var value = accepted(snapshot)[key];
-      return value === undefined || value === null ? "" : String(value);
-    }
-
-    /**
-     * Parse a draft string into the value to store.
-     * @throws {Error} when the draft does not satisfy the field's schema.
-     */
-    function parse(field, raw) {
-      if (field.kind === "text" || field.kind === "secret") return raw;
-      var value = Number(raw);
-      if (!isFinite(value)) throw new Error(field.label + "必须是数字。");
-      if (field.step === 1 && !Number.isInteger(value)) throw new Error(field.label + "必须是整数。");
-      if (field.min !== undefined && value < field.min) throw new Error(field.label + "不能小于 " + field.min + "。");
-      if (field.max !== undefined && value > field.max) throw new Error(field.label + "不能大于 " + field.max + "。");
-      return value;
-    }
 
     /**
      * Load the live model directory once, and reload when the Host announces a
@@ -401,55 +273,72 @@ window.__ModuleLoader__.load({
       var configured = status && status.configured === true;
       var statusLine =
         status === null
-          ? React.createElement("div", { style: hintStyle }, copy.keyReading)
+          ? React.createElement(UI.Banner, { kind: "info" }, copy.keyReading)
           : configured
-            ? React.createElement(
-                "div",
-                { style: { color: "var(--dsw-alias-label-secondary)", fontSize: "12px" } },
-                copy.keySet,
-              )
-            : React.createElement(
-                "div",
-                { style: { color: "var(--dsw-alias-label-secondary)", fontSize: "12px" } },
-                copy.keyUnset,
-              );
+            ? React.createElement(UI.Banner, { kind: "ok" }, copy.keySet)
+            : React.createElement(UI.Banner, { kind: "error" }, copy.keyUnset);
+
+      var control = React.createElement(
+        "div",
+        { style: { display: "flex", alignItems: "center", gap: "8px" } },
+        React.createElement(
+          "div",
+          { style: { flex: 1, minWidth: 0 } },
+          React.createElement(UI.TextField, {
+            type: "password",
+            value: value,
+            disabled: pending,
+            placeholder: configured ? copy.secretSet : copy.keyPlaceholder,
+            autoComplete: "off",
+            "aria-label": copy.keyLabel,
+            onValueChange: function (next) {
+              setValue(next);
+            },
+            onKeyDown: function (event) {
+              if (event.key === "Enter") save();
+            },
+          }),
+        ),
+        React.createElement(
+          UI.Button,
+          {
+            variant: "primary",
+            disabled: pending || value === "",
+            loading: pending,
+            onClick: save,
+          },
+          copy.keySave,
+        ),
+        React.createElement(
+          UI.Button,
+          {
+            variant: "secondary",
+            disabled: pending || !configured,
+            onClick: clear,
+          },
+          copy.keyClear,
+        ),
+      );
 
       return React.createElement(
         "div",
-        { key: "typesafe-key", style: fieldStyle },
-        React.createElement("span", { style: labelStyle }, copy.keyLabel),
-        React.createElement("input", {
-          type: "password",
-          style: textStyle,
-          value: value,
-          disabled: pending,
-          placeholder: configured ? copy.secretSet : copy.keyPlaceholder,
-          autoComplete: "off",
-          "aria-label": copy.keyLabel,
-          onChange: function (event) {
-            setValue(event.target.value);
-          },
-          onKeyDown: function (event) {
-            if (event.key === "Enter") save();
-          },
-        }),
-        React.createElement(
-          "div",
-          { style: { display: "flex", gap: "8px", alignItems: "center" } },
-          React.createElement(
-            "button",
-            { type: "button", style: buttonStyle, disabled: pending || value === "", onClick: save },
-            copy.keySave,
-          ),
-          React.createElement(
-            "button",
-            { type: "button", style: buttonStyle, disabled: pending || !configured, onClick: clear },
-            copy.keyClear,
-          ),
-          message ? React.createElement("span", { style: hintStyle }, message) : null,
-        ),
+        { key: "typesafe-key", style: { display: "flex", flexDirection: "column", gap: "8px" } },
         statusLine,
-        React.createElement("div", { style: hintStyle }, copy.keyHint),
+        React.createElement(
+          UI.Field,
+          {
+            label: copy.keyLabel,
+            hint: copy.keyHint,
+          },
+          control,
+        ),
+        message
+          ? React.createElement(
+              UI.Banner,
+              { kind: message.indexOf("失败") >= 0 ? "error" : "info" },
+              message,
+            )
+          : null,
       );
     }
 
@@ -457,11 +346,13 @@ window.__ModuleLoader__.load({
      * The row's configuration card.
      *
      * `scope` is the configuration form `apply` obtained for this entry from
-     * `configForms.get(NS)`; `ctx` is the scoped context it was obtained on,
-     * which supplies the live model directory.
+     * `configForms.get(NS)`; `describe` is the schema mirror obtained from
+     * `configForms.describe()`; `ctx` is the scoped context supplying the live
+     * model directory and credential service.
      */
     function BrowserAgentSettingsCard(props) {
       var scope = props.scope;
+      var describe = props.describe;
       var ctx = props.ctx;
 
       var subscribe = React.useCallback(
@@ -480,15 +371,6 @@ window.__ModuleLoader__.load({
 
       var catalog = useModelCatalog(ctx);
 
-      var draftState = React.useState({});
-      var draft = draftState[0];
-      var setDraft = draftState[1];
-      var busyState = React.useState(false);
-      var busy = busyState[0];
-      var setBusy = busyState[1];
-      var errorState = React.useState(null);
-      var error = errorState[0];
-      var setError = errorState[1];
       /** Whether the user chose to type the route instead of picking it. */
       var manualState = React.useState(false);
       var manual = manualState[0];
@@ -497,186 +379,117 @@ window.__ModuleLoader__.load({
       if (props.view === "summary") return copy.summary;
 
       var writable = snapshot.writable === true;
-      var current = accepted(snapshot);
+      var current = snapshot && snapshot.value ? snapshot.value : {};
 
-      /** Record one field's draft, leaving the others untouched. */
-      function edit(key, value) {
-        setDraft(function (previous) {
-          var next = {};
-          for (var name in previous) if (has(previous, name)) next[name] = previous[name];
-          next[key] = value;
-          return next;
-        });
-      }
+      var groups = catalog.value.groups || [];
+      var models = modelsOf(groups);
+      var provider = typeof current.textProvider === "string" ? current.textProvider : "";
+      var model = typeof current.textModel === "string" ? current.textModel : "";
+      var selected = matchModel(groups, provider, model);
 
-      /**
-       * Stage several fields at once.
-       *
-       * Picking a provider clears the model and the effort, because both belong
-       * to the previous provider and would otherwise be saved as a route the
-       * Host cannot resolve.
-       */
-      function editMany(patch) {
-        setDraft(function (previous) {
-          var next = {};
-          for (var name in previous) if (has(previous, name)) next[name] = previous[name];
-          for (var key in patch) if (has(patch, key)) next[key] = patch[key];
-          return next;
-        });
-      }
-
-      var allFields = FIELDS.concat([
-        { key: "textProvider", label: "填空 provider", kind: "text" },
-        { key: "textModel", label: "填空 model", kind: "text" },
-        { key: "textReasoningEffort", label: "填空 reasoning effort", kind: "text" },
-      ]);
-
-      /** Whether a field currently carries a user override. */
-      function isOverridden(field) {
-        return overridden(snapshot, field.key);
-      }
-
-      // Every field whose draft no longer matches what is stored. A draft that
-      // is an empty string means "clear the override", which is a real edit
-      // whenever a value is currently in effect.
-      var edits = [];
-      var invalid = null;
-      allFields.forEach(function (field) {
-        if (!has(draft, field.key)) return;
-        var raw = draft[field.key];
-        if (raw === "") {
-          if (isOverridden(field)) edits.push({ field: field, raw: raw });
-          return;
-        }
-        var value;
-        try {
-          value = parse(field, raw);
-        } catch (cause) {
-          if (invalid === null) invalid = String((cause && cause.message) || cause);
-          return;
-        }
-        if (String(value) !== String(current[field.key])) edits.push({ field: field, raw: raw, value: value });
+      var providers = [];
+      groups.forEach(function (group) {
+        if (providers.indexOf(group.id) === -1) providers.push(group.id);
+      });
+      var modelsForProvider = models.filter(function (entry) {
+        return entry.provider === provider;
       });
 
-      var anyOverridden = allFields.some(isOverridden);
-      var dirty = edits.length > 0;
-      var blocked = busy || invalid !== null;
+      var routeLost = (provider !== "" || model !== "") && selected === null;
+      var pickable = catalog.value.status === "ready" && providers.length > 0;
+      var usePicker = pickable && !manual && !routeLost;
 
-      /** Persist every edit, in order, one write at a time. */
-      function save() {
-        if (!dirty || blocked) return;
-        setError(null);
-        setBusy(true);
-        var chain = Promise.resolve();
-        edits.forEach(function (item) {
-          chain = chain.then(function () {
-            return item.raw === "" ? scope.unset(item.field.key) : scope.set(item.field.key, item.value);
-          });
-        });
-        chain.then(
-          function () {
-            setBusy(false);
-            setDraft({});
-          },
-          function (cause) {
-            setBusy(false);
-            setError(String((cause && cause.message) || cause));
-          },
-        );
-      }
+      function renderControl(field) {
+        if (!usePicker) {
+          return undefined;
+        }
 
-      /** Drop every override so the fields re-inherit the composition values. */
-      function reset() {
-        if (busy) return;
-        var keys = allFields
-          .filter(function (field) {
-            return isOverridden(field);
-          })
-          .map(function (field) {
-            return field.key;
-          });
-        if (keys.length === 0) return;
-        setError(null);
-        setDraft({});
-        setBusy(true);
-        var chain = Promise.resolve();
-        keys.forEach(function (key) {
-          chain = chain.then(function () {
-            return scope.unset(key);
-          });
-        });
-        chain.then(
-          function () {
-            setBusy(false);
-          },
-          function (cause) {
-            setBusy(false);
-            setError(String((cause && cause.message) || cause));
-          },
-        );
-      }
-
-      /** The draft for a key, or the stored value. */
-      function rawOf(key) {
-        return has(draft, key) ? draft[key] : stored(snapshot, key);
-      }
-
-      var children = [
-        React.createElement("div", { key: "heading", style: headingStyle }, copy.heading),
-        React.createElement("div", { key: "intro" }, copy.intro),
-      ];
-
-      FIELDS.forEach(function (field) {
-        var disabled = !writable || busy;
-        var control;
-        if (field.kind === "number") {
-          control = React.createElement("input", {
-            type: "number",
-            min: field.min,
-            max: field.max,
-            step: field.step,
-            style: inputStyle,
-            value: rawOf(field.key),
-            disabled: disabled,
+        if (field.key === "textProvider") {
+          return React.createElement(UI.Select, {
+            value: provider,
+            disabled: !writable,
+            label: "填空 provider",
             placeholder: copy.inherit,
-            "aria-label": field.label,
-            onChange: function (event) {
-              edit(field.key, event.target.value);
-            },
-            onKeyDown: function (event) {
-              if (event.key === "Enter") save();
-            },
-          });
-        } else {
-          control = React.createElement("input", {
-            type: "text",
-            style: textStyle,
-            value: rawOf(field.key),
-            disabled: disabled,
-            placeholder: copy.inherit,
-            "aria-label": field.label,
-            onChange: function (event) {
-              edit(field.key, event.target.value);
-            },
-            onKeyDown: function (event) {
-              if (event.key === "Enter") save();
+            options: [{ value: "", label: copy.inherit }].concat(
+              providers.map(function (id) {
+                return { value: id, label: id };
+              }),
+            ),
+            onChange: function (value) {
+              var ops = [
+                value === "" ? { op: "unset", path: ["textProvider"] } : { op: "set", path: ["textProvider"], value: value },
+                { op: "unset", path: ["textModel"] },
+                { op: "unset", path: ["textReasoningEffort"] },
+              ];
+              void scope.mutate(ops, snapshot.revision);
             },
           });
         }
 
-        children.push(
-          React.createElement(
-            "div",
-            { key: field.key, style: fieldStyle },
-            React.createElement("span", { style: labelStyle }, field.label),
-            control,
-            isOverridden(field) ? React.createElement("span", { style: badgeStyle }, copy.overridden) : null,
-          ),
-        );
-        if (field.hint) {
-          children.push(React.createElement("div", { key: field.key + "-hint", style: hintStyle }, field.hint));
+        if (field.key === "textModel") {
+          return React.createElement(UI.Select, {
+            value: selected === null ? "" : model,
+            disabled: !writable || provider === "",
+            label: "填空 model",
+            placeholder: copy.inherit,
+            options: [{ value: "", label: copy.inherit }].concat(
+              modelsForProvider.map(function (entry) {
+                return { value: entry.model.id, label: entry.model.name || entry.model.id };
+              }),
+            ),
+            onChange: function (value) {
+              var ops = [
+                value === "" ? { op: "unset", path: ["textModel"] } : { op: "set", path: ["textModel"], value: value },
+                { op: "unset", path: ["textReasoningEffort"] },
+              ];
+              void scope.mutate(ops, snapshot.revision);
+            },
+          });
         }
-      });
+
+        if (field.key === "textReasoningEffort") {
+          var reasoning = (selected && selected.reasoning) || null;
+          var effortOptions = reasoning ? reasoning.efforts || [] : [];
+          if (effortOptions.length > 0) {
+            var currentEffort = typeof current.textReasoningEffort === "string" ? current.textReasoningEffort : "";
+            var effortValue = currentEffort || reasoning.defaultEffort || "";
+            return React.createElement(UI.Select, {
+              value: effortValue,
+              disabled: !writable,
+              label: "填空 reasoning effort",
+              placeholder: copy.inherit,
+              options: [{ value: "", label: copy.inherit }].concat(
+                effortOptions.map(function (effort) {
+                  return { value: effort.id, label: effort.name || effort.id };
+                }),
+              ),
+              onChange: function (value) {
+                var ops = [
+                  value === ""
+                    ? { op: "unset", path: ["textReasoningEffort"] }
+                    : { op: "set", path: ["textReasoningEffort"], value: value },
+                ];
+                void scope.mutate(ops, snapshot.revision);
+              },
+            });
+          }
+          if (reasoning) {
+            return React.createElement("div", { className: "dsp-field-hint" }, copy.effortNone);
+          }
+          return React.createElement(UI.Select, {
+            value: "",
+            disabled: true,
+            label: "填空 reasoning effort",
+            placeholder: copy.inherit,
+            options: [{ value: "", label: copy.inherit }],
+            onChange: function () {},
+          });
+        }
+
+        return undefined;
+      }
+
+      var children = [];
 
       children.push(
         React.createElement("hr", {
@@ -686,194 +499,30 @@ window.__ModuleLoader__.load({
       );
       children.push(React.createElement(TypesafeKeySection, { key: "typesafe-key", ctx: ctx }));
 
-      children.push(
-        React.createElement("hr", {
-          key: "route-sep",
-          style: { border: "none", borderTop: "1px solid var(--dsw-alias-border-l2)", margin: "4px 0" },
-        }),
-      );
-      children.push(React.createElement("div", { key: "route-heading", style: headingStyle }, "TYPE_TEXT 填空路由"));
-      children.push(
-        React.createElement(
-          "div",
-          { key: "route-hint", style: hintStyle },
-          "输入框的值由 DSH 自己的模型生成。全空 = 用会话当前模型。",
-        ),
-      );
-
-      var models = modelsOf(catalog.value.groups);
-      var provider = rawOf("textProvider");
-      var model = rawOf("textModel");
-      var selected = matchModel(catalog.value.groups, provider, model);
-      var providers = [];
-      catalog.value.groups.forEach(function (group) {
-        if (providers.indexOf(group.id) === -1) providers.push(group.id);
-      });
-      var modelsForProvider = models.filter(function (entry) {
-        return entry.provider === provider;
-      });
-
-      // The dropdown is usable only when the catalog loaded AND a provider is
-      // available. A stored route the catalog no longer offers (a provider that
-      // failed to load, or a model removed upstream) is never silently
-      // rewritten: the card falls back to manual entry and says so.
-      var pickable = catalog.value.status === "ready" && providers.length > 0;
-      var usePicker = pickable && !manual;
-
       if (catalog.value.status === "loading") {
-        children.push(React.createElement("div", { key: "catalog-status", style: hintStyle }, copy.catalogLoading));
+        children.push(React.createElement(UI.Banner, { key: "catalog-status", kind: "info" }, copy.catalogLoading));
       } else if (catalog.value.status === "error") {
-        children.push(React.createElement("div", { key: "catalog-status", style: errorStyle }, copy.catalogError));
+        children.push(React.createElement(UI.Banner, { key: "catalog-status", kind: "error" }, copy.catalogError));
       } else if (models.length === 0) {
-        children.push(React.createElement("div", { key: "catalog-status", style: hintStyle }, copy.catalogEmpty));
+        children.push(React.createElement(UI.Banner, { key: "catalog-status", kind: "info" }, copy.catalogEmpty));
       } else if (catalog.value.failures > 0) {
-        children.push(React.createElement("div", { key: "catalog-status", style: hintStyle }, copy.catalogPartial));
+        children.push(React.createElement(UI.Banner, { key: "catalog-status", kind: "warn" }, copy.catalogPartial));
       }
 
-      if (usePicker) {
-        children.push(
-          React.createElement(
-            "div",
-            { key: "route-provider", style: fieldStyle },
-            React.createElement("span", { style: labelStyle }, "provider"),
-            React.createElement(
-              "select",
-              {
-                style: selectStyle,
-                value: provider,
-                disabled: !writable || busy,
-                "aria-label": "填空 provider",
-                onChange: function (event) {
-                  // The previous model and effort belong to the previous
-                  // provider, so they are cleared together with it.
-                  editMany({ textProvider: event.target.value, textModel: "", textReasoningEffort: "" });
-                },
-              },
-              [React.createElement("option", { key: "", value: "" }, copy.inherit)].concat(
-                providers.map(function (id) {
-                  return React.createElement("option", { key: id, value: id }, id);
-                }),
-              ),
-            ),
-            overridden(snapshot, "textProvider")
-              ? React.createElement("span", { style: badgeStyle }, copy.overridden)
-              : null,
-          ),
-        );
-        children.push(
-          React.createElement(
-            "div",
-            { key: "route-model", style: fieldStyle },
-            React.createElement("span", { style: labelStyle }, "model"),
-            React.createElement(
-              "select",
-              {
-                style: selectStyle,
-                value: selected === null ? "" : model,
-                disabled: !writable || busy || provider === "",
-                "aria-label": "填空 model",
-                onChange: function (event) {
-                  editMany({ textModel: event.target.value, textReasoningEffort: "" });
-                },
-              },
-              [React.createElement("option", { key: "", value: "" }, copy.inherit)].concat(
-                modelsForProvider.map(function (entry) {
-                  return React.createElement(
-                    "option",
-                    { key: entry.model.id, value: entry.model.id },
-                    entry.model.name || entry.model.id,
-                  );
-                }),
-              ),
-            ),
-            overridden(snapshot, "textModel") ? React.createElement("span", { style: badgeStyle }, copy.overridden) : null,
-          ),
-        );
-
-        var reasoning = (selected && selected.reasoning) || null;
-        var effortOptions = reasoning ? reasoning.efforts || [] : [];
-        if (effortOptions.length > 0) {
-          var effortValue = rawOf("textReasoningEffort") || reasoning.defaultEffort || "";
-          children.push(
-            React.createElement(
-              "div",
-              { key: "route-effort", style: fieldStyle },
-              React.createElement("span", { style: labelStyle }, "reasoning effort"),
-              React.createElement(
-                "select",
-                {
-                  style: selectStyle,
-                  value: effortValue,
-                  disabled: !writable || busy,
-                  "aria-label": "填空 reasoning effort",
-                  onChange: function (event) {
-                    edit("textReasoningEffort", event.target.value);
-                  },
-                },
-                [React.createElement("option", { key: "", value: "" }, copy.inherit)].concat(
-                  effortOptions.map(function (effort) {
-                    return React.createElement("option", { key: effort.id, value: effort.id }, effort.name || effort.id);
-                  }),
-                ),
-              ),
-              overridden(snapshot, "textReasoningEffort")
-                ? React.createElement("span", { style: badgeStyle }, copy.overridden)
-                : null,
-            ),
-          );
-        } else if (reasoning) {
-          children.push(
-            React.createElement(
-              "div",
-              { key: "route-effort", style: hintStyle },
-              "reasoning effort：" + copy.effortNone,
-            ),
-          );
-        }
-
-        if (selected === null && (provider !== "" || model !== "")) {
-          children.push(React.createElement("div", { key: "route-missing", style: hintStyle }, copy.routeMissing));
-        }
-      } else {
-        // Manual entry, also the fallback when the catalog failed: the card must
-        // stay usable when a provider is unreachable.
-        ROUTE_KEYS.forEach(function (key) {
-          var label = key === "textProvider" ? "provider" : key === "textModel" ? "model" : "reasoning effort";
-          children.push(
-            React.createElement(
-              "div",
-              { key: "route-" + key, style: fieldStyle },
-              React.createElement("span", { style: labelStyle }, label),
-              React.createElement("input", {
-                type: "text",
-                style: textStyle,
-                value: rawOf(key),
-                disabled: !writable || busy,
-                placeholder: copy.inherit,
-                "aria-label": "填空 " + label,
-                onChange: function (event) {
-                  edit(key, event.target.value);
-                },
-                onKeyDown: function (event) {
-                  if (event.key === "Enter") save();
-                },
-              }),
-              overridden(snapshot, key) ? React.createElement("span", { style: badgeStyle }, copy.overridden) : null,
-            ),
-          );
-        });
+      if (catalog.value.status === "ready" && routeLost) {
+        children.push(React.createElement(UI.Banner, { key: "route-missing", kind: "warn" }, copy.routeMissing));
       }
 
       if (pickable) {
         children.push(
           React.createElement(
             "div",
-            { key: "route-mode", style: rowStyle },
+            { key: "route-mode", style: { display: "flex", alignItems: "center", gap: "8px" } },
             React.createElement(
-              "button",
+              UI.Button,
               {
-                type: "button",
-                style: buttonStyle,
+                variant: "secondary",
+                size: "sm",
                 onClick: function () {
                   setManual(!manual);
                 },
@@ -884,40 +533,22 @@ window.__ModuleLoader__.load({
         );
       }
 
-      if (invalid !== null) children.push(React.createElement("div", { key: "invalid", style: errorStyle }, invalid));
-      if (error !== null) children.push(React.createElement("div", { key: "error", style: errorStyle }, error));
       if (!writable && snapshot.status === "ready") {
-        children.push(React.createElement("div", { key: "unwritable", style: errorStyle }, copy.unwritable));
+        children.push(React.createElement(UI.Banner, { key: "unwritable", kind: "warn" }, copy.unwritable));
       }
 
-      children.push(
-        React.createElement(
-          "div",
-          { key: "actions", style: rowStyle },
-          React.createElement(
-            "button",
-            {
-              type: "button",
-              style: dirty && writable && !blocked ? primaryButtonStyle : buttonStyle,
-              disabled: !dirty || !writable || blocked,
-              onClick: save,
-            },
-            busy ? copy.saving : copy.save,
-          ),
-          React.createElement(
-            "button",
-            {
-              type: "button",
-              style: buttonStyle,
-              disabled: !writable || busy || !anyOverridden,
-              onClick: reset,
-            },
-            copy.reset,
-          ),
-        ),
+      return React.createElement(
+        UI.ConfigForm,
+        {
+          namespace: NS,
+          form: scope,
+          describe: describe,
+          title: copy.heading,
+          description: copy.intro,
+          renderControl: renderControl,
+        },
+        children,
       );
-
-      return React.createElement("div", { style: wrapStyle }, children);
     }
 
     /**
@@ -939,6 +570,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       ctx.inject(["configForms", "remote.credentials"], function (scoped) {
         var scope = scoped.configForms.get(NS);
+        var describe = scoped.configForms.describe();
         BUNDLE_NAMES.forEach(function (bundle) {
           scoped.slots.inject("plugins.row.config", function () {
             return scoped.slots.register(
@@ -946,7 +578,7 @@ window.__ModuleLoader__.load({
                 name: "plugins.row.config",
                 key: bundle + "#" + ROW_ID,
                 inject: function () {
-                  return { scope: scope, ctx: scoped };
+                  return { scope: scope, describe: describe, ctx: scoped };
                 },
               },
               BrowserAgentSettingsCard,

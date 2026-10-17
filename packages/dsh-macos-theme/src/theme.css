@@ -981,3 +981,130 @@ body [data-slot='conversation.session.header.utilities'] > span:not(:has([data-o
   display: none;
 }
 
+
+/* ==========================================================================
+   12. Plugin page (`插件中心`)
+
+   The host's plugin page is the one surface this theme cannot reach through a
+   token: its card fill and stroke come from a `border`/`bg-*` utility pair, and
+   with preflight withheld (section 0) the card renders with a **transparent
+   background and a 0px border** — measured on the live page, `li.card` reported
+   `background-color: rgba(0,0,0,0)` and `border-top-width: 0px`. So the card is
+   drawn here rather than re-coloured here.
+
+   Only the stable anchors the host publishes are used, plus
+   `[class*='_localName']` for the few inner elements that carry no anchor of
+   their own. That suffix form is this file's existing convention (see
+   "Anchors" at the top): the hash before the underscore is derived from the
+   build path, the local name after it is not.
+
+   Geometry and type only. The plan estimated ~14 rules; the design needs 18
+   blocks, because the card stroke/fill, the two heading sizes, the status pill,
+   the switch and its thumb, the three detail-header lines and the row hairline
+   each need their own selector. No block was split for convenience and no two
+   could be comma-joined without giving one selector the other's declarations.
+   Structural assumptions are still forbidden: nothing here moves an element,
+   hides one, or changes the information hierarchy; the design's row actions,
+   badges and status text are the host's own and stay exactly where the host
+   puts them.
+   ========================================================================== */
+
+/* The card. */
+body [data-plugin-panel] li[data-plugin-package],
+body [data-plugin-panel] li[data-plugin-item] {
+  margin: 0;
+  border: 1px solid var(--dsw-alias-settings-card-stroke);
+  border-radius: 16px;
+  background-color: var(--dsw-alias-settings-card-fill);
+}
+body[data-ds-dark-theme] [data-plugin-panel] li[data-plugin-package],
+body[data-ds-dark-theme] [data-plugin-panel] li[data-plugin-item] {
+  border-radius: 14px;
+  background-color: var(--dsw-alias-bg-layer-2);
+}
+
+/* Card interior padding, and the gap between cards. */
+body [data-plugin-panel] [class*='_cardHead'] {
+  padding: 12px 14px;
+}
+body [data-plugin-panel] [class*='_cards'] {
+  gap: 10px;
+}
+body [data-plugin-panel] [data-plugin-group] {
+  gap: 12px;
+}
+
+/* Group heading, the group count, and the card title. */
+body [data-plugin-panel] [class*='_groupTitle'] {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+body [data-plugin-panel] [data-plugin-count] {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+body [data-plugin-panel] [class*='_cardTitle'] {
+  color: var(--dsw-alias-label-primary);
+  font-weight: 500;
+}
+
+/* Card description. */
+body [data-plugin-panel] [class*='_cardDesc'] {
+  font-size: 13px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Status pill — the host's `[data-tone]` badge, in both views. */
+body [data-plugin-panel] [data-tone],
+body [data-plugin-detail] [data-tone] {
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+/* Switch. */
+body [data-plugin-panel] [class*='_switch_'],
+body [data-plugin-detail] [class*='_switch_'] {
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  padding: 2px;
+}
+body [data-plugin-panel] [class*='_thumb_'],
+body [data-plugin-detail] [class*='_thumb_'] {
+  width: 18px;
+  height: 18px;
+}
+
+/* Detail header. */
+body [data-plugin-detail] [class*='_detailTitle'] {
+  color: var(--dsw-alias-label-primary);
+  font-size: 20px;
+  font-weight: 500;
+}
+body [data-plugin-detail] [class*='_detailName'] {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
+body [data-plugin-detail] [class*='_detailDesc'] {
+  font-size: 14px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* Detail rows: a hairline between rows, none above the first. */
+body [data-plugin-detail] li[data-plugin-row] {
+  padding: 10px 4px;
+}
+body [data-plugin-detail] li[data-plugin-row] + li[data-plugin-row] {
+  border-top: 1px solid var(--dsw-alias-border-l1);
+}
+
+/* Row state dot. */
+body [data-plugin-detail] [data-state] {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+

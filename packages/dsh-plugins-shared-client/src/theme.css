@@ -1,0 +1,652 @@
+/**
+ * @logictan/dsh-plugins-shared-client — component stylesheet.
+ *
+ * Written in the design's own Tailwind utility strings and compiled to plain
+ * CSS at build time (`build.mjs` runs the Tailwind CLI, the result is inlined
+ * into `lib/client.js`). Tailwind never reaches the browser.
+ *
+ * ## Division of labour
+ *
+ * Colour comes from `--dsw-*` tokens, geometry and typography come from here.
+ * That split is what lets one stylesheet serve both palettes: the host swaps
+ * the token values when the user's preference is dark, so no component needs a
+ * second implementation. The only literal colour is the brand blue used by
+ * states the token layer has no slot for; those carry an explicit dark override
+ * at the bottom of this file.
+ *
+ * ## Why these selectors are plain classes
+ *
+ * Every selector is a `dsp-*` class this package owns. Nothing here competes
+ * with a host class, so no `body` prefix is needed — that trick exists in
+ * `dsh-macos-theme` because it overrides the host's own rules at equal
+ * specificity. Here the names are unique, so 0-1-0 is enough.
+ *
+ * ## Why `@apply` and not runtime utilities
+ *
+ * Same reason as the theme package: a transplanted runtime utility class loses
+ * to the host's own single-class rules and disappears the moment React
+ * overwrites `className` on a re-render. Compiling to a plain rule anchored on
+ * a class this package owns avoids both.
+ *
+ * ## Dark-mode deltas
+ *
+ * The design gives a few genuinely different geometry values in dark (card
+ * radius 16→14px, control radius 12→10px). Those are expressed once, at the
+ * bottom, keyed on the host's `body[data-ds-dark-theme]` attribute — not by a
+ * second component.
+ */
+@tailwind utilities;
+
+/* ==========================================================================
+   0. Scope root.
+   Set on the outermost element of any card this package renders, so the
+   components inherit the host's font stack and base text colour without
+   touching global element selectors.
+   ========================================================================== */
+.dsp-root {
+  @apply text-[13px] leading-[20px];
+  font-family: var(--dsw-font-family);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* ==========================================================================
+   1. Card — the settings card: title row, optional description, body.
+   ========================================================================== */
+.dsp-card {
+  @apply rounded-[16px] border p-4;
+  background-color: var(--dsw-alias-settings-card-fill);
+  border-color: var(--dsw-alias-settings-card-stroke);
+}
+.dsp-card + .dsp-card {
+  @apply mt-3;
+}
+
+.dsp-card-head {
+  @apply flex items-start justify-between gap-3;
+}
+.dsp-card-titles {
+  @apply flex min-w-0 flex-col gap-0.5;
+}
+.dsp-card-title {
+  @apply text-[14px] font-semibold;
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-card-desc {
+  @apply text-[12px] leading-[18px];
+  color: var(--dsw-alias-label-secondary);
+}
+.dsp-card-aside {
+  @apply flex shrink-0 items-center gap-2;
+}
+
+/* Body holds the fields; a card without a body renders head only. */
+.dsp-card-body {
+  @apply mt-3 flex flex-col gap-3;
+}
+.dsp-card-body-flush {
+  @apply mt-3;
+}
+
+/* Collapsible card: the head is a button and the chevron rotates. */
+.dsp-card-toggle {
+  @apply flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent p-0 text-left;
+}
+.dsp-chevron {
+  @apply ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center transition-transform duration-150;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsp-chevron-open {
+  @apply rotate-90;
+}
+
+/* ==========================================================================
+   2. Field — label / description / control / error, stacked.
+   ========================================================================== */
+.dsp-field {
+  @apply flex flex-col gap-1.5;
+}
+.dsp-field-head {
+  @apply flex items-center gap-1.5;
+}
+.dsp-field-control {
+  @apply min-w-0;
+}
+.dsp-field-control-inline {
+  @apply shrink-0;
+}
+.dsp-field-label {
+  @apply text-[13px] font-medium;
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-field-desc {
+  @apply text-[12px] leading-[18px];
+  color: var(--dsw-alias-label-secondary);
+}
+.dsp-field-error {
+  @apply flex items-center gap-1 text-[12px] leading-[18px];
+  color: var(--dsw-alias-state-error-primary);
+}
+.dsp-field-hint {
+  @apply text-[11px] leading-[16px];
+  color: var(--dsw-alias-label-tertiary);
+}
+/* Inline row variant: label left, control right — used by switches. */
+.dsp-field-row {
+  @apply flex flex-row items-center justify-between gap-4;
+}
+.dsp-field-row .dsp-field-head {
+  @apply flex-col items-start gap-0.5;
+}
+
+/* ==========================================================================
+   3. Text input, textarea, secret, number.
+   ========================================================================== */
+.dsp-input-wrap {
+  @apply flex h-[36px] items-center overflow-hidden rounded-[12px] border;
+  background-color: var(--dsw-alias-bg-base);
+  border-color: var(--dsw-alias-border-l4);
+}
+.dsp-input-wrap:focus-within {
+  border-color: var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 2px var(--dsw-alias-interactive-bg-hover-accent);
+}
+.dsp-input-invalid,
+.dsp-input-invalid:focus-within {
+  border-color: var(--dsw-alias-state-error-primary);
+  box-shadow: none;
+}
+.dsp-input-wrap-disabled {
+  @apply cursor-not-allowed opacity-50;
+}
+
+.dsp-input {
+  @apply h-full min-w-0 flex-1 border-0 bg-transparent px-3 text-[13px] outline-none;
+  color: var(--dsw-alias-label-primary);
+  font-family: inherit;
+}
+.dsp-input::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsp-input:disabled {
+  @apply cursor-not-allowed;
+}
+
+/* A leading cell (protocol, unit, currency) with a hairline on its right. */
+.dsp-input-prefix {
+  @apply flex h-full shrink-0 items-center border-r px-2.5 font-mono text-[12px];
+  background-color: var(--dsw-alias-bg-layer-2);
+  border-color: var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsp-input-suffix {
+  @apply flex h-full shrink-0 items-center gap-1.5 pl-1 pr-2.5;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.dsp-textarea {
+  @apply min-h-[72px] w-full resize-y rounded-[12px] border px-3 py-2 text-[13px] leading-[20px] outline-none;
+  background-color: var(--dsw-alias-bg-base);
+  border-color: var(--dsw-alias-border-l4);
+  color: var(--dsw-alias-label-primary);
+  font-family: inherit;
+}
+.dsp-textarea:focus {
+  border-color: var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 2px var(--dsw-alias-interactive-bg-hover-accent);
+}
+.dsp-textarea::placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Character counter sits under the textarea, right-aligned. */
+.dsp-counter {
+  @apply flex justify-end font-mono text-[11px];
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Secret: masked value in a wider-tracked face plus a reveal button. */
+.dsp-secret-value {
+  @apply flex-1 px-3 font-mono text-[14px] tracking-[3px];
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Number: right-aligned mono value with a two-button stepper column. */
+.dsp-number {
+  @apply flex h-[36px] items-stretch overflow-hidden rounded-[12px] border;
+  background-color: var(--dsw-alias-bg-base);
+  border-color: var(--dsw-alias-border-l4);
+}
+.dsp-number:focus-within {
+  border-color: var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 2px var(--dsw-alias-interactive-bg-hover-accent);
+}
+.dsp-number-input {
+  @apply h-full min-w-0 flex-1 border-0 bg-transparent px-3 text-right font-mono text-[13px] outline-none;
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-stepper {
+  @apply flex w-6 shrink-0 flex-col border-l;
+  border-color: var(--dsw-alias-border-l3);
+}
+.dsp-stepper-btn {
+  @apply flex flex-1 cursor-pointer items-center justify-center border-0 bg-transparent p-0;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsp-stepper-btn:hover:not(:disabled) {
+  background-color: var(--dsw-alias-interactive-bg-hover);
+}
+.dsp-stepper-btn:disabled {
+  @apply cursor-not-allowed opacity-40;
+}
+.dsp-stepper-btn + .dsp-stepper-btn {
+  border-top: 1px solid var(--dsw-alias-border-l3);
+}
+
+/* ==========================================================================
+   4. Select — a custom listbox. The host has no Select component, so this one
+   owns its own keyboard and ARIA contract (see `Select.tsx`).
+   ========================================================================== */
+.dsp-select {
+  @apply relative inline-block;
+}
+.dsp-select-trigger {
+  @apply flex h-[36px] cursor-pointer items-center justify-between gap-2 rounded-[12px] border px-3 text-[13px] text-left;
+  background-color: var(--dsw-alias-bg-base);
+  border-color: var(--dsw-alias-border-l4);
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-select-trigger:hover:not(:disabled) {
+  border-color: var(--dsw-alias-border-inverted2);
+}
+.dsp-select-trigger:focus-visible {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary);
+  box-shadow: 0 0 0 2px var(--dsw-alias-interactive-bg-hover-accent);
+}
+.dsp-select-trigger:disabled {
+  @apply cursor-not-allowed opacity-50;
+}
+.dsp-select-placeholder {
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsp-select-value {
+  @apply min-w-0 flex-1 truncate;
+}
+.dsp-select-chevron {
+  @apply shrink-0 transition-transform duration-150;
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsp-select-chevron-open {
+  @apply rotate-180;
+}
+.dsp-select-check {
+  @apply flex h-3 w-3 shrink-0 items-center justify-center;
+  color: var(--dsw-alias-brand-primary);
+}
+.dsp-select-panel {
+  @apply absolute left-0 top-[calc(100%+4px)] z-50 max-h-[280px] min-w-full overflow-y-auto rounded-[12px] border p-1;
+  background-color: var(--dsw-alias-button-floating-fill);
+  border-color: var(--dsw-alias-border-l3);
+  box-shadow: var(--dsw-elevation-panel);
+}
+.dsp-select-option {
+  @apply flex h-8 cursor-pointer items-center gap-2 rounded-[8px] px-2.5 text-[13px];
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-select-option:hover,
+.dsp-select-option-active {
+  background-color: var(--dsw-alias-interactive-bg-hover);
+}
+.dsp-select-option-selected {
+  background-color: var(--dsw-alias-button-primary-dimmed);
+  color: var(--dsw-alias-brand-primary);
+  @apply font-medium;
+}
+.dsp-select-option-disabled {
+  @apply cursor-not-allowed opacity-40;
+}
+.dsp-select-option-label {
+  @apply min-w-0 flex-1 truncate;
+}
+.dsp-select-option-hint {
+  @apply shrink-0 font-mono text-[10px];
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* ==========================================================================
+   5. Switch, checkbox, radio, segmented control.
+   ========================================================================== */
+.dsp-switch {
+  @apply inline-flex shrink-0 cursor-pointer items-center border-0 bg-transparent p-0;
+}
+.dsp-switch:disabled {
+  @apply cursor-not-allowed opacity-50;
+}
+.dsp-switch-track {
+  @apply relative inline-flex h-[22px] w-[38px] shrink-0 rounded-full transition-colors duration-150;
+  background-color: var(--dsw-alias-state-idle-primary);
+}
+.dsp-switch-track-on {
+  background-color: var(--dsw-alias-brand-primary);
+}
+.dsp-switch-thumb {
+  @apply absolute top-[2px] left-[2px] h-[18px] w-[18px] rounded-full transition-transform duration-150;
+  background-color: var(--dsw-alias-switch-thumb);
+}
+.dsp-switch-track-on .dsp-switch-thumb {
+  @apply translate-x-4;
+}
+
+.dsp-check {
+  @apply inline-flex shrink-0 cursor-pointer items-center gap-2 border-0 bg-transparent p-0 text-left;
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-check:disabled {
+  @apply cursor-not-allowed opacity-50;
+}
+.dsp-check-box {
+  @apply flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-[4px] border;
+  border-color: var(--dsw-alias-border-l4);
+  background-color: var(--dsw-alias-bg-base);
+}
+.dsp-check-box-on {
+  background-color: var(--dsw-alias-brand-primary);
+  border-color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+.dsp-radio-box {
+  @apply rounded-full;
+}
+.dsp-radio-dot {
+  @apply h-[6px] w-[6px] rounded-full;
+  background-color: var(--dsw-alias-label-primary-foreground);
+}
+.dsp-check-label {
+  @apply text-[13px];
+}
+
+.dsp-seg {
+  @apply inline-flex items-center gap-0.5 rounded-[10px] p-0.5;
+  background-color: var(--dsw-alias-bg-layer-3);
+}
+.dsp-seg-item {
+  @apply inline-flex h-7 cursor-pointer items-center justify-center rounded-[8px] border-0 bg-transparent px-3 text-[13px];
+  color: var(--dsw-alias-label-secondary);
+}
+.dsp-seg-item:hover:not(.dsp-seg-item-on) {
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-seg-item-on {
+  @apply font-semibold;
+  background-color: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: var(--dsw-elevation-stroke), 0 1px 2px 0 rgba(15, 23, 42, 0.06);
+}
+
+/* ==========================================================================
+   6. Button.
+   ========================================================================== */
+.dsp-btn {
+  @apply inline-flex h-[36px] shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-[12px] border border-transparent px-4 text-[13px] font-medium;
+  @apply transition-colors duration-150;
+  font-family: inherit;
+}
+.dsp-btn:disabled {
+  @apply cursor-not-allowed opacity-40;
+}
+.dsp-btn-sm {
+  @apply h-[28px] rounded-[8px] px-2.5 text-[12px];
+}
+.dsp-btn-primary {
+  background-color: var(--dsw-alias-button-primary-fill);
+  color: var(--dsw-alias-label-primary-foreground);
+}
+.dsp-btn-primary:hover:not(:disabled) {
+  background-color: var(--dsw-alias-button-primary-hover);
+}
+.dsp-btn-secondary {
+  background-color: var(--dsw-alias-bg-base);
+  border-color: var(--dsw-alias-border-l4);
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-btn-secondary:hover:not(:disabled) {
+  background-color: var(--dsw-alias-interactive-bg-hover);
+}
+.dsp-btn-ghost {
+  @apply px-1;
+  background-color: transparent;
+  color: var(--dsw-alias-link);
+}
+.dsp-btn-ghost:hover:not(:disabled) {
+  @apply underline;
+}
+.dsp-btn-danger {
+  @apply px-1;
+  background-color: transparent;
+  color: var(--dsw-alias-state-error-primary);
+}
+.dsp-btn-danger:hover:not(:disabled) {
+  @apply underline;
+}
+.dsp-btn-icon {
+  @apply h-8 w-8 rounded-[10px] p-0;
+  background-color: transparent;
+  color: var(--dsw-alias-label-secondary);
+}
+.dsp-btn-icon:hover:not(:disabled) {
+  background-color: var(--dsw-alias-interactive-bg-hover);
+}
+.dsp-btn-spin {
+  @apply animate-spin;
+}
+
+/* ==========================================================================
+   7. Status dot, tag, banner, empty state, skeleton.
+   ========================================================================== */
+.dsp-dot {
+  @apply inline-block h-2 w-2 shrink-0 rounded-full;
+}
+.dsp-dot-ok {
+  background-color: var(--dsw-alias-state-success-primary);
+}
+.dsp-dot-warn {
+  background-color: var(--dsw-alias-state-warn-primary);
+}
+.dsp-dot-error {
+  background-color: var(--dsw-alias-state-error-primary);
+}
+/* Idle reads as a hollow ring, not a filled grey disc. */
+.dsp-dot-idle {
+  background-color: transparent;
+  border: 1.5px solid var(--dsw-alias-state-idle-primary);
+}
+.dsp-dot-info {
+  background-color: var(--dsw-alias-state-business-primary);
+}
+
+.dsp-tag {
+  @apply inline-flex shrink-0 items-center gap-1 rounded-[6px] px-1.5 py-0.5 text-[10px] font-medium;
+  background-color: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-secondary);
+}
+.dsp-tag-mono {
+  @apply font-mono text-[11px] px-2;
+}
+.dsp-tag-ok {
+  background-color: var(--dsw-alias-state-success-tertiary);
+  color: var(--dsw-alias-state-success-primary);
+}
+.dsp-tag-warn {
+  background-color: var(--dsw-alias-state-warn-tertiary);
+  color: var(--dsw-alias-state-warn-primary);
+}
+.dsp-tag-error {
+  background-color: var(--dsw-alias-interactive-bg-hover-danger);
+  color: var(--dsw-alias-state-error-primary);
+}
+.dsp-tag-accent {
+  background-color: var(--dsw-alias-button-primary-dimmed);
+  color: var(--dsw-alias-brand-primary);
+}
+
+.dsp-banner {
+  @apply flex items-start gap-2 rounded-[12px] border px-2.5 py-2 text-[12px] leading-[18px];
+}
+.dsp-banner-icon {
+  @apply mt-px shrink-0;
+}
+.dsp-banner-body {
+  @apply min-w-0 flex-1;
+}
+.dsp-banner-info {
+  background-color: var(--dsw-alias-button-primary-dimmed);
+  border-color: var(--dsw-alias-interactive-bg-hover-accent);
+  color: var(--dsw-alias-brand-text);
+}
+.dsp-banner-ok {
+  background-color: var(--dsw-alias-state-success-tertiary);
+  border-color: var(--dsw-alias-state-success-secondary);
+  color: var(--dsw-alias-state-success-primary);
+}
+.dsp-banner-warn {
+  background-color: var(--dsw-alias-state-warn-tertiary);
+  border-color: var(--dsw-alias-state-warn-secondary);
+  color: var(--dsw-alias-state-warn-primary);
+}
+/* No `state-error-tertiary` token exists, so the danger wash comes from the
+   interactive danger tint: `rgba(239,68,68,.08)` over white is #FEF2F2, the
+   design's light value, and `.14` over the dark canvas is its dark value. */
+.dsp-banner-error {
+  background-color: var(--dsw-alias-interactive-bg-hover-danger);
+  border-color: var(--dsw-alias-state-error-secondary);
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.dsp-empty {
+  @apply flex flex-col items-center gap-2 px-5 py-6 text-center;
+}
+.dsp-empty-icon {
+  @apply flex h-9 w-9 items-center justify-center rounded-full;
+  background-color: var(--dsw-alias-bg-layer-3);
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsp-empty-title {
+  @apply text-[13px] font-medium;
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-empty-desc {
+  @apply max-w-[360px] text-[12px] leading-[18px];
+  color: var(--dsw-alias-label-secondary);
+}
+.dsp-empty-actions {
+  @apply mt-1;
+}
+
+.dsp-skel-stack {
+  @apply flex flex-col gap-2;
+}
+.dsp-skel {
+  @apply h-[12px] rounded-[6px];
+  background-color: var(--dsw-alias-bg-skeleton);
+}
+.dsp-skel-60 {
+  @apply w-[60%];
+}
+.dsp-skel-40 {
+  @apply w-[40%];
+}
+
+/* ==========================================================================
+   8. Read-only summary — the two-column grey block.
+   ========================================================================== */
+.dsp-summary {
+  @apply flex flex-col gap-2 rounded-[12px] p-3;
+  background-color: var(--dsw-alias-bg-layer-2);
+}
+.dsp-summary-pair {
+  @apply grid grid-cols-12 gap-x-3;
+}
+.dsp-summary-label {
+  @apply col-span-4 truncate text-[12px];
+  color: var(--dsw-alias-label-secondary);
+}
+.dsp-summary-value {
+  @apply col-span-8 min-w-0 break-all font-mono text-[12px];
+  color: var(--dsw-alias-label-primary-dimmed);
+}
+.dsp-summary-value-empty {
+  @apply not-italic;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* ==========================================================================
+   9. List editor — add/remove rows, used for model catalogues and the like.
+   ========================================================================== */
+.dsp-list {
+  @apply flex flex-col overflow-hidden rounded-[12px] border;
+  border-color: var(--dsw-alias-border-l3);
+}
+.dsp-list-root {
+  @apply flex flex-col gap-2;
+}
+.dsp-list-empty {
+  @apply rounded-[12px] border border-dashed px-3 py-4 text-center text-[12px];
+  border-color: var(--dsw-alias-border-l3);
+  color: var(--dsw-alias-label-tertiary);
+}
+.dsp-list-row {
+  @apply flex h-[40px] items-center gap-2 px-3;
+}
+.dsp-list-row + .dsp-list-row {
+  border-top: 1px solid var(--dsw-alias-border-l3);
+}
+.dsp-list-value {
+  @apply min-w-0 flex-1 truncate font-mono text-[12px];
+  color: var(--dsw-alias-label-primary);
+}
+.dsp-list-add {
+  @apply flex items-center gap-2 p-3;
+}
+.dsp-list-add-input {
+  @apply w-[200px];
+}
+.dsp-list-add-btn {
+  @apply rounded-[12px] border border-dashed;
+  background-color: var(--dsw-alias-interactive-bg-hover-accent);
+  border-color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-brand-primary);
+}
+
+/* ==========================================================================
+   10. Dark-mode geometry deltas.
+   Only the values the design actually changes; every colour above already
+   follows the token layer, so nothing else needs a dark rule.
+   ========================================================================== */
+body[data-ds-dark-theme] .dsp-card {
+  border-radius: 14px;
+}
+body[data-ds-dark-theme] .dsp-input-wrap,
+body[data-ds-dark-theme] .dsp-number,
+body[data-ds-dark-theme] .dsp-textarea,
+body[data-ds-dark-theme] .dsp-select-trigger,
+body[data-ds-dark-theme] .dsp-select-panel,
+body[data-ds-dark-theme] .dsp-btn {
+  border-radius: 10px;
+}
+body[data-ds-dark-theme] .dsp-list,
+body[data-ds-dark-theme] .dsp-summary,
+body[data-ds-dark-theme] .dsp-banner {
+  border-radius: 10px;
+}
+body[data-ds-dark-theme] .dsp-btn-icon {
+  border-radius: 8px;
+}
+/* The segmented thumb is white-on-light; in dark it reads as a raised slate. */
+body[data-ds-dark-theme] .dsp-seg-item-on {
+  box-shadow: none;
+  background-color: var(--dsw-alias-bg-overlay);
+}
+/* Primary buttons in dark use the lighter brand fill with a readable label. */
+body[data-ds-dark-theme] .dsp-btn-primary {
+  color: var(--dsw-alias-label-primary-foreground);
+}

@@ -17,7 +17,6 @@ import assert from 'node:assert/strict'
 import { markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import * as plugin from '../lib/index.js'
 import { TextRepetitionDetector, countRepeatedText } from '../lib/index.js'
-import { configRefs } from './helpers/refs.mjs'
 
 const CONFIG = {
   maxThinkingSteps: 3,
@@ -140,22 +139,41 @@ async function* textStream(count, text = 'The `register` API matches. ', termina
 }
 
 /** Run one stream through the installed listener and collect every chunk. */
-async function collect(agent, count, config = CONFIG, text) {
+async function collect(agent, count, text) {
   const ctx = fakeContext(agent)
-  plugin.apply(ctx, configRefs({ ...CONFIG, ...config }))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const out = []
   for await (const chunk of ctx.fire(options, () => textStream(count, text))) out.push(chunk)
   return out
 }
 
+/**
+ * A chunk the cycle rule cannot see, so these tests isolate the chunk rule.
+ *
+ * Two constraints pin it. It must be longer than the cycle rule's 512-character
+ * cap, or a repeating 28-character sentence is caught by the cycle rule at 10
+ * deltas — before the chunk rule's 60. And it must not be internally periodic:
+ * a repeated phrase IS a period, and the cycle rule fires on the very first
+ * delta of it (`trailingCycle` reads the whole 610-character chunk as period 1).
+ * Distinct characters satisfy both.
+ */
+const LONG_PERIOD = (() => {
+  let seed = 12345
+  const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648
+  const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  let text = ''
+  while (text.length < 600) text += alphabet[Math.floor(next() * alphabet.length)]
+  return text
+})()
+
 test('a repetitive single call is cut short by closing its block', async () => {
   const agent = fakeAgent()
-  const out = await collect(agent, 50)
+  const out = await collect(agent, 70, LONG_PERIOD)
   const deltas = out.filter(c => c.type === 'text-delta')
   const finish = out.at(-1)
 
-  assert.equal(deltas.length, 4, 'the stream must stop at the threshold, not run to the model max_tokens')
+  assert.equal(deltas.length, 60, 'the stream must stop at the threshold, not run to the model max_tokens')
   assert.equal(finish.type, 'finish', 'the last chunk must be terminal — a bare return violates the llm invariant')
   // A closed call, not a failed one: `error` would settle as an `assistant/attempt`
   // with no `assistant/message`, which the conversation renderer cannot draw, and
@@ -166,35 +184,28 @@ test('a repetitive single call is cut short by closing its block', async () => {
 })
 
 test('the terminal finish is the last chunk: nothing follows it', async () => {
-  const out = await collect(fakeAgent(), 50)
+  const out = await collect(fakeAgent(), 70, LONG_PERIOD)
   const at = out.findIndex(c => c.type === 'finish')
   assert.ok(at > 0, 'a finish must be emitted')
   assert.equal(at, out.length - 1, 'the invariant rejects any chunk after terminal finish')
 })
 
 test('the pending deltas after the break are dropped, not flushed', async () => {
-  // The fixture's adapter would keep going to 50; the breaker must abandon the
+  // The fixture's adapter would keep going; the breaker must abandon the
   // upstream iteration rather than drain it into the durable log.
-  const out = await collect(fakeAgent(), 5000)
-  assert.equal(out.filter(c => c.type === 'text-delta').length, 4)
+  const out = await collect(fakeAgent(), 5000, LONG_PERIOD)
+  assert.equal(out.filter(c => c.type === 'text-delta').length, 60)
 })
 
 test('the break steers the agent with the observed size of the repetition', async () => {
   const agent = fakeAgent()
-  await collect(agent, 50)
+  await collect(agent, 70, LONG_PERIOD)
   assert.equal(agent.steered.length, 1, 'the correction must be queued before the finish')
   const text = agent.steered[0].content.map(b => b.text).join('')
   // The wording is localized (Chinese by default), so this asserts the observed
   // size and the localized noun rather than an English phrase.
   assert.match(text, /可见输出/)
   assert.match(text, /\d+/)
-})
-
-test('`breakCorrection: false` still breaks but says nothing', async () => {
-  const agent = fakeAgent()
-  const out = await collect(agent, 50, { breakCorrection: false })
-  assert.equal(out.at(-1).reason.kind, 'stop')
-  assert.equal(agent.steered.length, 0)
 })
 
 /**
@@ -251,11 +262,11 @@ test('the break finish is protocol-legal: the shipped llm invariant accepts it',
   // wrong ("finished with 1 open block(s)").
   const { ctx, listeners } = chainContext(fakeAgent())
   const failures = await installInvariant(ctx)
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx)
   assert.equal(listeners.length, 2, 'the chain must be invariant -> plugin')
 
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
-  const seen = await runChain(listeners, options, () => textStream(50))
+  const seen = await runChain(listeners, options, () => textStream(70))
 
   assert.deepEqual(failures, [], 'the synthesized finish must not violate the stream grammar')
   assert.equal(seen.at(-1).type, 'finish')
@@ -268,27 +279,38 @@ test('an UNBROKEN repetitive call would have failed only at the provider ceiling
   // so the two tests differ only by the breaker.
   const raw = await (async () => {
     const out = []
-    for await (const c of textStream(50, undefined, { type: 'finish', reason: { kind: 'stop' } })) out.push(c)
+    for await (const c of textStream(70, undefined, { type: 'finish', reason: { kind: 'stop' } })) out.push(c)
     return out
   })()
-  assert.equal(raw.filter(c => c.type === 'text-delta').length, 50, 'without the breaker all 50 deltas flow')
+  assert.equal(raw.filter(c => c.type === 'text-delta').length, 70, 'without the breaker all 70 deltas flow')
   assert.deepEqual(raw.at(-1).reason, { kind: 'stop' })
 })
 
 test('a call inside the threshold is left completely alone', async () => {
   const agent = fakeAgent()
-  // 3 identical deltas against a threshold of 4 — a legitimately repeated short
-  // line (a header row, a log prefix) must not be treated as degeneration.
-  const out = await collect(agent, 3, { maxRepeatedText: 4 })
-  assert.equal(out.filter(c => c.type === 'text-delta').length, 3)
+  // The shipped cycle rule needs a 256-character span, and the fixture sentence
+  // is 28 characters, so nine repetitions (252 characters) stay under it. This
+  // is the boundary the rule actually has: a header row or a log prefix repeated
+  // a handful of times must not be treated as degeneration.
+  const out = await collect(agent, 9)
+  assert.equal(out.filter(c => c.type === 'text-delta').length, 9)
   assert.equal(out.at(-1).type, 'text-delta', 'no finish may be synthesized for a healthy call')
   assert.equal(agent.steered.length, 0)
+})
+
+test('one more repetition than the span allows does trip it', async () => {
+  // The other side of the same boundary, so the number above is not a guess.
+  const agent = fakeAgent()
+  const out = await collect(agent, 10)
+  assert.equal(out.filter(c => c.type === 'text-delta').length, 10)
+  assert.equal(out.at(-1).reason.kind, 'stop')
+  assert.equal(agent.steered.length, 1)
 })
 
 test('varying visible output never trips the breaker', async () => {
   const agent = fakeAgent()
   const ctx = fakeContext(agent)
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   async function* varying() {
     for (let i = 0; i < 200; i++) yield { type: 'text-delta', index: 0, text: `chunk number ${i} ` }
@@ -396,9 +418,9 @@ test('a cycled stream is cut through apply() with a terminal error finish', asyn
   // this is the assertion that fails if the breaker counts but never emits.
   const agent = fakeAgent()
   const ctx = fakeContext(agent)
-  plugin.apply(ctx, configRefs(CYCLE_ON))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
-  const deltas = lineDeltas(CYCLE_ZH, 40)
+  const deltas = lineDeltas(CYCLE_ZH, 60)
   async function* cycled() {
     yield { type: 'block-start', index: 0, blockType: 'text' }
     for (const text of deltas) yield { type: 'text-delta', index: 0, text }
@@ -411,32 +433,6 @@ test('a cycled stream is cut through apply() with a terminal error finish', asyn
   assert.equal(out.at(-1).reason.kind, 'stop')
   assert.ok(out.some(c => c.type === 'block-end'), 'the open text block must be closed before the finish')
   assert.equal(agent.steered.length, 1, 'the correction must be queued before the finish')
-})
-
-test('the schema ships the cycle rule on, with its documented defaults', () => {
-  const resolved = plugin.Config({})
-  assert.equal(resolved.maxRepeatedCycleChars.get(), 512)
-  assert.equal(resolved.minRepeatedCycleChars.get(), 256)
-  assert.equal(plugin.Config({ maxRepeatedCycleChars: 0 }).maxRepeatedCycleChars.get(), 0, '0 must survive as the off switch')
-  assert.throws(() => plugin.Config({ minRepeatedCycleChars: 1 }))
-})
-
-/* -------------------------------------------------------------------------- */
-/* configuration                                                              */
-/* -------------------------------------------------------------------------- */
-
-test('the schema accepts the breaker keys and applies their defaults', () => {
-  // Guards a real failure mode: schemastery reserves some key names, and a
-  // collision fails at plugin *load* rather than in a type check.
-  const resolved = plugin.Config({})
-  assert.equal(resolved.maxRepeatedText.get(), 60)
-  assert.equal(resolved.breakCode.get(), 'REPETITIVE_OUTPUT')
-  assert.equal(resolved.breakCorrection.get(), true)
-  assert.equal(plugin.Config({ maxRepeatedText: 0 }).maxRepeatedText.get(), 0, '0 must survive as the documented off switch')
-})
-
-test('the schema rejects a negative repetition threshold', () => {
-  assert.throws(() => plugin.Config({ maxRepeatedText: -1 }))
 })
 
 /* -------------------------------------------------------------------------- */
@@ -481,7 +477,7 @@ test('the shipped period cap must exceed every measured visible-output period', 
   // below a real period fails silently. Measured periods on this side: 12 and 26
   // (discussion #7043), and 172 (the 44 387-character bleed).
   const MEASURED_PERIODS = [12, 26, 172]
-  const cap = plugin.Config({}).maxRepeatedCycleChars.get()
+  const cap = 512
   for (const period of MEASURED_PERIODS) {
     assert.ok(cap > period, `cap ${cap} must exceed the measured period ${period}`)
   }
@@ -491,10 +487,9 @@ test('the real 172-period bleed is cut mid-stream through apply()', async () => 
   // End to end, through the wrapper, on the shipped defaults for the cycle rule:
   // the assertion that fails if the cap regresses, and the one that proves the
   // bleed is cut rather than merely measured.
-  const config = { ...CONFIG, maxRepeatedText: 0, maxRepeatedCycleChars: 512, minRepeatedCycleChars: 256 }
   const agent = fakeAgent()
   const ctx = fakeContext(agent)
-  plugin.apply(ctx, configRefs(config))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const total = BLEED_PERIOD.repeat(60)
   async function* bleeding() {

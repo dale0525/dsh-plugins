@@ -1,4 +1,4 @@
-﻿/**
+/**
  * The reasoning bleed breaker — the issue #5976 shape.
  *
  * #5976 is a model that degrades into a pure reasoning bleed and never returns:
@@ -30,7 +30,6 @@ import { join, dirname } from 'node:path'
 import { markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import * as plugin from '../lib/index.js'
 import { ReasoningLoopBreaker, trailingCycle } from '../lib/index.js'
-import { configRefs } from './helpers/refs.mjs'
 
 /**
  * Real reasoning tails captured from the reproduction.
@@ -98,15 +97,28 @@ const SHORT = (() => {
 
 /**
  * The shipped defaults as the breaker classes expect them.
- *
- * The schema hands back a live reference per field, because `apply` reads
- * through `.get()`. `trip()` and the breaker classes below take plain values, so
- * this unwraps — and in doing so it also fails loudly if a field ever loses its
- * `volatile()` marker, rather than quietly handing a breaker a reference.
  */
 function shippedDefaults() {
-  const refs = plugin.Config({})
-  return Object.fromEntries(Object.entries(refs).map(([key, ref]) => [key, ref.get()]))
+  return {
+    maxThinkingSteps: 3,
+    minReasoningChars: 2048,
+    similarityThreshold: 0.8,
+    escalate: 'steer',
+    maxFires: 99,
+    cancelCause: 'thinking-loop',
+    maxRepeatedText: 60,
+    maxRepeatedCycleChars: 512,
+    minRepeatedCycleChars: 256,
+    maxRepeatedReasoningCycleChars: 512,
+    minRepeatedReasoningCycleChars: 384,
+    maxRepeatedReasoningLineChars: 2048,
+    minRepeatedReasoningLineCoverage: 0.6,
+    breakCode: 'REPETITIVE_OUTPUT',
+    breakCorrection: true,
+    resumeAfterBreak: true,
+    retryRequestFailures: true,
+    maxRequestRetries: 2,
+  }
 }
 
 /** Feed a reasoning text through the breaker at a fixed chunk size. */
@@ -226,8 +238,7 @@ test('the breaker trips exactly once', () => {
 /* -------------------------------------------------------------------------- */
 
 /** A host that captures what the plugin does to a live stream. */
-function host(overrides = {}) {
-  const config = { ...CONFIG, ...overrides }
+function host() {
   const steered = []
   const warnings = []
   const agent = {
@@ -243,7 +254,7 @@ function host(overrides = {}) {
     agents: { get: () => agent },
     on: (event, listener) => { if (event === 'llm/stream') stream = listener },
   }
-  plugin.apply(ctx, configRefs(config))
+  plugin.apply(ctx)
   assert.equal(typeof stream, 'function')
   return { stream, steered, warnings, agent }
 }
@@ -348,13 +359,6 @@ test('the pending deltas after the cut are dropped, not flushed', async () => {
   assert.equal(finishAt, out.length - 1)
 })
 
-test('`breakCorrection: false` still cuts but says nothing', async () => {
-  const { stream, steered } = host({ breakCorrection: false })
-  const out = await drive(stream, reasoningChunks(BLEED))
-  assert.equal(out.at(-1).type, 'finish')
-  assert.equal(steered.length, 0)
-})
-
 test('a call that moves on to real output is left alone', async () => {
   const { stream, steered } = host()
   // A short cyclic burst below `minRepeatedReasoningCycleChars` — legitimate
@@ -446,7 +450,7 @@ test('the reasoning cut is protocol-legal: the shipped llm invariant accepts it'
   const agent = { steer: () => {}, inject: () => {}, cancel: () => {} }
   const { ctx, listeners } = chainContext(agent)
   const failures = await installInvariant(ctx)
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx)
   assert.equal(listeners.length, 2, 'the chain must be invariant -> plugin')
 
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
@@ -463,7 +467,7 @@ test('the break never aborts the agent', async () => {
   // queued. A closed-block `stop` finish is the turn-level mechanism.
   const agent = { steer: () => {}, inject: () => {}, cancel: () => { throw new Error('must not cancel the agent') } }
   const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const seen = await runChain(listeners, options, () => reasoningStream(BLEED))
   assert.equal(seen.at(-1).reason.kind, 'stop')
@@ -530,54 +534,6 @@ function resumeAgent() {
   return agent
 }
 
-test('resumeAfterBreak re-enters the model only after the turn is idle', async () => {
-  const agent = resumeAgent()
-  const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs({ ...CONFIG, resumeAfterBreak: true, breakCorrection: false }))
-  const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
-
-  await runChain(listeners, options, () => reasoningStream(BLEED))
-
-  // Still running: the wake must not have been delivered yet, and must not have
-  // been attempted into the busy phase either — the guard waits, it does not
-  // fire a doomed wake and hope.
-  assert.equal(agent.steered.length, 0, 'no wake while the turn is still unwinding')
-
-  await agent.finishTurn()
-
-  assert.equal(agent.steered.length, 1, 'exactly one continuation after idle')
-  const text = agent.steered[0].content.map((b) => b.text ?? '').join('')
-  assert.match(text, /截断/, 'the continuation carries the correction, it is not empty')
-})
-
-test('the continuation is never an empty message', async () => {
-  // An empty user message would re-enter the model with the same degenerate
-  // history and no new instruction — the loop's own input. This pins that the
-  // resume path always carries the correction text.
-  const agent = resumeAgent()
-  const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs({ ...CONFIG, resumeAfterBreak: true, breakCorrection: false }))
-  const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
-  await runChain(listeners, options, () => reasoningStream(BLEED))
-  await agent.finishTurn()
-
-  const blocks = agent.steered[0].content
-  assert.ok(blocks.length > 0, 'must carry at least one block')
-  assert.ok(blocks.every((b) => (b.text ?? '').length > 0), 'no empty text block')
-})
-
-test('resumeAfterBreak is off by default', async () => {
-  // `breakCorrection` is switched off so the only thing that could reach the
-  // model here is the resume path itself.
-  const agent = resumeAgent()
-  const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs({ ...CONFIG, breakCorrection: false }))
-  const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
-  await runChain(listeners, options, () => reasoningStream(BLEED))
-  await agent.finishTurn()
-  assert.equal(agent.steered.length, 0, 'the default must not re-enter the model unasked')
-})
-
 test('the post-break notice is always steering, never a queued turn', async () => {
   // The shipped failure: 78 mid-stream breaks in one turn each pushed the same
   // correction into `next-turn`. `claim()` consumes exactly ONE queued message
@@ -588,7 +544,7 @@ test('the post-break notice is always steering, never a queued turn', async () =
   // is drained whole at the next step boundary.
   const agent = resumeAgent()
   const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs({ ...CONFIG, resumeAfterBreak: true }))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   await runChain(listeners, options, () => reasoningStream(BLEED))
   await agent.finishTurn()
@@ -603,7 +559,7 @@ test('a break does not deliver the same correction twice', async () => {
   // The resume path must not append a second identical copy on top of it.
   const agent = resumeAgent()
   const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs({ ...CONFIG, resumeAfterBreak: true, breakCorrection: true }))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   await runChain(listeners, options, () => reasoningStream(BLEED))
   await agent.finishTurn()
@@ -612,23 +568,12 @@ test('a break does not deliver the same correction twice', async () => {
   assert.deepEqual(agent.followups, [])
 })
 
-test('the shipped schema defaults resumeAfterBreak to false', () => {
-  // Behavioural test above covers the undefined case; this pins the schema
-  // itself, so flipping the default is caught even if a future config path
-  // always passes the key explicitly.
-  const resolved = plugin.Config(CONFIG).resumeAfterBreak
-  assert.equal(typeof resolved.get, 'function', 'the field must arrive as a live reference')
-  assert.equal(resolved.get(), false)
-  const cleared = plugin.Config({ ...CONFIG, resumeAfterBreak: undefined }).resumeAfterBreak
-  assert.equal(cleared.get(), false)
-})
-
 test('a guard without whenIdle still breaks cleanly', async () => {
   // `whenIdle` is optional on the Agent type, so a stand-in that omits it must
   // not turn a working break into a crash.
   const agent = { steer: () => {}, inject: () => {}, cancel: () => {} }
   const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs({ ...CONFIG, resumeAfterBreak: true, breakCorrection: false }))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const seen = await runChain(listeners, options, () => reasoningStream(BLEED))
   assert.equal(seen.at(-1).reason.kind, 'stop')
@@ -680,7 +625,7 @@ test('the break output assembles into a non-empty message through the real Block
   )
   const agent = { steer: () => {}, inject: () => {}, cancel: () => {} }
   const { ctx, listeners } = chainContext(agent)
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const seen = await runChain(listeners, options, () => reasoningStream(BLEED))
 
@@ -723,7 +668,7 @@ async function breakWithLocale(settings) {
     agents: { get: () => agent },
     get: (name) => (name === 'settings' ? settings : undefined),
   }
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const out = []
   for await (const c of listener(options, async function* () {
@@ -763,7 +708,7 @@ async function breakWithLocaleSource(settings) {
     agents: { get: () => agent },
     get: (name) => (name === 'settings' ? settings : undefined),
   }
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   for await (const _ of listener(options, () => reasoningStream(BLEED))) { /* drain */ }
   assert.equal(steered.length, 1)
@@ -850,7 +795,7 @@ test('the service is read through ctx.get, not the throwing ctx.settings proxy',
     get: (name) => (name === 'settings' ? settingsWith('en') : undefined),
     get settings() { throw new Error('cannot get property "settings" without inject') },
   }
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   for await (const _ of listener(options, () => reasoningStream(BLEED))) { /* drain */ }
   assert.equal(steered.length, 1)
@@ -875,7 +820,7 @@ test('the notice is attributed to the package, with an account of what happened'
     agents: { get: () => agent },
     get: () => undefined,
   }
-  plugin.apply(ctx, configRefs(CONFIG))
+  plugin.apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   for await (const _ of listener(options, () => reasoningStream(BLEED))) { /* drain */ }
 
@@ -984,32 +929,9 @@ test('the old default of 512 misses them — this is the regression', () => {
 test('the stall captures are cut by the reasoning rule, through apply()', async () => {
   // The helper-level assertion above cannot show that the plugin actually ends
   // the call; this drives the real stream wrapper.
-  const { stream, steered } = host({ minRepeatedReasoningCycleChars: 384 })
+  const { stream, steered } = host()
   const out = await drive(stream, reasoningChunks(STALL.stalls[0].text))
   assert.equal(out.at(-1).type, 'finish')
   assert.equal(out.at(-1).reason.kind, 'stop')
   assert.ok(steered.length > 0, 'the cut must steer a correction back to the model')
-})
-
-/* -------------------------------------------------------------------------- */
-/* the shipped schema                                                         */
-/* -------------------------------------------------------------------------- */
-
-test('the schema ships the reasoning rule on, with its calibrated defaults', () => {
-  // The keys are omitted so this reads the schema's own defaults rather than
-  // echoing CONFIG — otherwise it would keep passing after a default moved.
-  const { maxRepeatedReasoningCycleChars, minRepeatedReasoningCycleChars, ...rest } = CONFIG
-  const resolved = plugin.Config(rest)
-  assert.equal(resolved.maxRepeatedReasoningCycleChars.get(), 512)
-  assert.equal(resolved.minRepeatedReasoningCycleChars.get(), 384)
-})
-
-test('the schema accepts the reasoning keys and applies their defaults', () => {
-  const resolved = plugin.Config({ ...CONFIG, maxRepeatedReasoningCycleChars: undefined, minRepeatedReasoningCycleChars: undefined })
-  assert.equal(resolved.maxRepeatedReasoningCycleChars.get(), 512)
-  assert.equal(resolved.minRepeatedReasoningCycleChars.get(), 384)
-})
-
-test('the schema rejects a negative reasoning period', () => {
-  assert.throws(() => plugin.Config({ ...CONFIG, maxRepeatedReasoningCycleChars: -1 }))
 })

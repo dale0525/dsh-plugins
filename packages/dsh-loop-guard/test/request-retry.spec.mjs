@@ -25,8 +25,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import * as plugin from '../lib/index.js'
-import { Config } from '../lib/index.js'
-import { configRefs, refs } from './helpers/refs.mjs'
 
 /** The JSON-parse messages actually observed in the session store. */
 const PARSE_FAILURES = [
@@ -92,10 +90,10 @@ function fakeContext(agent) {
  * listener which declines must delegate, so "did downstream get a turn" is the
  * observable difference between declining and swallowing the failure.
  */
-function mount(config = {}) {
+function mount() {
   const agent = {}
   const ctx = fakeContext(agent)
-  plugin.apply(ctx, configRefs(config))
+  plugin.apply(ctx)
 
   assert.equal(ctx.stream.length, 1, 'apply() must still register exactly one llm/stream listener')
   assert.equal(
@@ -177,31 +175,25 @@ test('the retry is bounded by the shipped default', async () => {
   assert.equal(calls.next, 1, 'the exhausted failure is handed downstream once')
 })
 
-test('the cap is configurable', async () => {
-  const { fire } = mount({ maxRequestRetries: 1 })
-  const failure = { code: 'PI_AI_ERROR', message: PARSE_FAILURES[1] }
-
-  assert.deepEqual(await fire(failure), { kind: 'retry' })
-  assert.equal(await fire(failure), undefined)
-})
-
 test('the budget is per step, so the next step starts fresh', async () => {
   // `agent-loop` re-runs the failed step inside its own loop, so (turn, step) is
   // the identity of "this attempt". Without the reset, one bad step would exhaust
   // the budget for the whole turn.
-  const { fire } = mount({ maxRequestRetries: 1 })
+  const { fire } = mount()
   const failure = { code: 'PI_AI_ERROR', message: PARSE_FAILURES[0] }
 
+  assert.deepEqual(await fire(failure, { step: 1 }), { kind: 'retry' })
   assert.deepEqual(await fire(failure, { step: 1 }), { kind: 'retry' })
   assert.equal(await fire(failure, { step: 1 }), undefined)
   assert.deepEqual(await fire(failure, { step: 2 }), { kind: 'retry' })
 })
 
 test('the budget is per agent', async () => {
-  const { fire, listener, calls } = mount({ maxRequestRetries: 1 })
+  const { fire, listener, calls } = mount()
   const failure = { code: 'PI_AI_ERROR', message: PARSE_FAILURES[0] }
   const other = {}
 
+  assert.deepEqual(await fire(failure), { kind: 'retry' })
   assert.deepEqual(await fire(failure), { kind: 'retry' })
   assert.equal(await fire(failure), undefined)
 
@@ -262,37 +254,4 @@ test('a downstream retry decision is passed through', async () => {
     async () => decided,
   )
   assert.equal(answer, decided, 'the downstream decision must be returned unchanged')
-})
-
-/* -------------------------------------------------------------------------- */
-/* configuration                                                              */
-/* -------------------------------------------------------------------------- */
-
-test('retryRequestFailures false turns the retry off', async () => {
-  const { fire, calls } = mount({ retryRequestFailures: false })
-  assert.equal(await fire({ code: 'PI_AI_ERROR', message: PARSE_FAILURES[0] }), undefined)
-  assert.equal(calls.next, 1)
-})
-
-test('the switch is read live, so an edit applies without a remount', async () => {
-  const live = refs({})
-  const agent = {}
-  const ctx = fakeContext(agent)
-  plugin.apply(ctx, live.refs)
-  const listener = ctx.requestError[0]
-  const next = async () => undefined
-  const failure = { code: 'PI_AI_ERROR', message: PARSE_FAILURES[0] }
-  const fire = () => listener({ agent, turn: 0, step: 1, provider: 'pi-ai', failure }, next)
-
-  assert.deepEqual(await fire(), { kind: 'retry' })
-  live.set('retryRequestFailures', false)
-  assert.equal(await fire(), undefined, 'a disabled switch must take effect on the next call')
-})
-
-test('the retry fields are part of the schema and default to on', () => {
-  const parsed = new Config({})
-  assert.equal(parsed.retryRequestFailures.get(), true, 'the retry ships enabled')
-  assert.equal(parsed.maxRequestRetries.get(), 2, 'the shipped budget is small and finite')
-  assert.equal(Config.dict.retryRequestFailures.meta?.volatile, true)
-  assert.equal(Config.dict.maxRequestRetries.meta?.volatile, true)
 })

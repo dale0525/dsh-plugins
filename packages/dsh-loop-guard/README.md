@@ -40,7 +40,7 @@
 - **误报极低**：在真实会话 119 个「有产出」的调用上，**零误报**；在标定用的 252 组参数里，选中的这组也是零误报。
 - **精确判据**：判定用的是**逐字周期**和**跨调用复述**，不是时长、也不是比率。
 - **纠正信息指向原任务**：切断时注入的提示只说「不要重复，继续完成任务」，**不会**让模型去"给个结论然后收尾"——后者会让它偏离原本在做的事。
-- **反应不闩锁**：一次 steer 常常打不破强循环，所以阈值到了会重新计数、再次开火（上限 `maxFires`）。
+- **反应不闩锁**：一次 steer 常常打不破强循环，所以阈值到了会重新计数、再次开火（上限 99 次）。
 - **跟随界面语言**：注入的提示读宿主 `locale` 设置，中文环境说中文（默认即中文）。
 - **绝不静默重试循环**：**没有**模型回退、没有把退化的模型再喂一遍——那比循环本身更糟。唯一的自动重发是**响应体没完整到达**（见下）：请求本身没问题，是上游返回的 JSON 解析失败、或流在送出任何可用内容前就关了，重发同一个请求才是正确的修法。
 - **响应体没完整到达时自动重试**：模型响应体 JSON 解析失败（界面上的「本轮运行失败 … JSON at position N」）、或上游在送出任何可用内容前关掉了流（`stream closed/ended before/without …`）时自动重发同一请求，默认最多 2 次，超出就交给下游恢复。判据很窄——错误码必须是 `PI_AI_ERROR`，且报文要命中这两类特征之一；`Too many pending requests`、`Provider finish_reason: error` 这类同样报 `PI_AI_ERROR` 的情况**不**重试。
@@ -79,24 +79,15 @@
 
 插件**只结束这次调用，从不结束 agent**——它永远不会调用 `agent.cancel()`。
 
-### 自动续跑（`resumeAfterBreak`）
+### 自动续跑机制
 
-**只在关掉 `breakCorrection` 时才有意义。** 纠正提示本身就是插队消息（`next-step`），而回合只有在 `next-step` 空了才收尾，所以「切断 + 纠正」已经能让任务自己往下走。这个选项补的是剩下那种情形：`breakCorrection: false` 时没有任何消息留下，会话会停在原地等你，`resumeAfterBreak` 才把它推起来。
-
-```yaml
-- id: loop-guard
-  config:
-    breakCorrection: false
-    resumeAfterBreak: true
-```
+切断后，插件不仅注入纠正提示，还会在回合收尾、agent 回到 `idle` 后自动推起续跑，让会话无缝回到任务中。
 
 **关键在于「等」**，这不是实现细节而是整个方案成立的前提：切断发生在流包装器里，此时 agent 还处于 `running`，而 DSH 在这个阶段**刻意压制唤醒**——`wakeDriver()` 只肯为 maintenance 或 aborted 挂起唤醒，所以此刻发 `steer()` / `followup()` 都不会置 `wakeRequested`，`kick()` 的 `finally` 找不到唤醒依据，会话就此停下。唤醒只有在 agent 回到 `idle` 后才有效，插件用 `whenIdle()` 等这个时刻。
 
 **续跑走插队通道（`next-step`），不走排队通道（`next-turn`）。** 这不是风格问题：`claim()` 每回合只从 `next-turn` 取**一条**，所以 N 条排队消息就是 N 个回合，一条条慢慢放。一个回合里可能熔断几十次，排队通道会把它们堆成上百条待办，之后每回合只消化一条。`next-step` 在下个步骤边界**整批**取走，因此不会堆积。插件发出的所有提示都是插队消息。
 
 续跑消息**带纠正文本，从不是空的**。空消息等于把同一段退化历史原样再喂一遍、不带任何新信息——那正是产生循环的输入。
-
-该选项默认关闭：它是在模型已经证明「不能自主行动」之后、**不经过你同意就再进一次模型**。无人值守的长任务才建议打开。
 
 ## 安装
 
@@ -126,113 +117,17 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest   # 更新
 dsh plugin --profile web remove @logictan/dsh-plugins-all       # 卸载
 ```
 
-然后重启 `dsh web`。本插件**不写任何自己的配置文件**，也没有全局注册表或系统级写入；
-用户在插件设置页里改过的参数存在宿主自己的设置文档中，随该文档一起管理。
+然后重启 `dsh web`。本插件**不写任何自己的配置文件**，也没有全局注册表或系统级写入；所有判定规则与阈值均作为内置常量默认生效，无需用户配置。
 
-## 配置
+## 默认机制与标定参数
 
-**默认配置就能用，通常不需要动它。** 只有想调整灵敏度或开启自动续跑时才需要改。
+本插件**完全开箱即用，无任何配置项与配置界面**。所有守护行为与判定阈值均以最佳实践常量固化在代码中：
 
-### 在插件设置页里改（推荐）
-
-DSH 的 **设置 → 插件 → 思考循环守护** 里有一张配置卡片，上面是下面这些选项的全部可编辑字段，
-带范围校验、逐项「已覆盖」标记和「恢复默认」。保存后**即刻生效**，不需要重启——
-插件每次模型调用都读取当前配置。
-
-- **留空** = 继承组合配置（profile 的 `cordis.patch.yml` 里写的值）或插件默认值；
-- **恢复默认** = 清掉所有用户层覆盖，回到组合配置的值。
-
-### 在 `cordis.patch.yml` 里改
-
-需要把值**固化进部署**（比如给整个团队发一份预设）时才用这种方式：
-
-```yaml
-- id: loop-guard
-  config:
-    maxThinkingSteps: 2
-    resumeAfterBreak: true
-```
-
-设置页里的用户层**优先于**这里写的组合层，所以两者不冲突：组合层定基线，设置页做个人调整。
-
-### 全部选项
-
-```ts
-interface Config {
-  // ── 跨调用判定（调用结束后） ──────────────────────────────
-  /** 连续多少次「停滞调用」后反应。默认 3。 */
-  maxThinkingSteps?: number
-  /** 单次调用的推理至少这么长才参与判定。默认 2048 字符。 */
-  minReasoningChars?: number
-  /** 跨调用相似度：上一步的推理有多少重现才算「复述」。0 关闭。默认 0.8。 */
-  similarityThreshold?: number
-  /** 命中后做什么：'warn' | 'steer'（默认） | 'cancel'。 */
-  escalate?: 'warn' | 'steer' | 'cancel'
-  /** 同一个 agent 最多反应多少次。默认 4。 */
-  maxFires?: number
-  /** escalate 为 'cancel' 时的取消原因。默认 'thinking-loop'。 */
-  cancelCause?: string
-
-  // ── 流内切断（调用进行中） ────────────────────────────────
-  /** 连续多少个相同的可见输出 chunk 就切断。0 关闭。默认 60。 */
-  maxRepeatedText?: number
-  /** 可见输出尾部最长重复周期（字符）。0 关闭。默认 512。 */
-  maxRepeatedCycleChars?: number
-  /** 可见输出尾部至少要重复多长才判定。默认 256。 */
-  minRepeatedCycleChars?: number
-  /** 推理尾部最长重复周期（字符）——**这条终止 #5976 的永不结束回合**。0 关闭。默认 512。 */
-  maxRepeatedReasoningCycleChars?: number
-  /** 推理尾部至少要重复多长才判定。默认 384。 */
-  minRepeatedReasoningCycleChars?: number
-  /** 推理里「重复行」累计到多少字符就切断——**这条抓没有周期的短语池重排**。0 关闭。默认 2048。 */
-  maxRepeatedReasoningLineChars?: number
-  /** 重复行占比要达到多少才判定。默认 0.6。 */
-  minRepeatedReasoningLineCoverage?: number
-
-  // ── 切断后的行为 ──────────────────────────────────────────
-  /** 日志里标注的错误码。默认 'REPETITIVE_OUTPUT'。（切断本身走 `stop`，不产生错误） */
-  breakCode?: string
-  /** 切断时注入一条纠正提示，让模型回到原任务。默认 true。 */
-  breakCorrection?: boolean
-  /** 切断后等回合收尾，再插队一条纠正消息把任务推起来。仅在 breakCorrection 关闭时有用。默认 false。 */
-  resumeAfterBreak?: boolean
-
-  // ── 响应体没完整到达时重试 ────────────────────────────────
-  /** 响应体 JSON 解析失败、或流被提前关闭时自动重发同一请求。默认 true。 */
-  retryRequestFailures?: boolean
-  /** 同一次尝试最多重发几次，超出交给下游恢复。默认 2。 */
-  maxRequestRetries?: number
-}
-```
-
-### 常见需求
-
-在设置页里填对应的值即可；下面给出等价的 `cordis.patch.yml` 写法（要固化部署时用）：
-
-```yaml
-# 1. 更灵敏：连续 2 次停滞就反应
-- id: loop-guard
-  config:
-    maxThinkingSteps: 2
-
-# 2. 无人值守：切断后不留提示，由续跑插队推起来
-- id: loop-guard
-  config:
-    breakCorrection: false
-    resumeAfterBreak: true
-
-# 3. 只想要推理循环这一条，其余全部关掉
-- id: loop-guard
-  config:
-    maxThinkingSteps: 999
-    maxRepeatedText: 0
-    maxRepeatedCycleChars: 0
-
-# 4. 硬停：不 steer，直接中止回合
-- id: loop-guard
-  config:
-    escalate: cancel
-```
+- **跨调用停滞守护**：连续 3 次停滞调用（单次推理 ≥2048 字符且相似度 ≥0.8 时触发 steer，单 agent 上限 99 次）；
+- **可见输出流内切断**：连续 60 个相同输出 chunk 切断；尾部最长重复周期 512 字符、最短重复 256 字符；
+- **推理流内切断**：尾部最长重复周期 512 字符、最短重复 384 字符；短语池重复行累计 2048 字符且占比 ≥0.6；
+- **切断后行为**：错误码 `REPETITIVE_OUTPUT`，切断后注入插队纠正提示（`breakCorrection`），并在回合收尾后自动推起续跑（`resumeAfterBreak`）；
+- **请求失败重试**：遇到上游响应体 JSON 损坏或提前关流（`PI_AI_ERROR`）自动重试同一请求，单步最多 2 次。
 
 ### 各阈值是怎么定的
 
@@ -380,8 +275,7 @@ pnpm test         # 构建 + 运行测试套件
 npm run build     # 只构建
 ```
 
-两半的构建方式不同，见 `build.mjs`：宿主半边 `src/index.ts` 走 `tsc`（声明落在 `lib/types/`），
-浏览器半边 `src/client.js` 已经是客户端模块加载器的协议格式，逐字拷贝到 `lib/client.js`。
+宿主半边 `src/index.ts` 走 `tsc` 编译（产物落在 `lib/`，声明落在 `lib/types/`）。
 
 测试包含三类：纯函数与静态断言、通过真实 `llm/stream` 链路的运行时断言，以及**用真实会话片段做的反例回归**（`test/fixtures-reasoning-bleed.json`，含实测周期 89–235 的循环样本与「高 `repeatRatio` 但无周期」的正常样本）。
 

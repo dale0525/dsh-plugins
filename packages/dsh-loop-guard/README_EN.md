@@ -40,7 +40,7 @@ The screenshot above is real output: the reasoning block cycles through `OK. / W
 - **Almost no false positives**: **zero** across the 119 calls that produced real output in the calibration session, and zero across all 252 parameter sets the shipped one was chosen from.
 - **Exact rules**: judgement uses **verbatim periodicity** and **cross-call restatement** — not duration, and not a ratio.
 - **The correction points back at the task**: the injected notice says only "stop repeating, carry on" — it never tells the model to "state a conclusion and finish", which derails work in progress.
-- **Reactions do not latch**: one steer often fails to break a strong loop, so the counter resets and fires again (capped by `maxFires`).
+- **Reactions do not latch**: one steer often fails to break a strong loop, so the counter resets and fires again (capped at 99 times).
 - **It follows the UI language**: the notice reads the host `locale` setting, and defaults to Chinese when it cannot tell.
 - **Never a silent retry of a loop**: **no** model fallback and no re-feeding a degenerate model — that is worse than the loop itself. The one automatic re-send is a **response that never arrived intact** (below): the request was fine and the upstream either returned JSON the parser rejected or closed the stream before it carried anything usable, which is exactly the case where re-sending the same request is the right fix.
 - **Retries a response that never arrived intact**: when the model's response body fails to parse (the UI's "本轮运行失败 … JSON at position N") or the upstream closed the stream before it carried anything usable (`stream closed/ended before/without …`), the same request is re-sent, up to 2 times by default, after which the failure goes to downstream recovery. The predicate is narrow — the code must be `PI_AI_ERROR` and the message must match one of those two signatures — so `Too many pending requests` and `Provider finish_reason: error`, which report the same `PI_AI_ERROR` code, are **not** retried.
@@ -79,24 +79,15 @@ The cost is that **the turn-end reason is no longer distinctive** (`completed` i
 
 The plugin **ends the call, never the agent** — it never calls `agent.cancel()`.
 
-### Automatic continuation (`resumeAfterBreak`)
+### Automatic continuation mechanism
 
-**Only meaningful with `breakCorrection` off.** The correction is itself a steering message (`next-step`), and a turn only ends once `next-step` is empty — so "cut + correction" already keeps the task moving on its own. This option covers the remaining case: with `breakCorrection: false` nothing is left behind, the session stops and waits for you, and `resumeAfterBreak` is what pushes it forward again.
-
-```yaml
-- id: loop-guard
-  config:
-    breakCorrection: false
-    resumeAfterBreak: true
-```
+After a cut, the plugin injects a steering correction and also waits for the turn to unwind and the agent to return to `idle`, automatically pushing the task forward to continue seamlessly.
 
 **The waiting is the whole trick, not an implementation detail**: the cut happens inside the stream wrapper, while the agent is still `running`, and DSH deliberately suppresses wakes in that phase — `wakeDriver()` only latches for maintenance or an aborted activity, so a `steer()` / `followup()` issued there sets no `wakeRequested`, `kick()`'s `finally` finds nothing to wake on, and the session settles. A wake only takes effect once the agent is back to `idle`, which is what the plugin waits for via `whenIdle()`.
 
 **The continuation is steering (`next-step`), never queued (`next-turn`).** This is not a style choice: `claim()` takes exactly **one** message from `next-turn` per turn, so N queued messages are N turns, drained one at a time. A single turn can break dozens of times, and the queued channel turns that into a backlog of hundreds consumed one per turn. `next-step` is drained **whole** at the next step boundary, so it cannot accumulate. Every notice this plugin emits is a steering message.
 
 The continuation **carries the correction text and is never empty**. An empty message would re-enter the model with the same degenerate history and no new instruction — exactly the input that produced the loop.
-
-It is off by default because it re-enters the model without being asked, on a failure where the model has already shown it cannot act on its own. Turn it on for unattended long runs.
 
 ## Install
 
@@ -128,113 +119,18 @@ dsh plugin --profile web remove @logictan/dsh-plugins-all       # uninstall
 ```
 
 Then restart `dsh web`. This plugin writes **no configuration file of its own** and performs no
-global registry or system-level writes; the parameters you change on the Plugins page live in the
-host's own settings document and are managed along with it.
+global registry or system-level writes; all guard behaviors and calibrated thresholds take effect
+as built-in constants with zero configuration needed.
 
-## Configuration
+## Default Mechanisms and Calibrated Parameters
 
-**The defaults work; you normally do not need to touch them.** Only sensitivity and automatic continuation need changing.
+This plugin **works completely out of the box with zero configuration options and no configuration UI**. All behaviors and detection thresholds are hardcoded in code according to calibrated best practices:
 
-### On the Plugins page (recommended)
-
-DSH's **Settings → Plugins → Thinking-Loop Guard** carries a configuration card with an editable
-field for every option below, with range validation, a per-field "overridden" marker and "Reset to
-defaults". Saving takes effect **immediately**, with no restart — the plugin reads the current
-configuration on every model call.
-
-- **Left blank** = inherit the composition config (the value written in the profile's `cordis.patch.yml`) or the plugin default;
-- **Reset to defaults** = drop every user-layer override and fall back to the composition values.
-
-### In `cordis.patch.yml`
-
-Use this only when a value must be **baked into the deployment** (shipping a preset to a whole team, say):
-
-```yaml
-- id: loop-guard
-  config:
-    maxThinkingSteps: 2
-    resumeAfterBreak: true
-```
-
-The user layer from the Plugins page **wins over** the composition layer written here, so the two do
-not conflict: the composition sets the baseline, the Plugins page makes a personal adjustment.
-
-### All options
-
-```ts
-interface Config {
-  // ── cross-call judgement (after a call ends) ──────────────
-  /** Consecutive stalled calls before reacting. Default 3. */
-  maxThinkingSteps?: number
-  /** Minimum reasoning length before a call is judged at all. Default 2048 chars. */
-  minReasoningChars?: number
-  /** Cross-call similarity: how much of the previous reasoning must reappear. 0 disables. Default 0.8. */
-  similarityThreshold?: number
-  /** Action on a crossing: 'warn' | 'steer' (default) | 'cancel'. */
-  escalate?: 'warn' | 'steer' | 'cancel'
-  /** How many times one agent may be reacted to. Default 4. */
-  maxFires?: number
-  /** Cancel cause when escalate is 'cancel'. Default 'thinking-loop'. */
-  cancelCause?: string
-
-  // ── mid-stream cuts (while a call is running) ─────────────
-  /** Consecutive identical visible-output chunks before cutting. 0 disables. Default 60. */
-  maxRepeatedText?: number
-  /** Longest repeating period of the visible output, in chars. 0 disables. Default 512. */
-  maxRepeatedCycleChars?: number
-  /** Shortest visible-output tail that must repeat before the cycle rule fires. Default 256. */
-  minRepeatedCycleChars?: number
-  /** Longest repeating period of the REASONING, in chars — **the rule that ends #5976**. 0 disables. Default 512. */
-  maxRepeatedReasoningCycleChars?: number
-  /** Shortest reasoning tail that must repeat before the reasoning rule fires. Default 384. */
-  minRepeatedReasoningCycleChars?: number
-  /** Repeated-LINE characters that end a reasoning bleed — **the rule for a period-free phrase pool**. 0 disables. Default 2048. */
-  maxRepeatedReasoningLineChars?: number
-  /** Share of counted reasoning characters that must sit in repeated lines. Default 0.6. */
-  minRepeatedReasoningLineCoverage?: number
-
-  // ── behaviour after a cut ─────────────────────────────────
-  /** Error code on a mid-stream break. Default 'REPETITIVE_OUTPUT'. */
-  breakCode?: string
-  /** Steer once after a cut so the resumed turn is corrected. Default true. */
-  breakCorrection?: boolean
-  /** Wait for the turn to unwind, then steer a correction in to push the task forward. Only useful with breakCorrection off. Default false. */
-  resumeAfterBreak?: boolean
-
-  // ── retry of a response that never arrived intact ─────────
-  /** Re-send the request when its body fails to parse or the stream closed early. Default true. */
-  retryRequestFailures?: boolean
-  /** How many times ONE attempt may be re-sent before downstream recovery. Default 2. */
-  maxRequestRetries?: number
-}
-```
-
-### Common setups (copy-paste)
-
-```yaml
-# 1. More sensitive: react after 2 stalled calls
-- id: loop-guard
-  config:
-    maxThinkingSteps: 2
-
-# 2. Unattended: leave no notice behind, let the continuation steer the task forward
-- id: loop-guard
-  config:
-    breakCorrection: false
-    resumeAfterBreak: true
-
-# 3. Keep only the reasoning-cycle rule, disable everything else
-- id: loop-guard
-  config:
-    maxThinkingSteps: 999
-    maxRepeatedText: 0
-    maxRepeatedCycleChars: 0
-
-# 4. Hard stop: no steer, abort the turn
-- id: loop-guard
-  config:
-    escalate: cancel
-```
+- **Cross-call stall guard**: reacts after 3 consecutive stalled calls (single reasoning ≥2048 chars and similarity ≥0.8 triggers steer, capped at 99 times per agent);
+- **Mid-stream visible-output cut**: cuts after 60 consecutive identical chunks; tail repetition period capped at 512 chars with minimum length 256 chars;
+- **Mid-stream reasoning cut**: tail repetition period capped at 512 chars with minimum length 384 chars; repeated-line characters in phrase-pool reshuffles capped at 2048 chars with line coverage ≥0.6;
+- **Behavior after a cut**: error code `REPETITIVE_OUTPUT`, injects a steering correction notice (`breakCorrection`), and automatically resumes after the turn unwinds (`resumeAfterBreak`);
+- **Request failure retry**: automatically retries when upstream response JSON is corrupt or stream closes early (`PI_AI_ERROR`), up to 2 times per step.
 
 ### How the thresholds were derived
 
@@ -383,9 +279,7 @@ pnpm test         # build + run the suite
 npm run build     # build only
 ```
 
-The two halves build differently; see `build.mjs`: the host half `src/index.ts` goes through `tsc`
-(declarations land in `lib/types/`), while the browser half `src/client.js` is already in the client
-module loader's protocol and is copied verbatim to `lib/client.js`.
+The host half `src/index.ts` is compiled with `tsc` (output in `lib/`, declarations in `lib/types/`).
 
 The suite has three kinds of assertion: pure-function and static checks, runtime checks through a real `llm/stream` chain, and **counter-example regressions built from real session fragments** (`test/fixtures-reasoning-bleed.json`, carrying bleeds with measured periods of 89–235 and a "high `repeatRatio` but no period" normal sample).
 

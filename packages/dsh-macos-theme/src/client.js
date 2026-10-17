@@ -45,6 +45,17 @@ window.__ModuleLoader__.load({
      */
     var React = require('react')
     /**
+     * The shared settings-card component layer. Every plugin in this family
+     * renders its configuration card from it, so the same control looks the same
+     * in every plugin and both palettes come from the host's tokens.
+     *
+     * It resolves through the loader because this package's own client half has
+     * no build step to bundle it: the module is registered by its own row in the
+     * composed graph. `dsh.client.external` in `package.json` names it so the
+     * module graph orders that row ahead of this one.
+     */
+    var UI = require('@logictan/dsh-plugins-shared-client')
+    /**
      * Palette. Light comes from the approved macOS light design; dark exists to
      * supply the dark colour tokens (the dark screen was drawn for exactly that
      * purpose, so its component geometry is not mirrored here).
@@ -256,100 +267,27 @@ window.__ModuleLoader__.load({
       return layer !== null && typeof layer === 'object' ? layer : {}
     }
 
-    /** The raw user layer; a key's presence here is what marks it overridden. */
-    function userLayer(snapshot) {
-      var layer = snapshot && snapshot.user
-      return layer !== null && typeof layer === 'object' ? layer : {}
-    }
-
     /**
      * The row's configuration card on the Plugins page.
      *
-     * `props.scope` is the form `apply` obtained for this entry from
-     * `configForms.get(NS)`. The value is read through `useSyncExternalStore`
-     * because the Host can change it from another surface (and reverts it when
-     * the settings file is edited underneath), so a local `useState` copy would
-     * go stale.
+     * The card is the shared `ConfigForm`, so the schema is the whole settings
+     * surface: the field, its label and its description all come from
+     * `Config.replaceChatFont`, and this half owns no control, no write path and
+     * no copy. Adding a second setting is one line in the schema.
+     *
+     * The `summary` view stays a one-liner. The Host renders that view inside the
+     * detail header's description paragraph, so a block-level summary there would
+     * be markup nested in a `<p>`.
      */
     function MacosThemeSettingsCard(props) {
-      var scope = props.scope
-
-      var subscribe = React.useCallback(
-        function (onChange) {
-          return scope.subscribe(onChange)
-        },
-        [scope],
-      )
-      var getSnapshot = React.useCallback(
-        function () {
-          return scope.getSnapshot()
-        },
-        [scope],
-      )
-      var snapshot = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
-
       if (props.view === 'summary') return '字体'
-
-      var value = accepted(snapshot)
-      var writable = snapshot.writable === true
-      var overridden = Object.prototype.hasOwnProperty.call(userLayer(snapshot), 'replaceChatFont')
-      var on = value.replaceChatFont !== false
-
-      /** Write the new value, or clear the override so the default applies again. */
-      function set(next) {
-        if (!writable) return
-        if (next === undefined) scope.unset('replaceChatFont')
-        else scope.set('replaceChatFont', next)
-      }
-
-      var children = [
-        React.createElement('div', { key: 'heading', style: CARD_HEADING }, '聊天字体'),
-        React.createElement(
-          'div',
-          { key: 'intro', style: CARD_HINT },
-          '用插件自带的 Fira Code + 落霞孤鹜等宽替换对话、代码块与输入框的字体。字体随插件一起提供，' +
-            '不依赖访问设备上装没装——关掉后恢复 DSH 原来的字体。',
-        ),
-        React.createElement(
-          'label',
-          { key: 'toggle', style: CARD_ROW },
-          React.createElement('input', {
-            type: 'checkbox',
-            checked: on,
-            disabled: !writable,
-            onChange: function (event) {
-              set(event.target.checked)
-            },
-          }),
-          React.createElement('span', null, '替换字体'),
-        ),
-      ]
-
-      if (overridden) {
-        children.push(
-          React.createElement(
-            'button',
-            {
-              key: 'reset',
-              type: 'button',
-              disabled: !writable,
-              style: CARD_RESET,
-              onClick: function () {
-                set(undefined)
-              },
-            },
-            '恢复默认',
-          ),
-        )
-      }
-
-      return React.createElement('div', null, children)
+      return React.createElement(UI.ConfigForm, {
+        namespace: NS,
+        form: props.scope,
+        describe: props.describe,
+        title: '聊天字体',
+      })
     }
-
-    var CARD_HEADING = { fontWeight: 600, marginBottom: '2px' }
-    var CARD_HINT = { opacity: 0.7, marginBottom: '10px' }
-    var CARD_ROW = { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }
-    var CARD_RESET = { marginTop: '8px', cursor: 'pointer' }
 
     var LIST_PREFIX = /^(\s*)(?:([-*+])|(\d+)([.)]))(\s+)(.*)$/
     var TASK_BOX = /^\[([ xX])\](?:\s+|$)/
@@ -552,6 +490,10 @@ window.__ModuleLoader__.load({
          disappears". Nested, an absent service costs only the settings card. */
       ctx.inject(['configForms', 'slots'], function (scoped) {
         var scope = scoped.configForms.get(NS)
+        /* The schema mirror. `ConfigForm` reads the field list from it, so the
+           card needs it alongside the form; both are requested here rather than
+           in `inject` for the reason in the comment above. */
+        var describe = scoped.configForms.describe()
 
         scoped.effect(function () {
           var off = document.body.hasAttribute(NATIVE_FONT_ATTR)
@@ -576,7 +518,7 @@ window.__ModuleLoader__.load({
                 name: 'plugins.row.config',
                 key: bundle + '#' + NS,
                 inject: function () {
-                  return { scope: scope, ctx: scoped }
+                  return { scope: scope, describe: describe }
                 },
               },
               MacosThemeSettingsCard,

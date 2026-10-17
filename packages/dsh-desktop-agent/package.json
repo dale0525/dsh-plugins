@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-desktop-agent",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "DSH desktop agent: a native-vision decision loop that drives the host desktop through the Cua Driver tools. DSH 桌面 Agent 子插件。",
   "type": "module",
   "main": "lib/index.js",
@@ -14,6 +14,9 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
+      "external": [
+        "@logictan/dsh-plugins-shared-client"
+      ],
       "inject": [
         "slots",
         "remote",
@@ -59,7 +62,8 @@
     "@deepseek-ai/dsh-system-prompt": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
     "@deepseek-ai/dsh-mcp-client": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
     "@deepseek-ai/dsh-tools": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
-    "@deepseek-ai/schemastery": "^3.18.3"
+    "@deepseek-ai/schemastery": "^3.18.3",
+    "@logictan/dsh-plugins-shared-client": "^0.1.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -81,6 +85,9 @@
       "optional": true
     },
     "@deepseek-ai/schemastery": {
+      "optional": true
+    },
+    "@logictan/dsh-plugins-shared-client": {
       "optional": true
     }
   },

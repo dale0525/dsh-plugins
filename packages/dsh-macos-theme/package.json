@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-macos-theme",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "macOS-native theme for DeepSeek Harness: a floating translucent workbench window on a sky-blue gradient desktop, with the macOS light and dark palettes. Pure UI plugin — the browser half stacks a token override layer on the active theme and injects the structural CSS the token layer cannot express.",
   "license": "MIT",
   "type": "module",
@@ -39,16 +39,23 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "platform": "web"
+      "platform": "web",
+      "external": [
+        "@logictan/dsh-plugins-shared-client"
+      ]
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-client-connection": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2",
-    "@deepseek-ai/schemastery": "^3.18.3"
+    "@deepseek-ai/schemastery": "^3.18.3",
+    "@logictan/dsh-plugins-shared-client": "^0.1.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
+    "@logictan/dsh-plugins-shared-client": {
       "optional": true
     }
   },

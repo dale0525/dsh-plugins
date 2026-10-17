@@ -660,9 +660,16 @@ test('the chat typeface can be switched off from the plugin settings', () => {
     clientSource.includes("hasAttribute(NATIVE_FONT_ATTR)"),
     'the browser half must drive the attribute from the stored config',
   )
+  // The card renders the schema through the shared layer rather than writing the
+  // key itself: the schema is then the only place the field is declared, so a
+  // renamed or added key cannot drift from a hand-written control.
   assert.ok(
-    clientSource.includes("scope.set('replaceChatFont'"),
-    'the settings card must write the config key the schema declares',
+    /UI\.ConfigForm/.test(clientSource),
+    'the settings card must render the schema through the shared ConfigForm',
+  )
+  assert.ok(
+    !clientSource.includes("scope.set('replaceChatFont'"),
+    'the card must not hand-write the write path the shared form owns',
   )
   // The two halves must agree on the key and the entry id, or the card renders
   // against a namespace that has no such field.
@@ -671,6 +678,12 @@ test('the chat typeface can be switched off from the plugin settings', () => {
   assert.ok(/export const Config = Schema\.object\(/.test(host), 'the schema must be exported from the package entry')
   assert.ok(host.includes('Schema.boolean()'), 'the field must be a boolean')
   assert.ok(host.includes('.volatile()'), 'the field must be volatile, or it cannot be edited live')
+  // The schema is the page: the label the user reads has to live beside the key,
+  // or the shared projection falls back to the bare key name.
+  assert.ok(
+    /replaceChatFont[\s\S]{0,120}\.comment\('/.test(host),
+    'the field must carry a comment, which is the label the page renders',
+  )
   assert.ok(clientSource.includes("var NS = 'macos-theme'"), 'the card must address the host entry id')
 })
 

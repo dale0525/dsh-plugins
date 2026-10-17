@@ -29,13 +29,23 @@ export interface SettingsScopeSnapshot<T> {
   revision: number | undefined
   writable: boolean
   mode: 'host' | 'memory'
+  /**
+   * The serialized schema envelope the bridge reports for this namespace.
+   *
+   * The bridge has always returned it (`toView` copies `descriptor.schema`);
+   * this scope simply did not keep it. The shared `ConfigForm` reads the field
+   * list from a schema mirror, and the host's `configForms.describe()` does not
+   * carry this namespace — this plugin serves it over its own bridge instead —
+   * so the envelope has to come through here.
+   */
+  schema: unknown
 }
 
 /** Reactive owner handle over one namespace's durable section. */
 export interface SettingsScope<T> {
   getSnapshot(): SettingsScopeSnapshot<T>
   subscribe(listener: () => void): () => void
-  mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<void>
+  mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<boolean>
   set(field: string, value: unknown): Promise<void>
   unset(field: string): Promise<void>
 }
@@ -80,6 +90,8 @@ export type SettingsOp = { op: 'set'; path: string[]; value: unknown } | { op: '
 /** Wire shape of one namespace view from the bridge. */
 interface BridgeView {
   ns: string
+  /** The serialized schema envelope the host settings descriptor carries. */
+  schema?: unknown
   value: unknown
   base?: unknown
   user?: unknown
@@ -149,6 +161,7 @@ class BridgeScopeController<T> implements SettingsScope<T> {
       revision: undefined,
       writable: false,
       mode: 'host',
+      schema: undefined,
     })
     this.keySet = createSnapshotStore(false)
     this.secretSets = createSnapshotStore({})
@@ -188,22 +201,31 @@ class BridgeScopeController<T> implements SettingsScope<T> {
   }
 
   set(field: string, value: unknown): Promise<void> {
-    return this.enqueue(() => this.writeOps([{ op: 'set', path: [field], value }]))
+    // The accepted flag is dropped here: `set` predates the shared form and its
+    // callers act on the snapshot, not on the write's outcome.
+    return this.enqueue(async () => { await this.writeOps([{ op: 'set', path: [field], value }]) })
   }
 
   unset(field: string): Promise<void> {
-    return this.enqueue(() => this.writeOps([{ op: 'unset', path: [field] }]))
+    return this.enqueue(async () => { await this.writeOps([{ op: 'unset', path: [field] }]) })
   }
 
-  mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<void> {
-    return this.enqueue(() => this.writeOps([...ops] as SettingsOp[], expectedRevision))
+  /**
+   * Apply path ops, resolving whether the write was accepted.
+   *
+   * The boolean is load-bearing for the shared form: it keeps the user's draft
+   * on a refusal, so a rejected edit cannot look applied. A `void` here would
+   * make every refusal silently read as success.
+   */
+  mutate(ops: readonly SettingsPathOpView[], expectedRevision?: number): Promise<boolean> {
+    return this.enqueueWrite(() => this.writeOps([...ops] as SettingsOp[], expectedRevision))
   }
 
   /** Apply several path ops in one revision-fenced mutate call (atomic save).
    *  Path ops may address plain-object fields (e.g. `channelSecrets.<id>`),
    *  but never navigate *inside* arrays — write array fields wholesale. */
   mutateOps(ops: SettingsOp[]): Promise<void> {
-    return this.enqueue(() => this.writeOps(ops))
+    return this.enqueue(async () => { await this.writeOps(ops) })
   }
 
   async dispose(): Promise<void> {
@@ -218,6 +240,23 @@ class BridgeScopeController<T> implements SettingsScope<T> {
       await operation()
     })
     this.tail = task.catch(() => {})
+    return task
+  }
+
+  /**
+   * Queue a write that reports whether it was accepted.
+   *
+   * Separate from `enqueue` because that one is also used for reads, whose
+   * caller has nothing to decide on. Serializing through the same `tail` keeps
+   * one ordering for every request on this scope.
+   */
+  private enqueueWrite(operation: () => Promise<boolean>): Promise<boolean> {
+    if (this.disposed) return Promise.resolve(false)
+    const task = this.tail.then(async () => {
+      if (this.disposed) return false
+      return operation()
+    })
+    this.tail = task.then(() => {}, () => {})
     return task
   }
 
@@ -247,7 +286,7 @@ class BridgeScopeController<T> implements SettingsScope<T> {
     this.accept(view, writable)
   }
 
-  private async writeOps(ops: SettingsOp[], expectedRevision?: number): Promise<void> {
+  private async writeOps(ops: SettingsOp[], expectedRevision?: number): Promise<boolean> {
     const revision = expectedRevision ?? this.getSnapshot().revision
     let response
     try {
@@ -258,13 +297,14 @@ class BridgeScopeController<T> implements SettingsScope<T> {
       })
     } catch {
       await this.read()
-      return
+      return false
     }
     if (!response.result.ok || this.disposed) {
       await this.read()
-      return
+      return false
     }
     this.accept(response.result.value as BridgeView, undefined)
+    return true
   }
 
   private accept(view: BridgeView, writable: boolean | undefined): void {
@@ -277,6 +317,7 @@ class BridgeScopeController<T> implements SettingsScope<T> {
       // Trust the Host-seam value: the seam already validated it, and the
       // card binds without a narrowing decoder.
       draft.value = view.value as T
+      draft.schema = view.schema
     })
     const secretSets = Object.fromEntries((view.secrets ?? []).map(secret => [secret.path.join('.'), secret.set]))
     this.keySet.set(Object.values(secretSets).some(Boolean))

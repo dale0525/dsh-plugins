@@ -5,9 +5,9 @@
  * every surface shares: the host half reads it when a run starts, and
  * `dsh-settings` derives the Plugins-page form from it — keyed by the loader
  * entry id, which is why {@link ENTRY_ID} must equal both the row id in
- * `cordis.patch.yml` and the host half's `export const name`. The card ships as
- * plain browser code and cannot import this module, so its field list is kept in
- * step by hand — changing a key here means changing `src/client.js` too.
+ * `cordis.patch.yml` and the host half's `export const name`. The card renders
+ * this schema through `UI.ConfigForm`, which reads labels and descriptions from
+ * the schema mirror automatically.
  *
  * Two rules follow from the redesign, and both are load-bearing:
  *
@@ -61,13 +61,50 @@ export const ENTRY_ID = 'browser-agent';
  * providers; a hard-coded model would point at a model the target may not have.
  */
 export const Config = z.object({
-  typesafeEndpoint: z.string().default(DEFAULT_TYPESAFE_ENDPOINT).volatile(),
-  typesafeModel: z.string().default(DEFAULT_MODEL).volatile(),
-  cdpEndpoint: z.string().default(DEFAULT_CDP_ENDPOINT).volatile(),
-  maxSteps: z.number().step(1).min(1).default(DEFAULT_MAX_STEPS).volatile(),
-  textProvider: z.string().default('').volatile(),
-  textModel: z.string().default('').volatile(),
-  textReasoningEffort: z.string().default('').volatile(),
+  typesafeEndpoint: z
+    .string()
+    .default(DEFAULT_TYPESAFE_ENDPOINT)
+    .comment('TypeSafe endpoint')
+    .description('默认 https://api.typesafe.ai/v1/systemone。')
+    .volatile(),
+  typesafeModel: z
+    .string()
+    .default(DEFAULT_MODEL)
+    .comment('TypeSafe model')
+    .description('默认 jev-latest。')
+    .volatile(),
+  cdpEndpoint: z
+    .string()
+    .default(DEFAULT_CDP_ENDPOINT)
+    .comment('Chrome 调试端口')
+    .description('默认 http://127.0.0.1:9222。Chrome 必须用专用 --user-data-dir 启动（见 README）。')
+    .volatile(),
+  maxSteps: z
+    .number()
+    .step(1)
+    .min(1)
+    .default(DEFAULT_MAX_STEPS)
+    .comment('步数上限')
+    .description('一次任务最多执行多少个浏览器动作，默认 60。')
+    .volatile(),
+  textProvider: z
+    .string()
+    .default('')
+    .comment('填空 provider')
+    .description('输入框的值由 DSH 自己的模型生成。全空 = 用会话当前模型。')
+    .volatile(),
+  textModel: z
+    .string()
+    .default('')
+    .comment('填空 model')
+    .description('输入框的值由 DSH 自己的模型生成。全空 = 用会话当前模型。')
+    .volatile(),
+  textReasoningEffort: z
+    .string()
+    .default('')
+    .comment('填空 reasoning effort')
+    .description('输入框的值由 DSH 自己的模型生成。全空 = 用会话当前模型。')
+    .volatile(),
 });
 
 /**

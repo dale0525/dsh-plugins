@@ -89,9 +89,22 @@ export { channelKeyRef, PROMPT_KEY_REF } from './credential-refs.ts'
  * the running fiber instead of remounting the plugin.
  */
 export const Config: z<Config> = z.object({
-  enabled: z.boolean().default(true),
-  announceToAgent: z.boolean().default(true),
-  allowAgentImageGeneration: z.boolean().default(true),
+  // The five editable scalars carry their label and hint in the schema, because
+  // the settings card renders the schema: a label written in the card would be a
+  // second place to keep in step, and a missing one would show the bare key. The
+  // copy is the same text the card used before the migration.
+  enabled: z.boolean()
+    .default(true)
+    .comment('启用插件')
+    .description('关闭后生图面板不可用（设置卡片始终可用）'),
+  announceToAgent: z.boolean()
+    .default(true)
+    .comment('向 Agent 播报本插件')
+    .description('开启后，本插件的存在与能力会写入每个 Agent 的系统提示词'),
+  allowAgentImageGeneration: z.boolean()
+    .default(true)
+    .comment('允许 Agent 调用生图')
+    .description('默认开启。关闭后，Agent 无法提交、查询或取消生图任务；侧边栏工作台不受影响。'),
   channels: z.array(z.object({
     id: z.string(),
     preset: z.string().default(''),
@@ -103,11 +116,23 @@ export const Config: z<Config> = z.object({
       id: z.string(),
     })).default([]),
   })).default([]),
-  defaultChannelId: z.string().default(''),
-  promptApiUrl: z.string().default(''),
-  promptModel: z.string().default(''),
-  apiUrl: z.string().default(''),
-  imageModels: z.array(z.string()).default([]),
+  // Machine-owned: the settings card reads it from `channels.defaultChannelId`,
+  // so it has no manual editor and is hidden from the rendered form.
+  defaultChannelId: z.string().default('').hidden(),
+  promptApiUrl: z.string()
+    .default('')
+    .comment('对话 API 地址（可选）')
+    .description('OpenAI 兼容基址；留空则复用图像 API 地址。'),
+  promptModel: z.string()
+    .default('')
+    .comment('对话模型')
+    .description('选择或填写支持 /chat/completions 的模型。'),
+  // Legacy single-endpoint shape. `normalizeChannels` reads these two to migrate
+  // a pre-channels value, then writes `channels`; rendering them would offer two
+  // dead inputs that the next channel edit overwrites. Hidden, not deleted, so
+  // the migration can still read them.
+  apiUrl: z.string().default('').hidden(),
+  imageModels: z.array(z.string()).default([]).hidden(),
 // The volatile marker widens the schema generic; the shape is still exactly
 // Config, which is what the loader and the settings form consume.
 }).volatile() as unknown as z<Config>

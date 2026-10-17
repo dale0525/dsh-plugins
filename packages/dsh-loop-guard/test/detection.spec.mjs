@@ -178,7 +178,11 @@ test('long coherent prose is not a stall (the measured false-positive control)',
   const d = detector({ minReasoningChars: 256 })
   const slice = (file, from) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
     .replace(/\s+/g, ' ').slice(from, from + 12000)
-  const parts = [slice('README_EN.md', 0), slice('src/index.ts', 0), slice('src/client.js', 0)]
+  // The third slice used to come from `src/client.js`, which no longer exists:
+  // the plugin ships no browser half, so the settings card is gone. Any long
+  // file in this repo works, provided it yields a full 12 000 characters and
+  // scores >= 0.5 on its own; this one measures 0.621.
+  const parts = [slice('README_EN.md', 0), slice('src/index.ts', 0), slice('test/reasoning-breaker.spec.mjs', 0)]
   for (const part of parts) {
     assert.equal(part.length, 12000, 'fixture slice must be full length, not truncated by the file')
     assert.ok(repeatRatio(part) >= 0.5, `control must score >= 0.5, got ${repeatRatio(part)}`)

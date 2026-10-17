@@ -15,14 +15,24 @@
 import { useEffect, useRef, useState } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
-import { CardForm, booleanField, secretField, textField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
+import { CardForm, secretField, type CardActions, type CardShell, type FieldState as CardFieldState } from './settings-form.ts'
 import { ChannelsForm, type ChannelDraft, type ChannelsFormActions, type ChannelsFormState } from './channels-form.ts'
 import type { ImageGenScope } from './settings-scope.ts'
 import { describeModel } from '../model-catalog.ts'
-import { IMAGE_MODEL_API, PRESETS_API, PROMPT_ENHANCE_API, type ModelMapping, type PresetProviderView } from '../protocol.ts'
+import { IMAGE_MODEL_API, IMAGEGEN_SETTINGS_NAMESPACE, PRESETS_API, PROMPT_ENHANCE_API, type ModelMapping, type PresetProviderView } from '../protocol.ts'
 import type { ImageGenKey } from './locales.ts'
 import { tt, type TranslateValues } from './helpers.ts'
 import { useImageGenLanguageTick } from './use-language.ts'
+import {
+  Button,
+  Checkbox,
+  ConfigForm,
+  SecretField,
+  Select,
+  StatusDot,
+  Tag,
+  TextField,
+} from '@logictan/dsh-plugins-shared-client/client'
 import css from './settings-card.module.css'
 
 /** The global (non-channel) fields this card's staged form edits. */
@@ -49,10 +59,88 @@ export interface ImageGenSettingsCardState extends CardShell {
   promptModel: CardFieldState
 }
 
+/**
+ * The schema mirror the shared `ConfigForm` reads its field list from.
+ *
+ * The host's `configForms.describe()` does not carry this namespace: the plugin
+ * re-serves it over its own bridge (`/api/dsh-imagegen/settings/*`) so the key
+ * writes can be diverted into the credential store. The bridge does return the
+ * schema envelope, so the scope snapshot carries it and this adapter presents it
+ * in the shape the form expects.
+ *
+ * The snapshot object is cached per schema identity. `useSyncExternalStore`
+ * compares snapshots by reference, so rebuilding it on every `getSnapshot()`
+ * call would re-render without end.
+ */
+function createSchemaMirror(scope: ImageGenScope): { getSnapshot: () => { status: string; view?: { namespaces: Array<{ ns: string; schema?: unknown }> } }; subscribe: (listener: () => void) => () => void } {
+  let cachedSchema: unknown
+  let cached: { status: string; view?: { namespaces: Array<{ ns: string; schema?: unknown }> } } = {
+    status: 'loading',
+    view: { namespaces: [] },
+  }
+  return {
+    getSnapshot() {
+      const snapshot = scope.getSnapshot()
+      const schema = snapshot.schema
+      if (schema !== cachedSchema) {
+        cachedSchema = schema
+        cached = {
+          status: snapshot.status,
+          view: {
+            namespaces: schema === undefined
+              ? []
+              : [{ ns: IMAGEGEN_SETTINGS_NAMESPACE, schema }],
+          },
+        }
+      }
+      return cached
+    },
+    subscribe(listener) {
+      return scope.subscribe(listener)
+    },
+  }
+}
+
+/**
+ * Present the bridge scope as the shared form's handle.
+ *
+ * The only difference is the value's static type: the plugin declares
+ * `ImageGenConfig` (an interface, so no index signature) while the form takes a
+ * plain record. They are the same object at runtime; widening here keeps the
+ * plugin's own interface precise instead of adding an index signature to it.
+ */
+function asConfigFormHandle(scope: ImageGenScope): {
+  getSnapshot: () => { status: 'loading' | 'ready' | 'unavailable'; value: Record<string, unknown> | undefined; writable: boolean; revision: number | undefined }
+  subscribe: (listener: () => void) => () => void
+  mutate: (ops: ReadonlyArray<{ op: 'set'; path: readonly string[]; value: unknown } | { op: 'unset'; path: readonly string[] }>, expectedRevision?: number) => Promise<boolean>
+} {
+  return {
+    getSnapshot() {
+      const snapshot = scope.getSnapshot()
+      return {
+        status: snapshot.status,
+        value: snapshot.value as Record<string, unknown> | undefined,
+        writable: snapshot.writable,
+        revision: snapshot.revision,
+      }
+    },
+    subscribe(listener) {
+      return scope.subscribe(listener)
+    },
+    mutate(ops, expectedRevision) {
+      return scope.mutate(ops as Parameters<ImageGenScope['mutate']>[0], expectedRevision)
+    },
+  }
+}
+
 /** The registration-side face the card's slot entry injects. */
 export interface ImageGenSettingsCardFace extends CardActions {
   /** Channel staging actions (committed together with the card's save). */
   channels: ChannelsFormActions
+  /** The bridge scope itself, which the shared form writes through. */
+  settingsScope: ImageGenScope
+  /** The schema mirror the shared form reads its field list from. */
+  schemaMirror: ReturnType<typeof createSchemaMirror>
   hooks: {
     /** Card snapshot bound by the renderer as useImageGenSettingsCard. */
     imageGenSettingsCard: SnapshotStore<ImageGenSettingsCardState>
@@ -66,13 +154,13 @@ export class ImageGenSettingsCardController {
 
   /** @param scope - the bound bridge scope for the dsh-imagegen namespace. */
   constructor(private readonly scope: ImageGenScope) {
+    // Only the key stays staged here. The five scalar settings are rendered and
+    // committed by the shared `ConfigForm` straight through this scope, so they
+    // are no longer part of this form; the key must stay because a write to it
+    // is diverted into the credential store by the bridge, which is what keeps
+    // it out of the settings document.
     this.form = new CardForm(scope, [
-      booleanField('enabled'),
-      booleanField('announceToAgent'),
-      booleanField('allowAgentImageGeneration'),
-      textField('promptApiUrl'),
       secretField('promptApiKey'),
-      textField('promptModel'),
     ], {
       secretSettled: (field) => this.scope.getSecretSetSnapshot(field),
     })
@@ -106,6 +194,8 @@ export class ImageGenSettingsCardController {
         imageGenSettingsCard: cardStore,
       },
       channels: this.channelsForm.actions(),
+      settingsScope: this.scope,
+      schemaMirror: createSchemaMirror(this.scope),
       ...this.form.actions(),
     }
   }
@@ -142,6 +232,9 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
   const t = tt
   useImageGenLanguageTick()
   const state = props.useImageGenSettingsCard(snapshot => snapshot)
+  // `promptModel` belongs to the shared form now, so the detection picker below
+  // reads it from the scope rather than from this card's staged state.
+  const liveModel = props.settingsScope.getSnapshot().value?.promptModel ?? ''
   const [open, setOpen] = useState(false)
   // Global-section local states (prompt enhancement etc.).
   const [promptModels, setPromptModels] = useState<string[]>([])
@@ -151,7 +244,6 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
   const [manualPromptModel, setManualPromptModel] = useState('')
   const [enhancementOpen, setEnhancementOpen] = useState(false)
   const [promptApiOpen, setPromptApiOpen] = useState(false)
-  const [moreOpen, setMoreOpen] = useState(false)
   // Channel list local states.
   const [editingId, setEditingId] = useState<string | null>(null)
   const [presetPickerOpen, setPresetPickerOpen] = useState(false)
@@ -221,6 +313,27 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
           <div className={css.body}>
             {!state.writable ? <p className={css.readOnly} role="status">{t('settings.readOnly')}</p> : null}
 
+            {/*
+              The five scalar settings are the schema's, rendered by the shared
+              form: `enabled`, `announceToAgent`, `allowAgentImageGeneration`,
+              `promptApiUrl`, `promptModel`. They commit on blur, which is the
+              interaction the design specifies and the only one this slot can
+              express — the host page owns no save band a plugin can reach.
+
+              Everything below stays hand-written because a schema cannot
+              describe it: the channel list is a structured editor over an array
+              of objects, and the two key inputs write through this plugin's
+              bridge, which diverts them into the credential store. The host's
+              settings service has no such diversion — it would put them in
+              settings.yaml in plaintext — so they must not become schema fields.
+            */}
+            <div className={css.schemaSection}>
+              <ConfigForm
+                namespace={IMAGEGEN_SETTINGS_NAMESPACE}
+                form={asConfigFormHandle(props.settingsScope)}
+                describe={props.schemaMirror}
+                title={t('settings.scalarsTitle')}
+              >
             <section className={css.channelSection} aria-label={t('channels.title')}>
               <div className={css.sectionHeader}>
                 <div>
@@ -240,26 +353,26 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
                         return (
                           <li key={channel.id} className={css.channelRow} data-action>
                             <span className={css.deleteConfirmText}>{t('channels.deleteConfirmTitle', { name: channel.name || t('channels.untitled') })}</span>
-                            <button type="button" className={css.channelDanger} disabled={disabled} onClick={() => { props.channels.setChannels(channels.filter(candidate => candidate.id !== channel.id)); if (isDefault && channels.length > 1) { const next = channels.find(candidate => candidate.id !== channel.id); if (next !== undefined) props.channels.setDefaultChannel(next.id) } setConfirmDeleteId(null); if (editingId === channel.id) setEditingId(null) }}>{t('channels.confirm')}</button>
-                            <button type="button" className={css.channelAction} disabled={disabled} onClick={() => { setConfirmDeleteId(null) }}>{t('channels.cancel')}</button>
+                            <Button variant="danger" size="sm" disabled={disabled} onClick={() => { props.channels.setChannels(channels.filter(candidate => candidate.id !== channel.id)); if (isDefault && channels.length > 1) { const next = channels.find(candidate => candidate.id !== channel.id); if (next !== undefined) props.channels.setDefaultChannel(next.id) } setConfirmDeleteId(null); if (editingId === channel.id) setEditingId(null) }}>{t('channels.confirm')}</Button>
+                            <Button variant="ghost" size="sm" disabled={disabled} onClick={() => { setConfirmDeleteId(null) }}>{t('channels.cancel')}</Button>
                           </li>
                         )
                       }
                       return (
                         <li key={channel.id} className={css.channelRow}>
-                          <span className={ready ? css.channelDotReady : css.channelDotWarn} aria-hidden="true" title={t(ready ? 'channels.statusReady' : 'channels.statusIncomplete')} />
+                          <StatusDot kind={ready ? 'ok' : 'warn'} title={t(ready ? 'channels.statusReady' : 'channels.statusIncomplete')} />
                           <button type="button" className={css.channelMain} disabled={disabled} onClick={() => { setEditingId(channel.id) }}>
                             <span className={css.channelName}>{isDefault ? `★ ${channel.name || t('channels.untitled')}` : (channel.name || t('channels.untitled'))}</span>
                             <span className={css.channelMeta}>
-                              <span className={css.channelBadge} data-warn={!keyHeld || channel.models.length === 0 ? '' : undefined}>
+                              <Tag kind={!keyHeld || channel.models.length === 0 ? 'warn' : 'ok'}>
                                 {keyHeld ? t('channels.keySet') : t('channels.keyMissing')}
                                 {' · '}
                                 {channel.models.length > 0 ? t('channels.modelCount', { n: channel.models.length }) : t('channels.noModels')}
-                              </span>
+                              </Tag>
                             </span>
                           </button>
-                          <button type="button" className={css.channelAction} onClick={() => { setEditingId(channel.id) }}>{t('channels.edit')}</button>
-                          <button type="button" className={css.channelAction} data-danger onClick={() => { setConfirmDeleteId(channel.id) }}>{t('channels.delete')}</button>
+                          <Button variant="ghost" size="sm" onClick={() => { setEditingId(channel.id) }}>{t('channels.edit')}</Button>
+                          <Button variant="danger" size="sm" onClick={() => { setConfirmDeleteId(channel.id) }}>{t('channels.delete')}</Button>
                         </li>
                       )
                     })}
@@ -299,8 +412,8 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
               ) : null}
 
               <div className={css.channelAddRow}>
-                <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { setPresetError(null); setPresetPickerOpen(true) }}>+ {t('channels.addProvider')}</button>
-                <button type="button" className={css.channelAdd} disabled={disabled} onClick={() => { addCustomChannel(channels, props.channels, setEditingId) }}>+ {t('channels.addCustom')}</button>
+                <Button variant="secondary" size="sm" disabled={disabled} onClick={() => { setPresetError(null); setPresetPickerOpen(true) }}>+ {t('channels.addProvider')}</Button>
+                <Button variant="secondary" size="sm" disabled={disabled} onClick={() => { addCustomChannel(channels, props.channels, setEditingId) }}>+ {t('channels.addCustom')}</Button>
               </div>
               </div>
             </section>
@@ -322,9 +435,10 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
                 <h3 className={css.sectionTitle}>{t('settings.promptModel')}</h3>
                 <p className={css.sectionHint}>{t('settings.promptModelDetectionHint')}</p>
               </div>
-              <button
-                type="button"
-                className={css.modelFetch}
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={loadingPromptModels}
                 disabled={disabled || loadingPromptModels}
                 onClick={() => {
                   setLoadingPromptModels(true)
@@ -340,23 +454,23 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
                 }}
               >
                 {loadingPromptModels ? t('settings.promptModelsLoading') : t('settings.promptModelsFetch')}
-              </button>
+              </Button>
             </div>
             <div className={css.modelSummary}>
-              {state.promptModel.text.trim() !== '' ? (
+              {liveModel.trim() !== '' ? (
                 <span className={css.modelChip}>
-                  <span>{state.promptModel.text}</span>
-                  <button type="button" disabled={disabled} aria-label={`${t('settings.removeModel')}: ${state.promptModel.text}`} onClick={() => { props.edit('promptModel', '') }}>×</button>
+                  <span>{liveModel}</span>
+                  <button type="button" disabled={disabled} aria-label={`${t('settings.removeModel')}: ${liveModel}`} onClick={() => { void props.settingsScope.set('promptModel', '') }}>×</button>
                 </span>
               ) : null}
-              <button type="button" className={css.addModel} disabled={disabled} onClick={() => { setManualPromptModelOpen(open => !open); setEnhancementOpen(true) }}>
+              <Button variant="secondary" size="sm" disabled={disabled} onClick={() => { setManualPromptModelOpen(open => !open); setEnhancementOpen(true) }}>
                 {manualPromptModelOpen ? t('settings.cancelAddModel') : t('settings.addModel')}
-              </button>
+              </Button>
             </div>
             {manualPromptModelOpen ? (
               <div className={css.manualModelRow}>
-                <input className={css.input} value={manualPromptModel} placeholder={t('settings.addPromptModelPlaceholder')} disabled={disabled} onChange={event => { setManualPromptModel(event.target.value) }} />
-                <button type="button" className={css.addModel} disabled={disabled || manualPromptModel.trim() === ''} onClick={() => { props.edit('promptModel', manualPromptModel); setManualPromptModel('') }}>{t('settings.addModelConfirm')}</button>
+                <TextField value={manualPromptModel} placeholder={t('settings.addPromptModelPlaceholder')} disabled={disabled} onValueChange={setManualPromptModel} />
+                <Button variant="secondary" size="sm" disabled={disabled || manualPromptModel.trim() === ''} onClick={() => { void props.settingsScope.set('promptModel', manualPromptModel); setManualPromptModel('') }}>{t('settings.addModelConfirm')}</Button>
               </div>
             ) : null}
             {promptModels.length > 0 ? (
@@ -368,10 +482,10 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
                     type="button"
                     role="radio"
                     className={css.modelCandidate}
-                    aria-checked={state.promptModel.text === candidate}
-                    data-selected={state.promptModel.text === candidate ? '' : undefined}
+                    aria-checked={liveModel === candidate}
+                    data-selected={liveModel === candidate ? '' : undefined}
                     disabled={disabled}
-                    onClick={() => { props.edit('promptModel', candidate) }}
+                    onClick={() => { void props.settingsScope.set('promptModel', candidate) }}
                   >
                     {candidate}
                   </button>
@@ -384,16 +498,9 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
               <span aria-hidden="true">{promptApiOpen ? '⌃' : '⌄'}</span>
             </button>
             {promptApiOpen ? <div className={css.optionalContent}>
-            <ValueField
-              id="dsh-imagegen-settings-prompt-apiurl"
-              label={t('settings.promptApiUrl')}
-              hint={t('settings.promptApiUrlHint')}
-              placeholder="https://api.openai.com/v1"
-              {...fieldProps}
-              {...state.promptApiUrl}
-              onEdit={(text) => { props.edit('promptApiUrl', text) }}
-              onReset={() => { props.resetField('promptApiUrl') }}
-            />
+            {/* The URL itself is a schema field the shared form renders above;
+                only the key stays here, because a write to it is diverted into
+                the credential store by this plugin's bridge. */}
             <ValueField
               id="dsh-imagegen-settings-prompt-apikey"
               label={t('settings.promptApiKey')}
@@ -409,66 +516,10 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
             </div> : null}
             </section> : null}
 
-            <button type="button" className={css.disclosure} aria-expanded={moreOpen} onClick={() => { setMoreOpen(open => !open) }}>
-              <span>{t('settings.moreOptions')}</span>
-              <span aria-hidden="true">{moreOpen ? '⌃' : '⌄'}</span>
-            </button>
-            {moreOpen ? <div className={css.optionalContent}>
-            <BooleanField
-              id="dsh-imagegen-settings-enabled"
-              label={t('settings.enabled')}
-              hint={t('settings.enabledHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.enabled}
-              onEdit={(text) => { props.edit('enabled', text) }}
-              onReset={() => { props.resetField('enabled') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-announce"
-              label={t('settings.announceToAgent')}
-              hint={t('settings.announceToAgentHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.announceToAgent}
-              onEdit={(text) => { props.edit('announceToAgent', text) }}
-              onReset={() => { props.resetField('announceToAgent') }}
-            />
-            <BooleanField
-              id="dsh-imagegen-settings-agent-generation"
-              label={t('settings.allowAgentImageGeneration')}
-              hint={t('settings.allowAgentImageGenerationHint')}
-              inheritLabel={t('settings.inherit')}
-              onLabel={t('settings.on')}
-              offLabel={t('settings.off')}
-              {...fieldProps}
-              {...state.allowAgentImageGeneration}
-              onEdit={(text) => { props.edit('enabled', text) }}
-              onReset={() => { props.resetField('enabled') }}
-            />
-            </div> : null}
-            <div className={css.footer}>
-              {(state.failed || state.channels.failed) ? <p className={css.failed} role="status">{t('settings.saveFailed')}</p> : null}
-              <button
-                type="button"
-                className={css.discard}
-                disabled={!state.dirty || state.saving || state.channels.saving}
-                onClick={() => { props.discard(); props.channels.discard() }}
-              >
-                {t('settings.discard')}
-              </button>
-              <button
-                type="button"
-                className={css.save}
-                disabled={blocked}
-                onClick={() => { void props.channels.commit(); void props.save() }}
-              >
-                {t(!state.saving && !state.channels.saving ? 'settings.save' : 'settings.saving')}
-              </button>
+            {(state.failed || state.channels.failed)
+              ? <p className={css.failed} role="status">{t('settings.saveFailed')}</p>
+              : null}
+              </ConfigForm>
             </div>
           </div>
         )
@@ -656,11 +707,11 @@ function ChannelEditor(props: {
 
         <div className={css.editorField}>
           <label className={css.label} htmlFor="dsh-imagegen-channel-name">{t('channels.displayName')}</label>
-          <input id="dsh-imagegen-channel-name" className={css.input} value={channel.name} placeholder={t('channels.untitled')} disabled={!props.writable} onChange={event => { props.onPatch({ name: event.target.value }) }} />
+          <TextField id="dsh-imagegen-channel-name" value={channel.name} placeholder={t('channels.untitled')} disabled={!props.writable} onValueChange={next => { props.onPatch({ name: next }) }} />
         </div>
         <div className={css.editorField}>
           <label className={css.label} htmlFor="dsh-imagegen-channel-url">{t('channels.apiUrl')}</label>
-          <input id="dsh-imagegen-channel-url" className={css.input} value={channel.apiUrl} placeholder="https://api.example.com/v1" disabled={!props.writable} onChange={event => { props.onPatch({ apiUrl: event.target.value }) }} />
+          <TextField id="dsh-imagegen-channel-url" value={channel.apiUrl} placeholder="https://api.example.com/v1" disabled={!props.writable} onValueChange={next => { props.onPatch({ apiUrl: next }) }} />
         </div>
         <div className={css.editorField}>
           <div className={css.head}>
@@ -673,15 +724,14 @@ function ChannelEditor(props: {
               )
               : null}
           </div>
-          <input
+          <SecretField
             id="dsh-imagegen-channel-key"
-            className={css.input}
-            type="password"
             autoComplete="off"
             value={keyDraft}
+            configured={props.keyHeld}
             placeholder={props.keyHeld ? t('channels.keyReplaceHint') : t('channels.keyMissingHint')}
             disabled={!props.writable}
-            onChange={event => { const value = event.target.value; setKeyDraft(value); props.onSetKey(value === '' ? undefined : value) }}
+            onValueChange={value => { const next = value; setKeyDraft(next); props.onSetKey(next === '' ? undefined : next) }}
           />
         </div>
 
@@ -689,9 +739,9 @@ function ChannelEditor(props: {
 
         <div className={css.editorSectionHeader}>
           <h4 className={css.label}>{t('channels.modelCatalogTitle')}</h4>
-          <button type="button" className={css.modelFetch} disabled={!props.writable || detecting} onClick={detect}>
+          <Button variant="secondary" size="sm" loading={detecting} disabled={!props.writable || detecting} onClick={detect}>
             {detecting ? t('channels.detecting') : t('channels.detect')}
-          </button>
+          </Button>
         </div>
         {detectError !== null ? <p className={css.failed} role="status">{t('channels.detectFailed', { error: detectError })}</p> : null}
         {candidates !== null && detectError === null ? <p className={css.detectOk} role="status">{t('channels.detectSuccess', { n: candidates.length })}</p> : null}
@@ -705,20 +755,30 @@ function ChannelEditor(props: {
                 return (
                   <li key={`${model.alias}-${index}`} className={css.modelRow}>
                     <div className={css.modelRowInputs}>
-                      <input className={css.input} value={model.alias} aria-label={t('channels.modelAliasLabel')} disabled={!props.writable} onChange={event => {
-                        const next = [...channel.models]
-                        next[index] = { ...model, alias: event.target.value }
-                        props.onSetModels(next)
-                      }} />
+                      <TextField
+                        value={model.alias}
+                        aria-label={t('channels.modelAliasLabel')}
+                        disabled={!props.writable}
+                        onValueChange={text => {
+                          const next = [...channel.models]
+                          next[index] = { ...model, alias: text }
+                          props.onSetModels(next)
+                        }}
+                      />
                       <span className={css.modelArrow}>→</span>
-                      <input className={css.input} value={model.id} aria-label={t('channels.modelIdLabel')} disabled={!props.writable} onChange={event => {
-                        const next = [...channel.models]
-                        next[index] = { ...model, id: event.target.value }
-                        props.onSetModels(next)
-                      }} />
+                      <TextField
+                        value={model.id}
+                        aria-label={t('channels.modelIdLabel')}
+                        disabled={!props.writable}
+                        onValueChange={text => {
+                          const next = [...channel.models]
+                          next[index] = { ...model, id: text }
+                          props.onSetModels(next)
+                        }}
+                      />
                     </div>
                     <div className={css.modelRowBadges}>
-                      <span className={css.modelBadge}>{entry.labelZh}{entry.known ? '' : ` · ${t('channels.unknownProtocol')}`}</span>
+                      <Tag mono kind={entry.known ? 'idle' : 'warn'}>{entry.labelZh}{entry.known ? '' : ` · ${t('channels.unknownProtocol')}`}</Tag>
                       <button type="button" className={css.modelRowRemove} disabled={!props.writable} aria-label={`${t('channels.removeModel')}: ${model.alias}`} onClick={() => { props.onSetModels(channel.models.filter((_, i) => i !== index)) }}>×</button>
                     </div>
                   </li>
@@ -729,18 +789,45 @@ function ChannelEditor(props: {
 
         <div className={css.editorTools}>
           <div className={css.manualModelRow}>
-            <input className={css.input} value={manualId} placeholder={t('channels.manualAddPlaceholder')} disabled={!props.writable} onChange={event => { setManualId(event.target.value) }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addManual() } }} />
-            <button type="button" className={css.addModel} disabled={!props.writable || manualId.trim() === ''} onClick={addManual}>{t('channels.addModelConfirm')}</button>
+            <TextField
+              value={manualId}
+              placeholder={t('channels.manualAddPlaceholder')}
+              disabled={!props.writable}
+              onValueChange={setManualId}
+              onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addManual() } }}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={!props.writable || manualId.trim() === ''}
+              onClick={addManual}
+            >
+              {t('channels.addModelConfirm')}
+            </Button>
           </div>
           {props.otherChannels.length > 0 ? (
             <div className={css.manualModelRow}>
-              <select className={css.modelChoices} value={copyFrom} disabled={!props.writable} onChange={event => { setCopyFrom(event.target.value) }} aria-label={t('channels.copyFrom')}>
-                <option value="">{t('channels.copyFrom')}</option>
-                {props.otherChannels.map(other => (
-                  <option key={other.id} value={other.id}>{other.name || t('channels.untitled')}</option>
-                ))}
-              </select>
-              <button type="button" className={css.addModel} disabled={!props.writable || copyFrom === ''} onClick={copyFromChannel}>{t('channels.copyApply')}</button>
+              <Select
+                value={copyFrom}
+                options={[
+                  { value: '', label: t('channels.copyFrom') },
+                  ...props.otherChannels.map(other => ({
+                    value: other.id,
+                    label: other.name || t('channels.untitled'),
+                  })),
+                ]}
+                disabled={!props.writable}
+                onChange={setCopyFrom}
+                label={t('channels.copyFrom')}
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={!props.writable || copyFrom === ''}
+                onClick={copyFromChannel}
+              >
+                {t('channels.copyApply')}
+              </Button>
             </div>
           ) : null}
         </div>
@@ -754,16 +841,21 @@ function ChannelEditor(props: {
               const selected = channel.models.some(model => model.alias === candidate)
               const entry = describeModel(candidate)
               return (
-                <label key={candidate} className={css.modelCandidate} data-selected={selected ? '' : undefined}>
-                  <input type="checkbox" checked={selected} disabled={!props.writable} onChange={() => {
-                    const merged = selected
-                      ? channel.models.filter(model => model.alias !== candidate)
-                      : [...channel.models, { alias: candidate, id: candidate }]
-                    props.onSetModels(merged)
-                  }} />
-                  <span>{candidate}</span>
-                  {!entry.known ? <span className={css.modelBadge} data-warn>{t('channels.unknownProtocol')}</span> : <span className={css.modelBadge}>{entry.labelZh}</span>}
-                </label>
+                <div key={candidate} className={css.modelCandidate} data-selected={selected ? '' : undefined}>
+                  <Checkbox
+                    checked={selected}
+                    disabled={!props.writable}
+                    onCheckedChange={() => {
+                      const merged = selected
+                        ? channel.models.filter(model => model.alias !== candidate)
+                        : [...channel.models, { alias: candidate, id: candidate }]
+                      props.onSetModels(merged)
+                    }}
+                  >
+                    <span>{candidate}</span>
+                  </Checkbox>
+                  {!entry.known ? <Tag mono kind="warn">{t('channels.unknownProtocol')}</Tag> : <Tag mono kind="idle">{entry.labelZh}</Tag>}
+                </div>
               )
             })}
           </div>
@@ -772,19 +864,19 @@ function ChannelEditor(props: {
         <div className={css.editorDivider} />
 
         <div className={css.editorFooter}>
-          {props.isDefault ? <span className={css.channelBadge} data-default>{t('channels.defaultLabel')}</span> : (
+          {props.isDefault ? <Tag kind="info">{t('channels.defaultLabel')}</Tag> : (
             <button type="button" className={css.inlineDisclosure} disabled={!props.writable} onClick={props.onSetDefault}>{t('channels.setDefault')}</button>
           )}
           <span className={css.spacer} />
           {removeOpen
             ? (
               <>
-                <button type="button" className={css.channelDanger} disabled={!props.writable} onClick={props.onRemove}>{t('channels.confirm')}</button>
-                <button type="button" className={css.channelAction} onClick={() => { setRemoveOpen(false) }}>{t('channels.cancel')}</button>
+                <Button variant="danger" size="sm" disabled={!props.writable} onClick={props.onRemove}>{t('channels.confirm')}</Button>
+                <Button variant="ghost" size="sm" onClick={() => { setRemoveOpen(false) }}>{t('channels.cancel')}</Button>
               </>
             )
             : (
-              <button type="button" className={css.channelAction} data-danger onClick={() => { setRemoveOpen(true) }}>{t('channels.deleteThisChannel')}</button>
+              <Button variant="danger" size="sm" onClick={() => { setRemoveOpen(true) }}>{t('channels.deleteThisChannel')}</Button>
             )}
         </div>
       </div>
@@ -840,7 +932,7 @@ function ValueField(props: FieldProps & {
         {props.overridden
           ? (
             <span className={css.badges}>
-              <span className={css.badge}>{props.overriddenLabel}</span>
+              <Tag mono kind="info">{props.overriddenLabel}</Tag>
               <button
                 type="button"
                 className={css.reset}
@@ -865,17 +957,27 @@ function ValueField(props: FieldProps & {
           )
           : null}
       </div>
-      <input
-        id={props.id}
-        className={props.invalid ? css.inputInvalid : css.input}
-        type={props.secret === true ? 'password' : 'text'}
-        autoComplete={props.secret === true ? 'off' : undefined}
-        {...props.invalid ? { 'aria-invalid': true } : {}}
-        value={props.text}
-        placeholder={props.placeholder ?? ''}
-        disabled={props.disabled}
-        onChange={(event) => { props.onEdit(event.target.value) }}
-      />
+      {props.secret === true ? (
+        <SecretField
+          id={props.id}
+          autoComplete="off"
+          value={props.text}
+          placeholder={props.placeholder ?? ''}
+          disabled={props.disabled}
+          invalid={props.invalid}
+          configured={props.canClear}
+          onValueChange={props.onEdit}
+        />
+      ) : (
+        <TextField
+          id={props.id}
+          value={props.text}
+          placeholder={props.placeholder ?? ''}
+          disabled={props.disabled}
+          invalid={props.invalid}
+          onValueChange={props.onEdit}
+        />
+      )}
       <p className={props.invalid ? css.invalid : css.hint}>
         {props.invalid ? props.invalidLabel : props.hint}
       </p>
@@ -883,47 +985,3 @@ function ValueField(props: FieldProps & {
   )
 }
 
-/** A staged boolean field: 继承 / 开 / 关. */
-function BooleanField(props: FieldProps & {
-  /** Copy for the inherit option. */
-  inheritLabel: string
-  /** Copy for the on option. */
-  onLabel: string
-  /** Copy for the off option. */
-  offLabel: string
-}) {
-  return (
-    <div className={css.field}>
-      <div className={css.head}>
-        <label className={css.label} htmlFor={props.id}>{props.label}</label>
-        {props.overridden
-          ? (
-            <span className={css.badges}>
-              <span className={css.badge}>{props.overriddenLabel}</span>
-              <button
-                type="button"
-                className={css.reset}
-                disabled={props.disabled}
-                onClick={props.onReset}
-              >
-                {props.resetLabel}
-              </button>
-            </span>
-          )
-          : null}
-      </div>
-      <select
-        id={props.id}
-        className={css.select}
-        value={props.text}
-        disabled={props.disabled}
-        onChange={(event) => { props.onEdit(event.target.value) }}
-      >
-        <option value="">{props.inheritLabel}</option>
-        <option value="true">{props.onLabel}</option>
-        <option value="false">{props.offLabel}</option>
-      </select>
-      <p className={css.hint}>{props.hint}</p>
-    </div>
-  )
-}

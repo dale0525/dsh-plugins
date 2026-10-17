@@ -27,6 +27,11 @@ const ID = '@logictan/dsh-imagegen'
  * The module specifiers the web shell shares into the frozen module table
  * (mirror of @deepseek-ai/dsh-client-web PLATFORM_MODULES) plus the store
  * store exemption. Anything else is inlined by the bundle.
+ *
+ * `@logictan/dsh-plugins-shared-client` is not a platform module: it is a row
+ * in the dynamic module graph, and `dsh.client.external` in package.json makes
+ * the graph order that row ahead of this bundle. Keeping it external here is
+ * what lets the factory's `require` reach it rather than a second inlined copy.
  */
 const CLIENT_EXTERNALS: readonly string[] = [
   'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
@@ -36,6 +41,7 @@ const CLIENT_EXTERNALS: readonly string[] = [
   '@deepseek-ai/dsh-client-ui-attachment',
   '@deepseek-ai/dsh-client-schema-form',
   '@deepseek-ai/dsh-client-store',
+  '@logictan/dsh-plugins-shared-client',
 ]
 
 /** Virtual-id wrapper keeping module CSS away from tsdown's own css pipeline. */

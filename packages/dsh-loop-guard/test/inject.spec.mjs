@@ -18,5 +18,4 @@ test('declares the agents service injection', () => {
 test('exposes the documented plugin surface', () => {
   assert.equal(plugin.name, 'loop-guard')
   assert.equal(typeof plugin.apply, 'function')
-  assert.equal(typeof plugin.Config, 'function')
 })

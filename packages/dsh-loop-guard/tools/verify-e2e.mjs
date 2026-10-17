@@ -16,7 +16,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
-import { apply, Config } from '../lib/index.js'
+import { apply } from '../lib/index.js'
 
 const [, , file, target, ...rest] = process.argv
 if (file === undefined || target === undefined) {
@@ -55,10 +55,10 @@ function fakeAgent() {
  * Drive one text through the plugin as a stream of `chunkSize` deltas.
  * @returns the outcome: how much was emitted, and whether the stream was cut.
  */
-async function runOne(text, config, chunkSize = 16) {
+async function runOne(text, chunkSize = 16) {
   const agent = fakeAgent()
   const ctx = fakeContext(agent)
-  apply(ctx, config)
+  apply(ctx)
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
 
   async function* stream() {
@@ -89,8 +89,10 @@ async function runOne(text, config, chunkSize = 16) {
   }
 }
 
-const shipped = Config({})
-console.log(`shipped config: maxRepeatedCycleChars=${shipped.maxRepeatedCycleChars} minRepeatedCycleChars=${shipped.minRepeatedCycleChars} maxRepeatedText=${shipped.maxRepeatedText}\n`)
+// The guard no longer reads a config schema: its thresholds are constants in
+// `src/index.ts`, so this banner restates them for the report. It is a label,
+// not an input — `apply` is called without arguments below.
+console.log('shipped config: maxRepeatedCycleChars=512 minRepeatedCycleChars=256 maxRepeatedText=60\n')
 
 if (target === '--all') {
   let examined = 0
@@ -100,7 +102,7 @@ if (target === '--all') {
     const text = textOf(e)
     if (text.length < minChars) continue
     examined++
-    const r = await runOne(text, shipped)
+    const r = await runOne(text)
     if (r.cut) fires.push({ seq: i, ...r })
   }
   console.log(`examined ${examined} texts, ${fires.length} cut`)
@@ -111,7 +113,7 @@ if (target === '--all') {
   const seq = Number(target)
   const text = textOf(events[seq])
   if (text.length === 0) throw new Error(`seq ${seq} has no text`)
-  const r = await runOne(text, shipped)
+  const r = await runOne(text)
   console.log(`seq ${seq}: ${r.total} text chars`)
   console.log(`  emitted before the cut : ${r.emitted} (${(r.emitted / r.total * 100).toFixed(1)}% of the text)`)
   console.log(`  stream cut             : ${r.cut}`)

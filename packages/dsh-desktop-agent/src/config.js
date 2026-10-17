@@ -76,13 +76,52 @@ export const DELIVERY_MODES = ['background', 'foreground'];
  * opt into, never a default this plugin picks on their behalf.
  */
 export const Config = z.object({
-  visionProvider: z.string().default('').volatile(),
-  visionModel: z.string().default('').volatile(),
-  visionReasoningEffort: z.string().default('').volatile(),
-  maxSteps: z.number().step(1).min(1).default(DEFAULT_MAX_STEPS).volatile(),
-  maxImageDimension: z.number().step(1).min(200).default(1568).volatile(),
-  deliveryMode: z.union(DELIVERY_MODES).default('background').volatile(),
-  allowBringToFront: z.boolean().default(false).volatile(),
+  visionProvider: z
+    .string()
+    .default('')
+    .comment('视觉 provider')
+    .description('每步决策用哪个模型看图。全空 = 用会话当前模型；会话模型不支持图像时自动走 AX 元素表。')
+    .volatile(),
+  visionModel: z
+    .string()
+    .default('')
+    .comment('视觉 model')
+    .description('')
+    .volatile(),
+  visionReasoningEffort: z
+    .string()
+    .default('')
+    .comment('视觉 reasoning effort')
+    .description('')
+    .volatile(),
+  maxSteps: z
+    .number()
+    .step(1)
+    .min(1)
+    .default(DEFAULT_MAX_STEPS)
+    .comment('步数上限')
+    .description('一次任务最多执行多少个动作，默认 40。')
+    .volatile(),
+  maxImageDimension: z
+    .number()
+    .step(1)
+    .min(200)
+    .default(1568)
+    .comment('截图长边上限')
+    .description('送给模型的截图最长边（像素），默认 1568。调小可省 token，但太小会看不清控件。')
+    .volatile(),
+  deliveryMode: z
+    .union(DELIVERY_MODES)
+    .default('background')
+    .comment('投递方式')
+    .description('后台投递不抢焦点；游戏等自绘表面会过滤按 pid 路由的事件，需要前台投递。')
+    .volatile(),
+  allowBringToFront: z
+    .boolean()
+    .default(false)
+    .comment('允许抢前台')
+    .description('关闭时模型不能使用 bring_to_front。开启后模型可把目标窗口提到最前，代价是抢走你当前的焦点；仅当窗口被压在后台、内容不刷新时才需要。')
+    .volatile(),
 });
 
 /**

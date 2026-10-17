@@ -52,8 +52,18 @@ export const Config = Schema.object({
    * Whether the bundled Fira Code + LXGW WenKai Mono replace the host's chat
    * typeface. On by default, because the bundled faces are the whole point of
    * the design; turning it off restores the host's own font stack untouched.
+   *
+   * `comment` is the label the settings page renders and `description` the
+   * sentence under it. They live here rather than in the browser half because
+   * the card renders the schema: a label written in the card would be a second
+   * place to keep in step, and the page would show the bare key if this one
+   * were missing.
    */
-  replaceChatFont: Schema.boolean().default(true).volatile(),
+  replaceChatFont: Schema.boolean()
+    .default(true)
+    .comment('替换字体')
+    .description('用插件自带的 Fira Code + 落霞孤鹜等宽替换对话、代码块与输入框的字体。字体随插件一起提供，不依赖访问设备上装没装——关掉后恢复 DSH 原来的字体。')
+    .volatile(),
 })
 
 /** Prefix the browser half's `@font-face` rules point at. Never under `/api`. */

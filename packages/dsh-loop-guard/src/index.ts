@@ -80,7 +80,7 @@
  * break**: a degenerate model must not be silently re-billed.
  *
  * That stance is scoped to the break, and it is not in tension with
- * {@link Config.retryRequestFailures}. A break re-sends the request to a model
+ * the request retry policy. A break re-sends the request to a model
  * that has just demonstrated it cannot act on it — the input is the problem. A
  * response that never arrived intact is the opposite case: the request was
  * well-formed and the provider returned something the JSON parser rejected or a
@@ -168,7 +168,6 @@
  * @module dsh-loop-guard
  */
 import { Context } from '@deepseek-ai/cordis'
-import z from '@deepseek-ai/schemastery'
 import type { Agent, AgentCancelCause, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, isAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import type { LlmFailure, StreamChunk } from '@deepseek-ai/dsh-llm'
@@ -179,323 +178,54 @@ type UserMessage = ReturnType<typeof createUserMessage>
  * The agent's public methods the guard reacts with.
  *
  * `whenIdle` is optional because it is only needed for
- * {@link Config.resumeAfterBreak}, and a guard that required it would fail to
+ * the resumeAfterBreak behavior, and a guard that required it would fail to
  * mount on any Agent-shaped stand-in that omits it.
  */
 type GuardableAgent = Pick<Agent, 'inject' | 'steer' | 'cancel'>
   & Partial<Pick<Agent, 'whenIdle' | 'status'>>
 
-/** Plugin configuration. */
-export interface Config {
-  /**
-   * Consecutive stalled model calls before a reaction. A call is stalled when it
-   * produced no text/tool output, or when it repeated most of the previous
-   * call's distinct reasoning material. Default `3`.
-   */
-  maxThinkingSteps?: number
-  /**
-   * Minimum reasoning text within one call before that call is judged at all; a
-   * short burst is normal. Default `2048` chars.
-   */
-  minReasoningChars?: number
-  /**
-   * Cross-call similarity: how much of the previous call's distinct reasoning
-   * material must reappear in this call before the call counts as a repetition
-   * of stalled thinking rather than progress. `1.0` requires an exact rerun of
-   * the same material; `0` disables this signal. Default `0.8`.
-   */
-  similarityThreshold?: number
-  /**
-   * Reaction to fire on a threshold crossing. `warn` injects a notice, `steer`
-   * sends a steering message, `cancel` hard-aborts the turn. Default `steer`.
-   */
-  escalate?: 'warn' | 'steer' | 'cancel'
-  /**
-   * How many times one agent may be reacted to before the guard stops
-   * re-firing. A single intervention often does not break a strong loop, so the
-   * default allows several. Default `4`.
-   */
-  maxFires?: number
-  /** Cancel cause used when `escalate` is `cancel`. Default `'thinking-loop'`. */
-  cancelCause?: string
-  /**
-   * Consecutive identical normalized visible-output chunks that end the stream
-   * mid-call. `0` disables the breaker. This is the only guard here that fires
-   * *inside* a model call, so it is the only one that can stop a single-call
-   * repetition bleed (issue #2848). Default `60`.
-   *
-   * Covers the period-1 case only (a byte-identical delta repeated); a model
-   * bleeding a *cycle* of a few short lines resets this counter on every phase
-   * change. See `maxRepeatedCycleChars`.
-   */
-  maxRepeatedText?: number
-  /**
-   * Longest repeating period, in visible-output characters, that
-   * {@link trailingCycle} will recognize at the tail of a call's output.
-   * `0` disables the cycle rule. Default `512`.
-   *
-   * Discussion #7043 reported a model that bleeds a cycle of a few short lines
-   * ("好。 / 发。 / 好。 / 好。", and a mixed-language variant) for tens of
-   * lines; measured on v0.1.7, that shape never fires `maxRepeatedText` under any
-   * chunking, because no two consecutive deltas are identical.
-   *
-   * ## Why the default is 512 and not 64
-   *
-   * The same silent-failure rule that set the reasoning cap applies here, and
-   * this side was left behind. Measured on a real 44 387-character visible-output
-   * bleed: its exact minimal period is **172** characters (stable across every
-   * tail window from 512 to 16 384), and the loop starts at character **139 —
-   * 0.3 %** of the final text. At the old `64` default `trailingCycle` returned
-   * **0** for it, so the guard never fired, the call was never cut, and the text
-   * ran to 44 387 characters until the user stopped the turn by hand.
-   *
-   * A streaming replay of that text through {@link TextRepetitionDetector} — the
-   * real detector, delta by delta, not the settled message — puts the candidate
-   * caps side by side. The figures are for that ONE text:
-   *
-   * | cap | fires on it |
-   * | --- | --- |
-   * | 64 (shipped) | **0** |
-   * | 128 | 0 |
-   * | 256 | 1, cut at character 576 (1.3 %) |
-   * | 512 | 1, cut at character 576 (1.3 %) |
-   *
-   * `512` is chosen over the bare-minimum `256` for the same reason the reasoning
-   * side chose it: a cap below a real period fails *silently*, and the periods
-   * seen on this side have already grown past a previous default once. It costs
-   * nothing in precision — across every visible-output text in the session store
-   * (2 973 texts of 1 500+ characters, all sessions) the cycle rule fires on
-   * exactly one: the real bleed. The other 2 972 legitimate texts — reports,
-   * code, tables — score `0` at every cap from 64 through 4096.
-   */
-  maxRepeatedCycleChars?: number
-  /**
-   * Shortest tail span that must be an exact repetition of a single period before
-   * the cycle rule ends the stream. Default `256`.
-   *
-   * Exact repetition rather than a low-entropy ratio on purpose: measured against
-   * legitimately repetitive long output — a 40-row markdown table (0.72 at a
-   * 512-char tail), generated CSS rows (0.82), a JSON dump (0.84), a log listing
-   * (0.76) — a coverage threshold only separates the loop (0.92-0.99) by ~0.06,
-   * too thin for a rule that truncates a call. Verbatim periodicity is 0 for all
-   * of those samples and non-zero only for the reported shapes.
-   */
-  minRepeatedCycleChars?: number
-  /**
-   * Longest repeating period, in **reasoning** characters, that ends the stream
-   * mid-call. `0` disables the reasoning rule. Default `512`.
-   *
-   * This is the rule that closes issue #5976. That failure is a model bleeding
-   * reasoning and never returning — no text, no tool call — so no post-call
-   * detector can reach it and the harness turn loop never settles (`StepEndReason`
-   * is derived from a finished message). Cutting the stream from inside the
-   * `llm/stream` wrapper is the only mechanism that ends such a turn.
-   *
-   * Calibrated on real reproductions. Measured bleed periods: 89, 102, 105, 154,
-   * 187, 235, and **409** characters. The 409 is why this default is `512` and
-   * not the `256` an earlier calibration chose: with `256` that bleed was
-   * invisible (`trailingCycle` returns 0), the guard never fired, and the turn
-   * had to be aborted by hand — the exact failure the rule exists to prevent.
-   * A too-low period cap fails silently, so it must sit above every observed
-   * period rather than at the middle of the ones seen so far.
-   */
-  maxRepeatedReasoningCycleChars?: number
-  /**
-   * Shortest reasoning tail that must be an exact repetition of one period
-   * before the reasoning rule ends the stream. Default `384`.
-   *
-   * Higher than the visible-output default (`256`) on purpose: reasoning is
-   * private scratch space that legitimately restates a heading or a plan step, so
-   * the reasoning rule demands a longer verbatim run before truncating a call.
-   *
-   * Measured across 22 sessions (9195 calls), the calls this rule exists to catch
-   * — reasoning-only, ending the turn with no text and no tool call — number 60
-   * (56 of them with >=384 reasoning chars). They repeat a phrase pool in their
-   * last 384-516 characters. `512` catches **0 of 56** of them; `384` catches 40
-   * (71%). The earlier `512` was calibrated on a single reproduction where the
-   * bleeds happened to run long, and its "costs no recall" claim does not survive
-   * the wider corpus.
-   */
-  minRepeatedReasoningCycleChars?: number
-  /**
-   * How many characters of *repeated lines* end a reasoning bleed. Default
-   * `2048`, `0` disables the rule.
-   *
-   * The cycle rule above only sees a bleed that repeats in the same order every
-   * time. A measured reproduction recombined a pool of about eleven sentences in
-   * a different order each pass, so it had no period at any cap and the cycle
-   * rule never fired: 330 188 characters until the user aborted. Counting the
-   * mass sitting in lines already seen catches that shape, and the two rules are
-   * complementary — a pool of very short phrases is the cycle rule's job.
-   *
-   * The threshold is deliberately far below the smallest aborted bleed that
-   * matters: the worst measured case is cut at 4096 characters, 1.2 % of its
-   * final length, with no false positive on any of the 119 calls in the same
-   * session that produced text or a tool call.
-   */
-  maxRepeatedReasoningLineChars?: number
-  /**
-   * The share of counted reasoning characters that must sit in repeated lines
-   * before the line rule fires. Default `0.6`.
-   *
-   * Coherent reasoning reuses phrases ("Let me check", "OK") but the bulk of its
-   * text is new, so its repeated share stays low; a bleed drawn from a fixed
-   * pool approaches 1.0. Lines shorter than two characters are excluded from
-   * both the numerator and the denominator, so generated code full of `}` and
-   * `);` cannot drive the ratio up.
-   */
-  minRepeatedReasoningLineCoverage?: number
-  /**
-   * Error code carried by the breaker's terminal failure. Default
-   * `'REPETITIVE_OUTPUT'`.
-   *
-   * There is deliberately no way to choose a quiet `stop` finish instead: the
-   * breaker fires while the call's text block is still open, and the `llm/stream`
-   * invariant rejects a `stop` finish with open blocks (only `error`/`aborted`
-   * may leave them open). Verified by running the wrapper's own output through
-   * `@deepseek-ai/dsh-llm/invariant` — see `test/text-breaker.spec.mjs`.
-   */
-  breakCode?: string
-  /**
-   * Steer the agent after a mid-stream break so the resumed turn is told what
-   * happened instead of silently continuing. Default `true`.
-   */
-  breakCorrection?: boolean
-  /**
-   * Continue the turn automatically after a mid-stream break, instead of
-   * leaving the session waiting for the user. Default `false`.
-   *
-   * Off by default because it re-enters the model without the user asking, and
-   * because the failure it responds to is one where the model has already shown
-   * it cannot act on its own. Turn it on when an unattended run must not stall.
-   *
-   * How it works, and why a naive attempt cannot work: the break is observed
-   * inside the stream wrapper, which runs while the agent's phase is `running`.
-   * In that phase `agent-loop` deliberately suppresses every wake —
-   * `wakeDriver()` only latches behind maintenance or an aborted activity, so a
-   * `steer()`/`followup()` issued here sets no `wakeRequested`, and `kick()`'s
-   * `finally` (`if (wakeRequested && inbox.hasPending) wakeDriver()`) finds
-   * neither and lets the session come to rest. The wake has to happen *after*
-   * the driver returns to `idle`, which is what `whenIdle()` waits for.
-   *
-   * Only meaningful with `breakCorrection: false`. A steered correction already
-   * keeps the turn alive on its own — `turn()` only ends while `nextStep` is
-   * empty — so with the correction on there is nothing left for this option to
-   * do, and scheduling it as well would deliver the same text twice.
-   *
-   * The continuation message is the same correction text `breakCorrection`
-   * steers, delivered as a steering notice. It is never empty: a user message
-   * with no text blocks carries no instruction, and `createUserMessage` is
-   * happy to build one, so an "empty retry" would re-enter the model with the
-   * degenerate history unchanged — the shape that produced the loop.
-   */
-  resumeAfterBreak?: boolean
-  /**
-   * Retry a model request whose response never arrived intact. Default `true`.
-   *
-   * This is the one failure where re-sending the SAME request is the fix rather
-   * than a silent re-bill, and it is a different class from the thinking-loop
-   * breaks above — those re-enter a model that has already shown it cannot act,
-   * which is why they are never retried automatically. Here the request was
-   * well-formed and the provider returned a corrupted body or closed the stream
-   * before it carried anything usable; the turn dies through
-   * `agent/request-error` with the user seeing `本轮运行失败`, and a second
-   * attempt normally succeeds.
-   *
-   * The predicate is deliberately narrow — the code AND one of two measured
-   * signatures, both required. Measured across this machine's `~/.dsh/sessions`:
-   * every JSON-parse failure (20 distinct failed steps over 19 error turns)
-   * arrives as `PI_AI_ERROR`, but
-   * `PI_AI_ERROR` alone is the adapter's catch-all — it also carries
-   * `Too many pending requests, please retry later`, `Provider finish_reason:
-   * error`, and pi-ai's `ended pending` / `deferred` bodies, none of which is an
-   * interrupted response. Conversely an upstream 400 whose error body merely
-   * QUOTES a JSON error must not be re-sent. See
-   * {@link isRetryableResponseFailure}.
-   */
-  retryRequestFailures?: boolean
-  /**
-   * How many times ONE attempt may be re-sent before the failure is handed to
-   * downstream recovery. Default `2`.
-   *
-   * Small on purpose, and deliberately below `dsh-llm`'s own
-   * `DEFAULT_MAX_RETRIES` of 5: this budget sits in FRONT of that policy, so a
-   * provider that corrupts every body must stop costing money quickly. The
-   * budget is per agent and per `(turn, step)`, so a bad step cannot starve the
-   * rest of the turn.
-   */
-  maxRequestRetries?: number
+/** Resolved guard configuration shape. */
+type ResolvedConfig = {
+  maxThinkingSteps: number
+  minReasoningChars: number
+  similarityThreshold: number
+  escalate: 'warn' | 'steer' | 'cancel'
+  maxFires: number
+  cancelCause: string
+  maxRepeatedText: number
+  maxRepeatedCycleChars: number
+  minRepeatedCycleChars: number
+  maxRepeatedReasoningCycleChars: number
+  minRepeatedReasoningCycleChars: number
+  maxRepeatedReasoningLineChars: number
+  minRepeatedReasoningLineCoverage: number
+  breakCode: string
+  breakCorrection: boolean
+  resumeAfterBreak: boolean
+  retryRequestFailures: boolean
+  maxRequestRetries: number
 }
 
-/** Resolved config: every field carries its validated default. */
-type ResolvedConfig = Required<Config>
-
-/**
- * A live reference to one volatile field, as the Loader hands it to `apply`.
- *
- * Declared structurally rather than imported: `Volatile` is a `cordis` 4.0.3
- * export and this package declares the whole `^4.0.2` range, so naming the
- * vendor type here would narrow the peer range for a cosmetic gain.
- */
-export interface ConfigRef<T> {
-  /** The field's value right now; re-read on every call. */
-  get(): T
+const RESOLVED: ResolvedConfig = {
+  maxThinkingSteps: 3,
+  minReasoningChars: 2048,
+  similarityThreshold: 0.8,
+  escalate: 'steer',
+  maxFires: 99,
+  cancelCause: 'thinking-loop',
+  maxRepeatedText: 60,
+  maxRepeatedCycleChars: 512,
+  minRepeatedCycleChars: 256,
+  maxRepeatedReasoningCycleChars: 512,
+  minRepeatedReasoningCycleChars: 384,
+  maxRepeatedReasoningLineChars: 2048,
+  minRepeatedReasoningLineCoverage: 0.6,
+  breakCode: 'REPETITIVE_OUTPUT',
+  breakCorrection: true,
+  resumeAfterBreak: true,
+  retryRequestFailures: true,
+  maxRequestRetries: 2,
 }
-
-/**
- * The live references `apply` receives, one per {@link Config} field.
- *
- * Cordis's Loader replaces every `volatile()` field of a plugin's `Config` with
- * a reference of this shape, so a value the user edits on the Plugins page is
- * committed into the RUNNING plugin (`loader/volatile-update`) instead of
- * remounting it. Reading through `.get()` at the point of use is therefore what
- * makes an edit take effect without a restart.
- */
-export type ConfigRefs = { [K in keyof ResolvedConfig]: ConfigRef<ResolvedConfig[K]> }
-
-/**
- * Plugin configuration — and, as of the 0.1.7-alpha.1 settings redesign, the
- * ONE schema behind every configuration surface.
- *
- * The host's `dsh-settings` no longer has a namespace registry: it derives the
- * Plugins-page form for a loader entry from that entry's own `Config`, keyed by
- * the entry id (which is this package's {@link name}, `loop-guard`). Marking
- * every field `volatile()` is what puts it in that form — a field left plain
- * would still configure the guard through `cordis.patch.yml`, but the Plugins
- * page could neither show nor edit it.
- *
- * Two consequences follow, both deliberate:
- *
- *  - The row's `config` in `cordis.patch.yml` is no longer a "composition
- *    layer" that the guard merges a settings section over. It is simply the
- *    entry's config, and the Plugins page edits that same entry, so there is
- *    exactly one layer and no precedence rule left to get wrong.
- *  - The guard no longer registers a settings namespace at all. The former
- *    `settings.installSection(ctx, 'loop-guard', SettingsSection, …)` seam —
- *    present in `dsh-settings` 0.1.2-alpha.2 through 0.1.6-alpha.2 — was
- *    removed in 0.1.7-alpha.1, which is why this plugin failed to activate on
- *    that harness generation.
- */
-export const Config: z<Config, ConfigRefs> = z.object({
-  maxThinkingSteps: z.number().min(2).default(3).volatile(),
-  minReasoningChars: z.number().min(256).default(2048).volatile(),
-  similarityThreshold: z.number().min(0).max(1).default(0.8).volatile(),
-  escalate: z.union(['warn', 'steer', 'cancel']).default('steer').volatile(),
-  maxFires: z.number().min(1).default(4).volatile(),
-  cancelCause: z.string().default('thinking-loop').volatile(),
-  maxRepeatedText: z.number().step(1).min(0).default(60).volatile(),
-  maxRepeatedCycleChars: z.number().step(1).min(0).default(512).volatile(),
-  minRepeatedCycleChars: z.number().step(1).min(2).default(256).volatile(),
-  maxRepeatedReasoningCycleChars: z.number().step(1).min(0).default(512).volatile(),
-  minRepeatedReasoningCycleChars: z.number().step(1).min(2).default(384).volatile(),
-  maxRepeatedReasoningLineChars: z.number().step(1).min(0).default(2048).volatile(),
-  minRepeatedReasoningLineCoverage: z.number().min(0).max(1).default(0.6).volatile(),
-  breakCode: z.string().default('REPETITIVE_OUTPUT').volatile(),
-  breakCorrection: z.boolean().default(true).volatile(),
-  resumeAfterBreak: z.boolean().default(false).volatile(),
-  retryRequestFailures: z.boolean().default(true).volatile(),
-  maxRequestRetries: z.number().step(1).min(0).default(2).volatile(),
-})
 
 export const name = 'loop-guard'
 
@@ -1309,38 +1039,10 @@ function isRetryableResponseFailure(failure: LlmFailure): boolean {
  * Install the listener. Per-`Agent` state is keyed in a `WeakMap` so a disposed
  * agent is collected; detectors are scoped to one agent lifecycle.
  *
- * `config` carries the entry's LIVE references, so the value a user saved on
- * the Plugins page — or wrote into the row's `cordis.patch.yml` config — is the
- * one in effect, and a later edit is picked up on the next model call: the
- * per-call breakers and the per-agent detector are both built from a fresh read.
- *
- * Every field is resolved INSIDE the thunk rather than captured once, because
- * the Loader commits a volatile edit into these very references (`updateVolatile`
- * → `loader/volatile-update`) instead of remounting the plugin. A snapshot taken
- * at activation would pin the values the profile started with, and the page's
- * save button would appear to do nothing.
+ * Uses built-in default constants without exposing any configuration options.
  */
-export function apply(ctx: Context, config: ConfigRefs): void {
-  installListeners(ctx, () => ({
-    maxThinkingSteps: config.maxThinkingSteps.get(),
-    minReasoningChars: config.minReasoningChars.get(),
-    similarityThreshold: config.similarityThreshold.get(),
-    escalate: config.escalate.get(),
-    maxFires: config.maxFires.get(),
-    cancelCause: config.cancelCause.get(),
-    maxRepeatedText: config.maxRepeatedText.get(),
-    maxRepeatedCycleChars: config.maxRepeatedCycleChars.get(),
-    minRepeatedCycleChars: config.minRepeatedCycleChars.get(),
-    maxRepeatedReasoningCycleChars: config.maxRepeatedReasoningCycleChars.get(),
-    minRepeatedReasoningCycleChars: config.minRepeatedReasoningCycleChars.get(),
-    maxRepeatedReasoningLineChars: config.maxRepeatedReasoningLineChars.get(),
-    minRepeatedReasoningLineCoverage: config.minRepeatedReasoningLineCoverage.get(),
-    breakCode: config.breakCode.get(),
-    breakCorrection: config.breakCorrection.get(),
-    resumeAfterBreak: config.resumeAfterBreak.get(),
-    retryRequestFailures: config.retryRequestFailures.get(),
-    maxRequestRetries: config.maxRequestRetries.get(),
-  }))
+export function apply(ctx: Context): void {
+  installListeners(ctx, () => RESOLVED)
 }
 
 /** The listener body, resolving the effective configuration at each use. */
@@ -1367,10 +1069,6 @@ function installListeners(ctx: Context, currentConfig: () => ResolvedConfig): vo
 
   /**
    * Claim one retry from the current attempt's budget.
-   *
-   * Reads the configuration at the point of use, like every other reaction, so
-   * turning `retryRequestFailures` off on the Plugins page takes effect on the
-   * very next failure without a remount.
    *
    * @returns whether this failure may be re-sent.
    */

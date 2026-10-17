@@ -1,0 +1,61 @@
+{
+  "name": "@logictan/dsh-plugins-shared-client",
+  "description": "Shared browser-half component layer for the dsh-plugins family: one settings-card / form-control implementation (card, field, text / secret / number / textarea input, select, switch, checkbox, radio, segmented, button, status dot, tag, banner, empty state, skeleton, read-only summary, list editor) that every plugin's Plugins-page configuration card composes, so the same control is pixel-identical in every plugin and follows the light/dark theme through the host's --dsw-* tokens.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "^18.3.1",
+    "jsdom": "^27.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.2.0",
+    "tailwindcss": "^3.4.19",
+    "tsdown": "0.22.14",
+    "typescript": "~5.7.2"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-plugins-shared-client"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "prepare": "node build.mjs",
+    "prepack": "node build.mjs",
+    "bundle": "tsdown",
+    "watch": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node build.mjs && node --test \"test/*.spec.mjs\""
+  }
+}

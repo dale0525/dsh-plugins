@@ -1,0 +1,17 @@
+# The shared component layer's own row.
+#
+# It has no configuration and its host half does nothing — the row exists for
+# exactly one reason: `@deepseek-ai/dsh-client-modules` only ever puts a package
+# into its browser-side module table when the package is a real Loader entry
+# (`reconcilePackage` is driven by `internal/plugin` emissions and by the
+# loader's own entry list). A package that is merely a `dependencies` entry of
+# the aggregate bundle never reaches that table, so a consumer's
+# `require("@logictan/dsh-plugins-shared-client")` would throw
+# `missed the module table`.
+#
+# The id must stay unique across the repository and equal the host half's
+# `export const name`; a duplicate is a hard startup crash
+# (`duplicate loader entry id`).
+- insert:
+    - id: plugins-shared-client
+      name: '@logictan/dsh-plugins-shared-client'
