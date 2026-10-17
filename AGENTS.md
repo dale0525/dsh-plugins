@@ -290,6 +290,10 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
 
 **验收**：`dsh-web status` 输出 `Verdict:  OK`（作业 PID == 端口 owner PID）。
 
+> **重启后核对「新代码是否真的进了提示词」，要读会话日志里最后一条 `request/header`。**
+> 同一会话里每条请求都留一份，第一条是**重启前**的旧快照。实测按第一条判定，得出「改动没生效」
+> 的错误结论，实际最新那条已是新工具清单（133 工具/220,287 字符 → 77 工具/106,064 字符）。
+
 > **该命令靠 `lsof` 找端口 owner，而 `lsof` 在 `/usr/sbin`**：调用方 PATH 缺 `/usr/sbin` 时
 > `port_pid` 取空，输出 `owner pid none` 与 `==NOT LISTENING==`——**服务其实是好的**。
 > 实测同一进程同一秒：PATH 无 `/usr/sbin` 判 NOT LISTENING，补上即 `Verdict: OK`。
