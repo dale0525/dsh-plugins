@@ -236,6 +236,15 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   判据：`grep "<仓库绝对路径>" pnpm-lock.yaml` 无输出，且包目录是真目录（非软链）、
   版本等于线上版本。只删 overrides 而不改 `package.json` 的 `file:`，聚合包仍指向本地目录。
 
+- **槽位渲染崩溃在页面上是「空的」，原因只在控制台**：`plugins.row.config` 这类槽位的渲染
+  抛错时，宿主把它换成 `<div data-slot-error="<slot>">`（空元素，无文案），页面表现为
+  「插件标题在、下面什么都没有」，看起来像没配字段而不是报错。诊断只能去浏览器控制台取
+  `slot entry crashed in '<slot>':` 后的原始 Error，别对着 DOM 猜。实测两个成因：
+  ① 迁移后消费端仍在读已删除的字段，抛 `settings card has no field <x>`；
+  ② `useSyncExternalStore` 的 `getSnapshot()` 每次返回新对象、或 handle 在渲染体内新建，
+  抛 React error #185（最大更新深度）——**引用不稳定即无限重渲染**。
+  这两个都不是「没渲染出内容」，而是渲染失败，加字段或改样式永远修不好。
+
 > **`npm trust list <pkg>` 无法免交互核验**：它要求 OTP（`npm error code EOTP`），
 > Agent 跑不了。所以「trust 是否配好」不能靠它判定 —— 真正的判据是**看该包历史版本的发布者身份**：
 > `npm view <pkg>@<ver> _npmUser` 显示 `GitHub Actions <npm-oidc-no-reply@github.com>` 即已走过 CI，
