@@ -91,5 +91,27 @@ export const AUTOFILL_MARKER = 'reasoningEffortsAutofilled'
  */
 export const DEFAULT_EFFORT_FIELD = 'defaultEffort'
 
+/**
+ * Provider-level bound on the image payload of ONE request, in bytes.
+ *
+ * pi-ai declares it on the provider profile (not the model row) because the
+ * cost it guards is per request, not per model: every image of every turn is
+ * base64-encoded into the same body. Its default (20 MiB) sits ABOVE the body
+ * cap many relays enforce, so an over-limit request is refused by the gateway
+ * with a 413 before pi-ai can offload the oldest images -- and a 413 is
+ * classified as an invalid request, which is why that failure took the whole
+ * session down instead of degrading. Setting the field below the relay's cap
+ * hands the bound back to pi-ai, which then turns the oldest images into
+ * placeholders.
+ */
+export const IMAGE_BUDGET_FIELD = 'maxRequestImageBytes'
+
+/**
+ * pi-ai's own default for {@link IMAGE_BUDGET_FIELD}, pinned from the installed
+ * kernel by `tests/image-budget.spec.tsx`. The UI shows it as the value a
+ * cleared field falls back to, so it must not drift from the adapter's.
+ */
+export const DEFAULT_IMAGE_BUDGET_BYTES = 20 * 1024 * 1024
+
 /** Locale dictionary namespace for the browser half's copy (not a settings namespace). */
 export const STORE_NS = PLUGIN_ID

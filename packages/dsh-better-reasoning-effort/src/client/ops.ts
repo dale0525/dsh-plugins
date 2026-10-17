@@ -12,7 +12,7 @@ import {
   type InputModalities,
   type ReasoningEfforts,
 } from '../knowledge.js'
-import { AUTOFILL_MARKER, DEFAULT_EFFORT_FIELD, INPUT_UNSET_MARKER, PI_AI_NS, PROBE_PATH, UNSET_MARKER } from '../constants.js'
+import { AUTOFILL_MARKER, DEFAULT_EFFORT_FIELD, IMAGE_BUDGET_FIELD, INPUT_UNSET_MARKER, PI_AI_NS, PROBE_PATH, UNSET_MARKER } from '../constants.js'
 import { detectModelSignal, type EndpointSignal } from '../detection.js'
 import { isRecord, looksLikeCompatRefusal, routeFactsOf } from '../shared.js'
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
@@ -617,6 +617,90 @@ function routeIsDeclared(namespace: SettingsNamespaceView | undefined, route: st
     if (providers !== undefined && Object.prototype.hasOwnProperty.call(providers, route)) return true
   }
   return false
+}
+
+/** One result of writing a provider's image budget. */
+export type ProviderBudgetReply = { ok: true } | { ok: false; error: string }
+
+/**
+ * The RAW layer's {@link IMAGE_BUDGET_FIELD} for one route, or undefined when
+ * no layer declares one (i.e. the adapter's own default applies).
+ *
+ * Reads the layers, never the resolved `value`, for the same reason
+ * {@link providerHeadersOf} does: the resolved section carries the schema
+ * default as if the user had chosen it, and a draft seeded from it would pin
+ * 20 MiB into the document on the first save.
+ * @param namespace - the namespace view carrying the layers.
+ * @param route - the provider route key.
+ * @returns the stored bound in bytes, when a layer declares a usable one.
+ */
+export function providerBudgetOf(
+  namespace: SettingsNamespaceView | undefined,
+  route: string,
+): number | undefined {
+  for (const layer of [namespace?.user, namespace?.base]) {
+    const profile = providersOfLayer(layer)?.[route]
+    if (!isRecord(profile)) continue
+    const bound = profile[IMAGE_BUDGET_FIELD]
+    if (bound === undefined) continue
+    // The kernel refuses anything that is not a positive integer at load time,
+    // so a malformed stored value is already an error state, not a choice the
+    // editor should reproduce: report "nothing usable" and let the field show
+    // the default it would fall back to.
+    return typeof bound === 'number' && Number.isInteger(bound) && bound > 0 ? bound : undefined
+  }
+  return undefined
+}
+
+/**
+ * Write ONE route's {@link IMAGE_BUDGET_FIELD} through the live settings seam.
+ *
+ * A single-field path write, so no brother field of the profile is restated.
+ * `undefined` becomes an `unset`, which is the only op that expresses "follow
+ * the adapter's default": the settings layer turns it into a `set` of the
+ * inherited value when a lower layer declares one, and deletes the key
+ * otherwise — both of which are exactly inheritance.
+ *
+ * The conflict discipline is {@link writeProviderHeaders}'s, for the same
+ * reason: the official card's own Save can move the namespace between the read
+ * and the write, and the user's edit must survive that race rather than fail.
+ * @param api - the settings Remote (plus the optional scope).
+ * @param route - the provider route key.
+ * @param bytes - the bound to store, or undefined to follow the default.
+ * @returns whether the write landed, and the refusal text when it did not.
+ */
+export async function writeProviderBudget(
+  api: RemoteApi,
+  route: string,
+  bytes: number | undefined,
+): Promise<ProviderBudgetReply> {
+  if (typeof route !== 'string' || route.length === 0) return { ok: false, error: 'no-route' }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const join = attempt === 0 ? await describeNamespace(api) : await describeNamespace(api, { fresh: true })
+      if (join.namespace === undefined) return { ok: false, error: 'no-namespace' }
+      if (join.writable !== true) return { ok: false, error: 'read-only' }
+      // Same guard as the headers write: a `set` on a path that resolves
+      // nowhere would create a stray profile with no endpoint and no protocol.
+      if (!routeIsDeclared(join.namespace, route)) return { ok: false, error: 'no-route' }
+      const op = bytes === undefined
+        ? { op: 'unset', path: ['providers', route, IMAGE_BUDGET_FIELD] }
+        : { op: 'set', path: ['providers', route, IMAGE_BUDGET_FIELD], value: bytes }
+      const response = await api.settings.mutate(
+        PI_AI_NS,
+        [op as unknown as SettingsPathOpView],
+        join.namespace.revision,
+      )
+      if (!response.ok) {
+        if (attempt === 0 && response.error.code === 'settings/conflict') continue
+        return { ok: false, error: response.error.message }
+      }
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+  return { ok: false, error: 'conflict' }
 }
 
 /**

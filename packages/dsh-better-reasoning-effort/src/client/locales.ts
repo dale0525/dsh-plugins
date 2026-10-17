@@ -103,6 +103,15 @@ export const en = {
   headersConflictSiblings: 'A plugin rewriting the same layer is installed: {names}. Only one user-agent rewrite should be active at a time, or the last writer on the wire wins.',
   headersError: 'Save failed: {error}',
   headersNoRoute: 'This route is no longer in the settings document — save the official card once first.',
+  budgetTitle: 'Request image cap',
+  budgetHint: 'The image payload of one request, base64 included. The default ({default}) sits above the body cap most relays enforce: an over-cap request is refused by the gateway before the harness can offload the oldest images, and that refusal is classed as an invalid request, so the offload-and-retry path never fires and the session stalls. Set it below the relay cap and the bound is enforced here instead — the oldest images become placeholders and the request still completes.',
+  budgetLabel: 'Max request image bytes',
+  budgetBlankHint: 'Bytes, not MiB. Leave it empty to follow the default ({default}).',
+  budgetInherited: 'No cap is set on this route — the adapter default applies ({default}).',
+  budgetCurrent: 'Cap: {bytes} B ({size}).',
+  budgetInvalid: 'The cap must be a positive whole number of bytes — it is not saved until fixed.',
+  budgetSaved: 'Saved.',
+  budgetCleared: 'Cleared — this route inherits the cap again.',
 }
 
 /** The plugin's locale key union. */
@@ -211,4 +220,13 @@ export const zh: { [Key in keyof typeof en]: string } = {
   headersConflictSiblings: '检测到会改写同一层的同类插件：{names}。同一时间只应启用一种 user-agent 改写，否则线上生效的是最后写入者。',
   headersError: '保存失败：{error}',
   headersNoRoute: '该路由已不在设置文档中——请先保存一次官方卡片。',
+  budgetTitle: '请求图片上限',
+  budgetHint: '单个请求携带的图片总量（含 base64 膨胀）。默认值（{default}）高于多数中转站的整包上限：一旦超过，网关会在 harness 有机会裁掉最老图片之前就拒收，而这个拒收被归为「非法请求」，裁图重试的恢复链路根本不会触发，会话就此卡死。把它设到中转站上限之下，判定权就回到这里——最老的图片变成占位符，请求照常完成。',
+  budgetLabel: '单请求图片字节上限',
+  budgetBlankHint: '单位是字节，不是 MiB。留空表示跟随默认值（{default}）。',
+  budgetInherited: '该路由未设置上限——使用适配器默认值（{default}）。',
+  budgetCurrent: '当前上限：{bytes} 字节（{size}）。',
+  budgetInvalid: '上限必须是正整数字节数——修正前不会保存。',
+  budgetSaved: '已保存。',
+  budgetCleared: '已清除——该路由重新继承上限。',
 }

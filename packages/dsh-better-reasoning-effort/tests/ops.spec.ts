@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { baselineModelsOf, createEditorApi, defaultEffortOf, describeNamespace, effortsOf, inputOf, providersOf } from '../src/client/ops.js'
+import { baselineModelsOf, createEditorApi, defaultEffortOf, describeNamespace, effortsOf, inputOf, providerBudgetOf, providersOf, writeProviderBudget } from '../src/client/ops.js'
 import { modelsOf } from '../src/shared.js'
 import { AUTOFILL_MARKER } from '../src/constants.js'
 import type { ConfigFormReadLike, RemoteApi, SettingsNamespaceView, SettingsRemoteApi } from '../src/client/types.js'
@@ -819,5 +819,134 @@ describe('createEditorApi', () => {
       expect(inputOf([{ id: 'x', input: ['text'] }], 'x')).toEqual(['text'])
       expect(inputOf([{ id: 'x', input: ['image', 'text'] }], 'x')).toEqual(['image', 'text'])
     })
+  })
+})
+
+/**
+ * The provider-level image cap: one route-wide number, read from the RAW
+ * layers and written as a single-field path op.
+ *
+ * It is a whole separate seam from the per-model writes because the field is
+ * provider-level in pi-ai's schema -- and because the resolved `value` carries
+ * the adapter default as if the user had chosen it, which is the one thing the
+ * editor must never seed from.
+ */
+describe('providerBudgetOf / writeProviderBudget', () => {
+  const withBudget = (bytes: unknown): SettingsNamespaceView => ({
+    ns: 'llm-pi-ai',
+    schema: {},
+    value: { providers: { cpa: { baseURL: 'https://relay.example.com', maxRequestImageBytes: bytes } } },
+    user: { providers: { cpa: { baseURL: 'https://relay.example.com', maxRequestImageBytes: bytes } } },
+    revision: 7,
+    applies: 'live',
+    secrets: [],
+  } as unknown as SettingsNamespaceView)
+
+  /** A Remote over one namespace view that records mutate calls. */
+  function budgetRemote(view: SettingsNamespaceView, options: {
+    writable?: boolean
+    mutate?: (ns: string, ops: unknown[], revision?: number) => Promise<unknown>
+  } = {}): { api: RemoteApi; mutates: { ns: string; ops: { op: string; path: string[]; value?: unknown }[]; expectedRevision?: number }[] } {
+    const mutates: { ns: string; ops: { op: string; path: string[]; value?: unknown }[]; expectedRevision?: number }[] = []
+    const api: RemoteApi = {
+      settings: {
+        async describe() {
+          return { ok: true, value: { writable: options.writable !== false, hasDocument: true, namespaces: [view] } }
+        },
+        async mutate(ns, ops, expectedRevision) {
+          mutates.push({ ns, ops: ops as { op: string; path: string[]; value?: unknown }[], expectedRevision })
+          if (options.mutate !== undefined) return await options.mutate(ns, ops as unknown[], expectedRevision) as never
+          return { ok: true } as never
+        },
+      },
+    }
+    return { api, mutates }
+  }
+
+  it('reads the stored cap from the user layer', () => {
+    expect(providerBudgetOf(withBudget(8388608), 'cpa')).toBe(8388608)
+  })
+
+  it('falls back to the composition base when the user layer declares none', () => {
+    const view = {
+      ns: 'llm-pi-ai', schema: {}, value: {}, user: { providers: { cpa: { baseURL: 'x' } } },
+      base: { providers: { cpa: { maxRequestImageBytes: 4194304 } } },
+      revision: 1, applies: 'live', secrets: [],
+    } as unknown as SettingsNamespaceView
+    expect(providerBudgetOf(view, 'cpa')).toBe(4194304)
+  })
+
+  it('reports no cap when neither layer declares one, and degrades a malformed value', () => {
+    // The kernel refuses a non-positive-integer bound at load time, so such a
+    // document is already broken: the editor shows the inherited default
+    // rather than reproducing the junk into its field.
+    expect(providerBudgetOf(withBudget(undefined), 'cpa')).toBeUndefined()
+    for (const junk of [0, -1, 1.5, '8388608', null, {}]) {
+      expect(providerBudgetOf(withBudget(junk), 'cpa'), JSON.stringify(junk)).toBeUndefined()
+    }
+  })
+
+  it('writes the cap as one inline path op, fenced on the read revision', async () => {
+    const { api, mutates } = budgetRemote(withBudget(undefined))
+    const reply = await writeProviderBudget(api, 'cpa', 8388608)
+    expect(reply).toEqual({ ok: true })
+    expect(mutates).toHaveLength(1)
+    expect(mutates[0]!.ns).toBe('llm-pi-ai')
+    expect(mutates[0]!.ops).toEqual([{ op: 'set', path: ['providers', 'cpa', 'maxRequestImageBytes'], value: 8388608 }])
+    expect(mutates[0]!.expectedRevision).toBe(7)
+  })
+
+  it('clears the cap with an unset, which is how inheritance is expressed', async () => {
+    const { api, mutates } = budgetRemote(withBudget(8388608))
+    const reply = await writeProviderBudget(api, 'cpa', undefined)
+    expect(reply).toEqual({ ok: true })
+    expect(mutates[0]!.ops).toEqual([{ op: 'unset', path: ['providers', 'cpa', 'maxRequestImageBytes'] }])
+  })
+
+  it('refuses a read-only document without writing', async () => {
+    const { api, mutates } = budgetRemote(withBudget(undefined), { writable: false })
+    expect(await writeProviderBudget(api, 'cpa', 1024)).toEqual({ ok: false, error: 'read-only' })
+    expect(mutates).toHaveLength(0)
+  })
+
+  it('refuses a route no layer declares, rather than creating a stray profile', async () => {
+    const { api, mutates } = budgetRemote(withBudget(undefined))
+    expect(await writeProviderBudget(api, 'ghost', 1024)).toEqual({ ok: false, error: 'no-route' })
+    expect(mutates).toHaveLength(0)
+  })
+
+  it('retries once on settings/conflict using the fresh revision', async () => {
+    let conflictsLeft = 1
+    // The concurrent writer moves the namespace AFTER the first read: the
+    // retry must re-read the wire (the shared form mirror folds a fresh view
+    // in asynchronously and would hand back the very revision that failed).
+    let revision = 7
+    const revisions: (number | undefined)[] = []
+    const view = { ...withBudget(undefined), revision }
+    const { api } = budgetRemote(view, {
+      mutate: async (_ns, _ops, expected) => {
+        revisions.push(expected)
+        if (conflictsLeft > 0) {
+          conflictsLeft -= 1
+          revision += 1
+          return { ok: false, error: { code: 'settings/conflict', message: 'moved', details: { ns: 'llm-pi-ai' } } }
+        }
+        return { ok: true }
+      },
+    })
+    api.settings.describe = async () => ({
+      ok: true,
+      value: { writable: true, hasDocument: true, namespaces: [{ ...view, revision }] },
+    }) as never
+    expect(await writeProviderBudget(api, 'cpa', 1024)).toEqual({ ok: true })
+    expect(revisions).toEqual([7, 8])
+  })
+
+  it('surfaces a non-conflict refusal without retrying', async () => {
+    const { api, mutates } = budgetRemote(withBudget(undefined), {
+      mutate: async () => ({ ok: false, error: { code: 'settings/rejected', message: 'nope', details: { ns: 'llm-pi-ai' } } }),
+    })
+    expect(await writeProviderBudget(api, 'cpa', 1024)).toEqual({ ok: false, error: 'nope' })
+    expect(mutates).toHaveLength(1)
   })
 })

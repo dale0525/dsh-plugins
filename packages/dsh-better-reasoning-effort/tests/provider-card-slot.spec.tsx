@@ -130,6 +130,10 @@ describe('ProviderCardSlot', () => {
       // The editor really is rendered (only hidden), so opening the card needs
       // no remount and no second read.
       expect(row.querySelector('.bre-headers')).not.toBeNull()
+      // Both provider-level sections ride the same wrapper: the request headers
+      // and the request image cap.
+      expect(row.querySelectorAll('.bre-headers')).toHaveLength(2)
+      expect(row.querySelector('.bre-budget')).not.toBeNull()
     } finally {
       await unmount()
     }

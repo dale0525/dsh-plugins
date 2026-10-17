@@ -20,6 +20,7 @@ import { createElement, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import { PI_AI_NS, PLUGIN_ID } from '../../constants.js'
+import { BudgetEditor } from '../BudgetEditor.js'
 import { HeadersEditor } from '../HeadersEditor.js'
 import type { ClientContext, RemoteApi, SlotRegistrarFace } from '../types.js'
 
@@ -105,6 +106,7 @@ export function ProviderCardSlot({ provider, api, t }: ProviderCardSlotProps): R
     'div',
     { ref: host, className: 'bre-headers-host', 'data-edit': editing ? '1' : '0' },
     createElement(HeadersEditor, { route, api, t }),
+    createElement(BudgetEditor, { route, api, t }),
   )
 }
 
