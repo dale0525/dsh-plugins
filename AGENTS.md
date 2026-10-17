@@ -408,6 +408,12 @@ npm run publish:plan                 # 确认顺序：子插件在聚合包之�
 > **改了版本号才能发出去**：npm 拒绝覆盖已发布版本，版本没升的包会被 CI 判重跳过（看似成功、实则没发）。
 > 子插件升版后聚合包也要升版，否则聚合包解析到的还是旧的子插件 range。
 
+> **一个包的版本号不止写在 `package.json` 里**：`dsh-openviking` 在 `config.mjs` 有 `PLUGIN_VERSION`
+> 常量，且 `bundle.test.mjs` 同时钉住它与包自带 `package-lock.json` 的两处 `version`。
+> 只改 `package.json` 会让该包测试红，而**本地单包测试若在升版前跑过就发现不了**——
+> 实测 v0.5.84 因此被 CI 的 Test 步骤拦下。升版前先 `grep -rn '"<旧版本>"' packages/<pkg>/`
+> 找出所有落点，改完再跑一次该包测试。
+
 ## ✅ 验证命令
 
 安装与日常构建命令见 `README.md` 的「开发」。以下四条是**合并前必过的验收门禁**：
