@@ -63,7 +63,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-reasoning-strip
       '@logictan/dsh-stitch-designer':
-        specifier: ^2.0.1
+        specifier: ^2.0.2
         version: link:../dsh-stitch-designer
       '@logictan/dsh-todo-goal':
         specifier: ^0.1.0

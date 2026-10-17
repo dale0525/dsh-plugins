@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-stitch-designer",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "DSH Stitch designer: Google Stitch AI UI generation as native mcp__stitch__* tools, plus the design conventions that keep one code project bound to one Stitch project. DSH Stitch 界面设计子插件。",
   "type": "module",
   "main": "lib/index.js",
