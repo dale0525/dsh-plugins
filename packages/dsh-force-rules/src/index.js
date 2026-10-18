@@ -4,11 +4,13 @@
  * Five prose rules in the operating instructions are mechanized here, because
  * prose is advisory and each of these has already failed in practice:
  *
- *  1. A subagent seat is never one-shot. `run_in_background: false` is the only
- *     switch into the one-shot path, whose run id cannot be continued with
- *     `send_message` and whose settlement is never announced to the delegating
- *     session — so the delegator blocks until the execution cap expires. This
- *     plugin denies that call before dispatch.
+ *  1. A subagent seat is never one-shot. On dsh 0.2.0 `run_in_background: false`
+ *     is the only switch into the one-shot path, whose run id cannot be
+ *     continued with `send_message` and whose settlement is never announced to
+ *     the delegating session — so the delegator blocks until the execution cap
+ *     expires. This plugin denies that call before dispatch. dsh 0.2.1 removed
+ *     both the parameter and the path, so on that generation the rule is
+ *     satisfied by construction and nothing is denied.
  *  2. A delegating session must not poll or spin while a seat runs.
  *  3. Silence must have an upper bound: a seat that dies without ever emitting
  *     `subagent/end` would otherwise leave the delegator waiting forever.
@@ -79,22 +81,42 @@ const CHECKPOINT_PROMPT = [
 ].join('\n');
 
 /**
- * Whether one JSON Schema node declares the `continuable` outcome.
+ * Whether one JSON Schema node declares a subagent seat as its outcome.
  *
- * The delegation tools are the only tools in the host that can return a
- * continuable seat, and they say so in their own output schema. Keying on that
- * declaration rather than on a tool name is what keeps this gate off `bash`,
- * `pwsh`, and `workflow`, which declare the same `run_in_background` parameter
- * but cannot produce a seat at all.
+ * The delegation tools are the only tools in the host that start a seat, and
+ * they say so in their own output schema. Keying on that declaration rather than
+ * on a tool name is what keeps this gate off `bash`, `pwsh`, and `workflow`,
+ * which cannot produce a seat at all.
+ *
+ * Two constants mean the same thing across host generations: `continuable` on
+ * dsh 0.2.0, where the tool also offered a one-shot path, and `activation` on
+ * 0.2.1, where every delegation starts an independently managed subagent and the
+ * one-shot path is gone. Both are recognised because `latest` still resolves to
+ * 0.2.0 and this package declares no host generation of its own.
  *
  * @param node - one JSON Schema node from a tool's output declaration.
- * @returns whether the schema can produce a continuable seat.
+ * @returns whether the schema can produce a seat.
  */
-function declaresContinuable(node) {
-  if (Array.isArray(node)) return node.some(declaresContinuable);
+function declaresSeat(node) {
+  if (Array.isArray(node)) return node.some(declaresSeat);
   if (node === null || typeof node !== 'object') return false;
-  if (node.const === 'continuable') return true;
-  return Object.values(node).some(declaresContinuable);
+  if (node.const === 'continuable' || node.const === 'activation') return true;
+  return Object.values(node).some(declaresSeat);
+}
+
+/**
+ * Whether this delegation tool still offers the one-shot switch.
+ *
+ * Read from the tool's own parameter declaration, for the same reason the seat
+ * check reads the output declaration: the name alone would also match `bash`,
+ * and a host generation without the switch must not be gated on it.
+ *
+ * @param ctx - the plugin context.
+ * @param exec - the pending call.
+ * @returns whether the tool declares `run_in_background`.
+ */
+function declaresBackgroundSwitch(ctx, exec) {
+  return ctx.tools.get(exec.name, exec.agent)?.parameters?.properties?.run_in_background !== undefined;
 }
 
 /**
@@ -106,7 +128,7 @@ function declaresContinuable(node) {
  */
 function isDelegation(ctx, exec) {
   const schema = ctx.tools.get(exec.name, exec.agent)?.output?.schema;
-  return schema !== undefined && declaresContinuable(schema);
+  return schema !== undefined && declaresSeat(schema);
 }
 
 /**
@@ -638,9 +660,15 @@ export function apply(ctx) {
   // Rule 1: the one-shot switch is refused before dispatch, so the delegating
   // session never enters the path that cannot report back. A denial here is a
   // tool error the model can correct on its next call.
+  //
+  // Scoped to tools that still declare the switch. dsh 0.2.1 removed
+  // `run_in_background` and the one-shot path with it, so on that generation the
+  // rule has nothing to refuse and stays silent rather than rejecting a
+  // parameter the tool does not have.
   ctx.on('tools/pre-execute', async (exec, next) => {
     if (exec.arguments?.run_in_background !== false) return next();
     if (!isDelegation(ctx, exec)) return next();
+    if (!declaresBackgroundSwitch(ctx, exec)) return next();
     return {
       kind: 'deny',
       reason: [

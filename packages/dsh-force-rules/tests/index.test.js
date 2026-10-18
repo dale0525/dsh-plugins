@@ -17,7 +17,11 @@ import assert from 'node:assert/strict';
 
 import { apply, inject, name } from '../src/index.js';
 
-/** A delegation tool: its output schema declares the continuable outcome. */
+/**
+ * A dsh 0.2.0 delegation tool: its output schema declares the `continuable`
+ * outcome next to a one-shot `background` one, and it takes the switch that
+ * selects between them.
+ */
 const CONTINUABLE_TOOL = {
   output: {
     schema: {
@@ -39,6 +43,38 @@ const CONTINUABLE_TOOL = {
       ],
     },
   },
+  parameters: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string' },
+      description: { type: 'string' },
+      run_in_background: { type: 'boolean' },
+    },
+  },
+};
+
+/**
+ * A dsh 0.2.1 delegation tool: every call starts an independently managed
+ * subagent, so the outcome is `activation` and there is no switch to select.
+ */
+const ACTIVATION_TOOL = {
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { type: 'string', required: true, const: 'activation' },
+        subagentId: { type: 'string', required: true },
+      },
+    },
+  },
+  parameters: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string' },
+      description: { type: 'string' },
+    },
+  },
 };
 
 /**
@@ -49,7 +85,7 @@ const CONTINUABLE_TOOL = {
  * must say which one it picked.
  */
 const ROUTE_TOOL = {
-  ...CONTINUABLE_TOOL,
+  ...ACTIVATION_TOOL,
   parameters: {
     type: 'object',
     properties: {
@@ -58,14 +94,13 @@ const ROUTE_TOOL = {
       provider: { type: 'string' },
       model: { type: 'string' },
       reasoning_effort: { type: 'string' },
-      run_in_background: { type: 'boolean' },
     },
   },
 };
 
 /** A delegation tool whose route advertises no reasoning effort to name. */
 const ROUTE_ONLY_TOOL = {
-  ...CONTINUABLE_TOOL,
+  ...ACTIVATION_TOOL,
   parameters: {
     type: 'object',
     properties: {
@@ -200,6 +235,16 @@ test('refuses the one-shot switch on a fork delegation too', async () => {
   const { listeners } = harness({ definitions: { subagent_fork: CONTINUABLE_TOOL } });
   const decision = await fire(listeners, 'tools/pre-execute', delegation('subagent_fork', false), ALLOW);
   assert.equal(decision.kind, 'deny');
+});
+
+test('does not gate a delegation tool that has no one-shot switch', async () => {
+  // dsh 0.2.1 removed `run_in_background` and the one-shot path with it, so a
+  // call carrying that argument is a model repeating an old parameter, not a
+  // request for a path the host still has. Denying it would blame the model for
+  // a rule this generation already satisfies by construction.
+  const { listeners } = harness({ definitions: { subagent: ACTIVATION_TOOL } });
+  const decision = await fire(listeners, 'tools/pre-execute', delegation('subagent', false), ALLOW);
+  assert.deepEqual(decision, { kind: 'allow' });
 });
 
 test('leaves an omitted scheduling choice alone', async () => {
