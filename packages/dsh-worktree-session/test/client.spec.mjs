@@ -154,19 +154,56 @@ describe('workspace row markers', () => {
   })
 
   /**
-   * A DOM just large enough for the marker pass: workspace rows, one `<style>`
-   * registry, and a MutationObserver that records what it was asked to watch.
+   * A DOM just large enough for the marker pass: workspace rows, session rows,
+   * one `<style>` registry, and a MutationObserver that records what it was
+   * asked to watch.
    */
   function makeDom() {
     const rows = []
+    const sessionRows = []
     const styles = []
     const observers = []
 
+    /** One row, with the attributes and title box a real row exposes. */
+    function makeRow(key) {
+      const attrs = { 'data-row-key': key }
+      // The row's title, where the worktree count is stamped. A real row
+      // always has one; `null` models the host re-rendering a row mid-pass.
+      const title = {
+        titleAttrs: {},
+        getAttribute: function (name) {
+          return name in this.titleAttrs ? this.titleAttrs[name] : null
+        },
+        setAttribute: function (name, value) {
+          this.titleAttrs[name] = value
+        },
+        removeAttribute: function (name) {
+          delete this.titleAttrs[name]
+        },
+      }
+      return {
+        title,
+        getAttribute: (name) => (name in attrs ? attrs[name] : null),
+        setAttribute: (name, value) => {
+          attrs[name] = value
+        },
+        removeAttribute: (name) => {
+          delete attrs[name]
+        },
+        querySelector: (selector) => (selector === '[class*="_title"]' ? title : null),
+      }
+    }
+
     const document = {
-      querySelectorAll: (selector) =>
-        selector === '[data-row-key^="workspace:"]'
-          ? rows.filter((row) => String(row.getAttribute('data-row-key')).startsWith('workspace:'))
-          : [],
+      querySelectorAll: (selector) => {
+        if (selector === '[data-row-key^="workspace:"]') {
+          return rows.filter((row) => String(row.getAttribute('data-row-key')).startsWith('workspace:'))
+        }
+        if (selector === '[data-row-key^="session:"]') {
+          return sessionRows.filter((row) => String(row.getAttribute('data-row-key')).startsWith('session:'))
+        }
+        return []
+      },
       querySelector: (selector) => {
         const match = /^style\[data-plugin-css="(.*)"\]$/.exec(selector)
         if (match === null) return null
@@ -197,33 +234,13 @@ describe('workspace row markers', () => {
       styles,
       observers,
       addRow: (workspaceId) => {
-        const attrs = { 'data-row-key': `workspace:${workspaceId}` }
-        // The row's title, where the worktree count is stamped. A real row
-        // always has one; `null` models the host re-rendering a row mid-pass.
-        const title = {
-          titleAttrs: {},
-          getAttribute: function (key) {
-            return key in this.titleAttrs ? this.titleAttrs[key] : null
-          },
-          setAttribute: function (key, value) {
-            this.titleAttrs[key] = value
-          },
-          removeAttribute: function (key) {
-            delete this.titleAttrs[key]
-          },
-        }
-        const row = {
-          title,
-          getAttribute: (name) => (name in attrs ? attrs[name] : null),
-          setAttribute: (name, value) => {
-            attrs[name] = value
-          },
-          removeAttribute: (name) => {
-            delete attrs[name]
-          },
-          querySelector: (selector) => (selector === '[class*="_title"]' ? title : null),
-        }
+        const row = makeRow(`workspace:${workspaceId}`)
         rows.push(row)
+        return row
+      },
+      addSessionRow: (sessionId) => {
+        const row = makeRow(`session:${sessionId}`)
+        sessionRows.push(row)
         return row
       },
     }
@@ -232,12 +249,12 @@ describe('workspace row markers', () => {
   /** A status read answering "is this directory a linked worktree". */
   function statusFetch(worktreePaths) {
     return (url) => {
-      const cwd = decodeURIComponent(String(url).split('cwd=')[1])
+      const cwd = decodeURIComponent(String(url).split('cwd=')[1].split('&')[0])
       const worktrees = [{ path: '/repo', isMain: true, name: 'repo' }]
       if (worktreePaths.includes(cwd)) worktrees.push({ path: cwd, isMain: false, name: cwd.split('/').pop() })
       return Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ isRepo: true, repoRoot: '/repo', worktrees }),
+        json: () => Promise.resolve({ isRepo: true, repoRoot: '/repo', worktrees, deferred: true }),
       })
     }
   }
@@ -247,20 +264,25 @@ describe('workspace row markers', () => {
     for (let i = 0; i < 8; i += 1) await Promise.resolve()
   }
 
-  const listOf = (items) => ({ list: { getSnapshot: () => ({ phase: 'ready', items }) } })
+  const listOf = (items) => ({ list: { getSnapshot: () => ({ phase: 'ready', items }), subscribe: () => () => {} } })
 
-  /** Run the row-marker effect against one workspace list and DOM. */
-  async function mountRows(workspaces, dom) {
+  /** A Session list snapshot carrying one row's projections. */
+  function sessionsOf(byId) {
+    return { list: { getSnapshot: () => ({ ids: Object.keys(byId), byId }), subscribe: () => () => {} } }
+  }
+
+  /** Run the row-marker effect against one workspace list, one Session list and DOM. */
+  async function mountRows(workspaces, dom, sessions = sessionsOf({})) {
     globalThis.document = dom.document
     globalThis.MutationObserver = dom.MutationObserver
-    const { effects } = applyWith({ workspaces })
+    const { effects } = applyWith({ workspaces, sessions })
     const cleanup = effects[1]()
     await settle()
     return cleanup
   }
 
   it('marks a worktree row and leaves the main checkout alone', async () => {
-    globalThis.fetch = statusFetch(['/repo/.worktrees/wt-abc123'])
+    globalThis.fetch = statusFetch(['/repo/.worktrees/fix-the-parser'])
     const dom = makeDom()
     const mainRow = dom.addRow('w-main')
     const worktreeRow = dom.addRow('w-wt')
@@ -268,7 +290,7 @@ describe('workspace row markers', () => {
     await mountRows(
       listOf([
         { workspaceId: 'w-main', path: '/repo' },
-        { workspaceId: 'w-wt', path: '/repo/.worktrees/wt-abc123' },
+        { workspaceId: 'w-wt', path: '/repo/.worktrees/fix-the-parser' },
       ]),
       dom,
     )
@@ -283,15 +305,15 @@ describe('workspace row markers', () => {
     const row = dom.addRow('w-wt')
     row.setAttribute('data-dsh-worktree', 'branch')
 
-    await mountRows(listOf([{ workspaceId: 'w-wt', path: '/repo/.worktrees/wt-abc123' }]), dom)
+    await mountRows(listOf([{ workspaceId: 'w-wt', path: '/repo/.worktrees/fix-the-parser' }]), dom)
 
     assert.equal(row.getAttribute('data-dsh-worktree'), null)
   })
 
   it('injects its stylesheet once and re-stamps rows the sidebar re-creates', async () => {
-    globalThis.fetch = statusFetch(['/repo/.worktrees/wt-abc123'])
+    globalThis.fetch = statusFetch(['/repo/.worktrees/fix-the-parser'])
     const dom = makeDom()
-    const workspaces = listOf([{ workspaceId: 'w-wt', path: '/repo/.worktrees/wt-abc123' }])
+    const workspaces = listOf([{ workspaceId: 'w-wt', path: '/repo/.worktrees/fix-the-parser' }])
 
     await mountRows(workspaces, dom)
     // A second activation must not append a second copy of the stylesheet.
@@ -324,13 +346,8 @@ describe('workspace row markers', () => {
     assert.ok(stale.textContent.includes('[data-dsh-worktree-count]'))
   })
 
-  it('gives a session row a glyph naming the card it lives in', async () => {
-    // The design drew five per-session glyphs keyed to what the session is
-    // *about* (星芒/羽毛笔/信标…), but no such signal reaches the client: the
-    // host's `SessionSummary` carries only id/title/cwd/parentId/origin/running/
-    // retainedBy/blank/updatedAt, and `origin` is just `'subagent'`. The card a
-    // row sits in *is* derivable, so that is what the glyph encodes.
-    globalThis.fetch = statusFetch(['/repo/.worktrees/wt-abc123'])
+  it('gives a session row a glyph naming the checkout it runs in', async () => {
+    globalThis.fetch = statusFetch([])
     const dom = makeDom()
 
     await mountRows(listOf([{ workspaceId: 'w-main', path: '/repo' }]), dom)
@@ -345,11 +362,11 @@ describe('workspace row markers', () => {
     assert.match(css, /left:100%/, 'the glyph must sit beside the leading cell, not inside it')
     // The title has to reserve the glyph's width, or the two would overlap.
     assert.match(css, /\[data-row-key\^="session:"\]>span:nth-child\(2\)\{margin-left:20px\}/)
-    // A worktree card's sessions take the branch glyph and the card's blue; a
-    // plain card's sessions keep the document glyph in slate.
+    // A Session running in a worktree takes the branch glyph and the blue tint;
+    // a plain one keeps the document glyph in slate.
     assert.match(
       css,
-      /\[class\*='groupSection'\]:has\(> \* > \[data-row-key\^="workspace:"\]\[data-dsh-worktree\]\) \[data-row-key\^="session:"\]>span:first-child::after\{background-color:#60a5fa/,
+      /\[data-row-key\^="session:"\]\[data-dsh-worktree-session\]>span:first-child::after\{background-color:#60a5fa/,
     )
     // Read the base rule by its exact selector rather than by substring: the
     // worktree override *contains* this selector, so an unanchored pattern
@@ -359,9 +376,61 @@ describe('workspace row markers', () => {
       .map((chunk) => chunk.split('{'))
       .find(([selector]) => selector === '[data-row-key^="session:"]>span:first-child::after')
     assert.ok(base, 'the session glyph needs a base rule')
-    assert.match(base[1], /background-color:#94a3b8/, 'a plain card\'s sessions stay slate')
-    assert.equal(/#60a5fa/.test(base[1]), false, 'only a worktree card may tint the glyph blue')
+    assert.match(base[1], /background-color:#94a3b8/, 'a plain session stays slate')
+    assert.equal(/#60a5fa/.test(base[1]), false, 'only a worktree session may tint the glyph blue')
   })
+
+  it('marks a session row whose working directory moved into a worktree', async () => {
+    // This is the whole point of the icon: the Session keeps the `cwd` it was
+    // created in — which is what keeps it in its Workspace group — while
+    // `workingDirectory` follows the checkout its tools actually run in. The
+    // two disagreeing is the definition of "this conversation works in a
+    // worktree", and it arrives with the list, so no request is needed.
+    globalThis.fetch = statusFetch([])
+    const dom = makeDom()
+    const inWorktree = dom.addSessionRow('session-wt')
+    const plain = dom.addSessionRow('session-plain')
+
+    await mountRows(
+      listOf([]),
+      dom,
+      sessionsOf({
+        'session-wt': { cwd: '/repo', projectionValues: { workingDirectory: '/repo/.worktrees/fix-the-parser' } },
+        'session-plain': { cwd: '/repo', projectionValues: { workingDirectory: '/repo' } },
+      }),
+    )
+
+    assert.equal(inWorktree.getAttribute('data-dsh-worktree-session'), 'branch')
+    assert.equal(plain.getAttribute('data-dsh-worktree-session'), null)
+  })
+
+  it('leaves a session with no recorded working directory unmarked', async () => {
+    // Cold rows have no projection until they are opened, and a missing value
+    // is not evidence of a worktree.
+    globalThis.fetch = statusFetch([])
+    const dom = makeDom()
+    const cold = dom.addSessionRow('session-cold')
+
+    await mountRows(listOf([]), dom, sessionsOf({ 'session-cold': { cwd: '/repo' } }))
+
+    assert.equal(cold.getAttribute('data-dsh-worktree-session'), null)
+  })
+
+  it('drops the session marker when the projection catches up', async () => {
+    globalThis.fetch = statusFetch([])
+    const dom = makeDom()
+    const row = dom.addSessionRow('session-wt')
+    row.setAttribute('data-dsh-worktree-session', 'branch')
+
+    await mountRows(
+      listOf([]),
+      dom,
+      sessionsOf({ 'session-wt': { cwd: '/repo', projectionValues: { workingDirectory: '/repo' } } }),
+    )
+
+    assert.equal(row.getAttribute('data-dsh-worktree-session'), null)
+  })
+
   it('disconnects its observer when the effect is disposed', async () => {
     globalThis.fetch = statusFetch([])
     const dom = makeDom()
@@ -471,7 +540,6 @@ describe('workspace row markers', () => {
   })
 })
 
-
 describe('composer picker status handling', () => {
   /**
    * Enough of React to run the real component: ordered hooks, effect deps, and
@@ -567,16 +635,18 @@ describe('composer picker status handling', () => {
   }
 
   /** Props standing in for the framework's own injections. */
-  function pickerProps(cwd) {
+  function pickerProps(cwd, overrides = {}) {
     return {
       t: (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key),
       sessionId: 'session-1',
-      useSessions: (selector) => selector({ byId: { 'session-1': { cwd } } }),
+      useSessions: (selector) =>
+        selector({ byId: { 'session-1': { cwd, blank: overrides.blank !== false } } }),
       useWorkspaces: (selector) => selector({ items: [] }),
       useInput: (selector) => selector({ draft: '', attachmentIds: [] }),
       inputActions: { setDraft: () => {} },
       workspaces: { create: () => Promise.resolve({ workspaceId: 'w1' }) },
       uiWorkspace: { connectWorkspace: () => Promise.resolve() },
+      ...overrides.props,
     }
   }
 
@@ -585,17 +655,36 @@ describe('composer picker status handling', () => {
     for (let i = 0; i < 8; i += 1) await Promise.resolve()
   }
 
+  /** A status body answering one repository with the given worktrees. */
+  function statusBody(worktrees, extra = {}) {
+    return {
+      isRepo: true,
+      repoRoot: '/repo',
+      worktrees,
+      deferred: true,
+      ...extra,
+    }
+  }
+
+  /** A fetch that answers status and records every call. */
+  function recordingFetch(status, calls = []) {
+    return (url, options) => {
+      calls.push({ url, options })
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(status) })
+    }
+  }
+
   /** Drive one mount: render, let promises settle, re-render. */
-  async function mount(cwd) {
+  async function mount(cwd, overrides = {}) {
     const react = makeReact()
     const Component = pickerComponent(react)
-    const props = pickerProps(cwd)
+    const props = pickerProps(cwd, overrides)
     let tree = react.render(Component, props)
     react.setOnRender(() => {
       tree = react.render(Component, props)
     })
     await settle()
-    return { tree: () => tree }
+    return { tree: () => tree, react, Component, props }
   }
 
   /** The label the picker's trigger currently shows. */
@@ -627,103 +716,154 @@ describe('composer picker status handling', () => {
     assert.equal(mounted.tree().props.anchor.props.title, 'menu.unavailable')
   })
 
-  it('asks before creating a worktree when the composer holds a draft', async () => {
-    // The asymmetry this pins: switching to an existing worktree asked for
-    // confirmation, while "create" wiped the same draft silently.
-    const calls = []
-    globalThis.fetch = (url, options) => {
-      calls.push({ url, options })
-      return Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            isRepo: true,
-            repoRoot: '/repo-draft',
-            worktrees: [{ path: '/repo-draft', name: 'repo-draft', isMain: true, prunable: false }],
-          }),
-      })
-    }
-
-    const react = makeReact()
-    const Component = pickerComponent(react)
-    const props = pickerProps('/repo-draft')
-    props.useInput = (selector) => selector({ draft: 'half-written prompt', attachmentIds: [] })
-    let tree = react.render(Component, props)
-    react.setOnRender(() => {
-      tree = react.render(Component, props)
-    })
-    await settle()
-
-    // First activation is a confirmation request, not a creation.
-    tree.props.onSelect('__new__')
-    await settle()
-
-    assert.equal(calls.filter((c) => c.url === '/api/dsh-worktree/create').length, 0, 'create must not run yet')
-    assert.equal(tree.props.items[0].text, 'menu.draft')
-
-    // The second activation goes through.
-    tree.props.onSelect('__new__')
-    await settle()
-
-    assert.equal(calls.length, 2)
-    assert.equal(calls[1].url, '/api/dsh-worktree/create')
-  })
-
   it('shows the main checkout when the read succeeds', async () => {
-    globalThis.fetch = () =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            isRepo: true,
-            repoRoot: '/repo-ok',
-            worktrees: [{ path: '/repo-ok', name: 'repo-ok', isMain: true, prunable: false }],
-          }),
-      })
+    globalThis.fetch = recordingFetch(statusBody([{ path: '/repo-ok', name: 'repo-ok', isMain: true, prunable: false }]))
 
     const mounted = await mount('/repo-ok')
 
     assert.equal(labelOf(mounted), 'entry.main')
   })
 
-  it('lands on the new worktree after creating it, without a manual switch', async () => {
-    // The regression: `connectWorkspace` only connects, so the user was left
-    // in the blank composer they started in and had to find the new workspace
-    // in the sidebar and start a second conversation there.
-    const opened = []
-    globalThis.fetch = (url) =>
-      Promise.resolve({
-        ok: true,
-        json: () =>
-          url === '/api/dsh-worktree/create'
-            ? Promise.resolve({ path: '/repo-nav/.worktrees/wt-abc123' })
-            : Promise.resolve({
-                isRepo: true,
-                repoRoot: '/repo-nav',
-                worktrees: [{ path: '/repo-nav', name: 'repo-nav', isMain: true, prunable: false }],
-              }),
-      })
+  it('records the intent instead of creating anything on the spot', async () => {
+    // The whole redesign: a branch cannot be named before the user has said
+    // what the task is, so the menu only records the intent. The host half
+    // creates the branch from the first message and moves the Session.
+    const calls = []
+    globalThis.fetch = recordingFetch(
+      statusBody([{ path: '/repo-defer', name: 'repo-defer', isMain: true, prunable: false }]),
+      calls,
+    )
 
-    const react = makeReact()
-    const Component = pickerComponent(react)
-    const props = pickerProps('/repo-nav')
-    props.workspaces = { create: () => Promise.resolve({ workspaceId: 'w-new' }) }
-    props.uiWorkspace = {
-      connectWorkspace: () => {
-        throw new Error('create must navigate, not merely connect')
-      },
-      openWorkspace: (workspaceId) => {
-        opened.push(workspaceId)
-        return Promise.resolve()
-      },
-    }
-    let tree = react.render(Component, props)
-    react.setOnRender(() => {
-      tree = react.render(Component, props)
-    })
+    const mounted = await mount('/repo-defer')
+    mounted.tree().props.onSelect('__new__')
     await settle()
 
-    tree.props.onSelect('__new__')
+    const prepare = calls.filter((call) => call.url === '/api/dsh-worktree/prepare')
+    assert.equal(prepare.length, 1)
+    assert.equal(calls.filter((call) => String(call.url).includes('/create')).length, 0)
+    assert.deepEqual(JSON.parse(prepare[0].options.body), { sessionId: 'session-1', from: '/repo-defer' })
+  })
+
+  it('offers the deferred item only where a Session can actually be moved', async () => {
+    // Without the host's working-directory service the flow has nowhere to
+    // land, so offering it would be a promise the plugin cannot keep.
+    globalThis.fetch = recordingFetch(
+      statusBody([{ path: '/repo-no-defer', name: 'repo-no-defer', isMain: true, prunable: false }], { deferred: false }),
+    )
+
+    const mounted = await mount('/repo-no-defer')
+
+    assert.deepEqual(mounted.tree().props.footer, [])
+  })
+
+  it('offers the deferred item only in a conversation that has no message yet', async () => {
+    // Naming happens on the first message; a Session that already has one can
+    // never run the flow.
+    globalThis.fetch = recordingFetch(
+      statusBody([{ path: '/repo-started', name: 'repo-started', isMain: true, prunable: false }]),
+    )
+
+    const mounted = await mount('/repo-started', { blank: false })
+
+    const [item] = mounted.tree().props.footer
+    assert.equal(item.disabled, true)
+  })
+
+  it('keeps the draft when recording the intent', async () => {
+    // Preparing only records intent, so unlike switching it must not touch the
+    // composer. The old "create" path wiped the draft, which is why it had to
+    // ask for confirmation first.
+    let cleared = 0
+    const calls = []
+    globalThis.fetch = recordingFetch(
+      statusBody([{ path: '/repo-draft', name: 'repo-draft', isMain: true, prunable: false }]),
+      calls,
+    )
+
+    const mounted = await mount('/repo-draft', {
+      props: {
+        useInput: (selector) => selector({ draft: 'half-written prompt', attachmentIds: [] }),
+        inputActions: { setDraft: () => (cleared += 1) },
+      },
+    })
+    mounted.tree().props.onSelect('__new__')
+    await settle()
+
+    assert.equal(cleared, 0)
+    assert.equal(calls.filter((call) => call.url === '/api/dsh-worktree/prepare').length, 1)
+  })
+
+  it('asks before switching to another checkout, which does discard the draft', async () => {
+    const opened = []
+    globalThis.fetch = recordingFetch(
+      statusBody([
+        { path: '/repo-switch', name: 'repo-switch', isMain: true, prunable: false },
+        { path: '/repo-switch/.worktrees/other', name: 'other', isMain: false, prunable: false },
+      ]),
+    )
+
+    const mounted = await mount('/repo-switch', {
+      props: {
+        useInput: (selector) => selector({ draft: 'half-written prompt', attachmentIds: [] }),
+        workspaces: { create: () => Promise.resolve({ workspaceId: 'w-other' }) },
+        uiWorkspace: { openWorkspace: (id) => (opened.push(id), Promise.resolve()) },
+      },
+    })
+
+    // First activation is a confirmation request, not a switch.
+    mounted.tree().props.onSelect('/repo-switch/.worktrees/other')
+    await settle()
+
+    assert.deepEqual(opened, [])
+    assert.equal(mounted.tree().props.items[0].text, 'menu.draft')
+
+    // The second activation goes through.
+    mounted.tree().props.onSelect('/repo-switch/.worktrees/other')
+    await settle()
+
+    assert.deepEqual(opened, ['w-other'])
+  })
+
+  it('shows the pending state once the intent is recorded', async () => {
+    globalThis.fetch = recordingFetch(
+      statusBody([{ path: '/repo-pending', name: 'repo-pending', isMain: true, prunable: false }], { waiting: true }),
+    )
+
+    const mounted = await mount('/repo-pending')
+
+    assert.equal(labelOf(mounted), 'entry.pending')
+    const [item] = mounted.tree().props.footer
+    assert.equal(item.disabled, true, 'a second intent must not be recordable')
+  })
+
+  it('lands on an existing worktree through a navigation, not a bare connect', async () => {
+    // The regression: `connectWorkspace` only connects, so the user was left
+    // in the blank composer they started in and had to find the workspace in
+    // the sidebar and start a second conversation there.
+    const opened = []
+    globalThis.fetch = recordingFetch(
+      statusBody([
+        { path: '/repo-nav', name: 'repo-nav', isMain: true, prunable: false },
+        { path: '/repo-nav/.worktrees/other', name: 'other', isMain: false, prunable: false },
+      ]),
+    )
+
+    const mounted = await mount('/repo-nav', {
+      props: {
+        workspaces: { create: () => Promise.resolve({ workspaceId: 'w-new' }) },
+        uiWorkspace: {
+          connectWorkspace: () => {
+            throw new Error('switching must navigate, not merely connect')
+          },
+          openWorkspace: (workspaceId) => {
+            opened.push(workspaceId)
+            return Promise.resolve()
+          },
+        },
+      },
+    })
+
+    mounted.tree().props.onSelect('/repo-nav/.worktrees/other')
     await settle()
 
     assert.deepEqual(opened, ['w-new'])

@@ -4,12 +4,18 @@
  * Registers one compact control at the left of the composer tool row: a
  * worktree picker that shows which checkout the current Session works in and
  * offers to switch to the main checkout, to an existing linked worktree, or to
- * a brand-new one. The choice belongs here because a Session's working
- * directory is fixed when the Session is created — "work in a worktree" means
- * "open a Session whose cwd is that worktree", never "move this one".
+ * start a new one.
  *
- * The host half owns git; this half only reads `GET /api/dsh-worktree/status`
- * and posts to `POST /api/dsh-worktree/create`.
+ * "New worktree" does not create anything yet. A Session's `cwd` is immutable,
+ * so the branch cannot be named before the user has said what the task is; the
+ * choice is recorded on the current blank Session instead, and the host half
+ * creates the branch from the first message and moves the Session's working
+ * directory into it. This half only reads `GET /api/dsh-worktree/status` and
+ * posts to `POST /api/dsh-worktree/prepare`.
+ *
+ * The sidebar then tells the two kinds apart without asking anyone: a Session
+ * whose working directory differs from the `cwd` it was created in is running
+ * its tools in a worktree, and gets a branch glyph instead of the document one.
  */
 
 window.__ModuleLoader__.load({
@@ -26,10 +32,12 @@ window.__ModuleLoader__.load({
       'entry.loading': '读取中',
       'entry.failed': '读取失败',
       'entry.label': '工作目录',
+      'entry.pending': '工作树待创建',
       'menu.title': '选择工作目录',
       'menu.main': '主检出',
       'menu.new': '新建工作树',
-      'menu.creating': '正在创建…',
+      'menu.deferred': '首条消息后按任务命名并创建',
+      'menu.needsBlank': '只有新对话可以新建工作树',
       'menu.failed': '操作失败：{message}',
       'menu.draft': '输入框有内容，切换工作目录会清空它。再点一次确认。',
       'menu.unavailable': '无法读取工作目录状态，点击重试',
@@ -40,10 +48,12 @@ window.__ModuleLoader__.load({
       'entry.loading': 'Loading',
       'entry.failed': 'Unavailable',
       'entry.label': 'Working directory',
+      'entry.pending': 'Worktree pending',
       'menu.title': 'Choose working directory',
       'menu.main': 'Main checkout',
       'menu.new': 'New worktree',
-      'menu.creating': 'Creating…',
+      'menu.deferred': 'Named and created after the first message',
+      'menu.needsBlank': 'A worktree can only be started from a new conversation',
       'menu.failed': 'Failed: {message}',
       'menu.draft': 'The composer has text; switching clears it. Click again to confirm.',
       'menu.unavailable': 'Could not read the working directory status; click to retry',
@@ -52,12 +62,14 @@ window.__ModuleLoader__.load({
     /** API paths, mirroring the host half's `API`. */
     var API = {
       status: '/api/dsh-worktree/status',
-      create: '/api/dsh-worktree/create',
+      prepare: '/api/dsh-worktree/prepare',
     }
 
-    /** GET the worktree status for one directory. */
-    function fetchStatus(cwd) {
-      return fetch(API.status + '?cwd=' + encodeURIComponent(cwd), {
+    /** GET the worktree status for one directory, and one Session's pending intent. */
+    function fetchStatus(cwd, sessionId) {
+      var url = API.status + '?cwd=' + encodeURIComponent(cwd)
+      if (sessionId) url += '&sessionId=' + encodeURIComponent(sessionId)
+      return fetch(url, {
         headers: { accept: 'application/json' },
       }).then(function (response) {
         if (!response.ok) throw new Error('status ' + response.status)
@@ -79,58 +91,34 @@ window.__ModuleLoader__.load({
      *
      * The sidebar badge renders once per Session row, and rows in one checkout
      * all ask the same question — without this, a workspace with ten Sessions
-     * would issue ten identical requests per render pass.
+     * would issue ten identical requests per render pass. The answer also
+     * carries the Session's own pending intent, so it is keyed by both.
      *
      * A failed read is not cached as a success: the promise stays rejected, so
      * each caller decides how to show it and an explicit reload can retry.
      */
     var statusCache = new Map()
 
-    function loadStatus(cwd) {
-      var pending = statusCache.get(cwd)
+    function cacheKey(cwd, sessionId) {
+      return cwd + '\u0000' + (sessionId || '')
+    }
+
+    function loadStatus(cwd, sessionId) {
+      var key = cacheKey(cwd, sessionId)
+      var pending = statusCache.get(key)
       if (pending === undefined) {
-        pending = fetchStatus(cwd)
-        statusCache.set(cwd, pending)
+        pending = fetchStatus(cwd, sessionId)
+        statusCache.set(key, pending)
       }
       return pending
     }
 
-    /** Resolve one directory's worktree status into component state. */
-    function useStatus(cwd) {
-      var state = React.useState(null)
-      var status = state[0]
-      var setStatus = state[1]
-
-      React.useEffect(
-        function () {
-          if (!cwd) {
-            setStatus(null)
-            return undefined
-          }
-          var cancelled = false
-          loadStatus(cwd).then(
-            function (value) {
-              if (!cancelled) setStatus(value)
-            },
-            function () {
-              if (!cancelled) setStatus(FAILED)
-            },
-          )
-          return function () {
-            cancelled = true
-          }
-        },
-        [cwd],
-      )
-      return status
-    }
-
-    /** POST a worktree creation for one directory. */
-    function postCreate(cwd) {
-      return fetch(API.create, {
+    /** POST one Session's pending worktree intent. */
+    function postPrepare(sessionId, from) {
+      return fetch(API.prepare, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ cwd: cwd }),
+        body: JSON.stringify({ sessionId: sessionId, from: from }),
       }).then(function (response) {
         return response.json().then(function (body) {
           if (!response.ok) throw new Error(body && body.error ? body.error : 'status ' + response.status)
@@ -142,10 +130,10 @@ window.__ModuleLoader__.load({
     /**
      * One worktree picker.
      *
-     * Switching goes through `uiWorkspace.openWorkspace`, which connects the
-     * target Workspace and then navigates into it. Connecting reuses an
-     * existing blank Session for that Workspace when one exists, so opening
-     * the same worktree twice does not pile up empty Sessions.
+     * Switching to an existing checkout goes through `uiWorkspace.openWorkspace`,
+     * which connects the target Workspace and then navigates into it. Connecting
+     * reuses an existing blank Session for that Workspace when one exists, so
+     * opening the same worktree twice does not pile up empty Sessions.
      *
      * `t` is framework-injected (the registration declares `locale`).
      */
@@ -158,11 +146,12 @@ window.__ModuleLoader__.load({
       // A blank Session has no `cwd` of its own yet, so its owning Workspace's
       // path stands in — that is the directory a new worktree is created from,
       // and the wrong answer would put it in the wrong repository.
-      var sessionCwd = props.useSessions(function (state) {
+      var session = props.useSessions(function (state) {
         if (!sessionId || !state || !state.byId) return undefined
-        var row = state.byId[sessionId]
-        return row ? row.cwd : undefined
+        return state.byId[sessionId]
       })
+      var sessionCwd = session ? session.cwd : undefined
+      var blank = session ? session.blank === true : false
       var workspacePath = props.useWorkspaces(function (state) {
         if (!state || !Array.isArray(state.items)) return undefined
         var direct = state.items.find(function (item) {
@@ -206,8 +195,8 @@ window.__ModuleLoader__.load({
           }
           var cancelled = false
           // Opening re-reads: a worktree may have been created outside DSH.
-          if (open) statusCache.delete(cwd)
-          loadStatus(cwd).then(
+          if (open) statusCache.delete(cacheKey(cwd, sessionId))
+          loadStatus(cwd, sessionId).then(
             function (value) {
               if (!cancelled) setStatus(value)
             },
@@ -219,7 +208,7 @@ window.__ModuleLoader__.load({
             cancelled = true
           }
         },
-        [cwd, open, retry],
+        [cwd, sessionId, open, retry],
       )
 
       var failed = status === FAILED
@@ -232,6 +221,10 @@ window.__ModuleLoader__.load({
         return entry.path === cwd
       })
       var isWorktree = current !== undefined && !current.isMain
+      // The host decides whether a Session can be moved at all: without its
+      // working-directory service the deferred flow has nowhere to land.
+      var canDefer = !failed && status && status.isRepo && status.deferred === true
+      var waiting = !failed && status && status.waiting === true
 
       var draft = (input && input.draft) || ''
       var attachmentCount = (input && input.attachmentIds && input.attachmentIds.length) || 0
@@ -256,12 +249,21 @@ window.__ModuleLoader__.load({
           })
       }
 
-      var createAndSwitch = function () {
+      /**
+       * Record the worktree intent on this blank Session.
+       *
+       * Nothing is created here: the branch is named from the first message, so
+       * the record is all that can be committed before the user has said
+       * anything. The host half reads it back when that message arrives.
+       */
+      var prepare = function () {
         setBusy(true)
         setNotice(null)
-        postCreate(cwd)
-          .then(function (created) {
-            return switchTo(created.path)
+        postPrepare(sessionId, cwd)
+          .then(function () {
+            setOpen(false)
+            setStatus(null)
+            setRetry(retry + 1)
           })
           .catch(function (error) {
             setNotice(t('menu.failed', { message: String(error && error.message ? error.message : error) }))
@@ -272,19 +274,19 @@ window.__ModuleLoader__.load({
       }
 
       var handleSelect = function (id) {
-        // Both paths mint a Session with a new cwd, so both discard the draft.
-        // Asking once, here, keeps "create" from silently eating typed text
-        // while "switch" asks.
+        if (id === '__new__') {
+          prepare()
+          return
+        }
+        // Both remaining paths mint a Session with a new cwd, so both discard
+        // the draft. Asking once, here, keeps "create" from silently eating
+        // typed text while "switch" asks.
         if (hasDraft && !confirmSwitch) {
           setConfirmSwitch(true)
           setNotice(t('menu.draft'))
           return
         }
         setConfirmSwitch(false)
-        if (id === '__new__') {
-          createAndSwitch()
-          return
-        }
         switchTo(id)
       }
 
@@ -297,13 +299,16 @@ window.__ModuleLoader__.load({
         items.push({ id: others[i].path, label: others[i].name })
       }
 
-      var footer = !failed && status && status.isRepo
+      var footer = canDefer
         ? [
             {
               id: '__new__',
-              label: busy ? t('menu.creating') : t('menu.new'),
+              label: waiting ? t('entry.pending') : t('menu.new'),
+              description: t('menu.deferred'),
               icon: React.createElement(Primitives.IconPlusOutlineRegular, null),
-              disabled: busy,
+              // Naming happens on the first message, so only a conversation
+              // that has none yet can start one.
+              disabled: busy || !blank || waiting,
             },
           ]
         : []
@@ -314,9 +319,11 @@ window.__ModuleLoader__.load({
           ? t('entry.loading')
           : !status.isRepo
             ? t('entry.label')
-            : isWorktree
-              ? current.name
-              : t('entry.main')
+            : waiting
+              ? t('entry.pending')
+              : isWorktree
+                ? current.name
+                : t('entry.main')
 
       return React.createElement(Primitives.Menu, {
         open: open,
@@ -339,7 +346,7 @@ window.__ModuleLoader__.load({
               setNotice(null)
               if (failed) {
                 // Drop the failed read so the effect issues a fresh request.
-                statusCache.delete(cwd)
+                statusCache.delete(cacheKey(cwd, sessionId))
                 setStatus(null)
                 setRetry(retry + 1)
                 return
@@ -358,7 +365,7 @@ window.__ModuleLoader__.load({
       })
     }
 
-    /* ------------------------------------------------- workspace row markers */
+    /* ------------------------------------------------------- row markers */
 
     /** Stylesheet id guarding the single injection of the row-marker CSS. */
     var ROW_CSS_ID = 'worktree-session/rows.css'
@@ -367,9 +374,8 @@ window.__ModuleLoader__.load({
      * The branch glyph, carried as a mask so the row's own colour still applies.
      *
      * Same artwork as `IconBranchOutlineRegular` (16x16, 1px `currentColor`
-     * strokes). A mask rather than a background image because the workspace row
-     * tints its icon when it is the active one, and a baked-in colour would
-     * lose that.
+     * strokes). A mask rather than a background image because the row tints its
+     * icon when it is the active one, and a baked-in colour would lose that.
      */
     var BRANCH_MASK =
       'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 16 16\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1\'%3E' +
@@ -379,8 +385,10 @@ window.__ModuleLoader__.load({
       '%3Ccircle cx=\'12.4502\' cy=\'12.6921\' r=\'1.56962\'/%3E%3C/svg%3E")'
 
     /**
-     * The document glyph the design drew for a session ("会话脸部小图标"), drawn
-     * on a 24-unit grid like the branch mark so both scale from one mask box.
+     * The document glyph a Session row shows when it is not in a worktree.
+     *
+     * Drawn on a 24-unit grid like the branch mark so both scale from one mask
+     * box.
      */
     var DOC_MASK =
       'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23000\' stroke-width=\'1.8\'%3E' +
@@ -388,8 +396,8 @@ window.__ModuleLoader__.load({
 
     /**
      * Replace a worktree row's folder glyph with the branch glyph, hang a
-     * worktree count off every plain workspace's name, and give each session row
-     * a glyph naming the card it lives in.
+     * worktree count off every plain workspace's name, and give each Session row
+     * a glyph naming the checkout it runs in.
      *
      * The sidebar renders a workspace row as plain markup: it has no plugin
      * slot, and a Workspace carries no icon of its own. So a worktree's row can
@@ -417,10 +425,10 @@ window.__ModuleLoader__.load({
       'font-size:10px;line-height:1;vertical-align:middle}',
       'body[data-ds-dark-theme] [data-dsh-worktree-count]::after{',
       'background:rgba(255,255,255,.1);color:#cbd5e1}',
-      // Session rows: a glyph naming the card the row lives in. It hangs off the
-      // leading 16px cell rather than replacing its contents, so the host's own
-      // status dot keeps that cell and the row's indentation is untouched — the
-      // leading cell is what the sidebar's indent reads from, and filling it
+      // Session rows: a glyph naming the checkout the row runs in. It hangs off
+      // the leading 16px cell rather than replacing its contents, so the host's
+      // own status dot keeps that cell and the row's indentation is untouched —
+      // the leading cell is what the sidebar's indent reads from, and filling it
       // would flatten a session against its workspace row.
       '[data-row-key^="session:"]>span:first-child{position:relative}',
       // `left:100%` puts the glyph's left edge on the leading cell's right edge,
@@ -440,24 +448,24 @@ window.__ModuleLoader__.load({
       // ends.
       '[data-row-key^="session:"]>span:nth-child(2){margin-left:20px}',
       '[data-row-key^="session:"]:hover>span:first-child::after{background-color:#475569}',
-      // A session inside a worktree card is a checkout of the branch its owner
-      // is on, so it takes the branch glyph and the card's blue.
-      '[class*=\'groupSection\']:has(> * > [data-row-key^="workspace:"][data-dsh-worktree]) ' +
-        '[data-row-key^="session:"]>span:first-child::after{background-color:#60a5fa;',
+      // A Session running its tools in a worktree takes the branch glyph and the
+      // worktree's blue. The marker is stamped from the Session's own
+      // projections, so this holds for every row without asking the host a
+      // second question.
+      '[data-row-key^="session:"][data-dsh-worktree-session]>span:first-child::after{',
+      'background-color:#60a5fa;',
       '-webkit-mask:' + BRANCH_MASK + ' center/14px 14px no-repeat;',
       'mask:' + BRANCH_MASK + ' center/14px 14px no-repeat}',
-      '[class*=\'groupSection\']:has(> * > [data-row-key^="workspace:"][data-dsh-worktree]) ' +
-        '[data-row-key^="session:"]:hover>span:first-child::after{background-color:#2563eb}',
+      '[data-row-key^="session:"][data-dsh-worktree-session]:hover>span:first-child::after{',
+      'background-color:#2563eb}',
       'body[data-ds-dark-theme] [data-row-key^="session:"]>span:first-child::after{',
       'background-color:#64748b}',
       'body[data-ds-dark-theme] [data-row-key^="session:"]:hover>span:first-child::after{',
       'background-color:#94a3b8}',
-      'body[data-ds-dark-theme] [class*=\'groupSection\']:has(> * > ' +
-        '[data-row-key^="workspace:"][data-dsh-worktree]) ' +
-        '[data-row-key^="session:"]>span:first-child::after{background-color:#93c5fd}',
-      'body[data-ds-dark-theme] [class*=\'groupSection\']:has(> * > ' +
-        '[data-row-key^="workspace:"][data-dsh-worktree]) ' +
-        '[data-row-key^="session:"]:hover>span:first-child::after{background-color:#bfdbfe}',
+      'body[data-ds-dark-theme] [data-row-key^="session:"][data-dsh-worktree-session]>span:first-child::after{',
+      'background-color:#93c5fd}',
+      'body[data-ds-dark-theme] [data-row-key^="session:"][data-dsh-worktree-session]:hover>span:first-child::after{',
+      'background-color:#bfdbfe}',
     ].join('')
 
     /** Attribute this plugin stamps on a workspace row that is a worktree. */
@@ -466,17 +474,22 @@ window.__ModuleLoader__.load({
     /** Attribute carrying the worktree count on a plain workspace's name box. */
     var COUNT_ATTR = 'data-dsh-worktree-count'
 
+    /** Attribute this plugin stamps on a Session row whose tools run in a worktree. */
+    var SESSION_ATTR = 'data-dsh-worktree-session'
+
     /**
      * Mark every sidebar workspace row whose directory is a linked worktree.
      *
      * Rows are addressed by their `data-row-key` (`workspace:<id>`), which is
      * the only stable handle the row exposes. Whether a directory is a worktree
      * is the host's answer, not a guess from the path, so this reuses the same
-     * per-directory status read the picker and the badge share.
+     * per-directory status read the picker shares.
      * @param workspaces - the client Workspace service, for its snapshot.
+     * @param sessions - the client Session service, whose list carries the
+     * working-directory projection each Session row is judged by.
      * @returns a disposer, or undefined when there is no DOM to mark.
      */
-    function applyWorkspaceRowMarkers(workspaces) {
+    function applyRowMarkers(workspaces, sessions) {
       if (typeof document === 'undefined') return undefined
 
       // The stylesheet is rewritten on every activation, never skipped when a
@@ -510,11 +523,12 @@ window.__ModuleLoader__.load({
           if (item === undefined) continue
           markRow(row, item.path)
         }
+        markSessionRows()
       }
 
-      /** Stamp or clear one row once the host has answered for its directory. */
+      /** Stamp or clear one workspace row once the host has answered for its directory. */
       var markRow = function (row, path) {
-        loadStatus(path).then(
+        loadStatus(path, undefined).then(
           function (status) {
             var entry = (status.worktrees || []).find(function (candidate) {
               return candidate.path === path
@@ -553,6 +567,34 @@ window.__ModuleLoader__.load({
         )
       }
 
+      /**
+       * Mark Session rows from the list snapshot alone.
+       *
+       * A Session keeps the `cwd` it was created in — that is what keeps it in
+       * its Workspace group — while `workingDirectory` follows the worktree its
+       * tools actually run in. The two disagreeing is therefore the exact
+       * definition of "this conversation works in a worktree", and it needs no
+       * request: the projection arrives with the list and with every live
+       * `working-directory/change`.
+       */
+      var markSessionRows = function () {
+        var snapshot = sessions.list.getSnapshot()
+        var byId = (snapshot && snapshot.byId) || {}
+        var rows = document.querySelectorAll('[data-row-key^="session:"]')
+        for (var i = 0; i < rows.length; i += 1) {
+          var row = rows[i]
+          var id = (row.getAttribute('data-row-key') || '').slice('session:'.length)
+          var summary = byId[id]
+          var projected = summary && summary.projectionValues ? summary.projectionValues.workingDirectory : undefined
+          var base = summary ? summary.cwd : undefined
+          var wanted = typeof projected === 'string' && projected !== '' && typeof base === 'string' && base !== '' && projected !== base
+          if (wanted !== (row.getAttribute(SESSION_ATTR) !== null)) {
+            if (wanted) row.setAttribute(SESSION_ATTR, 'branch')
+            else row.removeAttribute(SESSION_ATTR)
+          }
+        }
+      }
+
       mark()
       // Expanding a workspace, renaming it, or a fresh snapshot all rebuild the
       // rows, so the pass re-runs whenever the list's DOM changes. Attribute
@@ -571,17 +613,21 @@ window.__ModuleLoader__.load({
       }
       var observer = new MutationObserver(schedule)
       observer.observe(document.body, { childList: true, subtree: true })
+      // A row can already be on screen when its projection arrives, and the
+      // projection update does not necessarily touch the DOM.
+      var unsubscribe = sessions.list.subscribe(schedule)
       return function () {
         observer.disconnect()
+        unsubscribe()
       }
     }
 
     /**
      * Register the picker at the left of the composer tool row.
      *
-     * The workspace services are required through a nested `inject` rather than
-     * the plugin's own `inject` list: a plugin whose `inject` cannot be
-     * satisfied never activates, and on the client a single such entry fails
+     * The workspace and Session services are required through a nested `inject`
+     * rather than the plugin's own `inject` list: a plugin whose `inject` cannot
+     * be satisfied never activates, and on the client a single such entry fails
      * the whole boot audit. This way a build without the workspace UI simply
      * has no picker.
      */
@@ -592,14 +638,14 @@ window.__ModuleLoader__.load({
         },
         'worktree-session: dictionaries',
       )
-      ctx.inject(['workspaces', 'uiWorkspace'], function (scoped) {
+      ctx.inject(['workspaces', 'uiWorkspace', 'sessions'], function (scoped) {
         // A worktree's sidebar row is plain markup with no plugin seat, so it
         // is marked and restyled rather than rendered by a slot.
         scoped.effect(
           function () {
-            return applyWorkspaceRowMarkers(scoped.workspaces)
+            return applyRowMarkers(scoped.workspaces, scoped.sessions)
           },
-          'worktree-session: workspace row markers',
+          'worktree-session: row markers',
         )
         scoped.slots.inject('conversation.input.left', function () {
           return scoped.slots.register(

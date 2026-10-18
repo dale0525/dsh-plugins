@@ -1,25 +1,42 @@
 /**
  * dsh-worktree-session — host half.
  *
- * Owns the git plumbing behind the composer's worktree picker: resolving the
- * repository a Session's `cwd` belongs to, listing its linked worktrees,
- * creating one, and keeping the repository's `.gitignore` in step with where
- * worktrees are put. The browser half only talks to these routes; it never
- * shells out to git itself, because a browser cannot and because the
- * repository root has to be resolved from the same `cwd` the tools use.
+ * Defers a Git worktree to the first message of a conversation.
+ *
+ * A Session's `cwd` is immutable, so "work in a worktree" cannot be a decision
+ * made while an existing Session runs. It is made *before* the first message
+ * instead: the composer creates a blank Session in the current Workspace and
+ * records a waiting marker on it. When that Session's first step is proposed,
+ * this plugin names the branch from the user's own message with one auxiliary
+ * model call, creates the branch and its checkout, and moves the Session's
+ * working directory into it — the `working-directory` service appends the
+ * durable change and its notice, so the model sees the new directory on that
+ * same step. The Session keeps its original `cwd`, which is why it stays in its
+ * Workspace group while its tools run in the worktree.
+ *
+ * Two markers make the decision durable and idempotent: the waiting marker says
+ * "a worktree is owed", the creation marker says "a name has been chosen". The
+ * name is committed *before* Git runs, so a turn that is resumed or retried
+ * reuses the same name instead of minting a second branch.
+ *
+ * Both markers are experimental plugin records, not Session event types: an
+ * event type this build does not know would make the stored log unreadable, so
+ * plugin state rides `appendPluginRecord`, which marks the record ignorable and
+ * keeps the log interpretable by any harness.
+ *
+ * Every optional host service is read with `ctx.get` at call time, never named
+ * in `inject`: naming one would turn "this deployment does not mount it" into
+ * "this plugin never loads". Without `workingDirectory` there is no way to move
+ * a Session, so the whole deferred flow stays off and the menu reports it.
  *
  * The routes are registered on the optional `webServer` service and fenced by
- * the optional `connection` service, both awaited through a nested `inject`
- * instead of being named in the top-level `inject` list — naming them would
- * turn "no Web UI" into "this plugin never loads".
- *
- * The fence is the composition's, never this plugin's own: `connection` owns
- * the Host/Origin trust policy (loopback plus the LAN authorities the
- * deployment declares) and the browser authentication that goes with it. A
- * plugin-local loopback check cannot see those declared authorities, so it
- * answers 403 to every LAN browser — which is exactly the bug this delegation
- * fixes. The routes are `exact`, so they sit in front of Connection's `/api`
- * prefix route and have to ask for the same verdict themselves.
+ * the optional `connection` service, both awaited through a nested `inject` for
+ * the same reason. The fence is the composition's, never this plugin's own:
+ * `connection` owns the Host/Origin trust policy and the browser authentication
+ * that goes with it, and a plugin-local loopback check cannot see the LAN
+ * authorities the deployment declares. The routes are `exact`, so they sit in
+ * front of Connection's `/api` prefix route and have to ask for the same
+ * verdict themselves.
  */
 
 import { execFile } from 'node:child_process'
@@ -30,6 +47,10 @@ import { join, relative } from 'node:path'
 import { promisify } from 'node:util'
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, LlmRuntime } from '@deepseek-ai/dsh-llm'
+import { appendPluginRecord, pluginRecordOf, type Session } from '@deepseek-ai/dsh-session'
 // Type-only: pull the Cordis Context augmentations (webServer / connection) and
 // the WebRoute contract without any runtime import.
 import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
@@ -41,19 +62,136 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 /**
  * Repository-relative directory holding this plugin's worktrees.
  *
- * A constant rather than a setting: worktrees live inside the repository they
- * belong to, at a path that is predictable from the repository alone. The
- * `.gitignore` entry below is what keeps them out of the parent's status.
+ * Only used when the host mounts no worktree service of its own. A constant
+ * rather than a setting: worktrees live inside the repository they belong to,
+ * at a path predictable from the repository alone.
  */
 const WORKTREE_PARENT = '.worktrees'
 
 export const name = 'worktree-session'
 
 /**
- * No required services: `webServer` is optional and awaited through a nested
- * `inject`, and cordis supplies `logger` itself.
+ * No required services: every host service this plugin touches is optional and
+ * read through `ctx.get` at call time, and cordis supplies `logger` itself.
  */
 export const inject: string[] = []
+
+/* -------------------------------------------------- optional host services */
+
+/**
+ * The host's working-directory service, as this plugin uses it.
+ *
+ * Declared structurally rather than imported so that a host generation without
+ * it still loads this plugin; the service is what decides whether a Session can
+ * be moved at all.
+ */
+interface WorkingDirectoryService {
+  /** The directory a Session's tools currently run in. */
+  get(session: Session): string
+  /**
+   * Move one Session, committing the change and its notice.
+   * @param agent - Session owner whose context asserts liveness.
+   * @param path - absolute directory to move into.
+   * @param signal - cancellation of the lookup and publication.
+   * @returns the directory in force afterwards.
+   */
+  set(agent: Agent, path: string, signal?: AbortSignal): Promise<string>
+}
+
+/**
+ * The host's worktree service, as this plugin uses it.
+ *
+ * Mounted by the host's experimental worktree bundle, so it is often absent;
+ * this plugin then falls back to its own Git plumbing.
+ */
+interface WorktreeService {
+  /**
+   * Create a branch and its checkout, then move the calling Session into it.
+   * @param agent - caller whose directory selects the source repository.
+   * @param request - new branch name and base revision.
+   * @param signal - cancellation of lookup, creation, and publication.
+   * @returns the created checkout and branch.
+   */
+  create(
+    agent: Agent,
+    request?: { name?: string; from?: string },
+    signal?: AbortSignal,
+  ): Promise<{ path: string; branch: string }>
+}
+
+/* ------------------------------------------------------------------ markers */
+
+/**
+ * Record type saying a worktree is owed to this Session.
+ *
+ * `from` is the directory the Session was created in, kept so the intent stays
+ * readable without re-deriving it from the immutable header.
+ */
+const WAITING = 'plugin:worktree-session/waiting'
+
+/**
+ * Record type saying a branch name has been chosen for this Session.
+ *
+ * Committed before Git runs: a resumed or retried first step then reuses the
+ * same name instead of minting a second branch, and a failed creation is not
+ * retried forever.
+ */
+const CREATION = 'plugin:worktree-session/creation'
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface PluginRecordMap {
+    'plugin:worktree-session/waiting': { from: string }
+    'plugin:worktree-session/creation': { name: string }
+  }
+}
+
+/** What the log currently says about this Session's worktree. */
+export interface WorktreeRecords {
+  /** Directory the Session was created in, when a worktree is owed. */
+  readonly waiting?: { readonly from: string }
+  /** Branch name already chosen, when one was. */
+  readonly creation?: { readonly name: string }
+}
+
+/**
+ * Fold one Session's worktree markers out of its log.
+ *
+ * Record payloads are validated here rather than trusted: a restored log may
+ * carry what an earlier build of this plugin wrote, which is the documented
+ * contract for plugin records. A later waiting marker supersedes an earlier
+ * creation marker, so asking for a second worktree re-arms the Session.
+ * @param session - Session whose log to read.
+ * @returns the markers still in force.
+ */
+export function readWorktreeRecords(session: Session): WorktreeRecords {
+  let waiting: { from: string } | undefined
+  let creation: { name: string } | undefined
+  for (const event of session.snapshotEvents()) {
+    const record = pluginRecordOf(event)
+    if (record === undefined) continue
+    if (record.type === WAITING) {
+      const from = (record.data as { from?: unknown }).from
+      if (typeof from !== 'string') continue
+      waiting = { from }
+      creation = undefined
+      continue
+    }
+    if (record.type === CREATION) {
+      const name = (record.data as { name?: unknown }).name
+      if (typeof name === 'string') creation = { name }
+    }
+  }
+  return { ...(waiting === undefined ? {} : { waiting }), ...(creation === undefined ? {} : { creation }) }
+}
+
+/**
+ * Record that this Session owes a worktree.
+ * @param session - the blank Session the composer created.
+ * @param from - directory the Session was created in.
+ */
+export function markWaiting(session: Session, from: string): void {
+  appendPluginRecord(session, WAITING, { from })
+}
 
 /* -------------------------------------------------------------- git plumbing */
 
@@ -234,15 +372,17 @@ const NAME_ATTEMPTS = 5
 /**
  * Create a linked worktree inside the repository's worktree parent directory.
  *
- * The directory and branch are named from a short random id, not from the
- * conversation: the Session that will occupy this worktree has to exist before
- * its first message does, and a Session's `cwd` is fixed at birth. The
- * human-facing name comes from DSH's own first-prompt Session titling.
+ * Without a `name` the directory and branch are named from a short random id.
+ * With one, the requested name is used as both, suffixed only when it is
+ * already taken — a model-named branch can collide with an earlier conversation,
+ * and that is the ordinary case rather than a failure.
  * @param cwd - directory inside the target repository.
+ * @param name - desired branch and directory name.
  * @returns the created worktree, or an error message explaining the refusal.
  */
 export async function createWorktree(
   cwd: string,
+  name?: string,
 ): Promise<{ ok: true; value: CreatedWorktree } | { ok: false; error: string }> {
   const worktrees = await listWorktrees(cwd)
   const repoRoot = worktrees[0]?.path
@@ -255,7 +395,7 @@ export async function createWorktree(
   let created: { path: string; branch: string } | undefined
   let lastError = ''
   for (let attempt = 0; attempt < NAME_ATTEMPTS && created === undefined; attempt += 1) {
-    const id = `wt-${randomBytes(3).toString('hex')}`
+    const id = name === undefined ? `wt-${randomBytes(3).toString('hex')}` : attempt === 0 ? name : `${name}-${attempt + 1}`
     const path = join(targetParent, id)
     if (takenBranches.has(id) || takenPaths.has(path)) continue
     // The leaf is git's to create, but a missing parent would make it fail.
@@ -276,6 +416,219 @@ export async function createWorktree(
   const gitignoreAdded = await ensureGitignoreEntry(repoRoot, relative(repoRoot, targetParent).split(/[\\/]/).join('/'))
 
   return { ok: true, value: { path: created.path, branch: created.branch, repoRoot, gitignoreAdded } }
+}
+
+/* -------------------------------------------------------------------- naming */
+
+/** Cap on the user text forwarded to the naming call. */
+const MAX_PROMPT_CHARS = 4000
+
+/** Output cap for the naming call; a slug is a few words. */
+const MAX_NAME_TOKENS = 24
+
+/** Hard cap on the naming call, so a stalled route cannot hold the first step. */
+const NAME_TIMEOUT_MS = 20_000
+
+/** Longest branch name accepted, in characters. */
+const MAX_NAME_CHARS = 60
+
+/** The one instruction the naming call carries. */
+const NAME_INSTRUCTION = `Name the task in the user's message as a Git branch.
+Reply with the name and nothing else: 2-4 lowercase words separated by hyphens, ASCII letters and digits only.
+Do not translate, explain, or quote.`
+
+/**
+ * Reduce model output to a Git-legal branch name.
+ *
+ * The result is restricted to `[a-z0-9-]`, which keeps it inside Git's own
+ * relative-branch grammar and inside the worktree service's path rule: no
+ * separators, no empty segments, nothing that could address another directory.
+ * @param text - raw model output.
+ * @returns the branch name, empty when nothing usable remained.
+ */
+export function sanitizeName(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .split('-')
+    .slice(0, 4)
+    .join('-')
+    .slice(0, MAX_NAME_CHARS)
+    .replace(/-+$/g, '')
+}
+
+/** A name that cannot collide with anything a model would choose. */
+function fallbackName(): string {
+  return `worktree-${randomBytes(3).toString('hex')}`
+}
+
+/**
+ * Ask the configured model to name this conversation's branch.
+ *
+ * The route comes from the Agent's own options, so the call uses the model the
+ * user already chose for the conversation instead of a second configuration.
+ * Every failure — no route, a failed call, an aborted call, unusable output —
+ * answers a random name, because naming must never hold up or break the turn.
+ * @param llm - the composition's LLM service, or undefined when absent.
+ * @param agent - Session owner supplying the route.
+ * @param prompt - the user's first message text.
+ * @param signal - the turn's cancellation signal.
+ * @returns a Git-legal branch name.
+ */
+async function chooseName(
+  llm: LlmRuntime | undefined,
+  agent: Agent,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const provider = agent.options.provider
+  const model = agent.options.model
+  if (llm === undefined || provider === undefined || model === undefined) return fallbackName()
+
+  const assembler = new BlockAssembler()
+  const control = AbortSignal.any([signal, AbortSignal.timeout(NAME_TIMEOUT_MS)])
+  try {
+    const options: GenerateOptions = {
+      provider,
+      model,
+      system: NAME_INSTRUCTION,
+      messages: [
+        createUserMessage({
+          content: [{ type: 'text', text: prompt.slice(0, MAX_PROMPT_CHARS) }],
+          source: { kind: 'user' },
+        }),
+      ],
+      maxTokens: MAX_NAME_TOKENS,
+      signal: control,
+    }
+    for await (const chunk of llm.stream(options)) assembler.push(chunk)
+  } catch {
+    return fallbackName()
+  }
+  const finish = assembler.finish
+  if (finish.kind === 'error' || finish.kind === 'aborted') return fallbackName()
+  const slug = sanitizeName(
+    assembler
+      .blocks()
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join(''),
+  )
+  return slug === '' ? fallbackName() : slug
+}
+
+/* ------------------------------------------------------------ first message */
+
+/**
+ * The first message the user actually wrote.
+ *
+ * Only `user` sources count: injected context, notices and tool results all
+ * arrive as `UserMessage` too, and naming a branch after them would describe
+ * the harness rather than the task.
+ * @param messages - the batch entering this step.
+ * @returns the first non-blank human text, or undefined when there is none.
+ */
+function firstHumanText(messages: readonly { source: { kind: string }; content: readonly { type: string; text?: string }[] }[]): string | undefined {
+  for (const message of messages) {
+    if (message.source.kind !== 'user') continue
+    const text = message.content
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text ?? '')
+      .join('\n')
+      .trim()
+    if (text !== '') return text
+  }
+  return undefined
+}
+
+/* --------------------------------------------------------------- deferred flow */
+
+/**
+ * Create the branch and checkout one Session owes, then move it there.
+ *
+ * Called from the accepted first step. The name is committed to the log before
+ * Git runs, so a resumed turn reuses it. A mounted host worktree service is
+ * preferred because it also owns the checkout pool and moves the Session
+ * itself; otherwise this plugin's own Git path does both.
+ * @param ctx - host plugin context.
+ * @param agent - the Session's owner.
+ * @param name - the chosen branch name.
+ * @param cwd - directory to create the checkout from.
+ * @param workingDirectory - the service that moves the Session.
+ * @param signal - the turn's cancellation signal.
+ * @returns the checkout path and branch.
+ */
+async function createCheckout(
+  ctx: Context,
+  agent: Agent,
+  name: string,
+  cwd: string,
+  workingDirectory: WorkingDirectoryService,
+  signal: AbortSignal,
+): Promise<{ path: string; branch: string }> {
+  const worktrees = ctx.get('worktrees') as WorktreeService | undefined
+  if (worktrees !== undefined) {
+    try {
+      return await worktrees.create(agent, { name }, signal)
+    } catch {
+      // The name is the model's, so an existing branch is the ordinary
+      // collision; one suffixed retry is enough to make it unique.
+      return await worktrees.create(agent, { name: `${name}-${randomBytes(2).toString('hex')}` }, signal)
+    }
+  }
+  const result = await createWorktree(cwd, name)
+  if (!result.ok) throw new Error(result.error)
+  await workingDirectory.set(agent, result.value.path, signal)
+  return { path: result.value.path, branch: result.value.branch }
+}
+
+/**
+ * Run the deferred worktree creation for one accepted step.
+ *
+ * Runs only on the first step of the first turn, only when the Session owes a
+ * worktree, and only when the user wrote something to name the branch after.
+ * Every failure is reported to the log and swallowed: the turn then runs in the
+ * Session's original directory, which is the same place it would have run
+ * without this plugin.
+ * @param ctx - host plugin context.
+ * @param agent - the Session's owner.
+ * @param messages - the batch entering this step.
+ * @param turn - the open turn number.
+ * @param step - the step being proposed.
+ * @param signal - the turn's cancellation signal.
+ */
+async function createDeferredWorktree(
+  ctx: Context,
+  agent: Agent,
+  messages: Parameters<typeof firstHumanText>[0],
+  turn: number,
+  step: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (turn !== 1 || step !== 1) return
+  const session = agent.session
+  const records = readWorktreeRecords(session)
+  if (records.waiting === undefined || records.creation !== undefined) return
+  const prompt = firstHumanText(messages)
+  if (prompt === undefined) return
+
+  const workingDirectory = ctx.get('workingDirectory') as WorkingDirectoryService | undefined
+  if (workingDirectory === undefined) return
+
+  const name = await chooseName(ctx.get('llm'), agent, prompt, signal)
+  signal.throwIfAborted()
+  appendPluginRecord(session, CREATION, { name })
+
+  const created = await createCheckout(
+    ctx,
+    agent,
+    name,
+    workingDirectory.get(session),
+    workingDirectory,
+    signal,
+  )
+  ctx.logger.info('worktree-session: created %s at %s', created.branch, created.path)
 }
 
 /* ---------------------------------------------------------- trust fence */
@@ -347,16 +700,21 @@ function stringField(body: Record<string, unknown>, key: string): string | undef
 /** API prefix shared with the browser half. */
 export const API = {
   status: '/api/dsh-worktree/status',
-  create: '/api/dsh-worktree/create',
+  prepare: '/api/dsh-worktree/prepare',
 } as const
 
 /**
  * Build the plugin's HTTP routes.
+ * @param ctx - host plugin context, for the Session store and the optional
+ * services whose presence decides whether a worktree can be deferred at all.
  * @param connection - the composition's Connection service, whose trust fence
  * every request is put through before the route's own work begins.
  * @returns the routes to register.
  */
-export function makeRoutes(connection: HostConnectionHandle): WebRoute[] {
+export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebRoute[] {
+  /** Whether this deployment can move a Session at all. */
+  const deferred = (): boolean => ctx.get('workingDirectory') !== undefined
+
   return [
     {
       kind: 'exact',
@@ -367,64 +725,105 @@ export function makeRoutes(connection: HostConnectionHandle): WebRoute[] {
           writeJson(res, 405, { error: 'method not allowed' })
           return
         }
-        const cwd = new URL(req.url ?? '/', 'http://localhost').searchParams.get('cwd')
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams
+        const cwd = params.get('cwd')
         if (cwd === null || cwd === '') {
           writeJson(res, 400, { error: 'cwd is required' })
           return
         }
         const worktrees = await listWorktrees(cwd)
         const repoRoot = worktrees[0]?.path
+        const sessionId = params.get('sessionId')
+        const session = sessionId === null || sessionId === '' ? undefined : ctx.sessions.get(sessionId as Parameters<typeof ctx.sessions.get>[0])
         writeJson(res, 200, {
           isRepo: repoRoot !== undefined,
           repoRoot: repoRoot ?? null,
           worktrees,
+          // A Session can only be moved where the host owns the working
+          // directory; the menu hides the deferred item when it cannot.
+          deferred: deferred(),
+          // Whether this Session already owes a worktree, so the menu can show
+          // the pending state instead of offering the same item twice.
+          waiting: session !== undefined && readWorktreeRecords(session).waiting !== undefined,
         })
       },
     },
     {
       kind: 'exact',
-      path: API.create,
+      path: API.prepare,
       handler: async (req, res) => {
         if (refuseUntrusted(connection, req, res)) return
         if (req.method !== 'POST') {
           writeJson(res, 405, { error: 'method not allowed' })
           return
         }
+        if (!deferred()) {
+          writeJson(res, 409, { error: 'this deployment cannot move a Session working directory' })
+          return
+        }
         const body = await readJsonBody(req)
-        const cwd = body === undefined ? undefined : stringField(body, 'cwd')
-        if (cwd === undefined) {
-          writeJson(res, 400, { error: 'cwd is required' })
+        const sessionId = body === undefined ? undefined : stringField(body, 'sessionId')
+        const from = body === undefined ? undefined : stringField(body, 'from')
+        if (sessionId === undefined || from === undefined) {
+          writeJson(res, 400, { error: 'sessionId and from are required' })
           return
         }
-        const result = await createWorktree(cwd)
-        if (!result.ok) {
-          writeJson(res, 409, { error: result.error })
+        const session = ctx.sessions.get(sessionId as Parameters<typeof ctx.sessions.get>[0])
+        if (session === undefined) {
+          writeJson(res, 404, { error: 'session not found' })
           return
         }
-        writeJson(res, 200, result.value)
+        markWaiting(session, from)
+        writeJson(res, 200, { ok: true })
       },
     },
   ]
 }
 
 /**
- * Mount the plugin's routes when a Web server and a trust fence are present.
+ * Mount the deferred creation and the plugin's routes.
  *
- * Both services are awaited through one nested `inject` rather than read with
- * `ctx.get` at apply time. A composed row order does not imply an activation
- * order, so a plain read can legitimately see `undefined` and silently drop
- * the routes; waiting on the services is the pattern the host's own Web-facing
- * plugins use. Keeping the `inject` nested (rather than in the top-level
- * `inject` list) is what lets a deployment with no Web UI still load this
- * plugin. `connection` is required alongside `webServer` on purpose: these
- * routes sit in front of Connection's `/api` prefix route, so serving them
- * without its fence would serve them unfenced.
+ * The `agent/pre-step` listener is registered unconditionally: it reads every
+ * optional service through `ctx.get` at call time, so a deployment that mounts
+ * none of them still loads this plugin and simply has nothing to do.
+ *
+ * `webServer` and `connection` are awaited through one nested `inject` rather
+ * than read at apply time. A composed row order does not imply an activation
+ * order, so a plain read can legitimately see `undefined` and silently drop the
+ * routes; waiting on the services is the pattern the host's own Web-facing
+ * plugins use. Keeping the `inject` nested is what lets a deployment with no
+ * Web UI still load this plugin. `connection` is required alongside `webServer`
+ * on purpose: these routes sit in front of Connection's `/api` prefix route, so
+ * serving them without its fence would serve them unfenced.
  * @param ctx - host plugin context.
  */
 export function apply(ctx: Context): void {
+  ctx.on('agent/pre-step', async (payload, next) => {
+    const decision = await next()
+    if (decision.kind === 'reject') return decision
+    try {
+      await createDeferredWorktree(
+        ctx,
+        payload.agent,
+        payload.messages,
+        payload.turn,
+        payload.step,
+        payload.signal,
+      )
+    } catch (error) {
+      // The turn must still run: it proceeds in the Session's original
+      // directory, which is where it would have run without this plugin.
+      ctx.logger.warn('worktree-session: deferred worktree creation failed: %o', error)
+    }
+    return decision
+  })
+
   ctx.inject(['webServer', 'connection'], (webCtx) => {
     webCtx.effect(() => {
-      const disposers = makeRoutes(webCtx.connection).map((route) => webCtx.webServer.register(route))
+      // Routes read the host's Session store and optional services from this
+      // plugin's own context; only the two services the nested `inject` waited
+      // for come from `webCtx`.
+      const disposers = makeRoutes(ctx, webCtx.connection).map((route) => webCtx.webServer.register(route))
       return () => {
         for (const dispose of disposers) dispose()
       }
