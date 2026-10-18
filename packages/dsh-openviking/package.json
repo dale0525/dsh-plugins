@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-openviking",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "OpenViking memory and context bundle for DeepSeek Harness",
   "type": "module",
   "main": "index.mjs",
@@ -37,9 +37,9 @@
     "prepublishOnly": "npm run prepack && npm run check && npm test"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.2.0 || ^0.1.5-rc.1",
-    "@deepseek-ai/dsh-mcp-client": ">=0.1.0-rc.6 <0.2.0 || ^0.1.5-rc.1",
-    "@deepseek-ai/dsh-skill-filesystem": ">=0.1.0-rc.6 <0.2.0 || ^0.1.5-rc.1"
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.6 <0.2.0 || ^0.1.5-rc.1 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-mcp-client": ">=0.1.0-rc.6 <0.2.0 || ^0.1.5-rc.1 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-skill-filesystem": ">=0.1.0-rc.6 <0.2.0 || ^0.1.5-rc.1 || ^0.2.1-rc.2"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
