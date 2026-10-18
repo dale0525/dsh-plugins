@@ -17,6 +17,7 @@ import assert from 'node:assert/strict'
 import { markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import * as plugin from '../lib/index.js'
 import { TextRepetitionDetector, countRepeatedText } from '../lib/index.js'
+import { grammarViolations } from './helpers/stream-grammar.mjs'
 
 const CONFIG = {
   maxThinkingSteps: 3,
@@ -211,8 +212,8 @@ test('the break steers the agent with the observed size of the repetition', asyn
 /**
  * A Cordis-shaped context whose `llm/stream` listeners form the real chain.
  *
- * `prepend` listeners are called first (the shipped invariant registers that
- * way), so the array order here IS the wrapper nesting the llm service builds.
+ * `prepend` listeners are called first, so the array order here IS the wrapper
+ * nesting the llm service builds.
  */
 function chainContext(agent) {
   const listeners = []
@@ -231,19 +232,6 @@ function chainContext(agent) {
   return { ctx, listeners }
 }
 
-/** Install the shipped dsh-llm invariant, returning the failures it records. */
-async function installInvariant(context) {
-  const { apply } = await import('@deepseek-ai/dsh-llm/invariant')
-  const failures = []
-  const fail = m => failures.push(m)
-  const inner = new Proxy(context, { get: (t, k) => (k === 'on' ? t.on.bind(t) : t[k]) })
-  await apply(
-    { ...inner, invariants: { register: (_name, installer) => installer(inner, fail) } },
-    fail,
-  )
-  return failures
-}
-
 /** Drive one raw stream through the whole installed chain. */
 async function runChain(listeners, options, source) {
   const out = []
@@ -254,21 +242,20 @@ async function runChain(listeners, options, source) {
   return out
 }
 
-test('the break finish is protocol-legal: the shipped llm invariant accepts it', async () => {
-  // The breaker fires with the call's text block still OPEN. The invariant fails
-  // a `stop` finish while any block is open, so the break closes the block first;
-  // this runs the wrapper's own output through the real validator instead of
-  // trusting a reading of the source — an earlier bare `stop` got exactly this
-  // wrong ("finished with 1 open block(s)").
+test('the break finish is protocol-legal: no block is left open at the stop', async () => {
+  // The breaker fires with the call's text block still OPEN. A `stop` finish is
+  // illegal while any block is open, so the break closes the block first; this
+  // runs the wrapper's own output through the grammar check instead of trusting
+  // a reading of the source — an earlier bare `stop` got exactly this wrong
+  // ("finished with 1 open block(s)") and crashed the renderer at runtime.
   const { ctx, listeners } = chainContext(fakeAgent())
-  const failures = await installInvariant(ctx)
   plugin.apply(ctx)
-  assert.equal(listeners.length, 2, 'the chain must be invariant -> plugin')
+  assert.equal(listeners.length, 1, 'apply() must register exactly one llm/stream listener')
 
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const seen = await runChain(listeners, options, () => textStream(70))
 
-  assert.deepEqual(failures, [], 'the synthesized finish must not violate the stream grammar')
+  assert.deepEqual(grammarViolations(seen), [], 'the synthesized finish must not violate the stream grammar')
   assert.equal(seen.at(-1).type, 'finish')
   assert.equal(seen.at(-1).reason.kind, 'stop')
 })

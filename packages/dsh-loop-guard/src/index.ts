@@ -64,20 +64,20 @@
  *  - The agent loop consumes the waterfall's iterable (`for await (const chunk
  *    of stream) live.push(chunk)`), so a listener's own chunk reaches the same
  *    assembler as an adapter's.
- *  - `packages/llm/llm/src/invariant.ts` requires a terminal finish chunk and
- *    explicitly permits an `error`/`aborted` finish with blocks still open — so
- *    a mid-call cut is a sanctioned protocol outcome, not a violation. A stream
- *    that simply ends is an invariant failure, which is why the breaker emits a
- *    finish rather than merely returning.
+ *  - The stream grammar requires a terminal finish chunk and permits a `stop`
+ *    finish only with no block open — so a mid-call cut is a sanctioned protocol
+ *    outcome, not a violation, provided the breaker closes what it opened. A
+ *    stream that simply ends is a grammar violation, which is why the breaker
+ *    emits a finish rather than merely returning.
  *
- * The break is always an `error` finish carrying `REPETITIVE_OUTPUT`: it fails
- * the step through the loop's normal error path (and the `agent/request-error`
- * waterfall, where a retry policy may act on the code). A quiet `stop` is not
- * offered, because the breaker fires with the call's text block still open and
- * the invariant admits only `error`/`aborted` finishes in that state — measured,
- * not assumed. `breakCorrection` steers the agent so the resumed turn is told
- * what happened. Deliberately **no model fallback and no automatic retry of the
- * break**: a degenerate model must not be silently re-billed.
+ * The break closes every open block and finishes with `stop`. It used to finish
+ * with `error`, which is legal at the stream level but produced a session shape
+ * the rest of the harness cannot handle (see {@link breakStream}). The code
+ * `REPETITIVE_OUTPUT` is therefore reported through the break's own notice
+ * rather than through a failed step. `breakCorrection` steers the agent so the
+ * resumed turn is told what happened. Deliberately **no model fallback and no
+ * automatic retry of the break**: a degenerate model must not be silently
+ * re-billed.
  *
  * That stance is scoped to the break, and it is not in tension with
  * the request retry policy. A break re-sends the request to a model

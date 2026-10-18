@@ -6,8 +6,8 @@ import { satisfies } from 'semver'
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
 /**
- * Every `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-llm` version published as
- * of 2026-09-18, oldest first; `npm view @deepseek-ai/dsh-agent versions`
+ * The `@deepseek-ai/dsh-agent` / `@deepseek-ai/dsh-llm` versions the range is
+ * evaluated against, oldest first; `npm view @deepseek-ai/dsh-agent versions`
  * refreshes it.
  *
  * The list is deliberately frozen: it is a record of what the range was checked
@@ -23,21 +23,24 @@ const PUBLISHED = [
   '0.1.3-alpha.2',
   '0.1.5-alpha.1', '0.1.5-alpha.2', '0.1.5-rc.1', '0.1.5-rc.2',
   '0.1.6-alpha.1', '0.1.6-alpha.2',
+  '0.2.1-rc.2',
 ]
 
 /**
  * The versions this plugin is expected to install against. Each one has had the
  * full suite run against it with every dsh peer pinned to that single line
- * (`npx tsc && node --test`), not just a surface grep: 49/49 pass on all eight.
- * The seam the guard wraps (`llm/stream`) plus the three symbols it imports
- * (`createUserMessage`, `isAgentLoopRequest`, `markAgentLoopRequest`) predate
- * all of them, so nothing here is claimed on faith.
+ * (`npx tsc && node --test`), not just a surface grep — 0.2.0-rc.2 and
+ * 0.2.1-rc.2 last on 2026-10-18. The seam the guard wraps (`llm/stream`) plus the
+ * three symbols it imports (`createUserMessage`, `isAgentLoopRequest`,
+ * `markAgentLoopRequest`) predate all of them, so nothing here is claimed on
+ * faith.
  */
 const SUPPORTED = [
   '0.1.2-rc.1',
   '0.1.3-alpha.2',
   '0.1.5-alpha.1', '0.1.5-alpha.2', '0.1.5-rc.1', '0.1.5-rc.2',
   '0.1.6-alpha.1', '0.1.6-alpha.2',
+  '0.2.1-rc.2',
 ]
 
 /**

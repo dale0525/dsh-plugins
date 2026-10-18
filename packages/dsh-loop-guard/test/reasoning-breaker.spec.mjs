@@ -30,6 +30,7 @@ import { join, dirname } from 'node:path'
 import { markAgentLoopRequest } from '@deepseek-ai/dsh-llm'
 import * as plugin from '../lib/index.js'
 import { ReasoningLoopBreaker, trailingCycle } from '../lib/index.js'
+import { grammarViolations } from './helpers/stream-grammar.mjs'
 
 /**
  * Real reasoning tails captured from the reproduction.
@@ -392,8 +393,8 @@ test('coherent reasoning is never cut', async () => {
 
 /**
  * A Cordis-shaped context whose `llm/stream` listeners form the real chain.
- * `prepend` listeners run first because the shipped invariant registers that
- * way, so this array order IS the wrapper nesting the llm service builds.
+ * `prepend` listeners run first, so this array order IS the wrapper nesting the
+ * llm service builds.
  */
 function chainContext(agent) {
   const listeners = []
@@ -412,19 +413,6 @@ function chainContext(agent) {
   return { ctx, listeners }
 }
 
-/** Install the shipped dsh-llm invariant, returning the failures it records. */
-async function installInvariant(context) {
-  const { apply } = await import('@deepseek-ai/dsh-llm/invariant')
-  const failures = []
-  const fail = (m) => failures.push(m)
-  const inner = new Proxy(context, { get: (t, k) => (k === 'on' ? t.on.bind(t) : t[k]) })
-  await apply(
-    { ...inner, invariants: { register: (_name, installer) => installer(inner, fail) } },
-    fail,
-  )
-  return failures
-}
-
 /** Drive one raw stream through the whole installed chain. */
 async function runChain(listeners, options, source) {
   const out = []
@@ -441,22 +429,21 @@ async function* reasoningStream(text, size = 32) {
   }
 }
 
-test('the reasoning cut is protocol-legal: the shipped llm invariant accepts it', async () => {
-  // The breaker fires with the call's reasoning block still OPEN. The invariant
-  // fails a `stop` finish while any block is open, so this runs the wrapper's own
-  // output through the real validator rather than trusting a reading of the
+test('the reasoning cut is protocol-legal: no block is left open at the stop', async () => {
+  // The breaker fires with the call's reasoning block still OPEN. A `stop`
+  // finish is illegal while any block is open, so this runs the wrapper's own
+  // output through the grammar check rather than trusting a reading of the
   // source — that is exactly how the original `stop` attempt was caught
   // ("finished with 1 open block(s)").
   const agent = { steer: () => {}, inject: () => {}, cancel: () => {} }
   const { ctx, listeners } = chainContext(agent)
-  const failures = await installInvariant(ctx)
   plugin.apply(ctx)
-  assert.equal(listeners.length, 2, 'the chain must be invariant -> plugin')
+  assert.equal(listeners.length, 1, 'apply() must register exactly one llm/stream listener')
 
   const options = markAgentLoopRequest({ sessionId: 's1', provider: 'p', model: 'm', messages: [] })
   const seen = await runChain(listeners, options, () => reasoningStream(BLEED))
 
-  assert.deepEqual(failures, [], 'the synthesized finish must not violate the stream grammar')
+  assert.deepEqual(grammarViolations(seen), [], 'the synthesized finish must not violate the stream grammar')
   assert.equal(seen.at(-1).type, 'finish')
   assert.equal(seen.at(-1).reason.kind, 'stop')
 })
