@@ -854,6 +854,34 @@ body [data-composer-card] [class*='_standardControls'] button[class*='_trigger']
   background-color: #dbeafe;
 }
 
+/* The model seat's glyph. The host renders `IconDataOutlineRegular` there — a
+   database — which says "storage", not "model". The artwork cannot be replaced
+   in the DOM, so it is replaced as a MASK: the host's two paths are hidden, the
+   svg paints `currentColor` through a chip glyph supplied here. That keeps the
+   one thing that has to follow the palette (the colour) on the host's own
+   `color`, so light and dark need no separate rule.
+
+   Scoped to the model slot, not to `_triggerIcon` alone: the local name is a
+   substring anchor and only this seat is being redrawn. On the desktop the host
+   keeps the icon at `display: none` (it shows the model name instead), so this
+   only shows where the host itself shows an icon — the compact row and the
+   mobile square in section 10. */
+body [data-composer-card] [data-slot='conversation.input.model'] button[class*='_trigger'] svg[class*='_triggerIcon'] {
+  background-color: currentColor;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3.75' y='3.75' width='8.5' height='8.5' rx='1.75'/%3E%3Crect x='6.5' y='6.5' width='3' height='3' rx='0.75'/%3E%3Cpath d='M6 1.75V3.75M10 1.75V3.75M6 12.25v2M10 12.25v2M1.75 6h2M1.75 10h2M12.25 6h2M12.25 10h2'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3.75' y='3.75' width='8.5' height='8.5' rx='1.75'/%3E%3Crect x='6.5' y='6.5' width='3' height='3' rx='0.75'/%3E%3Cpath d='M6 1.75V3.75M10 1.75V3.75M6 12.25v2M10 12.25v2M1.75 6h2M1.75 10h2M12.25 6h2M12.25 10h2'/%3E%3C/svg%3E");
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+}
+
+body [data-composer-card] [data-slot='conversation.input.model'] button[class*='_trigger'] svg[class*='_triggerIcon'] > * {
+  display: none;
+}
+
 /* Send button. `transform: none` neutralises the host's own `translateY(-2px)`,
    which put this 34px button's centre at cy=836 while every other control in the
    28px-tall row sat at cy=838. */
@@ -1012,25 +1040,52 @@ body[data-ds-dark-theme] [data-composer-card] [data-slot='conversation.input.lef
     display: none;
   }
 
-  /* The composer's two host chips step down to a 28x28 icon square. They used to
-     be handled two different ways — 完全权限 was hidden outright while 主检出 kept
-     its full label — so the row's left edge changed shape depending on which
+  /* The composer's three host chips step down to a 28x28 icon square. They used
+     to be handled two different ways — 完全权限 was hidden outright while 主检出
+     kept its full label — so the row's left edge changed shape depending on which
      plugin happened to be mounted.
 
      `font-size: 0` is what does the work on 主检出: its label is a BARE TEXT NODE
      inside the button (`<span class=icon/><svg/></span>主检出`), so there is no
      element to target. The icon keeps its size from the explicit `svg` rule in
      section 8, which is a length, not an em. 完全权限's label is a real span and is
-     hidden by name as well, so it does not rely on the inherited zero. */
+     hidden by name as well, so it does not rely on the inherited zero.
+
+     The model seat joins them here rather than relying on the host's own compact
+     mode. The host collapses it by CONTENT (`observeControlRow` sets
+     `data-model-compact` when the row cannot fit), so above this breakpoint a
+     narrow workbench also dropped its label — the same container-driven surprise
+     the permission chip had. At this width the pill is always a square.
+
+     Its label, effort and chevron are real spans/elements, so they are hidden by
+     name; the icon is forced on because the host's own compact variables
+     (`--dsh-composer-model-icon-display`) only take effect on the pill, and this
+     rule must hold whether or not the host has decided to compact it. */
   body [data-composer-card] [data-slot='conversation.input.permission'] button,
-  body [data-composer-card] [data-slot='conversation.input.left'] button[class*='_ghost'] {
+  body [data-composer-card] [data-slot='conversation.input.left'] button[class*='_ghost'],
+  body [data-composer-card] [data-slot='conversation.input.model'] button[class*='_trigger'] {
     @apply w-7 justify-center px-0;
     gap: 0;
     font-size: 0;
   }
 
-  body [data-composer-card] [data-slot='conversation.input.permission'] button [class*='_triggerLabel'] {
+  body [data-composer-card] [data-slot='conversation.input.permission'] button [class*='_triggerLabel'],
+  body [data-composer-card] [data-slot='conversation.input.model'] button[class*='_trigger'] [class*='_triggerLabel'],
+  body [data-composer-card] [data-slot='conversation.input.model'] button[class*='_trigger'] [class*='_triggerEffort'],
+  body [data-composer-card] [data-slot='conversation.input.model'] button[class*='_trigger'] [class*='chevron'] {
     display: none;
+  }
+
+  body [data-composer-card] [data-slot='conversation.input.model'] button[class*='_trigger'] svg[class*='_triggerIcon'] {
+    display: block;
+    @apply h-3.5 w-3.5;
+  }
+
+  /* Same square as the permission chip beside it. The pill's `rounded-full` is
+     section 8's shape for a text pill; at 28x28 it would read as a circle among
+     two rounded squares, so the step-down also takes the chip's 8px radius. */
+  body [data-composer-card] [data-slot='conversation.input.model'] button[class*='_trigger'] {
+    @apply rounded-[8px];
   }
 
   /* The sidebar's two panel entries ("插件" / "自动化任务") are desktop

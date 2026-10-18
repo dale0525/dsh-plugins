@@ -956,24 +956,60 @@ test('the composer chips step down to an icon square together on 移动端', () 
   const mobile = /@media \(max-width: 900px\)\s*\{([\s\S]*?)\n\}/.exec(css)
   assert.ok(mobile, 'the mobile block must exist')
 
-  const square = /body \[data-composer-card\] \[data-slot='conversation\.input\.permission'\] button,\s*body \[data-composer-card\] \[data-slot='conversation\.input\.left'\] button\[class\*='_ghost']\s*\{([^}]*)\}/.exec(mobile[1])
-  assert.ok(square, 'both chips must share one 移动端 rule')
+  const square = /body \[data-composer-card\] \[data-slot='conversation\.input\.permission'\] button,\s*body \[data-composer-card\] \[data-slot='conversation\.input\.left'\] button\[class\*='_ghost'\],\s*body \[data-composer-card\] \[data-slot='conversation\.input\.model'\] button\[class\*='_trigger'\]\s*\{([^}]*)\}/.exec(mobile[1])
+  assert.ok(square, 'all three chips must share one 移动端 rule')
   assert.match(square[1], /width:\s*1\.75rem/, 'the chip must become a 28px square')
   assert.match(square[1], /justify-content:\s*center/, 'the icon must be centred once the label is gone')
   assert.match(square[1], /font-size:\s*0/, "font-size:0 is the only way to drop 主检出's bare text node")
   assert.equal(/display:\s*none/.test(square[1]), false, 'the chip itself must stay — it is the only permission control left')
 
   // 完全权限's label IS a real span, so it is hidden by name as well rather than
-  // relying on the inherited zero.
+  // relying on the inherited zero. It shares one declaration block with the
+  // model seat's parts, so the selector list around it is what is read.
   assert.match(
     mobile[1],
-    /\[data-slot='conversation\.input\.permission'\] button \[class\*='_triggerLabel'\]\s*\{[^}]*display:\s*none/,
+    /[^{}]*\[data-slot='conversation\.input\.permission'\] button \[class\*='_triggerLabel'\][^{}]*\{[^}]*display:\s*none/,
     'the permission label must be hidden by name too',
+  )
+
+  // The model seat: label, 推理等级 and chevron are all real elements, and the
+  // icon has to be forced on because the host's compact variables only apply
+  // when the host itself decided to compact the pill.
+  for (const [what, suffix] of [
+    ['the model name', '_triggerLabel'],
+    ['the reasoning effort', '_triggerEffort'],
+    ['the chevron', 'chevron'],
+  ]) {
+    assert.match(
+      mobile[1],
+      new RegExp(`\\[data-slot='conversation\\.input\\.model'\\] button\\[class\\*='_trigger'\\] \\[class\\*='${suffix}'\\][^{]*\\{[^}]*display:\\s*none`),
+      `${what} must be dropped from the mobile model square`,
+    )
+  }
+  const modelIcon = /\[data-slot='conversation\.input\.model'\] button\[class\*='_trigger'\] svg\[class\*='_triggerIcon'\]\s*\{([^}]*)\}/.exec(mobile[1])
+  assert.ok(modelIcon, 'the model square must keep its glyph')
+  assert.match(modelIcon[1], /display:\s*block/, "the glyph must not depend on the host's compact variables")
+  assert.match(modelIcon[1], /height:\s*0\.875rem/, 'the glyph matches the two chips beside it at 14px')
+  assert.match(modelIcon[1], /width:\s*0\.875rem/, 'the glyph matches the two chips beside it at 14px')
+
+  // The pill's `rounded-full` is section 8's shape for a text pill; at 28x28 it
+  // would be the only circle among two rounded squares.
+  assert.match(
+    mobile[1],
+    /\[data-slot='conversation\.input\.model'\] button\[class\*='_trigger'\]\s*\{[^}]*border-radius:\s*8px/,
+    'the mobile model square must take the chip radius',
   )
 
   // Nothing of this may leak above the breakpoint.
   const outside = css.replace(mobile[0], '')
   assert.equal(/font-size:\s*0/.test(outside), false, 'the chips keep their labels on the desktop')
+  for (const suffix of ['_triggerLabel', '_triggerEffort']) {
+    assert.equal(
+      new RegExp(`\\[data-slot='conversation\\.input\\.model'\\] button\\[class\\*='_trigger'\\] \\[class\\*='${suffix}'\\][^{]*\\{[^}]*display:\\s*none`).test(outside),
+      false,
+      `the desktop keeps the model ${suffix}`,
+    )
+  }
   assert.equal(
     /\[data-slot='conversation\.input\.permission'\] button \[class\*='_triggerLabel'\]\s*\{[^}]*display:\s*none/.test(outside),
     false,
@@ -1016,6 +1052,40 @@ test('the two host chips are normalised to one shape', () => {
   const lh = /body \[data-composer-card\] \[data-slot='conversation\.input\.left'\] button\[class\*='_ghost'\],\s*body \[data-composer-card\] \[data-slot='conversation\.input\.permission'\] button\s*\{([^}]*)\}/.exec(css)
   assert.ok(lh, 'both chips must share one line box')
   assert.match(lh[1], /line-height:\s*18px/, 'the two labels must sit in the same 18px line box')
+})
+
+test('the model seat wears a chip glyph, not the host database glyph', () => {
+  // The host renders `IconDataOutlineRegular` — a database — on the model seat,
+  // which says "storage", not "model". The artwork cannot be replaced in the
+  // DOM, so it is replaced as a MASK: the host's own two paths are hidden and
+  // the svg paints `currentColor` through the glyph supplied here. Leaving the
+  // colour on the host's `color` is what lets one rule serve both palettes.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  const rule = /body \[data-composer-card\] \[data-slot='conversation\.input\.model'\] button\[class\*='_trigger'\] svg\[class\*='_triggerIcon'\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(rule, 'the model seat glyph must be redrawn')
+  assert.match(rule[1], /background-color:\s*currentColor/, "the glyph must take the pill's own colour, in both palettes")
+  assert.match(rule[1], /mask-image:\s*url\(/, 'the replacement glyph is a mask')
+  assert.match(rule[1], /-webkit-mask-image:\s*url\(/, 'the mask needs its -webkit- form too')
+  assert.match(rule[1], /mask-size:\s*100% 100%/, 'the glyph must fill the 14px box')
+  assert.equal(/mask-image[^;]*#/.test(rule[1]), false, 'the mask is a shape, so it must not carry a palette colour')
+
+  // The host's two database paths have to go, or they paint over the mask.
+  assert.match(
+    css,
+    /\[data-slot='conversation\.input\.model'\] button\[class\*='_trigger'\] svg\[class\*='_triggerIcon'\]\s*>\s*\*\s*\{[^}]*display:\s*none/,
+    "the host's own paths must be hidden",
+  )
+
+  // Scoped to the model slot: `_triggerIcon` is a substring anchor, and the
+  // permission chip's shield must keep its own artwork.
+  const iconSelectors = [...css.matchAll(/(^|\})\s*([^{}]*\[class\*='_triggerIcon'\][^{}]*)\{/g)].map((m) => m[2].trim())
+  assert.ok(iconSelectors.length > 0, 'the glyph rules must be found')
+  for (const selector of iconSelectors) {
+    assert.ok(
+      selector.includes("[data-slot='conversation.input.model']"),
+      `the glyph rule must be scoped to the model slot: ${selector}`,
+    )
+  }
 })
 
 /**
