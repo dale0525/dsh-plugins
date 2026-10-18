@@ -121,8 +121,13 @@ describe('ComposerSlider commit', () => {
     expect(knob).not.toBeNull()
     const range = container.querySelector<HTMLInputElement>('input[type="range"]')!
     // The rest position lands in the mount-sync effect (passive effects flush
-    // asynchronously); wait for it instead of racing the commit.
+    // asynchronously); wait for it before checking the rest state.
     await vi.waitFor(() => expect(range.value).toBe('2'))
+    // The stops are felt while dragging, never drawn: no locator dots.
+    expect(container.querySelector('.bre-effort-markers')).toBeNull()
+    expect(container.querySelectorAll('.bre-effort-marker')).toHaveLength(0)
+    // The snap behind that feel: the range runs on whole stops.
+    expect(range.step).toBe('1')
     // The popover body replicates upstream: separator + model row after the slider.
     expect(container.querySelector('.bre-menu-separator')).not.toBeNull()
     const row = container.querySelector<HTMLButtonElement>('.bre-model-row')

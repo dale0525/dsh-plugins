@@ -53,15 +53,15 @@
 
 ## 支持的模型
 
-自动适配知识库内置 **15 家厂商 65 个条目**（DeepSeek、OpenAI、Anthropic Claude、Gemini、Grok、Qwen、GLM、Kimi、Mistral、MiniMax、MiMo、豆包、混元、阶跃、文心——2026-08/09 逐条对照官方文档复核，含视觉变体与无档位控制家族）。完整表格——匹配写法、档位 → 线上取值阶梯、默认档、模态、参考容量——见 **[docs/supported-models.md](docs/supported-models.md)**（由 [`src/knowledge.ts`](src/knowledge.ts) 生成，代码是权威数据源）。未列出的模型回退到协议推断 + 通用档位，可手动调整。
+自动适配知识库内置 **15 家厂商 65 个条目**（DeepSeek、OpenAI、Anthropic Claude、Gemini、Grok、Qwen、GLM、Kimi、Mistral、MiniMax、MiMo、豆包、混元、阶跃、文心——2026-08/09 逐条对照官方文档复核，含视觉变体与无档位控制家族）。完整表格——匹配写法、档位 → 线上取值阶梯、默认档、模态、参考容量——见 **[docs/supported-models.md](docs/supported-models.md)**（由 [`src/knowledge.ts`](src/knowledge.ts) 生成，代码是权威数据源）。未列出的模型不会被自动填充；用户仍可手动审核低置信度的「自动适配」建议。
 
 ## 安装
 
-需要 DeepSeek Harness **`0.1.5-alpha.1` 及后续**（面向 `0.1.5`–`0.2.0` 内核发布线；peer 范围 `@deepseek-ai/dsh-api-remotes@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2`、`@deepseek-ai/dsh-settings@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2`，另有 `@deepseek-ai/schemastery@^3.18.0`。peer 用逐线并集而非 `>=0.1.5-alpha.1`，是因为 semver 的预发布豁免只管同 `major.minor.patch` 元组——`>=0.1.5-alpha.1` 匹配不到后续发布线的任何预发布版）。
+需要 DeepSeek Harness **`0.1.5-alpha.1` 及后续**（面向 `0.1.5`–`0.2.1` 内核发布线；peer 范围 `@deepseek-ai/dsh-api-remotes@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-rc.2`、`@deepseek-ai/dsh-settings@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-rc.2`，另有 `@deepseek-ai/schemastery@^3.18.0`。peer 用逐线并集而非 `>=0.1.5-alpha.1`，是因为 semver 的预发布豁免只管同 `major.minor.patch` 元组——`>=0.1.5-alpha.1` 匹配不到后续发布线的任何预发布版）。
 
 > **还在用旧版 DeepSeek Harness？**本插件这条发布线面向 `0.1.5-alpha` 及后续——`0.1.2-rc` / `0.1.3-alpha` 线及更早版本**均不再受支持**。请升级 Harness，或安装与内核匹配的本插件旧版本（例如 `0.1.2-rc` / `0.1.3-alpha` 线请用 `dsh-better-reasoning-effort@0.3.7`）。
 
-以 `0.2.0-rc.2` 为编译与门禁基线（typecheck / 测试套件 / 完整构建都跑在 `0.2.0-rc.2` 的各官方包上）；最近一次**实机**运行时基线仍为 `0.1.5-rc.1`。逐内核的接缝复核记录见 [docs/compatibility-notes.md](docs/compatibility-notes.md)。
+以 `0.2.1-rc.2` 为编译与门禁基线（typecheck / 测试套件 / 完整构建都跑在 `0.2.1-rc.2` 的各官方包上）；最近一次**实机**运行时基线仍为 `0.1.5-rc.1`。逐内核的接缝复核记录见 [docs/compatibility-notes.md](docs/compatibility-notes.md)。
 
 `0.1.5-rc.2` → `0.1.6-alpha.1` 的逐接缝源码复核：settings 服务（`get` / `describe` / `update` 与 `settings/updated`）与生成的 Typert `ctx.remote.settings` 契约、`settings.models` 的两个 slot 席位、slots / locale 运行时、`connection` 服务与 `connection/reset` 事件、Models 页六个锚点 aria-label 与结构类名、composer 模型弹层（`aria-controls` → `role="menu"` → `menuitem` / `menuitemradio`）、`dsh.client` 装载规则与 `/plugins/<id>/client.js` 路由、`llm` 服务的 `prepareCall` / `stream` 包装、`webServer.register`，以及 pi-ai 的 `config.ts` / `catalog.ts`（compat 键、`reasoningEfforts`、`input`）——承载实现全部零改动。两处相邻改动不在本插件的注入路径上：`ui-settings-models` 为 deepseek 家族端点加了新占位与提示文案，`ui-input-trigger` 改了斜杠命令菜单行的显示形态（本插件注入的是 `ModelSelect` 弹层）。`0.1.5` 线的既有适配说明继续成立（源码级验证：settings Remote wire、Models 页锚点、模型目录类型、slots / locale 自 `0.1.2-rc.1` 起全部原样；仅 `llm-pi-ai` compat schema 增长——pi-ai 0.85.1 新增 `thinkingTokenBudgetField` / `vllmPriority` / `supportsMaxOutputTokens`，以及 composer 模型菜单改为 portal 到 `document.body`——滑块经触发钮 `aria-controls` 链接跟随，内联形态保留为兜底）。新 schema 键按协议取用，旧内核写拒绝时自动剥离重试，全程无版本嗅探。接缝明细：settings Remote 是生成的 Typert `ctx.remote.settings` stub（无参 `describe`、位置参数 `mutate(ns, ops, expectedRevision)`、`{ok, value | error}` 包络、`settings/conflict` / `settings/rejected` 拒绝码）；Models 页锚点（`Capacities`/容量、Model ID、Display name、Provider ID、Base URL、API protocol 与 `settings.models.footer` slot）全部原样；原始列表探测镜像内核自己的模型发现——同一协议集合（新含 **Anthropic Messages**，走原生 `/v1/models` 路由、`x-api-key` + `anthropic-version`）、同款 `data`/`models` 双形态解析、同款 4 MB 上限。client bundle 运行时不请求任何官方模块。
 
@@ -74,14 +74,31 @@
 ### 从 npm
 
 ```bash
-# npm 安装（dsh 的 web profile 下）
 dsh plugin --profile web add dsh-better-reasoning-effort
+```
 
-# 或从 GitHub（源码安装；`lib/` 由 prepare 钩子构建——安装器会打印需要的
-# `allowBuilds` 键，照做后重新 add）
+DSH 内置的 pnpm 11.7.0 默认 `minimum-release-age` 为 24 小时：在某个版本发布后一天内发起的安装会解析到「足够旧的最新版」并安装它，而插件管理器显示的仍可能是更新的那一版。写明版本号即可立刻安装——pnpm 接受指定版本，并把它记入豁免：
+
+```bash
+dsh plugin --profile web add dsh-better-reasoning-effort@0.5.2
+```
+
+release 页面同时附带打包好的 tarball，这条路线跳过 registry 与发布冷静期。tarball 是成品，pnpm 不执行任何脚本，也不需要构建授权。URL 指向单一版本，升级时替换它即可：
+
+```bash
+dsh plugin --profile web add \
+  https://github.com/HaoyueQin/dsh-better-reasoning-effort/releases/download/v<version>/dsh-better-reasoning-effort-<version>.tgz
+```
+
+从 GitHub 源码安装，用于开发与审查而非日常安装。pnpm 要跑 `prepare` 钩子构建 `lib/`，且只在 `allowBuilds` 存在对应条目后才放行。安装器会打印确切的键，该键包含解析到的 commit：把它加进 profile 的 `pnpm-workspace.yaml` 后重新执行 add。新 commit 会改变这个键，因此每次发版都要重新授权；不含 commit 的键形式需要比内置的 11.7.0 更新的 pnpm：
+
+```bash
 dsh plugin --profile web add github:HaoyueQin/dsh-better-reasoning-effort
+```
 
-# 或链接本地检出做开发
+或链接本地检出做开发：
+
+```bash
 npm install && npm run build
 dsh plugin --profile web add link:D:/Project/dsh-better-reasoning-effort
 ```
@@ -146,7 +163,7 @@ npm test            # vitest：知识库 / 推断 / 自动填充 / DOM 注入 / 
 npm run build       # lib/*.js + lib/client.js（module-loader bundle）
 ```
 
-契约版本：`@deepseek-ai/dsh-api-remotes@0.2.0-rc.2`（client 契约类型，peer 范围 `^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2`）；开发依赖已统一到已发布的 `0.2.0-rc.2` 各包与 Cordis `4.0.4`，typecheck（0 错误）、测试套件与完整构建均针对该版本执行；运行时实测基线为 `0.1.5-rc.1`——`0.1.6-alpha.1` 至 `0.2.0-rc.2` 目前完成的是源码/包契约门禁，实机复核未做。测试套件钉住 composer 菜单发现（portal 与内联双形态），`0.1.2-rc.1` 降级重试路径保留为安全网。
+契约版本：`@deepseek-ai/dsh-api-remotes@0.2.1-rc.2`（client 契约类型，peer 范围 `^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-rc.2`）；开发依赖已统一到已发布的 `0.2.0-rc.2` 各包与 Cordis `4.0.4`，typecheck（0 错误）、测试套件与完整构建均针对该版本执行；运行时实测基线为 `0.1.5-rc.1`——`0.1.6-alpha.1` 至 `0.2.0-rc.2` 目前完成的是源码/包契约门禁，实机复核未做。测试套件钉住 composer 菜单发现（portal 与内联双形态），`0.1.2-rc.1` 降级重试路径保留为安全网。
 在 `0.1.5-rc.1` 内核上的运行时复核（2026-09）：settings Remote 的 `describe`/`mutate(ns, ops, revision)` 契约、Models 页锚点、slider 的菜单发现全部原样；rc.1 对 `llm-pi-ai` 的两处加严已被本插件覆盖——模型级 compat 必须属于该模型解析出的协议（写拒绝时按协议剥离并重试，拒绝文案已逐字钉进测试），以及存量无效配置改为在提供方卡片上就地显示错误而非整体失败。
 
 ## 已知限制
@@ -158,7 +175,8 @@ npm run build       # lib/*.js + lib/client.js（module-loader bundle）
 - 模态词汇跟随 pi-ai 核心（当前 `text` / `image`）；更宽的网关支持（PDF / 音频 / 视频）按家族记录在案，核心词汇扩充前声明不了是设计使然。
 - 命名启发式的模态建议（视觉风味 id）刻意标注低置信度，使用前请核对。
 - 自建中转：对没有官方 host 认领的路由，自动填充会钉 `supportsDeveloperRole: false`（部分上游拒绝 `developer` 角色）；显式值永不被覆盖。
-- 强制思考模型（无 `off` 的梯子，如 GLM-5.3）：无档位调用自动落厂商默认档而不是发 `thinking: disabled`——设 `defaultGuard: false` 可恢复原行为。
+- 强制思考模型（无 `off` 的梯子，如 GLM-5.3）：无档位调用自动落厂商默认档而不是发 `thinking: disabled`——设 `defaultGuard: false` 可恢复原行为。路由级 `reasoning` 默认档可用官方式覆盖同一批调用、无需 guard：适配器取 `options.reasoningEffort ?? profile.reasoning`，配了默认档的路由不会走到关闭档（guard 也会为它让路）。
+- guard 的活动情况在请求头区域内报告（已改写 N 次无档位调用、最近一次是哪个模型），因此「已安装但闲置」与「正在工作」可以区分；同一份报告也由 `/dsh-better-reasoning-effort/headers-config` 提供。
 - **`headers` 中的凭据在磁盘上不脱敏**：只读视图会掩码，但设置文档仍明文保存——请当 API key 对待。
 - **请求头区域的编辑态检测读取非官方信号**（官方行没有编辑器状态的 data 属性）；官方若改名该类词根，区域会停止出现——绝不弄坏页面。
 - **同一时间只应有一个 `user-agent` 改写器**：同类 header 插件落在同一层，后写者赢；插件会检测并提示已知同类，但不覆盖未知情况。

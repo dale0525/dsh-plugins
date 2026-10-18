@@ -53,15 +53,15 @@ The `llm-pi-ai` adapter natively supports per-model `reasoningEfforts` and `inpu
 
 ## Supported models
 
-The auto-adapt knowledge base carries **65 curated entries across 15 vendors** (DeepSeek, OpenAI, Anthropic Claude, Gemini, Grok, Qwen, GLM, Kimi, Mistral, MiniMax, MiMo, Doubao, Hunyuan, Step, ERNIE — re-verified against official docs 2026-08/09, including vision-capable variants and no-effort-control families). The full table — match patterns, level → wire-spelling ladders, defaults, modalities, reference capacities — lives in **[docs/supported-models.md](docs/supported-models.md)** (generated from [`src/knowledge.ts`](src/knowledge.ts), the authoritative source). Unlisted models fall back to protocol inference + generic levels, adjustable by hand.
+The auto-adapt knowledge base carries **65 curated entries across 15 vendors** (DeepSeek, OpenAI, Anthropic Claude, Gemini, Grok, Qwen, GLM, Kimi, Mistral, MiniMax, MiMo, Doubao, Hunyuan, Step, ERNIE — re-verified against official docs 2026-08/09, including vision-capable variants and no-effort-control families). The full table — match patterns, level → wire-spelling ladders, defaults, modalities, reference capacities — lives in **[docs/supported-models.md](docs/supported-models.md)** (generated from [`src/knowledge.ts`](src/knowledge.ts), the authoritative source). Unlisted models are left unchanged by automatic fill; the user can still review a low-confidence Auto-adapt suggestion.
 
 ## Install
 
-Requires DeepSeek Harness **`0.1.5-alpha.1` or later** (the `0.1.5`–`0.2.0` kernel release lines; peer ranges `@deepseek-ai/dsh-api-remotes@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2`, `@deepseek-ai/dsh-settings@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2`, `@deepseek-ai/schemastery@^3.18.0`). The peer range is a per-line union rather than `>=0.1.5-alpha.1` because semver's prerelease exemption only covers the same `major.minor.patch` tuple — a `>=0.1.5-alpha.1` range matches no later prerelease line).
+Requires DeepSeek Harness **`0.1.5-alpha.1` or later** (the `0.1.5`–`0.2.0` kernel release lines; peer ranges `@deepseek-ai/dsh-api-remotes@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-rc.2`, `@deepseek-ai/dsh-settings@^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-rc.2`, `@deepseek-ai/schemastery@^3.18.0`). The peer range is a per-line union rather than `>=0.1.5-alpha.1` because semver's prerelease exemption only covers the same `major.minor.patch` tuple — a `>=0.1.5-alpha.1` range matches no later prerelease line).
 
 > **On an older DeepSeek Harness?** This release line targets `0.1.5-alpha` and later — the `0.1.2-rc` / `0.1.3-alpha` lines and earlier are **no longer supported**. Please upgrade Harness, or install an older plugin release that matches your kernel (for example `dsh-better-reasoning-effort@0.3.7` for the `0.1.2-rc` / `0.1.3-alpha` lines).
 
-Compiled and gated against `0.2.0-rc.2` (typecheck, the test suite and the full build all run against that release's official packages); the most recent **live-kernel** runtime baseline remains `0.1.5-rc.1`. The per-kernel seam re-checks behind this live in [docs/compatibility-notes.md](docs/compatibility-notes.md).
+Compiled and gated against `0.2.1-rc.2` (typecheck, the test suite and the full build all run against that release's official packages); the most recent **live-kernel** runtime baseline remains `0.1.5-rc.1`. The per-kernel seam re-checks behind this live in [docs/compatibility-notes.md](docs/compatibility-notes.md).
 
 Seam-by-seam source re-check across `0.1.5-rc.2` → `0.1.6-alpha.1`: the settings service (`get` / `describe` / `update` plus `settings/updated`) and the generated Typert `ctx.remote.settings` contract, the two `settings.models` slot seats, the slots / locale runtime, the `connection` service and its `connection/reset` event, the six Models-page anchor aria-labels and the structural class names, the composer model popover (`aria-controls` → `role="menu"` → `menuitem` / `menuitemradio`), the `dsh.client` load rules and the `/plugins/<id>/client.js` route, the `llm` service wrappers (`prepareCall` / `stream`) and `webServer.register`, and pi-ai's `config.ts` / `catalog.ts` (compat keys, `reasoningEfforts`, `input`) — every carrying implementation is unchanged. Two neighbouring edits stay off this plugin's injection path: `ui-settings-models` gained a placeholder and hint copy for deepseek-family endpoints, and `ui-input-trigger` changed how slash-command menu rows render (this plugin injects into the `ModelSelect` popover). The `0.1.5`-line compatibility notes still hold (verified source-level: the settings Remote wire, the Models-page anchors, the model-directory types, slots / locale are unchanged since `0.1.2-rc.1`; only the `llm-pi-ai` compat schema grew — pi-ai 0.85.1 adds `thinkingTokenBudgetField` / `vllmPriority` / `supportsMaxOutputTokens` — and the composer model menu is now portaled to `document.body`, which the slider follows through the trigger's `aria-controls` link with the inline shape kept as fallback). New-schema keys are suggested where the protocol takes them and stripped automatically on a write refusal from an older kernel, with no version sniffing. Seam details: the settings Remote is the generated Typert `ctx.remote.settings` stub (argument-less `describe`, positional `mutate(ns, ops, expectedRevision)`, `{ok, value | error}` envelopes, `settings/conflict` / `settings/rejected` refusal codes), the Models-page anchors (`Capacities`/容量, Model ID, Display name, Provider ID, Base URL, API protocol; the `settings.models.footer` slot) are unchanged, and the raw-listing probe mirrors the kernel's own model discovery — the same protocol set (now including **Anthropic Messages** via its native `/v1/models` route with `x-api-key` + `anthropic-version`), the same dual `data`/`models` listing shapes, and the same 4 MB ceiling. The client bundle requests no official module at runtime, so it loads unchanged.
 
@@ -74,14 +74,31 @@ A further source re-check across `0.1.6-alpha.1` → `0.1.6-alpha.2` found exact
 ### From npm
 
 ```bash
-# from npm, under the dsh web profile
 dsh plugin --profile web add dsh-better-reasoning-effort
+```
 
-# or from GitHub (source install; `lib/` builds via the prepare hook — the
-# installer prints the `allowBuilds` key it needs, follow that and re-add)
+DSH bundles pnpm 11.7.0, whose default `minimum-release-age` is 24 hours: an install started within a day of a release resolves to the newest version old enough and installs that one, while the plugin manager may still display the newer release. Name the version to install it without waiting — pnpm accepts a named version and records it as an exemption:
+
+```bash
+dsh plugin --profile web add dsh-better-reasoning-effort@0.5.2
+```
+
+The release page also carries the packed tarball, which skips both the registry and the release-age wait. It is prebuilt, so pnpm executes nothing and asks for no build approval. The URL names one version, so an update replaces it:
+
+```bash
+dsh plugin --profile web add \
+  https://github.com/HaoyueQin/dsh-better-reasoning-effort/releases/download/v<version>/dsh-better-reasoning-effort-<version>.tgz
+```
+
+From GitHub source, for development and review rather than normal installs. pnpm runs the `prepare` hook to build `lib/`, and allows that only once an `allowBuilds` entry exists. The installer prints the exact key, which names the resolved commit: add it to the profile's `pnpm-workspace.yaml` and repeat the add. A new commit changes that key, so every release needs re-approval, and the commit-free key form needs a newer pnpm than the bundled 11.7.0:
+
+```bash
 dsh plugin --profile web add github:HaoyueQin/dsh-better-reasoning-effort
+```
 
-# or link a local checkout for development
+Or link a local checkout for development:
+
+```bash
 npm install && npm run build
 dsh plugin --profile web add link:D:/Project/dsh-better-reasoning-effort
 ```
@@ -148,7 +165,7 @@ npm test            # vitest: knowledge / inference / autofill / DOM injection /
 npm run build       # lib/*.js + lib/client.js (module-loader bundle)
 ```
 
-Contract version: `@deepseek-ai/dsh-api-remotes@0.2.0-rc.2` (client contract types; peer range `^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2`). The dev dependencies are unified on the published `0.2.0-rc.2` packages and Cordis `4.0.4` — typecheck (0 errors), the test suite and the full build all run against them — while the runtime baseline is `0.1.5-rc.1`: `0.1.6-alpha.1` through `0.2.0-rc.2` have had source/package contract gates, not a live-kernel run.
+Contract version: `@deepseek-ai/dsh-api-remotes@0.2.1-rc.2` (client contract types; peer range `^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-rc.2`). The dev dependencies are unified on the published `0.2.1-rc.2` packages and Cordis `4.0.5` — typecheck (0 errors), the test suite and the full build all run against them — while the runtime baseline is `0.1.5-rc.1`: `0.1.6-alpha.1` through `0.2.1-rc.2` have had source/package contract gates, not a live-kernel run.
 Runtime re-check against the `0.1.5-rc.1` kernel (2026-09): the settings Remote's `describe` / `mutate(ns, ops, revision)` contract, the Models-page anchors, and the slider's menu discovery are unchanged; rc.1's two `llm-pi-ai` tightenings are covered here — a model-level compat key must belong to the protocol that model resolves to (the write path strips per protocol and retries, with the refusal prose pinned verbatim in a test), and stored profiles that no longer validate surface as a row-level error on the provider card instead of failing the whole page. The suite pins composer-menu discovery across the portaled (`0.1.5`) and inline menu shapes; the `0.1.2-rc.1` downgrade-retry path is kept as a safety net.
 
 ## Known limitations
@@ -160,7 +177,8 @@ Runtime re-check against the `0.1.5-rc.1` kernel (2026-09): the settings Remote'
 - The modality vocabulary follows pi-ai's core (`text` / `image` today); wider gateway support (PDF, audio, video) is recorded per family until the core vocabulary grows.
 - Name-heuristic modality advice (vision-flavored ids) is deliberately low-confidence and labeled as such.
 - Self-hosted relays: auto-fill pins `supportsDeveloperRole: false` on routes no official host claims (some upstreams reject the `developer` role); explicit values are never overwritten.
-- Forced-thinking models (ladders without `off`, e.g. GLM-5.3): effort-less calls map to the vendor default instead of sending `thinking: disabled` — set `defaultGuard: false` to restore raw behavior.
+- Forced-thinking models (ladders without `off`, e.g. GLM-5.3): effort-less calls map to the vendor default instead of sending `thinking: disabled` — set `defaultGuard: false` to restore raw behavior. A route-level `reasoning` default covers the same calls without the guard: the adapter resolves `options.reasoningEffort ?? profile.reasoning`, so a route that names one never reaches the off-equivalent (and the guard steps aside for it).
+- The guard's activity is reported inside the request-header section (`N` effort-less calls rewritten, and the model of the most recent one), so an installed-but-idle fallback is distinguishable from one that is working; the same report is served at `/dsh-better-reasoning-effort/headers-config`.
 - **Credentials inside `headers` are not redacted on disk**: the read-only view masks them, but the settings document still holds them in clear text — treat it like an API key.
 - **The request-header section's edit-state detection reads an unofficial signal** (the official row exposes no data attribute for its editor state); if an official build renames that class root, the section stops appearing — never breaking the page.
 - **Only one `user-agent` rewrite should be active**: sibling header plugins land on the same layer; the plugin detects and reports known ones, but the last writer on the wire wins.
