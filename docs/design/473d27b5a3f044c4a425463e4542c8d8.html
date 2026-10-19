@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>DeepSeek Harness · 侧边栏卡片规范 (340×1150)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            sidebarBg: '#F8FAFC',
+            cardBg: '#F8FAFC',
+            cardBorder: 'rgba(15, 23, 42, 0.06)',
+            selectedBorder: 'rgba(37, 99, 235, 0.18)',
+            accentBlue: '#2563EB',
+            branchBlue: '#60A5FA',
+            badgeBg: 'rgba(226, 232, 240, 0.8)',
+            textMain: '#1E293B',
+            textMuted: '#64748B',
+            textSub: '#94A3B8'
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"PingFang SC"', '"Hiragino Sans GB"', '"Microsoft YaHei"', 'sans-serif'],
+            mono: ['"SF Mono"', 'Menlo', 'Monaco', 'Consolas', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    * {
+      box-sizing: border-box;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #F8FAFC;
+      color: #1E293B;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      width: 340px;
+      min-height: 600px;
+      overflow-x: hidden;
+    }
+    /* 隐藏滚动条 */
+    ::-webkit-scrollbar {
+      display: none;
+    }
+    .text-ellipsis-single {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  </style>
+</head>
+<body class="bg-[#F8FAFC] w-[340px] min-h-[600px] p-3 flex flex-col gap-2 select-none">
+<!-- 卡片一：小说 (含 6 行会话) -->
+<section class="w-full bg-[#F8FAFC] border border-[rgba(15,23,42,0.06)] rounded-[14px] p-2 flex flex-col gap-1">
+<!-- 标题行：文件夹图标 + 小说 + 数字标 5 -->
+<div class="w-full h-[34px] rounded-[12px] px-2 flex items-center gap-[6px]">
+<!-- 16px 文件夹细线图标 #64748B -->
+<svg class="w-4 h-4 shrink-0 text-[#64748B]" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>
+</svg>
+<span class="text-[13px] font-[500] text-[#1E293B] leading-none">小说</span>
+<!-- 数字标 5 -->
+<span class="inline-flex items-center justify-center h-[17px] min-w-[17px] px-[5px] rounded-full bg-[rgba(226,232,240,0.8)] text-[#64748B] text-[10px] font-mono leading-none">5</span>
+</div>
+<!-- 会话列表 -->
+<div class="flex flex-col gap-[2px]">
+<!-- 会话 1：双行，分支图标 -->
+<div class="w-full h-[46px] rounded-[12px] px-2 flex flex-col justify-center">
+<div class="flex items-center justify-between w-full h-[22px]">
+<div class="flex items-center min-w-0 pr-2">
+<!-- 16px 状态槽 (空闲留空) -->
+<div class="w-4 h-4 shrink-0"></div>
+<!-- 14px 分支图标 #60A5FA -->
+<svg class="w-[14px] h-[14px] shrink-0 text-[#60A5FA] ml-0 mr-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<line x1="6" x2="6" y1="3" y2="15"></line>
+<circle cx="18" cy="6" r="3"></circle>
+<circle cx="6" cy="18" r="3"></circle>
+<path d="M18 9a9 9 0 0 1-9 9"></path>
+</svg>
+<span class="text-[13px] font-[400] text-[#1E293B] text-ellipsis-single leading-tight">整理事件并检阅优化剧情</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono shrink-0 whitespace-nowrap">1天</span>
+</div>
+<!-- 第二行小字：左边缘相对行起点缩进 20px (状态槽16px + 图标14px中轴微调对齐) -->
+<div class="pl-[34px] text-ellipsis-single"><span class="text-[10.5px] font-[500] text-[#2563EB] font-mono leading-[14px] tracking-[0.2px]">fusheng-ke-tongxing</span></div>
+</div>
+<!-- 会话 2：选中态（白底、蓝细边框、圆角12px），双行 -->
+<div class="w-full h-[46px] rounded-[12px] px-2 flex flex-col justify-center bg-white border border-[rgba(37,99,235,0.18)]">
+<div class="flex items-center justify-between w-full h-[22px]">
+<div class="flex items-center min-w-0 pr-2">
+<!-- 16px 状态槽 -->
+<div class="w-4 h-4 shrink-0"></div>
+<!-- 14px 分支图标 #60A5FA -->
+<svg class="w-[14px] h-[14px] shrink-0 text-[#60A5FA] ml-0 mr-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<line x1="6" x2="6" y1="3" y2="15"></line>
+<circle cx="18" cy="6" r="3"></circle>
+<circle cx="6" cy="18" r="3"></circle>
+<path d="M18 9a9 9 0 0 1-9 9"></path>
+</svg>
+<span class="text-[13px] font-[400] text-[#1E293B] text-ellipsis-single leading-tight">写第一单元事件 5</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono shrink-0 whitespace-nowrap">1天</span>
+</div>
+<div class="pl-[34px] text-ellipsis-single"><span class="text-[10.5px] font-[500] text-[#2563EB] font-mono leading-[14px] tracking-[0.2px]">xingmian</span></div>
+</div>
+<!-- 会话 3：双行，分支图标 -->
+<div class="w-full h-[46px] rounded-[12px] px-2 flex flex-col justify-center">
+<div class="flex items-center justify-between w-full h-[22px]">
+<div class="flex items-center min-w-0 pr-2">
+<!-- 16px 状态槽 -->
+<div class="w-4 h-4 shrink-0"></div>
+<svg class="w-[14px] h-[14px] shrink-0 text-[#60A5FA] ml-0 mr-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<line x1="6" x2="6" y1="3" y2="15"></line>
+<circle cx="18" cy="6" r="3"></circle>
+<circle cx="6" cy="18" r="3"></circle>
+<path d="M18 9a9 9 0 0 1-9 9"></path>
+</svg>
+<span class="text-[13px] font-[400] text-[#1E293B] text-ellipsis-single leading-tight">第一卷第一单元事件 2</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono shrink-0 whitespace-nowrap">5天</span>
+</div>
+<div class="pl-[34px] text-ellipsis-single"><span class="text-[10.5px] font-[500] text-[#2563EB] font-mono leading-[14px] tracking-[0.2px]">ten-year-first-move</span></div>
+</div>
+<!-- 会话 4：双行，分支图标 -->
+<div class="w-full h-[46px] rounded-[12px] px-2 flex flex-col justify-center">
+<div class="flex items-center justify-between w-full h-[22px]">
+<div class="flex items-center min-w-0 pr-2">
+<!-- 16px 状态槽 -->
+<div class="w-4 h-4 shrink-0"></div>
+<svg class="w-[14px] h-[14px] shrink-0 text-[#60A5FA] ml-0 mr-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<line x1="6" x2="6" y1="3" y2="15"></line>
+<circle cx="18" cy="6" r="3"></circle>
+<circle cx="6" cy="18" r="3"></circle>
+<path d="M18 9a9 9 0 0 1-9 9"></path>
+</svg>
+<span class="text-[13px] font-[400] text-[#1E293B] text-ellipsis-single leading-tight">检阅两界一间铺设定冲突</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono shrink-0 whitespace-nowrap">5天</span>
+</div>
+<div class="pl-[34px] text-ellipsis-single"><span class="text-[10.5px] font-[500] text-[#2563EB] font-mono leading-[14px] tracking-[0.2px]">liangjie-yijianpu</span></div>
+</div>
+<!-- 会话 5：双行，分支图标 -->
+<div class="w-full h-[46px] rounded-[12px] px-2 flex flex-col justify-center">
+<div class="flex items-center justify-between w-full h-[22px]">
+<div class="flex items-center min-w-0 pr-2">
+<!-- 16px 状态槽 -->
+<div class="w-4 h-4 shrink-0"></div>
+<svg class="w-[14px] h-[14px] shrink-0 text-[#60A5FA] ml-0 mr-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<line x1="6" x2="6" y1="3" y2="15"></line>
+<circle cx="18" cy="6" r="3"></circle>
+<circle cx="6" cy="18" r="3"></circle>
+<path d="M18 9a9 9 0 0 1-9 9"></path>
+</svg>
+<span class="text-[13px] font-[400] text-[#1E293B] text-ellipsis-single leading-tight">天道小饭馆设定冲突检查</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono shrink-0 whitespace-nowrap">5天</span>
+</div>
+<div class="pl-[34px] text-ellipsis-single"><span class="text-[10.5px] font-[500] text-[#2563EB] font-mono leading-[14px] tracking-[0.2px]">tian-dao-xiao-fan-guan</span></div>
+</div>
+<!-- 会话 6：单行 (32px)，文档图标 #94A3B8 -->
+<div class="w-full h-[32px] rounded-[12px] px-2 flex items-center justify-between">
+<div class="flex items-center min-w-0 pr-2">
+<!-- 16px 状态槽 -->
+<div class="w-4 h-4 shrink-0"></div>
+<!-- 14px 文档图标 #94A3B8 -->
+<svg class="w-[14px] h-[14px] shrink-0 text-[#94A3B8] ml-0 mr-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+<polyline points="14 2 14 8 20 8"></polyline>
+<line x1="16" x2="8" y1="13" y2="13"></line>
+<line x1="16" x2="8" y1="17" y2="17"></line>
+<line x1="10" x2="8" y1="9" y2="9"></line>
+</svg>
+<span class="text-[13px] font-[400] text-[#1E293B] text-ellipsis-single leading-none">整理主线时间线</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono shrink-0 whitespace-nowrap">9天</span>
+</div>
+</div>
+</section>
+<!-- 卡片二：果糖私人医生 (无数字标，无会话行，只有标题行) -->
+<section class="w-full bg-[#F8FAFC] border border-[rgba(15,23,42,0.06)] rounded-[14px] p-2 flex flex-col">
+<div class="w-full h-[34px] rounded-[12px] px-2 flex items-center gap-[6px]">
+<svg class="w-4 h-4 shrink-0 text-[#64748B]" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>
+</svg>
+<span class="text-[13px] font-[500] text-[#1E293B] leading-none">果糖私人医生</span>
+</div>
+</section>
+<!-- 卡片三：dsh-plugins (含 3 行单行会话) -->
+<section class="w-full bg-[#F8FAFC] border border-[rgba(15,23,42,0.06)] rounded-[14px] p-2 flex flex-col gap-1">
+<!-- 标题行：文件夹图标 + dsh-plugins -->
+<div class="w-full h-[34px] rounded-[12px] px-2 flex items-center gap-[6px]">
+<svg class="w-4 h-4 shrink-0 text-[#64748B]" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>
+</svg>
+<span class="text-[13px] font-[500] text-[#1E293B] leading-none font-mono">dsh-plugins</span>
+</div>
+<!-- 3 行会话列表，均是单行(32px)文档图标 -->
+<div class="flex flex-col gap-[2px]">
+<!-- 会话 1 -->
+<div class="w-full h-[32px] rounded-[12px] px-2 flex items-center justify-between">
+<div class="flex items-center min-w-0 pr-2">
+<div class="w-4 h-4 shrink-0"></div>
+<svg class="w-[14px] h-[14px] shrink-0 text-[#94A3B8] ml-0 mr-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+<polyline points="14 2 14 8 20 8"></polyline>
+<line x1="16" x2="8" y1="13" y2="13"></line>
+<line x1="16" x2="8" y1="17" y2="17"></line>
+<line x1="10" x2="8" y1="9" y2="9"></line>
+</svg>
+<span class="text-[13px] font-[400] text-[#1E293B] text-ellipsis-single leading-none">局域网访问 dsh 的优化</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono shrink-0 whitespace-nowrap">14分钟</span>
+</div>
+<!-- 会话 2 -->
+<div class="w-full h-[32px] rounded-[12px] px-2 flex items-center justify-between">
+<div class="flex items-center min-w-0 pr-2">
+<div class="w-4 h-4 shrink-0"></div>
+<svg class="w-[14px] h-[14px] shrink-0 text-[#94A3B8] ml-0 mr-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+<polyline points="14 2 14 8 20 8"></polyline>
+<line x1="16" x2="8" y1="13" y2="13"></line>
+<line x1="16" x2="8" y1="17" y2="17"></line>
+<line x1="10" x2="8" y1="9" y2="9"></line>
+</svg>
+<span class="text-[13px] font-[400] text-[#1E293B] text-ellipsis-single leading-none">侧边栏显示 worktree 归属</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono shrink-0 whitespace-nowrap">21分钟</span>
+</div>
+<!-- 会话 3 -->
+<div class="w-full h-[32px] rounded-[12px] px-2 flex items-center justify-between">
+<div class="flex items-center min-w-0 pr-2">
+<div class="w-4 h-4 shrink-0"></div>
+<svg class="w-[14px] h-[14px] shrink-0 text-[#94A3B8] ml-0 mr-1" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" viewbox="0 0 24 24">
+<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"></path>
+<polyline points="14 2 14 8 20 8"></polyline>
+<line x1="16" x2="8" y1="13" y2="13"></line>
+<line x1="16" x2="8" y1="17" y2="17"></line>
+<line x1="10" x2="8" y1="9" y2="9"></line>
+</svg>
+<span class="text-[13px] font-[400] text-[#1E293B] text-ellipsis-single leading-none">优化 worktree-session 的图标</span>
+</div>
+<span class="text-[10px] text-[#94A3B8] font-mono shrink-0 whitespace-nowrap">36分钟</span>
+</div>
+</div>
+</section>
+</body>
+</html>
