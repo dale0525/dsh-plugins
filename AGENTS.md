@@ -189,6 +189,17 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   写进去只会让「宿主没装那个服务」从「少一个功能」升级成「插件整体消失」。
   宿主自己的监听方也这么写（`dsh-agent-preset-registry`、`dsh-session-reference` 都监听
   `system-prompt/assemble` 而不 inject `systemPrompt`）。
+- **HTTP 路由处理器里读服务必须用 `ctx.get(name)`，不能用 `ctx.<name>`**：cordis 的 context 是
+  Proxy，属性读只对**声明在 inject 里的服务**成立，否则抛 `cannot get property "<name>" without
+  inject`。而路由处理器由宿主 HTTP 服务器在**另一个 fiber** 里调用，不是 `apply` 里 `ctx.inject`
+  那个 fiber，于是同一个 `ctx` 在事件监听里能用、在路由里抛错。
+  症状：`dsh-host-webserver` 把逃出的处理器异常兜成**空 body 的 400**（`lib/index.js:403`），
+  前端只看 `response.ok`，于是任何非 2xx 都显示成「读取失败」——看不出是抛错。
+  实测 2026-10-19 `dsh-worktree-session` 0.1.4：状态路由只在请求带 `sessionId` 时读
+  `ctx.sessions`，所以不带参数的探测返回 200，界面永远失败。
+  **测试替身必须与真实 context 一样严格**：该包的 `makeCtx` 曾直接在 stub 上挂
+  `sessions: { get }` 属性，路由在测试里永远读得到会话，52 个用例全绿而浏览器必挂。
+  stub 不应提供任何「真实 context 上拿不到」的属性。
 - **provenance 需要 `repository`**：包的 `package.json` 缺 `repository`（指向本仓库且
   `directory` 正确）时，OIDC 发布的 provenance 生成被拒。已发布的旧版本无法补，只能等下一个版本。
 - **`@deepseek-ai/dsh-client-ui-slots` 的版本必须全仓库一致**：宿主用 `declare module`
