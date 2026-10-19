@@ -260,6 +260,18 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   所以**理由不要写在可被设置 UI 编辑的行里**——那里只放值，因果写进代码注释、README 或记忆；
   写进 patch 行的注释是一次性消耗品。
 
+- **同一个 `Menu` 原语渲染出的两个座位，只能靠 `[data-slot]` 区分，形状认不出来**：输入框里
+  `conversation.input.left`（工作树选择）与 `conversation.input.model`（模型选择）都用
+  `Primitives.Menu`，都渲染成 `div[role="menu"]`、都紧跟在 `button[aria-haspopup="menu"]` 之后。
+  于是「按形状找菜单」（`previousElementSibling` 是不是那个按钮）在另一个座位打开时会**命中别人的
+  菜单**——实测 2026-10-19 `dsh-better-reasoning-effort`：手机点分支按钮，弹出的分支列表里混进了
+  推理等级滑块和模型行。形状相同不是巧合，是同一个原语；判据只能是宿主的座位包装：
+  内核给每个座位包 `<div data-slot="<slot>" style="display:contents">`，用
+  `element.closest('[data-slot]')` 取座位名即可。注意 `display:contents` 让该包装不产生盒，
+  但它**在 DOM 树里**，所以 `closest` 有效、`getBoundingClientRect` 无效。
+  模型座位的弹层会 portal 到 `body`（此时没有 `[data-slot]` 祖先），所以这条要写成
+  「有座位就按座位判，没座位才退回形状」，不能反过来。
+
 - **槽位渲染崩溃在页面上是「空的」，原因只在控制台**：`plugins.row.config` 这类槽位的渲染
   抛错时，宿主把它换成 `<div data-slot-error="<slot>">`（空元素，无文案），页面表现为
   「插件标题在、下面什么都没有」，看起来像没配字段而不是报错。诊断只能去浏览器控制台取
@@ -479,6 +491,14 @@ pnpm run check:host                           # 宿主世代兼容 + patch 行 i
 > R1 是纯 manifest 检查、R4 是纯文本检查，无宿主的机器上也照跑（R1 挡的正是本次真实发生过的
 > `mcp-stitch` 事故，所以它不能依赖宿主在场）。本机没宿主时 R2 会明说「未检查」并以 0 退出，
 > **不会假装通过**。
+
+> **`pnpm test` 在本地会因为「完整克隆」而红，而 CI 的浅克隆反而绿**：`scripts/sync-upstream.test.mjs`
+> 的 `--preflight 对已同步的目标如实报告` 用例先判输出里有没有「浅克隆」，有就只要求
+> `fetch --unshallow`，没有才要求 `/已同步/`。CI 的 checkout 默认 `fetch-depth: 1`，走的是浅克隆分支；
+> 本地是完整克隆，于是真的去算共同祖先，一旦某个 fork 落后上游就报「落后：共同祖先 …」，
+> 断言失败。**这不是回归**：判据是 `node scripts/sync-upstream.mjs --preflight <id>` 的输出
+> ——状态是「落后」即属预期，只有它报「已同步」而测试仍红才是真问题。让该 fork 追上上游
+> 或把本地克隆变浅才能消掉这条红，两者都不该为「让测试绿」而做。
 
 > **`--workspace-concurrency=2` 不是性能旋钮，别调大**：`node --test` 与 vitest 各自按
 > CPU 数开 worker，pnpm 再并发跑多个包，两个乘数叠起来会在 10 核机器上拉起 ~30 个测试进程，
