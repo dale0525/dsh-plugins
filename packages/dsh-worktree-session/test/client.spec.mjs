@@ -146,11 +146,13 @@ describe('workspace row markers', () => {
   const originalFetch = globalThis.fetch
   const originalDocument = globalThis.document
   const originalObserver = globalThis.MutationObserver
+  const originalWindow = globalThis.window
 
   after(() => {
     globalThis.fetch = originalFetch
     globalThis.document = originalDocument
     globalThis.MutationObserver = originalObserver
+    globalThis.window = originalWindow
   })
 
   /**
@@ -194,6 +196,26 @@ describe('workspace row markers', () => {
       }
     }
 
+    /** One event target the marker pass subscribes to. */
+    function makeTarget() {
+      const listeners = new Map()
+      return {
+        listeners,
+        addEventListener: (type, handler) => {
+          if (!listeners.has(type)) listeners.set(type, new Set())
+          listeners.get(type).add(handler)
+        },
+        removeEventListener: (type, handler) => {
+          const set = listeners.get(type)
+          if (set) set.delete(handler)
+        },
+        /** Deliver one event, the way the browser would. */
+        emit: (type) => {
+          for (const handler of [...(listeners.get(type) || [])]) handler()
+        },
+      }
+    }
+
     const document = {
       querySelectorAll: (selector) => {
         if (selector === '[data-row-key^="workspace:"]') {
@@ -230,6 +252,7 @@ describe('workspace row markers', () => {
 
     return {
       document,
+      window: makeTarget(),
       MutationObserver,
       styles,
       observers,
@@ -274,6 +297,7 @@ describe('workspace row markers', () => {
   /** Run the row-marker effect against one workspace list, one Session list and DOM. */
   async function mountRows(workspaces, dom, sessions = sessionsOf({})) {
     globalThis.document = dom.document
+    globalThis.window = dom.window
     globalThis.MutationObserver = dom.MutationObserver
     const { effects } = applyWith({ workspaces, sessions })
     const cleanup = effects[1]()
@@ -440,6 +464,40 @@ describe('workspace row markers', () => {
 
     assert.equal(dom.observers[0].disconnected, true)
     assert.deepEqual(dom.observers[0].options, { childList: true, subtree: true })
+  })
+
+  it('re-reads the worktree count when the window regains focus', async () => {
+    // A worktree removed outside DSH — a branch merged, then `git worktree
+    // remove` in a terminal — leaves the cached answer claiming it still
+    // exists, and nothing in the page asks again. Returning to the window is
+    // that moment.
+    let worktrees = [
+      { path: '/repo', isMain: true, name: 'repo' },
+      { path: '/repo/.worktrees/wt-a', isMain: false, name: 'wt-a' },
+    ]
+    globalThis.fetch = () =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve({ isRepo: true, repoRoot: '/repo', worktrees }) })
+    const dom = makeDom()
+    const row = dom.addRow('w-main')
+
+    await mountRows(listOf([{ workspaceId: 'w-main', path: '/repo' }]), dom)
+    assert.equal(row.title.getAttribute('data-dsh-worktree-count'), '1')
+
+    worktrees = [{ path: '/repo', isMain: true, name: 'repo' }]
+    dom.window.emit('focus')
+    await settle()
+
+    assert.equal(row.title.getAttribute('data-dsh-worktree-count'), null)
+  })
+
+  it('stops listening for focus when the effect is disposed', async () => {
+    globalThis.fetch = statusFetch([])
+    const dom = makeDom()
+
+    const cleanup = await mountRows(listOf([]), dom)
+    cleanup()
+
+    assert.equal(dom.window.listeners.get('focus').size, 0)
   })
 
   it('counts the repository worktrees on the plain workspace row', async () => {

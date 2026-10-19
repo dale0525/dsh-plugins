@@ -622,7 +622,25 @@ window.__ModuleLoader__.load({
       // A row can already be on screen when its projection arrives, and the
       // projection update does not necessarily touch the DOM.
       var unsubscribe = sessions.list.subscribe(schedule)
+
+      /**
+       * Forget every cached status read and mark the rows again.
+       *
+       * Nothing re-reads a directory on its own: a row is stamped from a cached
+       * answer, so a worktree created or removed outside DSH — a `git worktree
+       * add` in a terminal, a branch merged and its worktree cleaned up — leaves
+       * the badge at its old value until the page is reloaded. Returning to the
+       * window is the one moment the user expects a fresh answer, and it costs
+       * one status read per visible directory.
+       */
+      var refresh = function () {
+        statusCache.clear()
+        mark()
+      }
+      window.addEventListener('focus', refresh)
+
       return function () {
+        window.removeEventListener('focus', refresh)
         observer.disconnect()
         unsubscribe()
       }
