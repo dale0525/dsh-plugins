@@ -50,7 +50,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmRuntime } from '@deepseek-ai/dsh-llm'
-import { appendPluginRecord, pluginRecordOf, type Session } from '@deepseek-ai/dsh-session'
+import { appendPluginRecord, pluginRecordOf, SessionId, type Session } from '@deepseek-ai/dsh-session'
 // Type-only: pull the Cordis Context augmentations (webServer / connection) and
 // the WebRoute contract without any runtime import.
 import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
@@ -715,6 +715,21 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
   /** Whether this deployment can move a Session at all. */
   const deferred = (): boolean => ctx.get('workingDirectory') !== undefined
 
+  /**
+   * Resolve one Session by id, or `undefined` when the id names none.
+   *
+   * Read through `ctx.get` rather than `ctx.sessions`: a route handler runs
+   * outside the fiber that injected `sessions` for the pre-step listener, and
+   * an un-injected property read on that context throws — the throw surfaces as
+   * an empty 400 from the web server, which the composer renders as a failed
+   * read. `get` asks the store instead of the property proxy.
+   */
+  const sessionOf = (sessionId: string | null | undefined): Session | undefined => {
+    if (sessionId === null || sessionId === undefined || sessionId === '') return undefined
+    const sessions = ctx.get('sessions')
+    return sessions === undefined ? undefined : sessions.get(SessionId(sessionId))
+  }
+
   return [
     {
       kind: 'exact',
@@ -734,7 +749,7 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
         const worktrees = await listWorktrees(cwd)
         const repoRoot = worktrees[0]?.path
         const sessionId = params.get('sessionId')
-        const session = sessionId === null || sessionId === '' ? undefined : ctx.sessions.get(sessionId as Parameters<typeof ctx.sessions.get>[0])
+        const session = sessionOf(sessionId)
         writeJson(res, 200, {
           isRepo: repoRoot !== undefined,
           repoRoot: repoRoot ?? null,
@@ -768,7 +783,7 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
           writeJson(res, 400, { error: 'sessionId and from are required' })
           return
         }
-        const session = ctx.sessions.get(sessionId as Parameters<typeof ctx.sessions.get>[0])
+        const session = sessionOf(sessionId)
         if (session === undefined) {
           writeJson(res, 404, { error: 'session not found' })
           return

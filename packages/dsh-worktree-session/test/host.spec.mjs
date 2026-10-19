@@ -345,7 +345,11 @@ function makeCtx(services = {}) {
         callback()
       },
       logger: { info: () => {}, warn: () => {} },
-      sessions: { get: () => undefined },
+      // Deliberately no `sessions` property: cordis resolves a service through
+      // `ctx.get(name)` unless the fiber declared it in `inject`, and reading an
+      // un-injected property throws. A stub that exposes `sessions` directly
+      // hides that contract, which is exactly how a route that only works in
+      // tests shipped.
       ...services,
     },
   }
