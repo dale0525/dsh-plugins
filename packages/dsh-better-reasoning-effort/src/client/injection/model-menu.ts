@@ -19,7 +19,31 @@
  * 0.2.0-rc.2 model list, which swaps in `group` because its own list box
  * takes role="menu" (ModelSelect.tsx:484). There the menu rows identify the
  * popover instead -- see {@link isSeatPopup}.
+ *
+ * SHAPE ALONE IS NOT ENOUGH for the inline route: the worktree picker is a
+ * second seat in the same composer and renders through the same Menu
+ * primitive, so its popover is also a role="menu" right after a
+ * button[aria-haspopup="menu"]. Matching it put this plugin's slider into the
+ * branch picker. The slot wrapper is what separates them -- see
+ * {@link seatSlotOf}.
  */
+
+/** The composer slot that owns the model seat. */
+const MODEL_SEAT_SLOT = 'conversation.input.model'
+
+/**
+ * The composer slot an element belongs to, when the kernel wraps slots in
+ * elements at all.
+ *
+ * Kernels render each seat inside a `[data-slot]` wrapper, so the model seat
+ * can be identified exactly instead of by popover shape. Older kernels have
+ * no such wrapper: `undefined` there means "unknown", not "not the seat".
+ * @param element - any node inside the composer.
+ * @returns the slot name, or undefined when there is no wrapper.
+ */
+function seatSlotOf(element: HTMLElement): string | undefined {
+  return element.closest('[data-slot]')?.getAttribute('data-slot') ?? undefined
+}
 
 /**
  * Whether an element is the seat's popover rather than some other linked or
@@ -47,14 +71,21 @@ export function findModelMenu(doc: Document = document): HTMLElement | undefined
     if (menu !== null && isSeatPopup(menu)) return menu
   }
   // Fallback: the pre-portal inline shape — the popover sits right after its
-  // trigger button, which disambiguates it from other popovers in the card.
+  // trigger button. That shape is shared with every other seat built on the
+  // same Menu primitive, so the slot wrapper decides which one is the model
+  // seat; a kernel without slot wrappers keeps the old shape-only answer.
   const popovers = card === null
     ? Array.from(doc.querySelectorAll<HTMLElement>('[role="menu"], [role="group"]'))
     : Array.from(card.querySelectorAll<HTMLElement>('[role="menu"], [role="group"]'))
+  let unwrapped: HTMLElement | undefined
   for (const popover of popovers) {
-    if (popover.previousElementSibling?.matches('button[aria-haspopup="menu"]') && isSeatPopup(popover)) return popover
+    if (!popover.previousElementSibling?.matches('button[aria-haspopup="menu"]')) continue
+    if (!isSeatPopup(popover)) continue
+    const slot = seatSlotOf(popover)
+    if (slot === MODEL_SEAT_SLOT) return popover
+    if (slot === undefined && unwrapped === undefined) unwrapped = popover
   }
-  return undefined
+  return unwrapped
 }
 
 /** The official composer model menu: the seat root's open popover. */

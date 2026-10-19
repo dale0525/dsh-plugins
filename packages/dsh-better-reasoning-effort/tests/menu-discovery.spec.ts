@@ -140,6 +140,54 @@ describe('findModelMenu', () => {
     expect(findModelMenu()).toBe(inline)
   })
 
+  it('ignores another composer seat whose inline menu has the same shape', () => {
+    // The worktree picker is a second seat in the same composer and renders
+    // through the same Menu primitive: an inline popover right after an
+    // aria-haspopup="menu" trigger. Shape alone cannot tell the two apart, so
+    // the slot wrapper decides -- the model seat's slider must not land in the
+    // branch picker.
+    const card = document.createElement('div')
+    card.setAttribute('data-composer-card', '')
+    const foreign = document.createElement('div')
+    foreign.setAttribute('data-slot', 'conversation.input.left')
+    const wrapper = document.createElement('span')
+    wrapper.appendChild(trigger(null))
+    const branchMenu = menu('branch-menu')
+    branchMenu.innerHTML = '<button role="menuitem">main</button>'
+    wrapper.appendChild(branchMenu)
+    foreign.appendChild(wrapper)
+    card.appendChild(foreign)
+    document.body.appendChild(card)
+
+    expect(findModelMenu()).toBeUndefined()
+  })
+
+  it('prefers the model seat when two inline menus are open at once', () => {
+    const card = document.createElement('div')
+    card.setAttribute('data-composer-card', '')
+    const foreign = document.createElement('div')
+    foreign.setAttribute('data-slot', 'conversation.input.left')
+    const branchWrapper = document.createElement('span')
+    branchWrapper.appendChild(trigger(null))
+    const branchMenu = menu('branch-menu')
+    branchMenu.innerHTML = '<button role="menuitem">main</button>'
+    branchWrapper.appendChild(branchMenu)
+    foreign.appendChild(branchWrapper)
+    card.appendChild(foreign)
+    const seat = document.createElement('div')
+    seat.setAttribute('data-slot', 'conversation.input.model')
+    const seatWrapper = document.createElement('div')
+    seatWrapper.appendChild(trigger(null))
+    const model = menu('model-menu')
+    model.innerHTML = '<button role="menuitemradio">DeepSeek V4.1 Flash</button>'
+    seatWrapper.appendChild(model)
+    seat.appendChild(seatWrapper)
+    card.appendChild(seat)
+    document.body.appendChild(card)
+
+    expect(findModelMenu()).toBe(model)
+  })
+
   it('returns undefined when no menu is open', () => {
     const card = document.createElement('div')
     card.setAttribute('data-composer-card', '')
