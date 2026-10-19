@@ -1,7 +1,7 @@
 {
   "name": "@logictan/dsh-worktree-session",
   "description": "Git-worktree sessions for dsh: pick 'work on the main checkout', an existing linked worktree, or 'new worktree' right beside the composer's workspace picker. A new worktree is created on the first message, named after the task by one auxiliary model call, and the Session's working directory moves into it — so its tools run in the checkout while the conversation stays in its Workspace. The host half owns the git plumbing (branch, worktree add, .gitignore entry); the browser half registers the picker and the sidebar row icon.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",

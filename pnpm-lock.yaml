@@ -69,7 +69,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-todo-goal
       '@logictan/dsh-worktree-session':
-        specifier: ^0.1.6
+        specifier: ^0.1.7
         version: link:../dsh-worktree-session
 
   packages/dsh-better-reasoning-effort:
