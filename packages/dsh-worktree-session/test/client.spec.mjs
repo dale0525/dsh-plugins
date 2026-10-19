@@ -836,6 +836,37 @@ describe('composer picker status handling', () => {
     assert.equal(item.disabled, true, 'a second intent must not be recordable')
   })
 
+  it('names the worktree the Session actually runs in', async () => {
+    // The regression: after the deferred checkout existed, the picker still
+    // read "worktree pending" and offered the main checkout, because it
+    // identified the current checkout by `cwd` -- the directory the Session was
+    // CREATED in -- instead of the one its tools run in.
+    globalThis.fetch = recordingFetch(
+      statusBody([
+        { path: '/repo-moved', name: 'repo-moved', isMain: true, prunable: false },
+        { path: '/repo-moved/.worktrees/fix-parser', name: 'fix-parser', isMain: false, prunable: false },
+      ]),
+    )
+
+    const mounted = await mount('/repo-moved', {
+      props: {
+        useSessions: (selector) =>
+          selector({
+            byId: {
+              'session-1': {
+                cwd: '/repo-moved',
+                blank: false,
+                projectionValues: { workingDirectory: '/repo-moved/.worktrees/fix-parser' },
+              },
+            },
+          }),
+      },
+    })
+
+    assert.equal(labelOf(mounted), 'fix-parser')
+    assert.equal(mounted.tree().props.selectedId, '/repo-moved/.worktrees/fix-parser')
+  })
+
   it('lands on an existing worktree through a navigation, not a bare connect', async () => {
     // The regression: `connectWorkspace` only connects, so the user was left
     // in the blank composer they started in and had to find the workspace in

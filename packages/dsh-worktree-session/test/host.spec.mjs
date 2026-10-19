@@ -304,6 +304,16 @@ describe('durable markers', () => {
     assert.deepEqual(readWorktreeRecords(session), { waiting: { from: '/repo' } })
   })
 
+  it('stops owing a worktree once its creation marker lands', () => {
+    // The regression: the waiting marker outlived the creation, so the
+    // composer kept reading "worktree pending" after the checkout existed.
+    const session = Session.create('session-markers-2b')
+    markWaiting(session, '/repo')
+    appendPluginRecord(session, 'plugin:worktree-session/creation', { name: 'first-task' })
+
+    assert.deepEqual(readWorktreeRecords(session), { creation: { name: 'first-task' } })
+  })
+
   it('ignores records whose payload an older build wrote differently', () => {
     const session = Session.create('session-markers-3')
     appendPluginRecord(session, 'plugin:worktree-session/waiting', { from: 42 })
@@ -437,10 +447,9 @@ describe('deferred worktree creation', () => {
     assert.equal(created[0].request.name, 'fix-the-parser')
     // The host service moved the Session itself, so the plugin must not.
     assert.deepEqual(moved, [])
-    assert.deepEqual(readWorktreeRecords(session), {
-      waiting: { from: '/repo' },
-      creation: { name: 'fix-the-parser' },
-    })
+    // The creation marker settles the waiting one: the checkout exists, so the
+    // Session no longer owes a worktree and the picker stops saying so.
+    assert.deepEqual(readWorktreeRecords(session), { creation: { name: 'fix-the-parser' } })
   })
 
   it('commits the chosen name before Git runs, so a resume reuses it', async () => {

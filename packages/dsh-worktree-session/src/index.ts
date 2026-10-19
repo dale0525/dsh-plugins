@@ -158,8 +158,12 @@ export interface WorktreeRecords {
  *
  * Record payloads are validated here rather than trusted: a restored log may
  * carry what an earlier build of this plugin wrote, which is the documented
- * contract for plugin records. A later waiting marker supersedes an earlier
- * creation marker, so asking for a second worktree re-arms the Session.
+ * contract for plugin records. The two markers are sequential, not cumulative:
+ * a waiting marker re-arms the Session and a creation marker settles it, so
+ * only the LAST of the two is in force. A later waiting marker supersedes an
+ * earlier creation marker (asking for a second worktree), and a creation
+ * marker supersedes the waiting marker it was written for (the checkout now
+ * exists, so nothing is owed).
  * @param session - Session whose log to read.
  * @returns the markers still in force.
  */
@@ -178,7 +182,10 @@ export function readWorktreeRecords(session: Session): WorktreeRecords {
     }
     if (record.type === CREATION) {
       const name = (record.data as { name?: unknown }).name
-      if (typeof name === 'string') creation = { name }
+      if (typeof name === 'string') {
+        creation = { name }
+        waiting = undefined
+      }
     }
   }
   return { ...(waiting === undefined ? {} : { waiting }), ...(creation === undefined ? {} : { creation }) }

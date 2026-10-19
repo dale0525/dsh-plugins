@@ -152,6 +152,12 @@ window.__ModuleLoader__.load({
       })
       var sessionCwd = session ? session.cwd : undefined
       var blank = session ? session.blank === true : false
+      // `cwd` is where the Session was CREATED; `workingDirectory` is where its
+      // tools run. They differ exactly when a deferred worktree exists, and the
+      // picker must name the checkout the Session is in NOW -- otherwise it
+      // keeps offering the main checkout and never shows the branch.
+      var projected = session && session.projectionValues ? session.projectionValues.workingDirectory : undefined
+      var effectiveCwd = typeof projected === 'string' && projected !== '' ? projected : sessionCwd
       var workspacePath = props.useWorkspaces(function (state) {
         if (!state || !Array.isArray(state.items)) return undefined
         var direct = state.items.find(function (item) {
@@ -159,7 +165,7 @@ window.__ModuleLoader__.load({
         })
         return direct ? direct.path : undefined
       })
-      var cwd = sessionCwd || workspacePath || undefined
+      var cwd = effectiveCwd || workspacePath || undefined
 
       var input = props.useInput(function (state) {
         return state
