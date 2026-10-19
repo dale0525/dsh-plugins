@@ -312,6 +312,14 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
 > 实测同一进程同一秒：PATH 无 `/usr/sbin` 判 NOT LISTENING，补上即 `Verdict: OK`。
 > 见到 NOT LISTENING 先用 `lsof -nP -iTCP:10000 -sTCP:LISTEN`（绝对路径）复核，别直接重启。
 
+> **同一端口上可能有两个监听者，`lsof -t | head -1` 会抓错**：宿主 0.2.1 起拒绝通配地址
+> （`host "0.0.0.0" is an unspecified (wildcard) address`），一个监听无法同时覆盖回环与局域网，
+> 于是回环靠一个独立的转发进程补齐。此时 `lsof` 返回两行，谁先返回不确定；`port_pid` 若只取
+> 第一行，就会把转发进程当成端口 owner，输出 `==SPLIT== job pid != port owner` 并提示重启 ——
+> **重启修不好，因为作业本身是好的**。修法是让 `port_pid` 优先在 `lsof` 结果里找作业自己的 pid，
+> 找不到才退回第一行。判据：`lsof` 有两行、但其中一行等于 `launchctl print` 里的作业 pid 时，
+> 服务健康。
+
 ## 🔀 上游同步
 
 **同步是手工的。** 仓库只保留 `git subtree` 祖先和一个**只读**的查询工具：没有定时任务、
@@ -400,6 +408,12 @@ git subtree pull --prefix=packages/<pkg> <url> <tag>
 > run 整体 success=**false**。此时**先查线上实际版本再决定动作**——
 > `gh run rerun <id> --failed` 即可续跑，判重会跳过已发布的包；
 > 看到红 run 就重新升版，会白白多发一个版本。
+
+> **`gh run rerun --failed` 对「作业被超时取消」无效，改用 `gh workflow run` 续跑**：取消的 run
+> 没有失败步骤，`--failed` 会直接报没有可重跑的作业。实测 v0.5.90：整个 `publish` 作业撞
+> `timeout-minutes: 30` 被 `cancelled`，17 个包里只发完 7 个；`gh workflow run publish.yml
+> --ref main -f dry_run=false` 起一条新 run，判重跳过已发布的 7 个、从第 8 个继续。
+> 判据是 run 的 `conclusion`：`failure` 用 `--failed`，`cancelled` 用 `workflow run`。
 
 两条触发路径（`.github/workflows/publish.yml`）：
 
