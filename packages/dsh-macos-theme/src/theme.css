@@ -350,14 +350,25 @@ html body[data-ds-dark-theme] * {
    2. Floating window chrome — the 24px translucent sheet.
    `[data-slot="root"]` is `display:contents`, so `:has()` resolves the real
    boxed frame that owns it.
+
+   No `backdrop-filter` here, although the design export draws this sheet as
+   `backdrop-blur-2xl bg-white/95`. The blur turned the whole 1368x897 frame
+   (2736x1794 device px at 2x) into a backdrop root, so every repaint anywhere
+   inside it re-ran a 40px gaussian over the entire window; the cost therefore
+   scaled with whatever the chat was animating, and it always animates
+   something. Live Chrome GPU process, nothing / pet video / host spinner /
+   both: 0 / 7.5 / 14.3 / 20%, and 25.1% for both with the blur restored.
+
+   Removing it is invisible at a 95% opaque fill: the desktop shows through 5%,
+   and frozen-page captures with and without the filter differ by 0.58/255 mean
+   per channel, with every pixel above 8/255 sitting under a translucent popup
+   that samples the frame's composite through its own blur.
    ========================================================================== */
 body [data-slot='root'] > div {
-  @apply rounded-[24px] border backdrop-blur-[40px];
+  @apply rounded-[24px] border;
   border-color: rgba(255, 255, 255, 0.6);
   background-color: rgba(248, 250, 252, 0.95);
   box-shadow: 0 25px 60px -15px rgba(15, 23, 42, 0.28);
-  backdrop-filter: blur(40px) saturate(160%);
-  -webkit-backdrop-filter: blur(40px) saturate(160%);
   overflow: hidden;
 }
 

@@ -184,6 +184,41 @@ test('bordered components restore border-style without a global reset', () => {
   )
 })
 
+test('no rule declares a backdrop-filter', () => {
+  // The design export draws the frame as `backdrop-blur-2xl bg-white/95`, and
+  // that blur was implemented as `backdrop-filter: blur(40px) saturate(160%)` on
+  // the frame. It is not a constant cost: it makes the whole 1368x897 frame
+  // (2736x1794 device px at 2x) a backdrop root, so it re-runs a 40px gaussian
+  // over the entire window on EVERY frame in which anything inside repaints.
+  // Measured on the live host with the Chrome GPU process idle at 0%:
+  //   pet video only ...........................  7.5%
+  //   state-dot spinner only ................... 14.3%
+  //   both ..................................... 20.0%
+  //   both, frame blur restored ................ 25.1%
+  // and with this stylesheet removed entirely the spinner alone still costs
+  // 12.1%, so the spinner is the host's cost and the blur was the theme's.
+  //
+  // Removing it is invisible because the fill is 95% opaque: frozen-page
+  // captures with and without the filter differ by 0.58/255 mean per channel,
+  // and the only pixels differing by more than 8/255 (0.74% of channels) are
+  // under translucent popups, which sample the frame's composite through their
+  // own blur.
+  //
+  // Comments are stripped first: the block comment above the frame rule names
+  // the property, and a match inside it would satisfy nothing.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  for (const declaration of [/backdrop-filter\s*:/, /-webkit-backdrop-filter\s*:/, /--tw-backdrop-/]) {
+    assert.equal(
+      declaration.test(css),
+      false,
+      `a backdrop-filter re-appears in the compiled sheet: ${declaration}`,
+    )
+  }
+  const frame = /body \[data-slot='root'\] > div\s*\{([^}]*)\}/.exec(css)
+  assert.ok(frame, 'the frame must stay addressed by its stable slot anchor')
+  assert.match(frame[1], /background-color:\s*rgba\(248, 250, 252, 0\.95\)/, 'the frame keeps its 95% fill')
+})
+
 test('the conversation header is restyled as a single grid row', () => {
   // The host ships a 76px two-row grid. Measured: a single row with
   // `grid-template-columns: minmax(0,1fr) auto` and the tabs pinned to column 2
