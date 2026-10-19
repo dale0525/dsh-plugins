@@ -314,6 +314,24 @@ describe('durable markers', () => {
     assert.deepEqual(readWorktreeRecords(session), { creation: { name: 'first-task' } })
   })
 
+  it('carries the existing checkout the user picked', () => {
+    // Picking a checkout that is already on disk is a move, not a creation, so
+    // the intent has to name its destination.
+    const session = Session.create('session-markers-5')
+    markWaiting(session, '/repo', '/repo/.worktrees/fix-parser')
+
+    assert.deepEqual(readWorktreeRecords(session), {
+      waiting: { from: '/repo', target: '/repo/.worktrees/fix-parser' },
+    })
+  })
+
+  it('drops a target that is not a path', () => {
+    const session = Session.create('session-markers-6')
+    appendPluginRecord(session, 'plugin:worktree-session/waiting', { from: '/repo', target: 7 })
+
+    assert.deepEqual(readWorktreeRecords(session), { waiting: { from: '/repo' } })
+  })
+
   it('ignores records whose payload an older build wrote differently', () => {
     const session = Session.create('session-markers-3')
     appendPluginRecord(session, 'plugin:worktree-session/waiting', { from: 42 })
@@ -566,6 +584,73 @@ describe('deferred worktree creation', () => {
     await runPreStep(harness.ctx, { agent, messages: [humanMessage('Anything')] })
 
     assert.match(created[0], /^worktree-[0-9a-f]{6}$/)
+  })
+
+  it('moves into the checkout the user picked instead of creating one', async () => {
+    // A branch the user already has is a checkout that already exists: creating
+    // a second one would leave them in a directory they did not choose.
+    const session = Session.create('session-flow-13')
+    markWaiting(session, '/repo', '/repo/.worktrees/fix-parser')
+    const agent = makeAgent(session)
+    let created = 0
+    let named = 0
+    const moved = []
+    const harness = mount({
+      llm: {
+        stream: () => {
+          named += 1
+          return { async *[Symbol.asyncIterator]() {} }
+        },
+      },
+      worktrees: {
+        create: () => {
+          created += 1
+          return Promise.resolve({ path: '/repo/.worktrees/other', branch: 'other' })
+        },
+      },
+      workingDirectory: {
+        get: () => '/repo',
+        set: (owner, path) => {
+          moved.push(path)
+          return Promise.resolve(path)
+        },
+      },
+    })
+
+    await runPreStep(harness.ctx, { agent, messages: [humanMessage('Continue the parser work')] })
+
+    assert.equal(created, 0, 'an existing checkout must not be created again')
+    assert.equal(named, 0, 'a checkout that already exists needs no name')
+    assert.deepEqual(moved, ['/repo/.worktrees/fix-parser'])
+    // The move is settled by the same creation marker, so the picker stops
+    // reporting a pending intent once the Session is in the checkout.
+    assert.equal(readWorktreeRecords(session).waiting, undefined)
+
+    // A resumed first step must not move again.
+    await runPreStep(harness.ctx, { agent, messages: [humanMessage('Continue the parser work')] })
+    assert.deepEqual(moved, ['/repo/.worktrees/fix-parser'])
+  })
+
+  it('leaves the turn in place when the picked checkout is gone', async () => {
+    const session = Session.create('session-flow-14')
+    markWaiting(session, '/repo', '/repo/.worktrees/removed')
+    const agent = makeAgent(session)
+    const harness = mount({
+      workingDirectory: {
+        get: () => '/repo',
+        set: () => Promise.reject(new Error('working-directory: directory does not exist')),
+      },
+    })
+
+    const decision = await runPreStep(harness.ctx, { agent, messages: [humanMessage('Anything')] })
+
+    assert.equal(decision.kind, 'enter')
+    assert.equal(decision.messages.length, 1)
+    // The move is attempted once, like the creation path: leaving the intent
+    // armed would make the picker keep naming a checkout the Session never
+    // reached, and nothing would ever retry it -- turn 1, step 1 never repeats.
+    assert.equal(readWorktreeRecords(session).waiting, undefined)
+    assert.equal(readWorktreeRecords(session).creation?.name, 'removed')
   })
 
   it('does nothing on a later turn or step', async () => {
@@ -931,6 +1016,18 @@ describe('prepare route', () => {
     assert.deepEqual(readWorktreeRecords(session), { waiting: { from: '/repo' } })
   })
 
+  it('records an existing checkout as the destination', async () => {
+    const session = Session.create('session-prepare-5')
+    const post = prepareHarness({ session })
+
+    const response = await post({ sessionId: session.id, from: '/repo', target: '/repo/.worktrees/fix-parser' })
+
+    assert.equal(response.statusCode, 200)
+    assert.deepEqual(readWorktreeRecords(session), {
+      waiting: { from: '/repo', target: '/repo/.worktrees/fix-parser' },
+    })
+  })
+
   it('refuses a Session the host does not know', async () => {
     const session = Session.create('session-prepare-2')
     const post = prepareHarness({ session })
@@ -1038,6 +1135,52 @@ describe('status route', () => {
     const body = JSON.parse(response.payload)
     assert.equal(body.waiting, true)
     assert.equal(body.deferred, true)
+  })
+
+  it('reports the checkout a pending move will land in', async () => {
+    const session = Session.create('session-status-3')
+    markWaiting(session, '/repo', '/repo/.worktrees/fix-parser')
+    const registered = []
+    const mounted = mount({
+      workingDirectory: { get: () => '/repo', set: () => Promise.resolve('/repo') },
+      sessions: { get: (id) => (id === session.id ? session : undefined) },
+    })
+    mounted.waits[0].callback({
+      webServer: {
+        register: (route) => {
+          registered.push(route)
+          return () => {}
+        },
+      },
+      connection: { requestRejection: () => undefined },
+      effect: (callback) => {
+        callback()
+      },
+    })
+    const route = registered.find((candidate) => candidate.path === '/api/dsh-worktree/status')
+    const response = {
+      statusCode: undefined,
+      payload: undefined,
+      writeHead(status) {
+        this.statusCode = status
+      },
+      end(payload) {
+        this.payload = payload
+      },
+    }
+    await route.handler(
+      {
+        method: 'GET',
+        url: '/api/dsh-worktree/status?cwd=/definitely-not-a-repository&sessionId=' + session.id,
+        headers: { host: '127.0.0.1:10000' },
+        async *[Symbol.asyncIterator]() {},
+      },
+      response,
+    )
+
+    const body = JSON.parse(response.payload)
+    assert.equal(body.waiting, true)
+    assert.equal(body.waitingTarget, '/repo/.worktrees/fix-parser')
   })
 
   it('reports no pending intent for a Session without one', async () => {

@@ -1,23 +1,24 @@
 /**
  * dsh-worktree-session — host half.
  *
- * Defers a Git worktree to the first message of a conversation.
+ * Defers a worktree choice to the first message of a conversation.
  *
  * A Session's `cwd` is immutable, so "work in a worktree" cannot be a decision
  * made while an existing Session runs. It is made *before* the first message
  * instead: the composer creates a blank Session in the current Workspace and
  * records a waiting marker on it. When that Session's first step is proposed,
- * this plugin names the branch from the user's own message with one auxiliary
- * model call, creates the branch and its checkout, and moves the Session's
- * working directory into it — the `working-directory` service appends the
- * durable change and its notice, so the model sees the new directory on that
- * same step. The Session keeps its original `cwd`, which is why it stays in its
- * Workspace group while its tools run in the worktree.
+ * this plugin moves the Session's working directory into a checkout — either one
+ * it creates, named from the user's own message with one auxiliary model call,
+ * or the one the user picked, which already existed. The `working-directory`
+ * service appends the durable change and its notice, so the model sees the new
+ * directory on that same step. The Session keeps its original `cwd`, which is
+ * why it stays in its Workspace group while its tools run in the worktree.
  *
  * Two markers make the decision durable and idempotent: the waiting marker says
- * "a worktree is owed", the creation marker says "a name has been chosen". The
- * name is committed *before* Git runs, so a turn that is resumed or retried
- * reuses the same name instead of minting a second branch.
+ * "a worktree is owed" (and, when the user picked an existing checkout, which
+ * one), the creation marker says "the intent is settled". The name is committed
+ * *before* Git runs, so a turn that is resumed or retried reuses the same name
+ * instead of minting a second branch.
  *
  * Both markers are experimental plugin records, not Session event types: an
  * event type this build does not know would make the stored log unreadable, so
@@ -43,7 +44,7 @@ import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { join, relative } from 'node:path'
+import { basename, join, relative } from 'node:path'
 import { promisify } from 'node:util'
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -125,22 +126,27 @@ interface WorktreeService {
  * Record type saying a worktree is owed to this Session.
  *
  * `from` is the directory the Session was created in, kept so the intent stays
- * readable without re-deriving it from the immutable header.
+ * readable without re-deriving it from the immutable header. `target` names a
+ * checkout that already exists — the user picked a branch they already have —
+ * so the first step moves the Session there instead of creating a second
+ * checkout of the same branch.
  */
 const WAITING = 'plugin:worktree-session/waiting'
 
 /**
- * Record type saying a branch name has been chosen for this Session.
+ * Record type saying this Session's worktree intent is settled.
  *
  * Committed before Git runs: a resumed or retried first step then reuses the
  * same name instead of minting a second branch, and a failed creation is not
- * retried forever.
+ * retried forever. For a checkout that already existed there was no name to
+ * choose, so `name` carries its directory name — the marker's meaning is "the
+ * intent is settled", and the picker reads it as "nothing is owed any more".
  */
 const CREATION = 'plugin:worktree-session/creation'
 
 declare module '@deepseek-ai/dsh-session/types' {
   interface PluginRecordMap {
-    'plugin:worktree-session/waiting': { from: string }
+    'plugin:worktree-session/waiting': { from: string; target?: string }
     'plugin:worktree-session/creation': { name: string }
   }
 }
@@ -148,7 +154,7 @@ declare module '@deepseek-ai/dsh-session/types' {
 /** What the log currently says about this Session's worktree. */
 export interface WorktreeRecords {
   /** Directory the Session was created in, when a worktree is owed. */
-  readonly waiting?: { readonly from: string }
+  readonly waiting?: { readonly from: string; readonly target?: string }
   /** Branch name already chosen, when one was. */
   readonly creation?: { readonly name: string }
 }
@@ -168,15 +174,19 @@ export interface WorktreeRecords {
  * @returns the markers still in force.
  */
 export function readWorktreeRecords(session: Session): WorktreeRecords {
-  let waiting: { from: string } | undefined
+  let waiting: { from: string; target?: string } | undefined
   let creation: { name: string } | undefined
   for (const event of session.snapshotEvents()) {
     const record = pluginRecordOf(event)
     if (record === undefined) continue
     if (record.type === WAITING) {
-      const from = (record.data as { from?: unknown }).from
-      if (typeof from !== 'string') continue
-      waiting = { from }
+      const data = record.data as { from?: unknown; target?: unknown }
+      if (typeof data.from !== 'string') continue
+      const target = data.target
+      waiting = {
+        from: data.from,
+        ...(typeof target === 'string' && target !== '' ? { target } : {}),
+      }
       creation = undefined
       continue
     }
@@ -195,9 +205,10 @@ export function readWorktreeRecords(session: Session): WorktreeRecords {
  * Record that this Session owes a worktree.
  * @param session - the blank Session the composer created.
  * @param from - directory the Session was created in.
+ * @param target - an existing checkout to move into instead of creating one.
  */
-export function markWaiting(session: Session, from: string): void {
-  appendPluginRecord(session, WAITING, { from })
+export function markWaiting(session: Session, from: string, target?: string): void {
+  appendPluginRecord(session, WAITING, target === undefined ? { from } : { from, target })
 }
 
 /* -------------------------------------------------------------- git plumbing */
@@ -591,10 +602,13 @@ async function createCheckout(
 }
 
 /**
- * Run the deferred worktree creation for one accepted step.
+ * Run the deferred worktree choice for one accepted step.
  *
- * Runs only on the first step of the first turn, only when the Session owes a
- * worktree, and only when the user wrote something to name the branch after.
+ * Runs only on the first step of the first turn and only when the Session owes a
+ * worktree. A `target` in the waiting marker names a checkout that already
+ * exists, so the Session is moved there and nothing is created; without one the
+ * branch is named after the user's message and a fresh checkout is made.
+ *
  * Every failure is reported to the log and swallowed: the turn then runs in the
  * Session's original directory, which is the same place it would have run
  * without this plugin.
@@ -617,11 +631,24 @@ async function createDeferredWorktree(
   const session = agent.session
   const records = readWorktreeRecords(session)
   if (records.waiting === undefined || records.creation !== undefined) return
-  const prompt = firstHumanText(messages)
-  if (prompt === undefined) return
 
   const workingDirectory = ctx.get('workingDirectory') as WorkingDirectoryService | undefined
   if (workingDirectory === undefined) return
+
+  if (records.waiting.target !== undefined) {
+    // An existing checkout needs no name, and asking a model for one would only
+    // delay the move. The marker is settled before the move, exactly like the
+    // creation path below: the intent is attempted once, and leaving it armed
+    // would make the picker keep naming a destination the Session never reaches.
+    const target = records.waiting.target
+    appendPluginRecord(session, CREATION, { name: basename(target) })
+    const moved = await workingDirectory.set(agent, target, signal)
+    ctx.logger.info('worktree-session: moved into %s', moved)
+    return
+  }
+
+  const prompt = firstHumanText(messages)
+  if (prompt === undefined) return
 
   const name = await chooseName(ctx.get('llm'), agent, prompt, signal)
   signal.throwIfAborted()
@@ -757,6 +784,7 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
         const repoRoot = worktrees[0]?.path
         const sessionId = params.get('sessionId')
         const session = sessionOf(sessionId)
+        const records = session === undefined ? undefined : readWorktreeRecords(session)
         writeJson(res, 200, {
           isRepo: repoRoot !== undefined,
           repoRoot: repoRoot ?? null,
@@ -766,7 +794,10 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
           deferred: deferred(),
           // Whether this Session already owes a worktree, so the menu can show
           // the pending state instead of offering the same item twice.
-          waiting: session !== undefined && readWorktreeRecords(session).waiting !== undefined,
+          waiting: records?.waiting !== undefined,
+          // An existing checkout the Session is waiting to move into, so the
+          // control can name it instead of reading "pending" after the pick.
+          waitingTarget: records?.waiting?.target ?? null,
         })
       },
     },
@@ -786,6 +817,7 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
         const body = await readJsonBody(req)
         const sessionId = body === undefined ? undefined : stringField(body, 'sessionId')
         const from = body === undefined ? undefined : stringField(body, 'from')
+        const target = body === undefined ? undefined : stringField(body, 'target')
         if (sessionId === undefined || from === undefined) {
           writeJson(res, 400, { error: 'sessionId and from are required' })
           return
@@ -795,7 +827,7 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
           writeJson(res, 404, { error: 'session not found' })
           return
         }
-        markWaiting(session, from)
+        markWaiting(session, from, target)
         writeJson(res, 200, { ok: true })
       },
     },

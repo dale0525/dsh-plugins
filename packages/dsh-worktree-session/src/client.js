@@ -10,8 +10,11 @@
  * so the branch cannot be named before the user has said what the task is; the
  * choice is recorded on the current blank Session instead, and the host half
  * creates the branch from the first message and moves the Session's working
- * directory into it. This half only reads `GET /api/dsh-worktree/status` and
- * posts to `POST /api/dsh-worktree/prepare`.
+ * directory into it. Picking an existing worktree records that checkout as the
+ * destination instead: it is already on disk, so the first message moves the
+ * Session into it rather than creating a second Workspace for the same
+ * checkout. This half only reads `GET /api/dsh-worktree/status` and posts to
+ * `POST /api/dsh-worktree/prepare`.
  *
  * The sidebar then tells the two kinds apart without asking anyone: a Session
  * whose working directory differs from the `cwd` it was created in is running
@@ -113,16 +116,26 @@ window.__ModuleLoader__.load({
       return pending
     }
 
+    /** The last path segment, which is how a checkout is named in the menu. */
+    function checkoutName(path) {
+      if (typeof path !== 'string' || path === '') return ''
+      var trimmed = path.replace(/[\/\\]+$/, '')
+      var cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+      return cut === -1 ? trimmed : trimmed.slice(cut + 1)
+    }
+
     /** POST one Session's pending worktree intent. */
-    function postPrepare(sessionId, from) {
+    function postPrepare(sessionId, from, target) {
+      var body = { sessionId: sessionId, from: from }
+      if (target) body.target = target
       return fetch(API.prepare, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId: sessionId, from: from }),
+        body: JSON.stringify(body),
       }).then(function (response) {
-        return response.json().then(function (body) {
-          if (!response.ok) throw new Error(body && body.error ? body.error : 'status ' + response.status)
-          return body
+        return response.json().then(function (payload) {
+          if (!response.ok) throw new Error(payload && payload.error ? payload.error : 'status ' + response.status)
+          return payload
         })
       })
     }
@@ -130,10 +143,18 @@ window.__ModuleLoader__.load({
     /**
      * One worktree picker.
      *
-     * Switching to an existing checkout goes through `uiWorkspace.openWorkspace`,
-     * which connects the target Workspace and then navigates into it. Connecting
-     * reuses an existing blank Session for that Workspace when one exists, so
-     * opening the same worktree twice does not pile up empty Sessions.
+     * Two routes into an existing checkout, split by whether the conversation
+     * has said anything yet:
+     *
+     * - A blank conversation is moved into the checkout on its first message
+     *   (`prepare`), so it stays the conversation the user started and the
+     *   checkout keeps the single sidebar entry it already had.
+     * - A conversation that has run a step cannot move -- its `cwd` is
+     *   immutable -- so it opens a Session in that checkout's Workspace through
+     *   `uiWorkspace.openWorkspace`, which connects the Workspace and then
+     *   navigates into it. Connecting reuses an existing blank Session for that
+     *   Workspace when one exists, so opening the same worktree twice does not
+     *   pile up empty Sessions.
      *
      * `t` is framework-injected (the registration declares `locale`).
      */
@@ -231,6 +252,7 @@ window.__ModuleLoader__.load({
       // working-directory service the deferred flow has nowhere to land.
       var canDefer = !failed && status && status.isRepo && status.deferred === true
       var waiting = !failed && status && status.waiting === true
+      var waitingTarget = !failed && status && typeof status.waitingTarget === 'string' ? status.waitingTarget : ''
 
       var draft = (input && input.draft) || ''
       var attachmentCount = (input && input.attachmentIds && input.attachmentIds.length) || 0
@@ -256,16 +278,18 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * Record the worktree intent on this blank Session.
+       * Record a worktree intent on this blank Session.
        *
-       * Nothing is created here: the branch is named from the first message, so
-       * the record is all that can be committed before the user has said
-       * anything. The host half reads it back when that message arrives.
+       * Nothing is created here: a new branch is named from the first message,
+       * so the record is all that can be committed before the user has said
+       * anything. `target` names a checkout that already exists — the user
+       * picked a branch they already have — and the Session is moved there on
+       * that first message. The host half reads the record back either way.
        */
-      var prepare = function () {
+      var prepare = function (target) {
         setBusy(true)
         setNotice(null)
-        postPrepare(sessionId, cwd)
+        postPrepare(sessionId, cwd, target)
           .then(function () {
             setOpen(false)
             setStatus(null)
@@ -281,7 +305,19 @@ window.__ModuleLoader__.load({
 
       var handleSelect = function (id) {
         if (id === '__new__') {
-          prepare()
+          prepare(undefined)
+          return
+        }
+        // A blank conversation has no history and no tools have run, so it can
+        // simply be moved into the checkout the user picked. Creating a
+        // Workspace for that checkout instead would put a second sidebar entry
+        // beside the one it already has, and open a different conversation than
+        // the one the user was in. Picking again simply re-arms the intent with
+        // the new destination.
+        if (blank && canDefer) {
+          // Picking the checkout it already runs in would move it nowhere.
+          if (id === cwd) return
+          prepare(id)
           return
         }
         // Both remaining paths mint a Session with a new cwd, so both discard
@@ -319,6 +355,23 @@ window.__ModuleLoader__.load({
           ]
         : []
 
+      /**
+       * Name a checkout the same way its own menu row does.
+       *
+       * The main checkout is called "Main checkout", not by its directory name,
+       * so a pending move to it must read the same as the row it was picked
+       * from. A checkout the listing does not know (the repository was edited
+       * outside DSH since the read) still gets a usable name from its path.
+       */
+      var nameOf = function (path) {
+        if (!path) return ''
+        var entry = worktrees.find(function (candidate) {
+          return candidate.path === path
+        })
+        if (entry === undefined) return checkoutName(path)
+        return entry.isMain ? t('menu.main') : entry.name
+      }
+
       var triggerLabel = failed
         ? t('entry.failed')
         : !status
@@ -326,15 +379,19 @@ window.__ModuleLoader__.load({
           : !status.isRepo
             ? t('entry.label')
             : waiting
-              ? t('entry.pending')
+              ? // A pending move already knows where it lands, so name that
+                // checkout instead of saying a worktree is still to be made.
+                nameOf(waitingTarget) || t('entry.pending')
               : isWorktree
                 ? current.name
                 : t('entry.main')
 
       return React.createElement(Primitives.Menu, {
         open: open,
-        // The built-in check marks whichever row is the current checkout.
-        selectedId: cwd,
+        // The built-in check marks whichever row is the current checkout, or the
+        // one a pending move is heading for -- the same checkout the trigger
+        // names, so the label and the list cannot disagree.
+        selectedId: waiting && waitingTarget ? waitingTarget : cwd,
         anchor: React.createElement(
           Primitives.Button,
           {

@@ -861,6 +861,9 @@ describe('composer picker status handling', () => {
     )
 
     const mounted = await mount('/repo-switch', {
+      // A conversation that already has messages cannot adopt a checkout, so it
+      // keeps the older "open that Workspace" behaviour.
+      blank: false,
       props: {
         useInput: (selector) => selector({ draft: 'half-written prompt', attachmentIds: [] }),
         workspaces: { create: () => Promise.resolve({ workspaceId: 'w-other' }) },
@@ -892,6 +895,124 @@ describe('composer picker status handling', () => {
     assert.equal(labelOf(mounted), 'entry.pending')
     const [item] = mounted.tree().props.footer
     assert.equal(item.disabled, true, 'a second intent must not be recordable')
+  })
+
+  it('moves a new conversation into the checkout it picked, without a Workspace', async () => {
+    // The whole point: a branch that already exists already has a directory, so
+    // the conversation adopts it on its first message. Creating a Workspace for
+    // it would put a second entry for one checkout in the sidebar and land the
+    // user in a different conversation than the one they started.
+    const opened = []
+    const created = []
+    const calls = []
+    globalThis.fetch = recordingFetch(
+      statusBody([
+        { path: '/repo-adopt', name: 'repo-adopt', isMain: true, prunable: false },
+        { path: '/repo-adopt/.worktrees/fix-parser', name: 'fix-parser', isMain: false, prunable: false },
+      ]),
+      calls,
+    )
+
+    const mounted = await mount('/repo-adopt', {
+      props: {
+        workspaces: { create: (request) => (created.push(request), Promise.resolve({ workspaceId: 'w-adopt' })) },
+        uiWorkspace: { openWorkspace: (id) => (opened.push(id), Promise.resolve()) },
+      },
+    })
+    mounted.tree().props.onSelect('/repo-adopt/.worktrees/fix-parser')
+    await settle()
+
+    assert.deepEqual(created, [], 'an existing checkout needs no new Workspace')
+    assert.deepEqual(opened, [], 'the user stays in the conversation they started')
+    const prepare = calls.filter((call) => call.url === '/api/dsh-worktree/prepare')
+    assert.equal(prepare.length, 1)
+    assert.deepEqual(JSON.parse(prepare[0].options.body), {
+      sessionId: 'session-1',
+      from: '/repo-adopt',
+      target: '/repo-adopt/.worktrees/fix-parser',
+    })
+  })
+
+  it('keeps the draft when the conversation adopts an existing checkout', async () => {
+    // Adopting does not leave the Workspace, so nothing the user typed is lost
+    // and there is nothing to confirm.
+    let cleared = 0
+    const calls = []
+    globalThis.fetch = recordingFetch(
+      statusBody([
+        { path: '/repo-adopt-draft', name: 'repo-adopt-draft', isMain: true, prunable: false },
+        { path: '/repo-adopt-draft/.worktrees/other', name: 'other', isMain: false, prunable: false },
+      ]),
+      calls,
+    )
+
+    const mounted = await mount('/repo-adopt-draft', {
+      props: {
+        useInput: (selector) => selector({ draft: 'half-written prompt', attachmentIds: [] }),
+        inputActions: { setDraft: () => (cleared += 1) },
+      },
+    })
+    mounted.tree().props.onSelect('/repo-adopt-draft/.worktrees/other')
+    await settle()
+
+    assert.equal(cleared, 0)
+    assert.equal(calls.filter((call) => call.url === '/api/dsh-worktree/prepare').length, 1)
+  })
+
+  it('records no move when the conversation picks the checkout it is already in', async () => {
+    const calls = []
+    globalThis.fetch = recordingFetch(
+      statusBody([
+        { path: '/repo-same', name: 'repo-same', isMain: true, prunable: false },
+        { path: '/repo-same/.worktrees/other', name: 'other', isMain: false, prunable: false },
+      ]),
+      calls,
+    )
+
+    const mounted = await mount('/repo-same')
+    mounted.tree().props.onSelect('/repo-same')
+    await settle()
+
+    assert.equal(calls.filter((call) => call.url === '/api/dsh-worktree/prepare').length, 0)
+  })
+
+  it('names the checkout a pending move will land in', async () => {
+    // After the pick the control has to say where the conversation is going,
+    // not that a worktree is still to be created.
+    globalThis.fetch = recordingFetch(
+      statusBody(
+        [
+          { path: '/repo-pending-target', name: 'repo-pending-target', isMain: true, prunable: false },
+          { path: '/repo-pending-target/.worktrees/fix-parser', name: 'fix-parser', isMain: false, prunable: false },
+        ],
+        { waiting: true, waitingTarget: '/repo-pending-target/.worktrees/fix-parser' },
+      ),
+    )
+
+    const mounted = await mount('/repo-pending-target')
+
+    assert.equal(labelOf(mounted), 'fix-parser')
+    // The check has to sit on the same row the trigger names, or the list
+    // contradicts the label.
+    assert.equal(mounted.tree().props.selectedId, '/repo-pending-target/.worktrees/fix-parser')
+  })
+
+  it('names a pending move to the main checkout the way its own row does', async () => {
+    // The main checkout's row reads "Main checkout", not the directory's
+    // basename, so a pending move back to it must not invent a third name.
+    globalThis.fetch = recordingFetch(
+      statusBody(
+        [
+          { path: '/repo-back', name: 'repo-back', isMain: true, prunable: false },
+          { path: '/repo-back/.worktrees/other', name: 'other', isMain: false, prunable: false },
+        ],
+        { waiting: true, waitingTarget: '/repo-back' },
+      ),
+    )
+
+    const mounted = await mount('/repo-back/.worktrees/other')
+
+    assert.equal(labelOf(mounted), 'menu.main')
   })
 
   it('names the worktree the Session actually runs in', async () => {
@@ -926,9 +1047,11 @@ describe('composer picker status handling', () => {
   })
 
   it('lands on an existing worktree through a navigation, not a bare connect', async () => {
-    // The regression: `connectWorkspace` only connects, so the user was left
-    // in the blank composer they started in and had to find the workspace in
-    // the sidebar and start a second conversation there.
+    // A conversation that already has messages cannot move — its `cwd` is
+    // immutable and its first step has run — so the older route stays: open a
+    // Session in that checkout's Workspace. The regression this pins is that
+    // the call was `connectWorkspace`, which only connects and left the user
+    // staring at the blank composer they started in.
     const opened = []
     globalThis.fetch = recordingFetch(
       statusBody([
@@ -938,6 +1061,7 @@ describe('composer picker status handling', () => {
     )
 
     const mounted = await mount('/repo-nav', {
+      blank: false,
       props: {
         workspaces: { create: () => Promise.resolve({ workspaceId: 'w-new' }) },
         uiWorkspace: {
