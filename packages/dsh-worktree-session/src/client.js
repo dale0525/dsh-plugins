@@ -529,6 +529,27 @@ window.__ModuleLoader__.load({
       'background-color:#93c5fd}',
       'body[data-ds-dark-theme] [data-row-key^="session:"][data-dsh-worktree-session]:hover>span:first-child::after{',
       'background-color:#bfdbfe}',
+      // The checkout's name, as a second line under the title. Five rows in
+      // five different worktrees all carried the same blue branch glyph and
+      // were therefore indistinguishable; the name is what tells them apart.
+      //
+      // `border-box` is load-bearing: the host's row is `content-box`, so a
+      // `min-height` of 46px would render as 56px once the vertical padding
+      // below is added (measured).
+      '[data-row-key^="session:"][data-dsh-worktree-name]{box-sizing:border-box;',
+      'flex-wrap:wrap;height:auto;min-height:46px;padding-top:4px;padding-bottom:4px;',
+      'align-content:center}',
+      // A full-width flex item wraps onto its own line. The left padding is 36px
+      // because that is where the title's *text* starts from the row's content
+      // edge — the 16px leading slot plus the 20px the title reserves for the
+      // glyph. Indenting by the title's margin alone would hang the name 16px
+      // to the left of it (measured).
+      '[data-row-key^="session:"][data-dsh-worktree-name]::after{',
+      'content:attr(data-dsh-worktree-name);flex:0 0 100%;box-sizing:border-box;',
+      'padding-left:36px;font-size:10.5px;line-height:14px;font-weight:500;letter-spacing:.2px;',
+      'color:#2563eb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      'body[data-ds-dark-theme] [data-row-key^="session:"][data-dsh-worktree-name]::after{',
+      'color:#93c5fd}',
     ].join('')
 
     /** Attribute this plugin stamps on a workspace row that is a worktree. */
@@ -539,6 +560,16 @@ window.__ModuleLoader__.load({
 
     /** Attribute this plugin stamps on a Session row whose tools run in a worktree. */
     var SESSION_ATTR = 'data-dsh-worktree-session'
+
+    /**
+     * Attribute carrying the checkout's name on a worktree Session row.
+     *
+     * Separate from {@link SESSION_ATTR} because the two answer different
+     * questions: the marker says "this row runs in a worktree", which the list
+     * snapshot alone answers, while the name needs the checkout's branch, which
+     * only the status read knows.
+     */
+    var NAME_ATTR = 'data-dsh-worktree-name'
 
     /**
      * Mark every sidebar workspace row whose directory is a linked worktree.
@@ -631,7 +662,7 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * Mark Session rows from the list snapshot alone.
+       * Mark Session rows from the list snapshot alone, and name their checkout.
        *
        * A Session keeps the `cwd` it was created in — that is what keeps it in
        * its Workspace group — while `workingDirectory` follows the worktree its
@@ -639,6 +670,12 @@ window.__ModuleLoader__.load({
        * definition of "this conversation works in a worktree", and it needs no
        * request: the projection arrives with the list and with every live
        * `working-directory/change`.
+       *
+       * The *name* is a second question. The directory name is in the path, so
+       * the row is labelled on the first pass and never shows a blank line; the
+       * branch then replaces it once the status read answers, because the branch
+       * is what the user named and what the picker lists, and `git worktree add
+       * <dir> -b <branch>` lets the two differ.
        */
       var markSessionRows = function () {
         var snapshot = sessions.list.getSnapshot()
@@ -655,7 +692,41 @@ window.__ModuleLoader__.load({
             if (wanted) row.setAttribute(SESSION_ATTR, 'branch')
             else row.removeAttribute(SESSION_ATTR)
           }
+          if (wanted) nameSessionRow(row, projected)
+          else if (row.getAttribute(NAME_ATTR) !== null) row.removeAttribute(NAME_ATTR)
         }
+      }
+
+      /**
+       * Stamp one Session row with its checkout's name, refining it to the branch.
+       *
+       * The status read is per checkout and already cached, so a workspace with
+       * ten Sessions in one worktree still issues one request, and the same read
+       * the picker uses answers here too. A failed read keeps the directory
+       * name: the row already knows where it runs, and the branch is only the
+       * better of two labels.
+       */
+      var nameSessionRow = function (row, path) {
+        var fallback = checkoutName(path)
+        writeName(row, fallback)
+        loadStatus(path, undefined).then(
+          function (status) {
+            var entry = (status.worktrees || []).find(function (candidate) {
+              return candidate.path === path
+            })
+            // A detached checkout has no branch to name it, and its directory is
+            // the only thing left to call it.
+            writeName(row, (entry && entry.branch) || (entry && entry.name) || fallback)
+          },
+          function () {},
+        )
+      }
+
+      /** Write the name only when it changed, so a re-pass never invalidates style. */
+      var writeName = function (row, name) {
+        if (name === '') return
+        if (row.getAttribute(NAME_ATTR) === name) return
+        row.setAttribute(NAME_ATTR, name)
       }
 
       mark()

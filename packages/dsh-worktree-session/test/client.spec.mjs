@@ -455,6 +455,156 @@ describe('workspace row markers', () => {
     assert.equal(row.getAttribute('data-dsh-worktree-session'), null)
   })
 
+  /** A status read naming each worktree's branch, which is what a row shows. */
+  function branchFetch(entries) {
+    return (url) => {
+      const cwd = decodeURIComponent(String(url).split('cwd=')[1].split('&')[0])
+      const worktrees = [{ path: '/repo', isMain: true, name: 'repo' }]
+      for (const entry of entries) {
+        worktrees.push({ path: entry.path, isMain: false, name: entry.name, detached: entry.branch === undefined })
+        if (entry.branch !== undefined) worktrees[worktrees.length - 1].branch = entry.branch
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ isRepo: true, repoRoot: '/repo', worktrees, deferred: true }),
+      })
+    }
+  }
+
+  it('names the worktree a session row runs in, so the row identifies its checkout', async () => {
+    // The branch is the name the user gave the checkout, and it is what the
+    // picker lists, so the row and the menu agree. It is not derivable from the
+    // path: `git worktree add <dir> -b <branch>` lets the two differ.
+    globalThis.fetch = branchFetch([{ path: '/repo/.worktrees/wt-dir', name: 'wt-dir', branch: 'fix-the-parser' }])
+    const dom = makeDom()
+    const row = dom.addSessionRow('session-wt')
+
+    await mountRows(
+      listOf([]),
+      dom,
+      sessionsOf({
+        'session-wt': { cwd: '/repo', projectionValues: { workingDirectory: '/repo/.worktrees/wt-dir' } },
+      }),
+    )
+
+    assert.equal(row.getAttribute('data-dsh-worktree-name'), 'fix-the-parser')
+  })
+
+  it('falls back to the directory name for a detached worktree, which has no branch', async () => {
+    globalThis.fetch = branchFetch([{ path: '/repo/.worktrees/detached-checkout', name: 'detached-checkout' }])
+    const dom = makeDom()
+    const row = dom.addSessionRow('session-wt')
+
+    await mountRows(
+      listOf([]),
+      dom,
+      sessionsOf({
+        'session-wt': {
+          cwd: '/repo',
+          projectionValues: { workingDirectory: '/repo/.worktrees/detached-checkout' },
+        },
+      }),
+    )
+
+    assert.equal(row.getAttribute('data-dsh-worktree-name'), 'detached-checkout')
+  })
+
+  it('names the checkout from its path before the status read answers', async () => {
+    // The row is on screen before any request returns; an empty second line
+    // would read as "this row has no worktree" and then grow one.
+    globalThis.fetch = () => new Promise(() => {})
+    const dom = makeDom()
+    const row = dom.addSessionRow('session-wt')
+
+    await mountRows(
+      listOf([]),
+      dom,
+      sessionsOf({
+        'session-wt': { cwd: '/repo', projectionValues: { workingDirectory: '/repo/.worktrees/fix-the-parser' } },
+      }),
+    )
+
+    assert.equal(row.getAttribute('data-dsh-worktree-name'), 'fix-the-parser')
+  })
+
+  it('leaves a main-checkout session without a worktree name', async () => {
+    globalThis.fetch = branchFetch([])
+    const dom = makeDom()
+    const row = dom.addSessionRow('session-plain')
+
+    await mountRows(
+      listOf([]),
+      dom,
+      sessionsOf({ 'session-plain': { cwd: '/repo', projectionValues: { workingDirectory: '/repo' } } }),
+    )
+
+    assert.equal(row.getAttribute('data-dsh-worktree-name'), null)
+  })
+
+  it('drops the worktree name when the projection catches up', async () => {
+    globalThis.fetch = branchFetch([])
+    const dom = makeDom()
+    const row = dom.addSessionRow('session-wt')
+    row.setAttribute('data-dsh-worktree-name', 'fix-the-parser')
+
+    await mountRows(
+      listOf([]),
+      dom,
+      sessionsOf({ 'session-wt': { cwd: '/repo', projectionValues: { workingDirectory: '/repo' } } }),
+    )
+
+    assert.equal(row.getAttribute('data-dsh-worktree-name'), null)
+  })
+
+  it('rewrites the worktree name only when it changes', async () => {
+    globalThis.fetch = branchFetch([{ path: '/repo/.worktrees/wt-a', name: 'wt-a', branch: 'wt-a' }])
+    const dom = makeDom()
+    const row = dom.addSessionRow('session-wt')
+    const sessions = sessionsOf({
+      'session-wt': { cwd: '/repo', projectionValues: { workingDirectory: '/repo/.worktrees/wt-a' } },
+    })
+
+    await mountRows(listOf([]), dom, sessions)
+    assert.equal(row.getAttribute('data-dsh-worktree-name'), 'wt-a')
+
+    // The observer re-runs this on every DOM change, and typing in the composer
+    // re-renders continuously: an unchanged row must not be rewritten.
+    let writes = 0
+    const originalSet = row.setAttribute
+    row.setAttribute = (key, value) => {
+      if (key === 'data-dsh-worktree-name') writes += 1
+      originalSet(key, value)
+    }
+    await dom.observers[dom.observers.length - 1].callback()
+    await settle()
+
+    assert.equal(writes, 0)
+  })
+
+  it('lays the worktree name out as a second line, aligned with the title', async () => {
+    globalThis.fetch = statusFetch([])
+    const dom = makeDom()
+
+    await mountRows(listOf([{ workspaceId: 'w-main', path: '/repo' }]), dom)
+    const css = dom.styles[0].textContent
+
+    // The caption is the row's own pseudo-element: it wraps below the title and
+    // spans the row, and `border-box` is what keeps `min-height` from growing by
+    // the row's vertical padding (measured: content-box rendered 56px).
+    assert.match(
+      css,
+      /\[data-row-key\^="session:"\]\[data-dsh-worktree-name\]\{[^}]*box-sizing:border-box[^}]*flex-wrap:wrap[^}]*min-height:46px/,
+    )
+    assert.match(css, /content:attr\(data-dsh-worktree-name\)/)
+    assert.match(css, /flex:0 0 100%/)
+    // 36px is where the title's text starts from the row's content edge: the
+    // 16px leading slot plus the 20px margin the glyph reserves. Indenting by
+    // the margin alone would hang the caption 16px left of the title.
+    assert.match(css, /padding-left:36px/)
+    assert.match(css, /color:#2563eb/)
+    assert.match(css, /body\[data-ds-dark-theme\] \[data-row-key\^="session:"\]\[data-dsh-worktree-name\]::after\{color:#93c5fd/)
+  })
+
   it('disconnects its observer when the effect is disposed', async () => {
     globalThis.fetch = statusFetch([])
     const dom = makeDom()
