@@ -595,6 +595,46 @@ test('the user bubble overrides the host inline style', () => {
   }
 })
 
+test('the three chat text surfaces share one type size', () => {
+  // The composer's editable, the user bubble and the assistant prose each carry
+  // their own type scale: measured in the live UI the composer's editable was
+  // 16px/26px (inherited from `_card`, which reads the host's
+  // `--dsh-content-font-size` user setting), the easyrewrite bubble 13px/20.8px
+  // and the assistant prose 13px/22.1px. The user asked for all three to match
+  // the assistant message, so the size and line-height live in one token pair
+  // and every surface reads it — changing one number must move all three.
+  const css = compiledCss()
+  const token = /body\s*\{([^}]*)\}/.exec(css)
+  assert.ok(token, 'the tokens must be declared on the body')
+  assert.match(token[1], /--dsh-chat-font-size:\s*13px/, 'the chat size token must be 13px')
+  assert.match(token[1], /--dsh-chat-line-height:\s*1\.7/, 'the line-height must stay unitless so 13px renders 22.1px')
+
+  // Read the rules as (selector list, body) pairs: some of these selectors share
+  // a rule with another surface, and the typeface rule already targets the same
+  // selectors, so only the last rule declaring the pair is the effective one.
+  // `@media` blocks nest rules, so a rule's selector can be preceded by `{` as
+  // well as `}`; capturing the run between braces covers both.
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const rules = [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+    selectors: m[1].split(',').map((s) => s.trim()),
+    body: m[2],
+  }))
+
+  for (const [selector, what] of [
+    ["body [data-chat-flow-kind='assistant-step'] [class*='_markdown']", 'the assistant prose'],
+    ["body [data-composer-card] [class*='_input']", 'the composer editable'],
+    ["body [data-composer-card] [class*='_placeholder']", 'the composer placeholder'],
+    ['body .dsh-easyrewrite-bubble', 'the durable user bubble'],
+    ["body [class*='_bubble']", 'the host-rendered user bubble'],
+  ]) {
+    const matching = rules.filter((rule) => rule.selectors.includes(selector))
+    assert.ok(matching.length > 0, `${what} must be styled`)
+    const body = matching.at(-1).body
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${what} must read the shared size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `${what} must read the shared line-height`)
+  }
+})
+
 test('the assistant prose is anchored on the markdown container', () => {
   // `_body_*` also matches 141 elements under assistant steps but is a different
   // component; the prose container is `_markdown_*`. Anchoring on `_body_`

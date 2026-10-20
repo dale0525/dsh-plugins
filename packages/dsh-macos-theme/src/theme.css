@@ -170,6 +170,14 @@ body [data-composer-card] {
    instead of the padded one, and every popup rendered as a full-height column.
    ========================================================================== */
 body {
+  /* One type scale for chat text. The three surfaces that carry it each bring
+     their own: the composer's editable inherits `_card`, which reads the host's
+     `--dsh-content-font-size` user setting (measured 16px/26px), while the user
+     bubble and the assistant prose sit at 13px. The user asked for all three to
+     match the assistant message, so the pair lives here and every surface reads
+     it — the line-height stays unitless so it scales with the size. */
+  --dsh-chat-font-size: 13px;
+  --dsh-chat-line-height: 1.7;
   padding: 16px;
   box-sizing: border-box;
   background-image:
@@ -566,9 +574,20 @@ body [data-conversation-scroll] {
   font-family: var(--dsh-chat-font, inherit);
 }
 
-body [data-chat-flow-kind='assistant-step'] [class*='_markdown'],
-body [data-composer-card] [class*='_input'] {
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] {
   font-family: var(--dsh-chat-font, inherit);
+}
+
+/* Chat type size. The composer's editable and its placeholder both inherit the
+   card's `--dsh-content-font-size` (measured 16px/26px), so they are re-asserted
+   here; the placeholder is a sibling of the editable, not a child, and is what
+   the empty composer shows, so pinning only the editable leaves the two visibly
+   different. */
+body [data-composer-card] [class*='_input'],
+body [data-composer-card] [class*='_placeholder'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
 }
 
 /* Bold. The host asks for `font-weight: 600`, which our LXGW WenKai Mono Medium
@@ -591,9 +610,16 @@ body [data-conversation-scroll] [class*='_markdown'] strong {
    the two tokens disagree and the text lands dark-on-dark. Steering rows are the
    visible case: they bypass `dsh-easyrewrite` entirely, so nothing else corrects
    them. Declared here because `--dsw-alias-label-primary` cannot be changed — it is
-   the global body colour — while the fill must stay dark to match the design. */
+   the global body colour — while the fill must stay dark to match the design.
+
+   The type size comes from the shared chat scale as well: the host sets
+   `font-size: var(--dsh-content-font-size, 14px)` on the same class, which follows
+   the user's editor size setting (measured 16px) and would leave the just-sent
+   bubble visibly larger than the assistant prose below it. */
 body [class*='_bubble'] {
   color: #f1f5f9;
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
 }
 
 /* The easyrewrite bubble. It is a fourth surface for the same thing and is styled
@@ -611,8 +637,8 @@ body .dsh-easyrewrite-bubble {
   padding: 10px 16px !important;
   background-color: #1e293b !important;
   color: #f1f5f9 !important;
-  font-size: 13px !important;
-  line-height: 1.6 !important;
+  font-size: var(--dsh-chat-font-size) !important;
+  line-height: var(--dsh-chat-line-height) !important;
 }
 
 body .dsh-easyrewrite-bubble code {
@@ -719,9 +745,12 @@ body [data-chat-flow-kind='tool-call'] [class*='_callRow'] {
 /* Assistant body copy. The prose container is `_markdown_*` (a CSS-module local
    name from the markdown renderer), not `_body_*` — `_body_` is a different
    component that also appears 141 times under assistant steps, so anchoring
-   there restyled the wrong element and left the prose at 14px. */
+   there restyled the wrong element and left the prose at 14px.
+   This surface defines the shared chat scale: the composer and the user bubble
+   read the same pair, so the assistant message is the reference size. */
 body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] {
-  @apply text-[13px] leading-[1.7];
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
 }
 
 body [data-chat-flow-kind='assistant-step'] code {
