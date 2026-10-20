@@ -11,11 +11,19 @@ export const inject = ["agents", "sessions", "tools"];
 export function apply(ctx, input = {}) {
   const config = resolveConfig(input);
   const client = new OpenVikingClient(config);
-  const runtime = new OpenVikingRuntime(client, config, ctx.logger, cwd => (
-    // Rebuild from the host input, not the config already merged for boot's cwd.
-    // The shared loader preserves host/env precedence over workspace peers.
-    resolveConfig(input, process.env, cwd).effectivePeer
-  ));
+  const runtime = new OpenVikingRuntime(client, config, ctx.logger, (cwd, uncached) => {
+    // Rebuild from the host input, not the config already merged for boot's
+    // cwd: the loader preserves host/env precedence over a workspace peer, and
+    // only `cwd` decides which workspace's file is read at all.
+    const resolved = resolveConfig(input, process.env, cwd);
+    return {
+      peerId: resolved.peerId,
+      legacyPeerId: resolved.legacyPeerId,
+      // Still no peer: keep re-resolving, so a directory that only becomes a
+      // workspace later stops filing that session at the user level.
+      peerUnresolved: uncached === true && !resolved.peerId,
+    };
+  });
   const skipMemory = session => (
     config.skipSubagentSessions && session?.header?.origin === "subagent"
   );

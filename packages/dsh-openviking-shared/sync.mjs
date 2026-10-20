@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "node:fs";
 import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve as resolvePath, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -131,6 +132,21 @@ export async function sharedClosure(seeds) {
   return [...generated].sort();
 }
 
+/**
+ * Whether TypeScript in the plugin imports the shared copies, so they need
+ * their `.d.mts` declarations. TypeScript that imports none of them (a Claude
+ * Code hooks module beside plain `.mjs` hooks) does not make the target typed.
+ */
+async function importsFromTypeScript(files, dir) {
+  for (const file of files) {
+    if (!file.endsWith(".ts") && !file.endsWith(".mts") && !file.endsWith(".tsx")) continue;
+    for (const spec of importSpecifiers(await readFile(file, "utf-8"))) {
+      if (spec.startsWith(".") && resolvePath(dirname(file), spec).startsWith(dir + sep)) return true;
+    }
+  }
+  return false;
+}
+
 /** Every target with the file set its own imports resolve to. */
 export async function resolveTargets() {
   const resolved = [];
@@ -144,7 +160,7 @@ export async function resolveTargets() {
     resolved.push({
       ...target,
       files: await sharedClosure(seeds),
-      typed: own.some((file) => file.endsWith(".ts") || file.endsWith(".mts")),
+      typed: await importsFromTypeScript(own, target.dir),
     });
   }
   return resolved;
@@ -209,10 +225,19 @@ async function main() {
   }
 }
 
+function isDirectRun() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return resolvePath(process.argv[1]) === fileURLToPath(import.meta.url);
+  }
+}
+
 // Guard the sync behind the entrypoint check so sync.test.mjs can import the
 // target lists as the single source of truth instead of keeping its own copy —
 // the duplicated lists had drifted, and a drifted vendored file passed CI.
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1])) {
+if (isDirectRun()) {
   main().catch((err) => {
     process.stderr.write(`${err?.stack || err}\n`);
     process.exit(1);

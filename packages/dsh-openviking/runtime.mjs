@@ -20,10 +20,42 @@ import {
 import { deriveDshSessionId } from "./session-id.mjs";
 
 export class OpenVikingRuntime {
-  constructor(client, config, logger = console) {
+  /**
+   * @param resolveConfigFor - Rebuild the plugin config against a directory, so
+   *   one process can serve sessions in several workspaces. The loader's boot
+   *   copy is resolved against the launch cwd, which is no session's project.
+   */
+  constructor(client, config, logger = console, resolveConfigFor = null) {
     this.client = client;
     this.config = config;
     this.logger = logger;
+    // A runtime built without the hook (tests, embedders) still has to resolve
+    // each session's peer from that session's own directory: falling back to
+    // the boot copy would attribute every session to the launch project.
+    this.resolveConfigFor = resolveConfigFor ?? ((cwd, uncached) => {
+      const cfg = {
+        peerId: config.explicitPeerId,
+        peerSource: config.peerSource,
+        workspacePeer: config.workspacePeer,
+        harness: config.harness,
+      };
+      // A workspace names its own peer in `.openviking/config.json`, and the
+      // session's directory is the only place that file can be found.
+      if (!cfg.peerId) {
+        const declared = resolveWorkspaceSettings(cwd).settings.peerId;
+        if (declared) cfg.peerId = declared;
+      }
+      const peer = resolveEffectivePeerId({
+        cfg,
+        cwd,
+        identity: uncached === true ? resolveWorkspaceIdentity({ cwd, cache: false }) : null,
+      });
+      return {
+        peerId: peer.peerId,
+        legacyPeerId: peer.legacyPeerId,
+        peerUnresolved: peer.source === "none" && peer.origin === "unresolved",
+      };
+    });
     this.states = new Map();
     this.drainTimer = null;
     this.drainRunning = false;
@@ -71,30 +103,21 @@ export class OpenVikingRuntime {
    */
   resolvePeer(state, session) {
     const cwd = session.header?.cwd || process.cwd();
-    const cfg = {
-      peerId: this.config.explicitPeerId,
-      peerSource: this.config.peerSource,
-      workspacePeer: this.config.workspacePeer,
-      harness: this.config.harness,
-    };
-    // A workspace names its own peer in `.openviking/config.json`, and the
-    // session's directory is the only place that file can be found: the host
-    // resolved its copy of this config against its own cwd, long before any
-    // session said which project it was in.
-    if (!cfg.peerId) {
-      const declared = resolveWorkspaceSettings(cwd).settings.peerId;
-      if (declared) cfg.peerId = declared;
-    }
-    // That same cache remembers "not a workspace" for a minute, which would
-    // defeat the re-resolution above, so the walk is repeated uncached while
-    // the answer is still empty. It costs a fraction of a millisecond.
-    const identity = state.peerUnresolved
-      ? resolveWorkspaceIdentity({ cwd, cache: false })
-      : null;
-    const peer = resolveEffectivePeerId({ cfg, cwd, identity });
-    state.config.peerId = peer.peerId;
-    state.config.legacyPeerId = peer.legacyPeerId;
-    state.peerUnresolved = peer.source === "none" && peer.origin === "unresolved";
+    // Rebuild the whole config against THIS session's directory rather than
+    // patching the boot copy. `explicitPeerId` is not the host's input: the
+    // loader fills it from whichever workspace the process was launched in, so
+    // reading it here would stamp the launch project's peer onto every session
+    // in every other project. Going back through `resolveConfig` re-runs the
+    // documented precedence (host input, then env, then this workspace's own
+    // `.openviking/config.json`) with the right `cwd`.
+    //
+    // `state.peerUnresolved` drops the loader's "not a workspace" cache, which
+    // would otherwise keep a directory that only BECAME a repository mid-session
+    // at the user level for the rest of that session.
+    const resolved = this.resolveConfigFor(cwd, state.peerUnresolved);
+    state.config.peerId = resolved.peerId;
+    state.config.legacyPeerId = resolved.legacyPeerId;
+    state.peerUnresolved = resolved.peerUnresolved;
   }
 
   async initialize(agent) {

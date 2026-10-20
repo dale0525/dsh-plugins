@@ -120,7 +120,12 @@ function captureMessage(event, message, config, toolNames) {
 function isUserInput(message) {
   if (!message || message.role !== "user") return false;
   if (message.source?.kind === "tool") return false;
-  return !isSyntheticUserMessage(message);
+  // A message with no source at all is pre-v4 history: nothing marked it as a
+  // producer's context, so it is what the user typed. Anything that does carry
+  // a source must be one of the closed conversation kinds -- a producer's own
+  // kind is that producer's context, not something a person typed.
+  const kind = message.source?.kind;
+  return kind === undefined || CONVERSATION_KINDS.has(kind);
 }
 
 export function promptText(messages) {

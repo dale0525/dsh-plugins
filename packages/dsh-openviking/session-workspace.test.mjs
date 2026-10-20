@@ -43,6 +43,9 @@ function setup(t) {
       effect(execute) { execute(); },
       on() {},
       plugin() {},
+      // The real context always carries the agent registry; this fork mounts a
+      // bridge per root agent, so a stub without it is not a faithful stand-in.
+      agents: { roots: () => [] },
     }, { endpoint: "http://openviking.test", ...input });
     runtimes.push(runtime);
     return runtime;
