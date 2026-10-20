@@ -454,6 +454,23 @@ git subtree pull --prefix=packages/<pkg> <url> <tag>
 > --ref main -f dry_run=false` 起一条新 run，判重跳过已发布的 7 个、从第 8 个继续。
 > 判据是 run 的 `conclusion`：`failure` 用 `--failed`，`cancelled` 用 `workflow run`。
 
+> **`+ <pkg>@<ver>` 不是「已上线」，只是 npm 受理了请求**：`npm publish` 输出 `+ @scope/pkg@1.2.3`
+> 之后，CI 会轮询 registry 直到该版本可解析，超时就以
+> `@scope/pkg@1.2.3 is still not resolvable after 15 minutes` 失败，并提示
+> `Usually a publish held for approval (staged)`。**这是已发布包也会撞上的情况**，与上文
+> 「新包不能 staged」是两件事：staged publishing 对新包是「不支持」，对已存在的包是
+> 「默认开着、需人工批准」。实测 v0.5.99：`dsh-better-reasoning-effort@0.5.7` 正常上线
+> （`_npmUser` 为 GitHub Actions），而 `dsh-openviking@0.4.10` 停在 staged，聚合包因依赖
+> `^0.4.10` 解析不到而整条 run 失败。
+>
+> **判据只能是 registry，不是 CI 日志**：`npm view <pkg> version` 与
+> `curl -H 'Cache-Control: no-cache' https://registry.npmjs.org/<urlencoded-pkg>?t=<ts>`
+> 里查 `versions` / `dist-tags`。`npm view <pkg>@<ver>` 报 404 即确认未上线。
+> **Agent 无法自行解锁**：`npm stage list <pkg>` 需要登录态（`E401`），批准要 OTP，
+> 只能由用户在包设置页处理（批准该 staged 版本，或为该包关闭 staged publishing），
+> 之后 `gh workflow run publish.yml --ref main -f dry_run=false` 续跑，判重跳过已发布的包。
+> **不要因为「CI 说发布了」就升版本重发**——那会多发一个版本，而真正缺的那个仍未上线。
+
 两条触发路径（`.github/workflows/publish.yml`）：
 
 | 路径 | 命令 | 用途 |
