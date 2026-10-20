@@ -121,7 +121,13 @@ export function discoverTargets(root = REPO_ROOT) {
       if (typeof parsed[key] !== 'string' || parsed[key] === '') bail(file + ' 缺 ' + key)
     }
     if (parsed.prefix !== 'packages/' + name) bail(file + ' 的 prefix 与目录不符：' + parsed.prefix)
-    targets.push({ id: parsed.id, url: parsed.url, prefix: parsed.prefix, dir: name })
+    // A fork of a MONOREPO subdirectory declares it: the upstream tags then name
+    // the whole repository, and only a `subtree split` of that path can be an
+    // ancestor of this package's history.
+    if (parsed.subdir !== undefined && (typeof parsed.subdir !== 'string' || parsed.subdir === '')) {
+      bail(file + ' 的 subdir 必须是非空字符串：' + parsed.subdir)
+    }
+    targets.push({ id: parsed.id, url: parsed.url, prefix: parsed.prefix, dir: name, subdir: parsed.subdir })
   }
   return targets
 }
@@ -157,6 +163,28 @@ function fetchTag(target, tag) {
 /** 状态由 merge-base(HEAD, 上游 tag) 判定，不用 subtree trailer（见文件头）。
  *  current = tag 已是 HEAD 的祖先；behind = 有共同祖先但 tag 还没并进来；
  *  blocked = 连共同祖先都没有，`git subtree pull` 会以 unrelated histories 直接拒绝。 */
+/** The split commit for one upstream tag, when this fork tracks a monorepo
+ *  subdirectory. `git subtree split` is deterministic: the same tag and path
+ *  always produce the same commit, so the result doubles as the sync point.
+ *  A temp worktree is used because split wants a checkout of the upstream ref;
+ *  it is removed again, so this stays a read-only query of the main worktree. */
+export function splitCommit(target, sha) {
+  const dir = join(REPO_ROOT, '.git', 'dsh-sync-split', target.id + '-' + sha.slice(0, 12))
+  git(['worktree', 'add', '--detach', dir, sha])
+  try {
+    const out = gitCapture(['-C', dir, 'subtree', 'split', '--prefix=' + target.subdir, sha])
+    if (out.code !== 0) bail('subtree split 失败：' + (out.stderr.trim() || out.stdout.trim()))
+    return out.stdout.trim().split('\n').filter((l) => l !== '').pop()
+  } finally {
+    git(['worktree', 'remove', '--force', dir], { allowFail: true })
+  }
+}
+
+/** The commit that stands for one upstream tag in THIS package's history. */
+export function syncPointOf(target, sha) {
+  return target.subdir === undefined ? sha : splitCommit(target, sha)
+}
+
 export function resolveState(target) {
   const listed = latestTag(target)
   if (listed.tag === null) {
@@ -166,10 +194,12 @@ export function resolveState(target) {
   const fetched = fetchTag(target, tag)
   if (fetched.sha === null) return { state: 'unreachable', tag, sha: null, base: null, error: fetched.error }
   const sha = fetched.sha
-  const base = git(['merge-base', 'HEAD', sha], { allowFail: true }).trim()
-  if (base === '') return { state: 'blocked', tag, sha, base: null }
-  if (base === sha) return { state: 'current', tag, sha, base }
-  return { state: 'behind', tag, sha, base }
+  const point = syncPointOf(target, sha)
+  if (point === undefined || point === '') return { state: 'unreachable', tag, sha, base: null, error: 'subtree split 没有产出提交' }
+  const base = git(['merge-base', 'HEAD', point], { allowFail: true }).trim()
+  if (base === '') return { state: 'blocked', tag, sha: point, base: null }
+  if (base === point) return { state: 'current', tag, sha: point, base }
+  return { state: 'behind', tag, sha: point, base }
 }
 
 /** 冲突消息里 sha 后可能紧跟句号（`... but deleted in <sha>.`），去掉它再比较。 */

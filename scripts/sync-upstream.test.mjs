@@ -58,7 +58,7 @@ test('discoverTargets 只认 packages/<dir>/upstream.json，并校验 id/url/pre
     writeFileSync(join(r, 'packages', 'plain', 'package.json'), '{}')
   })
   try {
-    assert.deepEqual(discoverTargets(root), [{ id: 'demo', url: 'https://example.test/demo.git', prefix: 'packages/demo', dir: 'demo' }])
+    assert.deepEqual(discoverTargets(root), [{ id: 'demo', url: 'https://example.test/demo.git', prefix: 'packages/demo', dir: 'demo', subdir: undefined }])
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
@@ -68,6 +68,28 @@ test('discoverTargets 拒绝 prefix 与目录不符的 policy', () => {
     writeFileSync(join(r, 'packages', 'demo', 'upstream.json'), JSON.stringify({ id: 'demo', url: 'u', prefix: 'packages/other' }))
   })
   try { assert.throws(() => discoverTargets(root), /prefix/) } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('discoverTargets 收下可选的 subdir（monorepo 子目录 fork）', () => {
+  const root = tempRepo((r) => {
+    mkdirSync(join(r, 'packages', 'demo'))
+    writeFileSync(join(r, 'packages', 'demo', 'upstream.json'), JSON.stringify({
+      id: 'demo', url: 'u', prefix: 'packages/demo', subdir: 'examples/plugin',
+    }))
+  })
+  try {
+    assert.equal(discoverTargets(root)[0].subdir, 'examples/plugin')
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('discoverTargets 拒绝空的 subdir（空串不是「没有子目录」）', () => {
+  const root = tempRepo((r) => {
+    mkdirSync(join(r, 'packages', 'demo'))
+    writeFileSync(join(r, 'packages', 'demo', 'upstream.json'), JSON.stringify({
+      id: 'demo', url: 'u', prefix: 'packages/demo', subdir: '',
+    }))
+  })
+  try { assert.throws(() => discoverTargets(root), /subdir/) } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
 test('--changed 缺 id / 未知 id / 未知 flag 都以退出码 1 失败', () => {

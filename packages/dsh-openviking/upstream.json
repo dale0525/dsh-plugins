@@ -1,5 +1,6 @@
 {
   "id": "openviking",
   "url": "https://github.com/volcengine/OpenViking.git",
-  "prefix": "packages/dsh-openviking"
+  "prefix": "packages/dsh-openviking",
+  "subdir": "examples/dsh-memory-plugin"
 }
