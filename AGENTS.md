@@ -343,6 +343,22 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
 > 找不到才退回第一行。判据：`lsof` 有两行、但其中一行等于 `launchctl print` 里的作业 pid 时，
 > 服务健康。
 
+> **监听地址是推导出来的，三处共用同一套规则，别写回字面量**：`~/.dsh/bin/local-address.mjs`
+> 问默认路由走哪张网卡、取该网卡非内部 IPv4、问不到再枚举、兜底 `127.0.0.1`；`dsh-web` 用它定
+> `HOST`（`DSH_WEB_HOST` 仍可覆盖），loopback 转发器接受字面量 `auto` 走同一函数（launchd 的
+> plist 不能做命令替换）。profile 里 `webserver.host` 那行**故意不 import 它**——那行要随
+> config-manager 同步到别的设备，而那些设备没有 `~/.dsh/bin`，所以那边留了一份等价的 `!!js`
+> 内联副本。看到「两处重复的推导逻辑」不要合并，那是同步边界，不是冗余。
+
+> **`~/.dsh/dsh-web.err` 是跨启动追加的，禁用行必须对得上进程启动时间才算数**：兼容门禁打的是
+> `disabling profile plugin row "<row>": Plugin <pkg>@<ver> is incompatible with dsh <ver>`，里面的
+> `<ver>` 是**当时**装的版本。升级插件后旧行仍在文件里，直接 `grep` 会得出「还在被禁用」的错误
+> 结论（实测：8 条禁用行全部指向 `dsh-openviking@0.4.8` / `dsh-loop-guard@1.1.7` /
+> `dsh-reasoning-strip@0.1.0`，而当次启动装的是 0.4.9 / 1.1.8 / 0.1.1，该次启动后 0 条）。
+> 判据：先用 `ps -o lstart= -p <作业 pid>` 定出本次启动的时刻，只认那之后的行；再直接问宿主
+> `evaluatePluginCompatibility(manifest, {}, <当前宿主版本>)`（`@deepseek-ai/dsh-app-boot` 导出），
+> 它才是门禁本身。
+
 ## 🔀 上游同步
 
 **同步是手工的。** 仓库只保留 `git subtree` 祖先和一个**只读**的查询工具：没有定时任务、
