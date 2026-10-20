@@ -326,7 +326,6 @@ function config() {
     captureToolMaxChars: 1000000,
     captureMaxLength: 24000,
     captureMode: "semantic",
-    commitKeepRecentCount: 10,
   };
 }
 
