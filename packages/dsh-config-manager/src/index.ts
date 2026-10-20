@@ -146,7 +146,7 @@ export const name = 'config-manager'
 export const inject = ['settings', 'credentials']
 
 /** Plugin version, kept in sync with package.json ("version"). */
-const PLUGIN_VERSION = '0.1.81'
+const PLUGIN_VERSION = '0.1.82'
 
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
@@ -624,6 +624,18 @@ class DshWorkspaceFacade implements WorkspaceFacade {
   }
 }
 
+/** 宿主把 `!!js` 标量解析成 `{ __jsExpr }`，再由 `cordis-plugin-loader` 求值（`interpolate`）。
+ * 裸 js-yaml 不认识该标签：读会让整份 patch 文件解析失败降级为空表，写会把表达式摊成普通 mapping
+ * （值变成字符串化的 `__jsExpr` 对象，宿主不再求值）。schema 必须同时用于 load 与 dump。 */
+const jsExprTag = yaml.defineScalarTag<{ __jsExpr: string }>('tag:yaml.org,2002:js', {
+  resolve: (source) => ({ __jsExpr: source }),
+  identify: (value) =>
+    value !== null && typeof value === 'object' && typeof (value as { __jsExpr?: unknown }).__jsExpr === 'string',
+  represent: (value) => value.__jsExpr,
+})
+const PATCH_LOAD_SCHEMA = yaml.CORE_SCHEMA.withTags(jsExprTag)
+const PATCH_DUMP_SCHEMA = yaml.DUMP_SCHEMA.withTags(jsExprTag)
+
 /** Patch-file facade：用户 patch 层（$DSH_HOME/cordis.patch.yml）+ profile patch 层
  * （$DSH_HOME/profiles/<name>/cordis.patch.yml），两者都在 home 根内。
  *
@@ -656,7 +668,7 @@ export class DshPatchFileFacade implements PatchFileFacade {
     }
     let doc: unknown
     try {
-      doc = yaml.load(text)
+      doc = yaml.load(text, { schema: PATCH_LOAD_SCHEMA })
     } catch {
       return []
     }
@@ -691,7 +703,7 @@ export class DshPatchFileFacade implements PatchFileFacade {
     const order: string[] = []
     let doc: unknown
     try {
-      doc = yaml.load(await fs.readFile(p, 'utf8'))
+      doc = yaml.load(await fs.readFile(p, 'utf8'), { schema: PATCH_LOAD_SCHEMA })
     } catch {
       doc = undefined
     }
@@ -741,7 +753,7 @@ export class DshPatchFileFacade implements PatchFileFacade {
       if (raw !== undefined) out.push(raw)
     }
     const text = '# rewritten by dsh-config-manager import (original comments not preserved)\n'
-      + yaml.dump(out)
+      + yaml.dump(out, { schema: PATCH_DUMP_SCHEMA })
     await atomicWriteFile(p, text)
   }
 }

@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { DshPatchFileFacade, DshPluginsFacade, ensureActivationRow } from './index.ts';
+import { PROFILE_PATCH_FILE } from './core/patch-layers.ts';
 import { resolveProfileDir } from './core/plugin-cli.ts';
 import type { DshPluginResult } from './core/plugin-cli.ts';
 import type { PatchChange, PatchFileFacade } from './core/types.ts';
@@ -282,6 +283,69 @@ test('ensureActivationRow: scope 包名 slug 形态正确（@scope/name → pm-s
     await ensureActivationRow(patchFile, join(profileDir, 'node_modules', '@org', 'pkg-a'), '@org/pkg-a');
     assert.equal(patchFile.lines.size, 1);
     assert.equal(patchFile.lines.has('pm-org-pkg-a'), true, '去 @ 后连字符 slug');
+  } finally {
+    cleanup();
+  }
+});
+
+/* ------------------------------------------- patch 层的 !!js 表达式 */
+
+/**
+ * 宿主把 `!!js` 标量解析成 `{ __jsExpr }` 再交给 loader 求值（`cordis-plugin-loader`）。
+ * 本包读写同一批 patch 文件，裸 js-yaml 既不认识该标签（读 → 整份文件降级成空表），
+ * 也不会写回该标签（写 → 表达式被当成普通 mapping，值变成字符串化的对象）。
+ */
+test('readPatchLines: !!js 行不得被静默丢弃，表达式按 { __jsExpr } 暴露', async () => {
+  const { homeDir, profileDir, cleanup } = makeTempProfile();
+  try {
+    const expr = "process.env.DSH_BIND ?? '127.0.0.1'";
+    writeFileSync(
+      join(profileDir, 'cordis.patch.yml'),
+      `- id: webserver\n  config:\n    host: !!js ${expr}\n    port: 10000\n`,
+      'utf8',
+    );
+
+    const lines = await new DshPatchFileFacade(homeDir, 'web').readPatchLines(PROFILE_PATCH_FILE);
+    assert.equal(lines.length, 1, '整个文件只有一行，读到空表说明 !!js 把解析打挂了');
+    assert.deepEqual(lines[0]?.raw, {
+      id: 'webserver',
+      config: { host: { __jsExpr: expr }, port: 10000 },
+    });
+  } finally {
+    cleanup();
+  }
+});
+
+test('applyPatchChanges: 未改动的 !!js 行原样写回，新写入的表达式也可再读回', async () => {
+  const { homeDir, profileDir, cleanup } = makeTempProfile();
+  try {
+    const profilePatch = join(profileDir, 'cordis.patch.yml');
+    const kept = "process.env.DSH_BIND ?? '127.0.0.1'";
+    writeFileSync(
+      profilePatch,
+      `- id: webserver\n  config:\n    host: !!js ${kept}\n    port: 10000\n`,
+      'utf8',
+    );
+    const written = "Object.values(process.getBuiltinModule('node:os').networkInterfaces()).flat()"
+      + ".filter((a) => a.family === 'IPv4' && !a.internal)[0]?.address ?? '127.0.0.1'";
+
+    const facade = new DshPatchFileFacade(homeDir, 'web');
+    await facade.applyPatchChanges(PROFILE_PATCH_FILE, [
+      { lineId: 'extra', raw: { id: 'extra', config: { host: { __jsExpr: written } } }, action: 'insert' },
+    ]);
+
+    assert.match(readFileSync(profilePatch, 'utf8'), /!!js/, '表达式必须仍以 !!js 标签落盘');
+    const back = await facade.readPatchLines(PROFILE_PATCH_FILE);
+    assert.deepEqual(
+      (back.find((l) => l.lineId === 'webserver')?.raw as { config: { host: unknown } }).config.host,
+      { __jsExpr: kept },
+      '未改动的行不能被展开成普通对象',
+    );
+    assert.deepEqual(
+      (back.find((l) => l.lineId === 'extra')?.raw as { config: { host: unknown } }).config.host,
+      { __jsExpr: written },
+      '写进去的表达式必须能原样读回（同步导入 profile 层时靠它保持可求值）',
+    );
   } finally {
     cleanup();
   }
