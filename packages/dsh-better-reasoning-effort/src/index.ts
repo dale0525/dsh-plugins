@@ -176,6 +176,19 @@ export interface Config {
  * the situation here — the profile ships one copy and this package's
  * `dependencies` entry pulls its own `^3.18.3`.
  *
+ * The split that actually breaks the build is one level deeper, and it is NOT
+ * schemastery: 3.18.4 and 3.18.5 ship byte-identical `.d.ts`, but they resolve
+ * different cosmokit versions, and `Volatile<T>` — what `volatile()` returns —
+ * is defined in cosmokit. Two cosmokit copies make two `Volatile<T>` symbols, so
+ * a `Schema<Config>` typed against one copy is not assignable to the other
+ * (`meta.default` is where it surfaces). That is why this error appears and
+ * disappears with no change to this file: anything that reshuffles the
+ * workspace's cosmokit graph — raising another package's devDependencies to a
+ * new host generation, for instance — can move this package onto the other
+ * copy. If you hit `Type 'Schema<ObjectS<...>>' is not assignable to type
+ * 'Schema<Config>'` after an unrelated dependency bump, compare the cosmokit
+ * each schemastery copy binds before touching anything here.
+ *
  * `.volatile()` needs schemastery ≥ 3.18.3, and the marker survives the copy
  * boundary because the reference protocol is `Symbol.for('cosmokit.volatile.write')`
  * and the host's `volatileForm` / `isVolatilePath` duck-type `meta.volatile`.
