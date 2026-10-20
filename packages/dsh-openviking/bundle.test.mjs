@@ -22,13 +22,17 @@ test("bundle uses neutral DSH naming, bounded peers, and one flat row", async ()
   // DSH checks dsh peers at load time with prereleases included in ranges.
   const dshRange = { includePrerelease: true };
   for (const [name, range] of Object.entries(manifest.peerDependencies)) {
+    // The range this fork ships admits the generations it was migrated to, not
+    // "every 0.x": `b37c195c4` narrowed it deliberately so the host's load-time
+    // gate accepts 0.2.1-rc.2 while still refusing the 0.3/1.0 surface the
+    // plugin was never tested against.
     for (const version of [
       "0.1.0-rc.6", "0.1.5-rc.1", "0.1.5-rc.2", "0.1.5", "0.1.7-rc.2",
-      "0.2.0-rc.2", "0.2.1-alpha.1", "0.3.0",
+      "0.2.0-rc.2", "0.2.1-rc.2",
     ]) {
       assert.ok(semver.satisfies(version, range, dshRange), `${name} must accept ${version}`);
     }
-    for (const version of ["0.0.1-rc.3", "0.1.0-rc.5", "1.0.0-rc.1", "1.0.0"]) {
+    for (const version of ["0.0.1-rc.3", "0.1.0-rc.5", "0.3.0", "1.0.0-rc.1", "1.0.0"]) {
       assert.ok(!semver.satisfies(version, range, dshRange), `${name} must reject ${version}`);
     }
     assert.equal(manifest.devDependencies[name], "0.1.0-rc.6", `${name} must test the minimum`);
