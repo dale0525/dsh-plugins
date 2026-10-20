@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.98",
+  "version": "0.5.99",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -19,7 +19,7 @@
     "cordis.patch.yml"
   ],
   "dependencies": {
-    "@logictan/dsh-better-reasoning-effort": "^0.5.6",
+    "@logictan/dsh-better-reasoning-effort": "^0.5.7",
     "@logictan/dsh-browser-agent": "^0.2.4",
     "@logictan/dsh-config-manager": "^0.1.82",
     "@logictan/dsh-desktop-agent": "^0.1.9",
@@ -30,7 +30,7 @@
     "@logictan/dsh-imagegen": "^2.0.7",
     "@logictan/dsh-loop-guard": "^1.1.8",
     "@logictan/dsh-macos-theme": "^0.1.8",
-    "@logictan/dsh-openviking": "^0.4.9",
+    "@logictan/dsh-openviking": "^0.4.10",
     "@logictan/dsh-plugins-shared-client": "^0.1.0",
     "@logictan/dsh-reasoning-strip": "^0.1.1",
     "@logictan/dsh-stitch-designer": "^2.0.3",
