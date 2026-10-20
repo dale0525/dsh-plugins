@@ -635,6 +635,53 @@ test('the three chat text surfaces share one type size', () => {
   }
 })
 
+test('the merged process cards share the chat type size', () => {
+  // One `[data-step-process]` card stacks three of the host's type scales:
+  // measured live, the header button renders 16px (it reads
+  // `--dsh-content-font-size`, i.e. the host's user setting), every row title and
+  // summary renders 14px (`--dsh-content-font-size-secondary`), and the reasoning
+  // copy sits on a 21px line box. None of them is the chat's 13px, so the card
+  // read as a third, unrelated text size beside the message. These four families
+  // are the ones that *declare* a size — the bare `_text` leaves inherit from
+  // them, which is why the rule must not name `_text`: the same class paints the
+  // terminal command and code lines inside the card, and those stay on the code
+  // scale.
+  const css = compiledCss()
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const rules = [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+    selectors: m[1].split(',').map((s) => s.trim()),
+    body: m[2],
+  }))
+
+  for (const [selector, what] of [
+    ["body [data-step-process]:not([hidden]) [class*='_title']", 'the card header and row titles'],
+    ["body [data-step-process]:not([hidden]) [class*='_summary']", 'the reasoning and tool summaries'],
+    ["body [data-step-process]:not([hidden]) [class*='_fileLink']", 'the tool file link'],
+    ["body [data-step-process]:not([hidden]) [class*='compaction']", 'the compaction row inside a card'],
+  ]) {
+    const matching = rules.filter((rule) => rule.selectors.includes(selector))
+    assert.ok(matching.length > 0, `${what} must be styled`)
+    const body = matching.at(-1).body
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${what} must read the shared size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `${what} must read the shared line-height`)
+  }
+
+  // The card's code surfaces (`_terminal`, `_ioCard`, `pre`, inline `code`) keep
+  // the code scale; reaching them would have to go through `_text`, which is the
+  // class they share with the card's own copy.
+  const cardRule = rules.filter((rule) =>
+    rule.selectors.some((s) => s.startsWith('body [data-step-process]:not([hidden]) ')),
+  )
+  for (const rule of cardRule) {
+    if (!/font-size:\s*var\(--dsh-chat-font-size\)/.test(rule.body)) continue
+    assert.deepEqual(
+      rule.selectors.filter((s) => /_text|terminal|_ioCard|code/.test(s)),
+      [],
+      'the card type rule must not repaint the code surfaces',
+    )
+  }
+})
+
 test('the assistant prose is anchored on the markdown container', () => {
   // `_body_*` also matches 141 elements under assistant steps but is a different
   // component; the prose container is `_markdown_*`. Anchoring on `_body_`

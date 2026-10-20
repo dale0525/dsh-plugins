@@ -736,6 +736,25 @@ body [data-step-process]:not([hidden]):has([data-process-activity='thinking']) [
   color: #475569;
 }
 
+/* The card's type scale. One card stacks three of the host's scales — measured
+   live: the header button 16px (it reads `--dsh-content-font-size`, i.e. the
+   host's user setting), every row title and summary 14px
+   (`--dsh-content-font-size-secondary`), and the reasoning copy on a 21px line
+   box. None of them was the chat's 13px, so a card read as a third text size
+   sitting between the user's message and the assistant's.
+
+   These four families are the ones that *declare* a size; the bare `_text` spans
+   inside them only set `color: inherit`, so they follow. Naming `_text` instead
+   would also repaint the terminal command and code lines inside the card, which
+   belong on the code scale, not the prose one. */
+body [data-step-process]:not([hidden]) [class*='_title'],
+body [data-step-process]:not([hidden]) [class*='_summary'],
+body [data-step-process]:not([hidden]) [class*='_fileLink'],
+body [data-step-process]:not([hidden]) [class*='compaction'] {
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
 /* Tool-call rows already render as a single 24px line; only the type scale
    needs pinning. */
 body [data-chat-flow-kind='tool-call'] [class*='_callRow'] {
