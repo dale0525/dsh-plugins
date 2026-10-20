@@ -466,10 +466,27 @@ git subtree pull --prefix=packages/<pkg> <url> <tag>
 > **判据只能是 registry，不是 CI 日志**：`npm view <pkg> version` 与
 > `curl -H 'Cache-Control: no-cache' https://registry.npmjs.org/<urlencoded-pkg>?t=<ts>`
 > 里查 `versions` / `dist-tags`。`npm view <pkg>@<ver>` 报 404 即确认未上线。
-> **Agent 无法自行解锁**：`npm stage list <pkg>` 需要登录态（`E401`），批准要 OTP，
-> 只能由用户在包设置页处理（批准该 staged 版本，或为该包关闭 staged publishing），
-> 之后 `gh workflow run publish.yml --ref main -f dry_run=false` 续跑，判重跳过已发布的包。
-> **不要因为「CI 说发布了」就升版本重发**——那会多发一个版本，而真正缺的那个仍未上线。
+
+> **staged 记录可能是「孤儿」：`npm stage list` 为空**≠**没有 staged 版本，此时只能跳号。**
+> 别把「列表为空」当成「不是 staged」去另找原因。判据是**发布时**的报错文本，不是列表：
+> ```
+> npm error code E409
+> 409 Conflict - PUT https://registry.npmjs.org/<pkg>
+> Cannot publish over previously staged version "<ver>".
+> ```
+> 这句话证明 registry 侧**确实存在**该版本的 staged 记录。而实测它同时满足：
+> `npm stage list <pkg>` 报 `No staged versions`、`GET /-/stage` 三页翻完 `total: 0`
+> （`--json` 也是 `[]`）—— **记录存在却不出现在任何队列里，于是拿不到 stageId**：
+> `DELETE /-/stage/<pkg>@<ver>` 报 `"stageId" must be a valid GUID`，没有 id 可删；
+> 页面上也没有条目可批准。`gh workflow run` 续跑会撞**同一个 E409**（已实测），
+> 所以它不是瞬时故障、重跑无意义。**唯一出路是跳过这个版本号**（`0.4.10` → `0.4.11`）。
+> 代价为零：该版本从未落库，没有客户端解析过它。
+>
+> **不要因为撞到 staged 就转去手动 `npm publish`**：本规则开头「一律走 CI/CD、不跑
+> `npm publish`」在这里同样成立。手动发要 OTP（本机认证走浏览器轮询，实测三次均以
+> `E404 GET /-/v1/done?authId=` 收场），且**撞的是同一个 E409**——绕远路而已。
+> 实测 v0.5.99：我在这一步误判成「registry 丢了版本、须手动重发」，让用户去终端操作，
+> 白白耗时；正确动作是直接改版本号重走 CI（v0.5.100 一次通过）。
 
 两条触发路径（`.github/workflows/publish.yml`）：
 
