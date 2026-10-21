@@ -707,10 +707,9 @@ body [data-chat-running] [class*='_highlight'] {
    That merging is the structure the design asks for; what is missing is its card
    chrome, so the group is dressed as the design's card here.
 
-   Pixel source: `c5764251d7be46239dacff5c161407f6` (亮色) and
-   `6f961c6ca2d14f199bd1bfbff7b5e6f3` (暗色), both in `docs/design/`. The two
-   palettes share this one token set; section 9 only re-points the tokens that
-   cannot resolve from `--dsw-alias-*` (the fill one layer up and the accent).
+   The card was drawn from a light and a dark pixel source. The two palettes
+   share this one token set; section 9 only re-points the tokens that cannot
+   resolve from `--dsw-alias-*` (the fill one layer up and the accent).
 
    Geometry, measured from the design: the card is `p-3.5` (14px), the header line
    is 16px tall with an 8px gap to its label, a hairline sits 10px under it and the
