@@ -254,6 +254,142 @@ window.__ModuleLoader__.load({
     var NATIVE_FONT_ATTR = 'data-dsh-native-chat-font'
 
     /**
+     * Marks `body` with THIS DEVICE's resolved light/dark choice.
+     *
+     * The Host stores one `ui-theme.preference` for the whole installation and
+     * bakes it into every index response's boot script, so a desktop on the LAN
+     * and a phone opening the same Host would otherwise share one palette. This
+     * attribute is the per-device override: it is set from `localStorage`, which
+     * is per-browser, and the stylesheet re-points the dark token values on it.
+     *
+     * `data-ds-dark-theme` alone cannot do the job — the Host writes the active
+     * palette INLINE on `body` (`ThemePresenter.apply`), and an inline
+     * declaration outranks every selector. The dark token block therefore has to
+     * carry `!important`, and this attribute has to be the thing that turns it
+     * on, so a device can be dark while the Host's stored preference stays light.
+     */
+    var DEVICE_THEME_ATTR = 'data-dsh-device-theme'
+
+    /** Per-browser store of the device's own choice: `'light'` or `'dark'`. */
+    var DEVICE_THEME_KEY = 'dsh-macos-theme.device-theme'
+
+    /**
+     * The Host's own palette attribute, which the stylesheet's structural dark
+     * rules already key on. A device override must drive this too, or the theme
+     * would paint dark tokens onto light-mode geometry.
+     */
+    var HOST_DARK_ATTR = 'data-ds-dark-theme'
+
+    /** Read this device's stored choice, or `null` when it has none. */
+    function deviceTheme() {
+      try {
+        var stored = window.localStorage.getItem(DEVICE_THEME_KEY)
+        return stored === 'light' || stored === 'dark' ? stored : null
+      } catch (error) {
+        /* Private-mode Safari throws on read; the Host's preference then wins,
+           which is the same state as a device that never chose. */
+        return null
+      }
+    }
+
+    /**
+     * Project the device's choice onto the document.
+     *
+     * Two attributes move together on purpose: {@link DEVICE_THEME_ATTR} turns on
+     * the `!important` dark token block (beating the Host's inline values), and
+     * {@link HOST_DARK_ATTR} turns on the structural dark rules this stylesheet
+     * already carries. Setting only the first would leave light geometry under
+     * dark tokens.
+     *
+     * With no stored choice the Host's boot script and presenter stay the single
+     * source, which is what keeps a device that never touched this setting
+     * exactly as it was — and what lets a device that DID touch it go back.
+     */
+    /**
+     * Write an attribute only when it actually changes.
+     *
+     * `setAttribute` records a mutation even when the value is identical, so an
+     * unguarded write from inside the attribute observer would re-enter it
+     * forever. `toggleAttribute`/`removeAttribute` are already no-ops in that
+     * case; only the value-carrying attribute needs this guard.
+     */
+    function setAttributeIfChanged(element, name, value) {
+      if (element.getAttribute(name) !== value) element.setAttribute(name, value)
+    }
+
+    function applyDeviceTheme() {
+      var choice = deviceTheme()
+      if (choice === null) {
+        document.body.removeAttribute(DEVICE_THEME_ATTR)
+        /* Restoring means re-deriving the Host's own answer, not just dropping
+           our attribute: this function set the palette attribute too, and
+           leaving it behind would keep a device in dark after the user picked
+           "follow the Host" while the Host preference is light. */
+        document.body.toggleAttribute(HOST_DARK_ATTR, hostWantsDark())
+        return
+      }
+      setAttributeIfChanged(document.body, DEVICE_THEME_ATTR, choice)
+      document.body.toggleAttribute(HOST_DARK_ATTR, choice === 'dark')
+    }
+
+    /**
+     * What the Host's own preference resolves to on this device right now.
+     *
+     * The presenter publishes the preference (not the resolved scheme) as
+     * `data-ds-theme-source`, exactly as the boot script does, so `system` has to
+     * be resolved here through `prefers-color-scheme` — the same rule
+     * `ThemePresenter` applies. An unreadable value falls back to light, matching
+     * the Host's default preference.
+     */
+    function hostWantsDark() {
+      var source = document.documentElement.getAttribute('data-ds-theme-source')
+      if (source === 'system') {
+        return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches
+      }
+      return source === 'dark'
+    }
+
+    /**
+     * Keep the device override applied across the Host's own writes.
+     *
+     * `ThemePresenter.apply` runs on every `theme/change` (a settings edit, a
+     * `prefers-color-scheme` flip) and re-sets the Host palette attribute from
+     * the stored preference, which would silently undo a device override. An
+     * observer on those two attributes re-asserts the device choice instead of
+     * fighting it from a timer.
+     *
+     * `applyDeviceTheme` is idempotent and cheap, so the callback just calls it:
+     * a conditional version had to re-derive the same three cases inline and got
+     * the "no device choice" case wrong. Writing an attribute from inside the
+     * callback re-enters it once more, and the second pass settles because the
+     * document already holds the values the function writes.
+     */
+    function installDeviceTheme(ctx) {
+      applyDeviceTheme()
+      var observer = new MutationObserver(applyDeviceTheme)
+      observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: [HOST_DARK_ATTR, DEVICE_THEME_ATTR],
+      })
+      /* A `prefers-color-scheme` flip only matters when the Host follows the
+         system; re-derive so a device on "follow the Host" tracks it. */
+      var media = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null
+      if (media !== null) media.addEventListener('change', applyDeviceTheme)
+      /* Another tab on the same browser is the same device: follow it. */
+      function onStorage(event) {
+        if (event.key !== DEVICE_THEME_KEY && event.key !== null) return
+        applyDeviceTheme()
+      }
+      window.addEventListener('storage', onStorage)
+      return function () {
+        observer.disconnect()
+        if (media !== null) media.removeEventListener('change', applyDeviceTheme)
+        window.removeEventListener('storage', onStorage)
+        document.body.removeAttribute(DEVICE_THEME_ATTR)
+      }
+    }
+
+    /**
      * The bundles that can own this plugin's row: the aggregate carrier and the
      * package itself. Whichever one the user installed supplies the row id the
      * form is keyed by, so both are offered and the settings page matches on the
@@ -281,12 +417,62 @@ window.__ModuleLoader__.load({
      */
     function MacosThemeSettingsCard(props) {
       if (props.view === 'summary') return '字体'
-      return React.createElement(UI.ConfigForm, {
-        namespace: NS,
-        form: props.scope,
-        describe: props.describe,
-        title: '聊天字体',
-      })
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(UI.ConfigForm, {
+          namespace: NS,
+          form: props.scope,
+          describe: props.describe,
+          title: '聊天字体',
+        }),
+        React.createElement(DeviceThemeCard, null),
+      )
+    }
+
+    /**
+     * This device's light/dark choice, in the plugin's own settings surface.
+     *
+     * Deliberately NOT a schema field: a schema field is written to the Host's
+     * user-settings document, which is one value for the whole installation and
+     * therefore the very thing this control exists to override. Keeping it in
+     * the browser's `localStorage` is what makes the choice per-device, so it
+     * cannot be expressed as `Config` and is drawn here instead.
+     */
+    function DeviceThemeCard() {
+      var state = React.useState(deviceTheme())
+      var value = state[0]
+      var setValue = state[1]
+      var choice = value === null ? 'host' : value
+      function choose(next) {
+        try {
+          if (next === 'host') window.localStorage.removeItem(DEVICE_THEME_KEY)
+          else window.localStorage.setItem(DEVICE_THEME_KEY, next)
+        } catch (error) {
+          /* Storage refused (private mode): the control still re-reads below, so
+             it settles back to the Host's preference instead of lying. */
+        }
+        applyDeviceTheme()
+        setValue(next === 'host' ? null : next)
+      }
+      return React.createElement(
+        UI.SettingsCard,
+        {
+          title: '本机外观',
+          description:
+            '只影响这台设备。宿主下发的亮暗是全局的，这里可以覆盖它；选「跟随宿主」即恢复全局设置。',
+        },
+        React.createElement(UI.Segmented, {
+          value: choice,
+          label: '本机外观',
+          options: [
+            { value: 'host', label: '跟随宿主' },
+            { value: 'light', label: '亮色' },
+            { value: 'dark', label: '暗色' },
+          ],
+          onChange: choose,
+        }),
+      )
     }
 
     var LIST_PREFIX = /^(\s*)(?:([-*+])|(\d+)([.)]))(\s+)(.*)$/
@@ -457,6 +643,353 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The host setting this theme takes over: 工作步骤展示 / Work details.
+     *
+     * The user asked for one behaviour in every mode, so the mode selector is not
+     * offered any more. It is hidden rather than removed: the row is rendered by
+     * React from the host's own settings schema, and deleting the node React owns
+     * makes its next reconciliation throw. A row is identified by its title text,
+     * which is the only thing that tells the five rows of that section apart —
+     * they carry no attribute of their own, and all five share one hashed class.
+     *
+     * The string is the host's own `settings.transcript.title`, hard-coded in both
+     * locales because this half has no access to the chat bundle's dictionary and
+     * the theme ships no dictionary of its own for a key it does not own.
+     */
+    var TRANSCRIPT_SETTING_TITLES = ['工作步骤展示', 'Work details']
+
+    /** Marks a hidden settings row, so the stylesheet can take it out of the flow. */
+    var HIDE_ATTR = 'data-dsh-hide'
+
+    /** The slot the host fills with the general settings rows. */
+    var PANEL = "[data-slot='settings.general.item']"
+
+    /**
+     * Hide the transcript-mode row whenever the settings dialog is showing.
+     *
+     * The sweep is keyed on the dialog rather than run on every mutation: the chat
+     * streams a DOM change per token, and the settings section is only mounted
+     * while the dialog is open. So the observer does one cheap check per batch and
+     * only walks the section's rows once a dialog has appeared.
+     */
+    function hideTranscriptSettingRow() {
+      var panel = null
+
+      function sweep() {
+        if (panel === null || !panel.isConnected) panel = document.querySelector(PANEL)
+        if (panel === null) return
+        var rows = panel.children
+        for (var i = 0; i < rows.length; i++) {
+          var title = rows[i].querySelector("[class*='_title']")
+          if (title === null) continue
+          var text = (title.textContent || '').trim()
+          if (TRANSCRIPT_SETTING_TITLES.indexOf(text) < 0) continue
+          rows[i].setAttribute(HIDE_ATTR, '')
+        }
+      }
+
+      sweep()
+      var observer = new MutationObserver(function (records) {
+        if (panel !== null && panel.isConnected) {
+          sweep()
+          return
+        }
+        panel = null
+        for (var r = 0; r < records.length; r++) {
+          var added = records[r].addedNodes
+          for (var n = 0; n < added.length; n++) {
+            var node = added[n]
+            if (node.nodeType !== 1 || typeof node.querySelector !== 'function') continue
+            /* The dialog arrives as one pre-built subtree, so the row slot is a
+               descendant of the added node and never appears in `addedNodes`. */
+            if (node.matches(PANEL) || node.querySelector(PANEL) === null) continue
+            sweep()
+            return
+          }
+        }
+      })
+      observer.observe(document.body, { childList: true, subtree: true })
+      return function () {
+        observer.disconnect()
+      }
+    }
+
+    /**
+     * The card header: one line, the turn's own state, and the tool's own result.
+     *
+     * Three things the stylesheet cannot do, all on the same element:
+     *
+     * 1. The header shows the first half of the host's title and nothing else. The
+     *    host composes `label + " · " + detail`, where the detail is the live
+     *    command or the reasoning text (measured: `正在运行命令 · Probe header label
+     *    DOM tree exactly`). The design keeps only the label, and truncation cannot
+     *    express that: the tail starts after a separator whose position CSS cannot
+     *    know.
+     * 2. A finished tool says so. The host's live label falls back to `正在分析请求`
+     *    whenever no tool is running, so a card whose last row is a returned command
+     *    announced the next analysis instead of the result the user just watched
+     *    arrive — reported as "刚运行完命令，不是应该显示执行了命令吗".
+     * 3. The card stays lit while its turn runs. ACTIVE is a turn, not a row: the
+     *    user's report was the card dimming the moment its last command returned,
+     *    mid-turn. The turn state is the host's running hint, which is a SIBLING of
+     *    the card (measured: turn 8, the hint's previous sibling is the card), so it
+     *    is mirrored onto the card for the stylesheet to paint.
+     *
+     * The visible label is one text node inside `span._text_*`, and the host
+     * re-renders it on every streamed token, so this is an observer rather than a
+     * one-off pass. A node already carrying the wanted text is left alone, which is
+     * what keeps the observer from feeding itself.
+     */
+    var TURN_LIVE_ATTR = 'data-dsh-turn-live'
+
+    /**
+     * The label span, relative to a card: the header is the card's first child.
+     *
+     * `:scope >` is load-bearing. Without it the selector also matches every ROW,
+     * whose own first child is its label: measured, a finished turn's card read
+     * `执行了命令 执行了命令` on each row, because the rows were rewritten along with
+     * the header. The header is the card's direct first child and nothing deeper.
+     */
+    var CARD_LABEL = ":scope > div:first-child span[class*='_text_']"
+
+    /** The host's own `message.turnProcess.separator`, hard-coded as its titles are. */
+    var TITLE_SEPARATOR = ' · '
+
+    /**
+     * The host's finished labels (`message.turnProcess.done.*`), in both locales
+     * because this half has no access to the chat bundle's dictionary — the same
+     * arrangement as the settings row above.
+     *
+     * Only the tools whose wording differs from their row variant are listed; every
+     * other row falls through to the variant table below, so no tool can end up
+     * with no label.
+     */
+    var DONE_BY_TOOL = {
+      read_image: ['已读取图片', 'Read images'],
+      web_search: ['已搜索网页', 'Searched the web'],
+      web_fetch: ['已访问网页', 'Visited web pages'],
+      subagent: ['已协调子智能体', 'Coordinated subagents'],
+      ask_user_question: ['向用户提出了问题', 'Asked questions'],
+      todo_write: ['更新了计划', 'Updated the plan'],
+      create_goal: ['更新了计划', 'Updated the plan'],
+      update_goal: ['更新了计划', 'Updated the plan'],
+    }
+
+    /** The host's row variants, as `data-variant` spells them. */
+    var DONE_BY_VARIANT = {
+      read: ['已读取文件', 'Read files'],
+      search: ['已搜索代码', 'Searched code'],
+      write: ['已写入文件', 'Wrote files'],
+      edit: ['修改了文件', 'Edited files'],
+      bash: ['执行了命令', 'Ran commands'],
+      code: ['运行了代码', 'Ran code'],
+      others: ['已调用工具', 'Called tools'],
+    }
+
+    function syncCardHeaderLabels() {
+      function isChinese() {
+        return (document.documentElement.lang || 'zh').toLowerCase().indexOf('zh') === 0
+      }
+
+      /** The card of the turn that is still running, or null. */
+      function liveTurnCard() {
+        var hint = document.querySelector('[data-chat-running]')
+        var card = hint === null ? null : hint.previousElementSibling
+        return card !== null && card.hasAttribute('data-step-process') ? card : null
+      }
+
+      function trimTextNode(node) {
+        var text = node.nodeValue
+        var at = text === null ? -1 : text.indexOf(TITLE_SEPARATOR)
+        if (at < 0) return
+        node.nodeValue = text.slice(0, at)
+      }
+
+      function writeText(span, text) {
+        var only = span.firstChild
+        if (only !== null && only === span.lastChild && only.nodeType === 3) {
+          if (only.nodeValue !== text) only.nodeValue = text
+          return
+        }
+        if (span.textContent !== text) span.textContent = text
+      }
+
+      /**
+       * The label for a card whose turn is still running, or null to keep the
+       * host's own.
+       *
+       * A row that is still running or still streaming keeps the host's wording —
+       * 正在运行命令, 准备读取文件 — because that is exactly what is happening. So
+       * does a finished reasoning row: the model really is analysing again, which is
+       * what the host says. Only a finished TOOL has a result to report, and its
+       * result is what the card announces until the next row appears.
+       */
+      function runningLabel(card) {
+        var rows = card.querySelectorAll('[data-step-process-content] [data-variant]')
+        var row = rows.length === 0 ? null : rows[rows.length - 1]
+        if (row === null) return null
+        if (row.matches("[data-state='running']") || row.querySelector('[data-shimmer]') !== null) return null
+        var tool = row.getAttribute('data-tool')
+        var pair =
+          (tool !== null && DONE_BY_TOOL[tool]) || DONE_BY_VARIANT[row.getAttribute('data-variant')]
+        if (pair === undefined) return null
+        return isChinese() ? pair[0] : pair[1]
+      }
+
+      function syncCard(card, live) {
+        if (card === live) {
+          if (!card.hasAttribute(TURN_LIVE_ATTR)) card.setAttribute(TURN_LIVE_ATTR, '')
+        } else if (card.hasAttribute(TURN_LIVE_ATTR)) {
+          card.removeAttribute(TURN_LIVE_ATTR)
+        }
+        var result = card === live ? runningLabel(card) : null
+        var labels = card.querySelectorAll(CARD_LABEL)
+        for (var i = 0; i < labels.length; i++) {
+          /* The ghost the shimmer paints behind the label carries the same text in
+             an attribute; the stylesheet hides it, and it is skipped here so only
+             the text a reader can see is rewritten. */
+          if (labels[i].hasAttribute('data-shimmer-text')) continue
+          /* Only the running turn's card is rewritten. Every other card keeps the
+             host's own title — the folded summary of a finished turn, and the done
+             label the host gives a group the turn has moved past (measured after a
+             reload: 执行了命令, with nothing of ours on it). The host re-renders a
+             card as it stops being the newest, so nothing written here survives it. */
+          if (result !== null) {
+            writeText(labels[i], result)
+            continue
+          }
+          var nodes = labels[i].childNodes
+          for (var n = 0; n < nodes.length; n++) {
+            if (nodes[n].nodeType === 3) trimTextNode(nodes[n])
+          }
+        }
+      }
+
+      /**
+       * The beat played when one step of the running turn finishes.
+       *
+       * A row is "in flight" while it is executing (`data-state="running"`) or
+       * while its text is still streaming (a `[data-shimmer]` inside it). Watching
+       * for a row that WAS in flight and no longer is, rather than counting, is what
+       * makes one command finishing distinguishable from the next one starting in
+       * the same batch — a count would stay level and no beat would play.
+       *
+       * Only the running turn's card beats. A history card is finished by
+       * definition, and animating it would put a pulse on the screen every time the
+       * transcript scrolled a card into view.
+       */
+      var BEAT_ATTR = 'data-dsh-step-done'
+      var BEAT_MS = 720
+      var inFlight = new WeakMap()
+      var beatTimers = new WeakMap()
+      /* The same timers again in a Set, because a `WeakMap` cannot be walked and the
+         effect's teardown has to clear every one of them. */
+      var pendingBeats = new Set()
+
+      function flightOf(card) {
+        var rows = card.querySelectorAll('[data-step-process-content] [data-variant]')
+        var set = []
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].matches("[data-state='running']") || rows[i].querySelector('[data-shimmer]') !== null) {
+            set.push(rows[i])
+          }
+        }
+        return set
+      }
+
+      function beat(card) {
+        var pending = beatTimers.get(card)
+        if (pending !== undefined) {
+          clearTimeout(pending)
+          pendingBeats.delete(pending)
+        }
+        /* Taken off first: a beat that fires while the previous one is still playing
+           has to restart the animation, and re-setting an attribute that is already
+           there does not. */
+        card.removeAttribute(BEAT_ATTR)
+        void card.offsetWidth
+        card.setAttribute(BEAT_ATTR, '')
+        var timer = setTimeout(function () {
+          card.removeAttribute(BEAT_ATTR)
+          beatTimers.delete(card)
+          pendingBeats.delete(timer)
+        }, BEAT_MS)
+        beatTimers.set(card, timer)
+        pendingBeats.add(timer)
+      }
+
+      function watchSteps(card, live) {
+        var now = flightOf(card)
+        var was = inFlight.get(card)
+        inFlight.set(card, now)
+        if (was === undefined || card !== live) return
+        for (var i = 0; i < was.length; i++) {
+          if (now.indexOf(was[i]) >= 0 || !was[i].isConnected) continue
+          beat(card)
+          return
+        }
+      }
+
+      function sweep() {
+        var live = liveTurnCard()
+        var cards = document.querySelectorAll('[data-step-process]')
+        for (var i = 0; i < cards.length; i++) {
+          syncCard(cards[i], live)
+          watchSteps(cards[i], live)
+        }
+      }
+
+      sweep()
+      var observer = new MutationObserver(function (records) {
+        var live = liveTurnCard()
+        var full = false
+        for (var r = 0; r < records.length; r++) {
+          var record = records[r]
+          if (record.type === 'characterData') {
+            var parent = record.target.parentNode
+            var card = parent === null ? null : parent.closest('[data-step-process]')
+            if (card !== null) {
+              syncCard(card, live)
+              watchSteps(card, live)
+            }
+            continue
+          }
+          /* A changed attribute can change which card is live, or which row is the
+             newest, so those re-read the whole flow; so does anything leaving the
+             tree, which is how the turn ends. An added node only needs its own card
+             resynced, and that is the common case: a streamed token. */
+          if (record.type === 'attributes' || record.removedNodes.length > 0) {
+            full = true
+            continue
+          }
+          for (var a = 0; a < record.addedNodes.length; a++) {
+            var node = record.addedNodes[a]
+            var element = node.nodeType === 1 ? node : node.parentElement
+            var owner = element === null || element === undefined ? null : element.closest('[data-step-process]')
+            if (owner !== null) {
+              syncCard(owner, live)
+              watchSteps(owner, live)
+            } else full = true
+          }
+        }
+        if (full) sweep()
+      })
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributeFilter: ['data-state', 'data-shimmer', 'hidden', 'data-chat-running'],
+      })
+      return function () {
+        observer.disconnect()
+        pendingBeats.forEach(function (timer) {
+          clearTimeout(timer)
+        })
+        pendingBeats.clear()
+      }
+    }
+
+    /**
      * The conversation View is pinned to 对话.
      *
      * The strip is hidden by the stylesheet, so the View cannot be changed by hand,
@@ -536,6 +1069,12 @@ window.__ModuleLoader__.load({
       }, 'macos-theme: styles')
 
       ctx.effect(installComposerKeys, 'macos-theme: composer keys')
+
+      ctx.effect(installDeviceTheme, 'macos-theme: device theme')
+
+      ctx.effect(hideTranscriptSettingRow, 'macos-theme: transcript setting row')
+
+      ctx.effect(syncCardHeaderLabels, 'macos-theme: card header labels')
 
       ctx.effect(keepChatView, 'macos-theme: chat view')
 

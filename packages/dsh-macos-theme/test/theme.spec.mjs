@@ -147,7 +147,11 @@ test('every rule targets a build-stable anchor', () => {
   const stable = /data-|class\*=|class\^=|^body|^html|^div:has|^\.md-code-block|^\.dsh-easyrewrite-bubble/
   // Strip comments first: the build keeps them, and a comment before a rule
   // would otherwise be read as part of its selector.
-  const stripped = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  // Keyframes are stripped whole: their steps (`28%, 72% { … }`) are offsets, not
+  // selectors, and would otherwise be read as rules anchored on nothing.
+  const stripped = compiledCss()
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/@keyframes[^{]*\{(?:[^{}]*\{[^{}]*\})*\s*\}/g, '')
   const rules = [...stripped.matchAll(/(^|\})\s*([^{}]+)\{/g)].map((m) => m[2].trim())
   assert.ok(rules.length >= 25, `expected the structural rules, found ${rules.length}`)
   for (const selector of rules) {
@@ -382,11 +386,6 @@ test('adjacent thinking and tool calls render as a bounded merged card', () => {
   assert.match(rule[1], /border-radius:\s*12px/, 'the card needs the design radius')
   assert.match(rule[1], /border-color:\s*var\(--dsw-alias-border-l3\)/, 'the card border must come from a token')
   assert.match(rule[1], /background-color:\s*var\(--dsw-alias-bg-layer-2\)/, 'the card fill must come from a token')
-  assert.equal(
-    /body \[data-step-process\]:not\(\[hidden\]\)[^{]*\{[^}]*max-height/.test(css),
-    false,
-    'the host already caps the expanded body — do not duplicate its value',
-  )
   // `:not([hidden])` is load-bearing: the conversation is virtualized, and an
   // off-screen group is a `hidden="until-found"` placeholder with a 0px box, so
   // padding on it produced a phantom 8px row for each of the 26 placeholders.
@@ -451,22 +450,416 @@ test('the three chat status surfaces share the theme palette', () => {
     'the animated sweep must be re-pointed where it lands',
   )
 
-  // 3. Both merged cards are ONE white card now; the thinking group is told apart
-  //    by its blue leading icon, not by a second card colour.
-  const thinkingIcon = /body \[data-step-process\]:not\(\[hidden\]\):has\(\[data-process-activity='thinking'\]\) \[data-step-process-icon\]\s*\{([^}]*)\}/.exec(css)
-  assert.ok(thinkingIcon, 'the thinking group must keep a distinguishing mark')
-  assert.match(thinkingIcon[1], /color:\s*#2563eb/, 'the mark is the theme blue')
-  // No second card fill may remain for the thinking group.
+  // 3. The thinking group is not told apart at all any more. The header is label
+  //    text only, so there is no per-kind icon or accent left to colour; a card is
+  //    distinguished by whether it is live, not by what kind of step it holds.
   assert.equal(
-    /body \[data-step-process\]:not\(\[hidden\]\):has\(\[data-process-activity='thinking'\]\)\s*\{/.test(css),
+    /:has\(\[data-process-activity='thinking'\]\)/.test(css),
     false,
-    'the thinking group must not carry its own card fill any more',
+    'the per-kind header mark is gone — a card is coloured by its live state instead',
   )
-  // The card title is primary text; the host's tertiary grey is reserved for the
-  // chevron.
-  const title = /body \[data-step-process\]:not\(\[hidden\]\) \[data-process-activity\]\s*\{([^}]*)\}/.exec(css)
-  assert.ok(title, 'the card title must be styled')
-  assert.match(title[1], /color:\s*#1e293b/, 'the card title takes the primary text colour')
+})
+
+test('the card header is the design header line: state mark, label, chevron, rule', () => {
+  // The design (`c5764251d7be46239dacff5c161407f6`) gives the header a 16px state
+  // mark, a 13px label and a chevron at the far right, under a hairline. The host
+  // draws its own two marks in the leading slot and swaps them by `opacity` on
+  // hover, focus and `[aria-expanded]`, so those are removed and the design's marks
+  // are drawn on the slot and the button instead.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  const hide = /body \[data-step-process\]:not\(\[hidden\]\) > div:first-child \[data-step-process-chevron\],\s*body \[data-step-process\]:not\(\[hidden\]\) > div:first-child \[data-step-process-icon\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(hide, 'the host marks must be removed from the flow')
+  assert.match(hide[1], /display:\s*none/, 'the host marks must be hidden')
+
+  // The leading slot is the design's 16px mark box.
+  const leading = /body \[data-step-process\]:not\(\[hidden\]\) > div:first-child \[class\*='_leading'\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(leading, 'the leading slot must be laid out again')
+  assert.match(leading[1], /width:\s*16px/, 'the state mark is 16px wide')
+  assert.match(leading[1], /height:\s*16px/, 'the state mark is 16px tall')
+  assert.match(leading[1], /display:\s*inline-flex/, 'the slot must be a mark again, not hidden')
+
+  // The mark is two stacked mask layers: the arc on `::before` (it spins) and the
+  // resting check on `::after` (it sits on top, so a finished step can show its
+  // check while the card's turn is still running underneath).
+  const arc = /body \[data-step-process\]:not\(\[hidden\]\) > div:first-child \[class\*='_leading'\]::before\s*\{([^}]*)\}/.exec(css)
+  assert.ok(arc, 'the live arc must be drawn on the slot')
+  assert.match(arc[1], /mask-image:\s*var\(--dsh-card-arc\)/, 'the arc follows the card state')
+  // Longhands, because the `animation` shorthand would reset the duration to `0s`
+  // and name an animation that never runs — measured, that left the arc sitting
+  // still as a half ring, which is the bug the user reported.
+  assert.match(arc[1], /animation-name:\s*var\(--dsh-card-spin\)/, 'the arc spins from the card token')
+  assert.match(arc[1], /animation-duration:\s*1\.1s/, 'the spin must actually take time')
+  assert.match(arc[1], /animation-iteration-count:\s*infinite/, 'the spin must not stop after one turn')
+  assert.equal(/animation:/.test(arc[1]), false, 'the shorthand must not be used here')
+  // The colour is shared by both layers, so it is declared once on the pair.
+  const layers = /body \[data-step-process\]:not\(\[hidden\]\) > div:first-child \[class\*='_leading'\]::before,\s*body \[data-step-process\]:not\(\[hidden\]\) > div:first-child \[class\*='_leading'\]::after\s*\{([^}]*)\}/.exec(css)
+  assert.ok(layers, 'both mark layers must share their box')
+  assert.match(layers[1], /background-color:\s*currentColor/, 'the mark takes the card icon colour')
+
+  // The `::after` layer is declared twice — once in the shared box rule, once with
+  // its own mask — so the layer rule is the one that names a mask.
+  const rest = [...css.matchAll(/body \[data-step-process\]:not\(\[hidden\]\) > div:first-child \[class\*='_leading'\]::after\s*\{([^}]*)\}/g)]
+    .map((m) => m[1])
+    .find((body) => /mask-image/.test(body))
+  assert.ok(rest, 'the resting check must be its own layer')
+  assert.match(rest, /mask-image:\s*var\(--dsh-card-mark\)/, 'the check is the resting mark')
+  assert.match(rest, /opacity:\s*var\(--dsh-card-rest-opacity\)/, 'the check is shown only at rest')
+
+  // The chevron comes back, at the far right, and points up only when expanded.
+  const chevron = /body \[data-step-process\]:not\(\[hidden\]\) > div:first-child button\[data-process-activity\]::after\s*\{([^}]*)\}/.exec(css)
+  assert.ok(chevron, 'the header must carry the design chevron')
+  assert.match(chevron[1], /margin-left:\s*auto/, 'the chevron sits at the far right')
+  assert.match(chevron[1], /transform:\s*rotate\(0deg\)/, 'a collapsed card points the chevron down')
+  const open = /button\[data-process-activity\]\[aria-expanded='true'\]::after\s*\{([^}]*)\}/.exec(css)
+  assert.ok(open, 'the expanded header must turn its chevron')
+  assert.match(open[1], /transform:\s*rotate\(180deg\)/, 'an expanded card points the chevron up')
+
+  // One line in both states: the host's own `padding-bottom: 8px` on the expanded
+  // header is what used to make the header grow when the card was opened, and the
+  // wrapper carries the design's hairline 10px under the line.
+  const header = /body \[data-step-process\]:not\(\[hidden\]\) button\[data-process-activity\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(header, 'the header button must be sized explicitly')
+  assert.match(header[1], /height:\s*16px/, 'the header line is 16px tall')
+  assert.match(header[1], /gap:\s*8px/, "the design's gap between mark and label")
+  assert.match(header[1], /padding:\s*0 !important/, "the header must drop the host's expanded padding")
+  assert.match(header[1], /overflow:\s*hidden/, 'the label must stay on one line')
+  assert.match(header[1], /font-size:\s*13px/, 'the header label is the design 13px')
+
+  const wrapper = /body \[data-step-process\]:not\(\[hidden\]\) > div:first-child\s*\{([^}]*)\}/.exec(css)
+  assert.ok(wrapper, 'the header wrapper must carry the rule')
+  assert.match(wrapper[1], /border-bottom:\s*1px solid var\(--dsh-card-rule\)/, 'the design puts a hairline under the header')
+  assert.match(wrapper[1], /padding:\s*0 0 10px/, "the design's 10px between line and hairline")
+  assert.match(wrapper[1], /display:\s*block !important/, 'the host leaves this wrapper hidden; the header must still show')
+
+  // The host paints a `data-shimmer-text` ghost of the full title behind the label;
+  // the label is trimmed to its first half, so the ghost would put the tail back.
+  assert.match(
+    css,
+    /\[class\*='_text_'\]\[data-shimmer-text\]::after\s*\{[^}]*content:\s*none/,
+    'the shimmer ghost must not repaint the trimmed title',
+  )
+})
+
+test('both card states are capped and pinned to the newest row', () => {
+  // The user's contract: collapsed shows the last 4 rows, expanded shows at most
+  // 12, and both scroll internally with the newest row in view. A host row is 26px
+  // (`calc(24px + var(--dsh-content-font-delta))`, measured), which is exactly the
+  // design's 16px row on its 10px `space-y-2.5` rhythm — so the card zeroes the
+  // host's own 6px gap and the row height supplies the whole pitch.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+
+  const body = /body \[data-step-process\]:not\(\[hidden\]\) \[data-step-process-body\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(body, 'the card body must carry the collapsed cap')
+  assert.match(body[1], /max-height:\s*calc\(4 \* 26px\)/, 'collapsed shows the last four rows')
+  assert.match(body[1], /--dsh-chat-flow-gap:\s*0px/, "the host's gap must not stretch the design pitch")
+  assert.match(body[1], /overflow-y:\s*auto/, 'the capped body must scroll')
+  assert.match(body[1], /flex-direction:\s*column-reverse/, 'reverse flow is what pins the newest row without script')
+  // The host leaves a collapsed body at `hidden="until-found"`, which the UA
+  // renders as `content-visibility: hidden` — a 0px box the cap cannot apply to.
+  assert.match(body[1], /content-visibility:\s*visible !important/, 'a collapsed body must still lay out')
+  assert.match(body[1], /display:\s*flex !important/, 'a collapsed body must still be a flex column')
+  assert.match(body[1], /scrollbar-gutter:\s*auto/, "the host's reserved gutter must be dropped on a card whose rows fit")
+
+  const expanded = /body\s*\[data-step-process\]:not\(\[hidden\]\)\s*> div:has\(> \[data-process-activity\]\[aria-expanded='true'\]\)\s*\+ \[data-step-process-body\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(expanded, 'the expanded card needs its own cap')
+  assert.match(expanded[1], /max-height:\s*calc\(12 \* 26px\)/, 'expanded shows at most twelve rows')
+})
+
+test('the card colours come from one token set, keyed on the live state', () => {
+  // Every colour the card family paints is a variable on the card root, so the
+  // dark palette re-points the tokens instead of restating the rules. `accent` is
+  // the only blue in a dimmed card and exists to mark the one live row.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  const root = /body \[data-step-process\]:not\(\[hidden\]\)\s*\{([^}]*)\}/.exec(css)
+  assert.ok(root, 'the card root must declare its token set')
+  for (const name of ['head', 'label', 'value', 'icon', 'row-icon', 'chevron', 'rule', 'accent', 'mark']) {
+    assert.match(root[1], new RegExp(`--dsh-card-${name}:`), `the card must declare --dsh-card-${name}`)
+  }
+  // The design's dimmed card: slate-500 header, slate-400 detail, a hairline rule.
+  assert.match(root[1], /--dsh-card-head:\s*#64748b/, 'a history header is slate-500')
+  assert.match(root[1], /--dsh-card-value:\s*var\(--dsw-alias-label-tertiary\)/, 'a history value is slate-400')
+  assert.match(root[1], /--dsh-card-rule:\s*var\(--dsw-alias-border-l2\)/, 'the header rule is a hairline')
+  assert.match(root[1], /opacity:\s*0\.8/, "the design dims the whole card to 80%")
+
+  // ACTIVE = the card of the running turn, plus the card holding a running or
+  // streaming row that is not followed by another live card (only the newest one
+  // is live, which is the bug the user reported: older cards' text sometimes
+  // stayed bright). The turn half is what keeps the card lit between two tools.
+  const active = /body\s*\[data-step-process\]:not\(\[hidden\]\):has\(\s*\[data-step-process-content\] \[data-state='running'\],\s*\[data-step-process-content\] \[data-shimmer\]\s*\):not\(\s*:has\(\s*~ \[data-step-process\]:not\(\[hidden\]\) \[data-state='running'\],\s*~ \[data-step-process\]:not\(\[hidden\]\) \[data-shimmer\]\s*\)\s*\),\s*body \[data-step-process\]:not\(\[hidden\]\)\[data-dsh-turn-live\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(active, 'the live card must be singled out, and the running turn must share it')
+  assert.match(active[1], /--dsh-card-head:\s*var\(--dsw-alias-label-primary\)/, 'the live header is primary text')
+  assert.match(active[1], /--dsh-card-icon:\s*var\(--dsh-card-accent\)/, 'the live mark takes the accent')
+  assert.match(active[1], /border-color:\s*rgba\(37, 99, 235, 0\.3\)/, 'the live card takes the theme blue hairline')
+  assert.match(active[1], /background-color:\s*var\(--dsw-alias-bg-layer-1\)/, "the live card is the design's white card")
+  assert.match(active[1], /opacity:\s*1/, 'the live card is the only one at full strength')
+
+  // Rows are coloured from the same set, scoped to the body so the header button
+  // — whose class also matches `_title` — is not repainted by the row rule.
+  const rowTitle = /body \[data-step-process\]:not\(\[hidden\]\) \[data-step-process-content\][^{]*\[class\*='_title'\][^{]*\{([^}]*)\}/.exec(css)
+  assert.ok(rowTitle, 'row titles must be coloured from the card set')
+  assert.match(rowTitle[1], /color:\s*var\(--dsh-card-label\)/, 'a row title follows the card state')
+
+  // The design's row glyph is one step darker in the live card than in a history
+  // card, so it needs its own token rather than following the row text.
+  const rowIcon = /body \[data-step-process\]:not\(\[hidden\]\) \[data-step-process-content\] \[class\*='_iconIdle'\] svg\s*\{([^}]*)\}/.exec(css)
+  assert.ok(rowIcon, 'the row glyph must be coloured from the card set')
+  assert.match(rowIcon[1], /color:\s*var\(--dsh-card-row-icon\)/, 'a row glyph follows the card state')
+})
+
+test('the only motion is the header beat, and it stays inside the header', () => {
+  // Two rounds of user direction shaped this. First "移除现在的所有动画，我会后续重新
+  // 设计动画", then — seeing the redesigned mark sit still — "转圈动画，我现在看到的
+  // 是一个固定不动的下半圆" plus "动画效果正反馈只通过卡片顶部 header 来呈现".
+  //
+  // So exactly two animations exist, both on the header mark, and nothing else in
+  // the sheet may animate. A third keyframe would be a card-level pulse again, which
+  // is what the user rejected.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  const names = [...css.matchAll(/@keyframes\s+([\w-]+)/g)].map((m) => m[1])
+  assert.deepEqual(names.sort(), ['dsh-card-arc-dip', 'dsh-card-check', 'dsh-card-rule-sweep', 'dsh-card-spin'])
+
+  // The spin has to be declared, and it has to be on the arc layer: the mark was a
+  // static mask before this, which is the "固定不动的下半圆" the user saw.
+  assert.match(css, /@keyframes\s+dsh-card-spin\s*\{[^}]*rotate\(360deg\)/, 'the arc must actually turn')
+  const arc = /body \[data-step-process\]:not\(\[hidden\]\) > div:first-child \[class\*='_leading'\]::before\s*\{([^}]*)\}/.exec(css)
+  assert.ok(arc, 'the arc layer must be styled')
+  assert.match(arc[1], /animation-name:\s*var\(--dsh-card-spin\)/, 'the arc spins from the card token')
+
+  // `none` is what a resting card carries, so a finished turn cannot spin a mark
+  // nobody sees — and one place (the ACTIVE rule) decides.
+  const root = /body \[data-step-process\]:not\(\[hidden\]\)\s*\{([^}]*)\}/.exec(css)
+  assert.ok(root, 'the card token block must exist')
+  assert.match(root[1], /--dsh-card-spin:\s*none/, 'a resting card does not spin')
+  const active = /body \[data-step-process\]:not\(\[hidden\]\)\[data-dsh-turn-live\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(active, 'the live card rule must exist')
+  assert.match(active[1], /--dsh-card-spin:\s*dsh-card-spin/, 'the live card names the spin')
+
+  // The per-step beat: check pops in over the arc, arc dips aside, hairline sweeps.
+  // All three hang off `[data-dsh-step-done]` on the CARD, and all three select
+  // `> div:first-child` — the header. Nothing may target the body or the card box.
+  for (const [pattern, what] of [
+    [/\[data-dsh-step-done\][^{]*_leading'\]::after\s*\{[^}]*animation-name:\s*dsh-card-check/, 'the check pops in'],
+    [/\[data-dsh-step-done\][^{]*_leading'\]::before\s*\{[^}]*animation-name:\s*var\(--dsh-card-spin\), dsh-card-arc-dip/, 'the arc dips aside without stopping'],
+    [/\[data-dsh-step-done\][^{]*div:first-child::after\s*\{[^}]*animation:\s*dsh-card-rule-sweep/, 'the hairline sweeps'],
+  ]) {
+    assert.match(css, pattern, what)
+  }
+  // Every animated selector stays on the header wrapper or its mark.
+  for (const rule of css.matchAll(/([^{}]+)\{([^{}]*animation(-name)?:[^{}]*)\}/g)) {
+    const selectors = rule[1].split(',').map((x) => x.trim()).filter(Boolean)
+    for (const selector of selectors) {
+      assert.match(
+        selector,
+        /div:first-child/,
+        `motion outside the card header: ${selector}`,
+      )
+    }
+  }
+
+  // The marker is the browser half's, not the stylesheet's.
+  assert.match(clientSource, /var BEAT_ATTR = 'data-dsh-step-done'/, 'the beat marker must be named')
+  assert.doesNotMatch(clientSource, /data-dsh-settled/, 'the old settle marker must not come back')
+})
+
+test('the finished card rests on the check', () => {
+  // The design gave a history card a clock and the just-finished card a check. The
+  // user kept the check for both and dropped the clock with the animation, so the
+  // card carries exactly two glyphs: the live arc and the resting check.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  const root = /body \[data-step-process\]:not\(\[hidden\]\)\s*\{([^}]*)\}/.exec(css)
+  assert.ok(root, 'the card root must declare its mark')
+  const check = "%3Cpath d='M5.5 8.25L7.25 10L10.75 6.25'/%3E"
+  const clock = "%3Cpath d='M8 5V8.5L10.5 10'/%3E"
+  assert.ok(root[1].includes(check), 'a finished card rests on the check')
+  assert.equal(css.includes(clock), false, 'the clock is gone with the animation')
+
+  // The arc is its own layer token, and the live card is what turns it on — the
+  // check stays on top so a step finishing mid-turn can show it over a live arc.
+  assert.ok(root[1].includes('stroke-dasharray'), 'the card declares the live arc')
+  assert.match(root[1], /--dsh-card-arc-opacity:\s*0/, 'a resting card shows no arc')
+  const arc = /body \[data-step-process\]:not\(\[hidden\]\)\[data-dsh-turn-live\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(arc, 'the live card must carry its own mark')
+  assert.match(arc[1], /--dsh-card-arc-opacity:\s*1/, 'the running card shows the live arc')
+  assert.match(arc[1], /--dsh-card-rest-opacity:\s*0/, 'the arc replaces the resting check while it runs')
+})
+
+test('the card stays lit for as long as its turn runs', () => {
+  // A card used to be ACTIVE only while one of its rows was running or streaming,
+  // so it dimmed the moment its last tool finished — in the middle of a turn the
+  // user is still watching. The running turn is the state, and the host's hint for
+  // it is a SIBLING of the card, which no selector can read, so `client.js` mirrors
+  // it onto the card and the sheet paints the card from that.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  const lit = /body \[data-step-process\]:not\(\[hidden\]\)\[data-dsh-turn-live\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(lit, 'the running turn must light its card')
+  for (const [what, re] of [
+    ['the header', /--dsh-card-head:\s*var\(--dsw-alias-label-primary\)/],
+    ['the mark', /--dsh-card-icon:\s*var\(--dsh-card-accent\)/],
+    ['the hairline', /border-color:\s*rgba\(37, 99, 235, 0\.3\)/],
+    ['the fill', /background-color:\s*var\(--dsw-alias-bg-layer-1\)/],
+    ['full strength', /opacity:\s*1/],
+  ]) {
+    assert.match(lit[1], re, `${what} must be the ACTIVE one`)
+  }
+  // The dark palette re-points the same rule, and has to take the accent back: its
+  // base rule dims every card's mark and sits later in the sheet than the light one.
+  assert.match(
+    css,
+    /body\[data-ds-dark-theme\] \[data-step-process\]:not\(\[hidden\]\)\[data-dsh-turn-live\]\s*\{[^}]*--dsh-card-icon:\s*var\(--dsh-card-accent\)/,
+    'the dark lit card keeps the accent mark',
+  )
+})
+
+test('the browser half marks what the stylesheet cannot select', () => {
+  // Two things are unselectable in CSS: a settings row whose only discriminator is
+  // its localized title, and the card that belongs to the running turn (the host's
+  // running hint is a sibling of the card). Both are written by `client.js`, and
+  // both attribute names must agree with the sheet, or the rules silently never
+  // match.
+  assert.ok(clientSource.includes("var HIDE_ATTR = 'data-dsh-hide'"), 'the row marker must match the sheet')
+  assert.ok(
+    clientSource.includes("var TURN_LIVE_ATTR = 'data-dsh-turn-live'"),
+    'the turn marker must match the sheet',
+  )
+  for (const title of ['工作步骤展示', 'Work details']) {
+    assert.ok(
+      clientSource.includes(`'${title}'`),
+      `the row is found by its title, so ${title} must be listed for that locale`,
+    )
+  }
+  // A hidden row is marked, never removed: React owns the host's settings list and
+  // deleting its node makes the next reconciliation throw.
+  assert.equal(
+    /removeChild|remove\(\)/.test(
+      clientSource.slice(
+        clientSource.indexOf('function hideTranscriptSettingRow'),
+        clientSource.indexOf('function liveTurnCard'),
+      ),
+    ),
+    false,
+    'the settings row must be marked, not removed',
+  )
+
+  // The turn state is the host's own hint, mounted only while the session runs, and
+  // the card it belongs to is that hint's previous sibling (measured: turn 8, the
+  // hint sat directly under the card with nothing in between).
+  assert.match(clientSource, /\[data-chat-running\]/, 'the turn state is read from the host hint')
+  assert.match(clientSource, /previousElementSibling/, "the card is the hint's previous sibling")
+
+  // Each effect must be registered with the context so a hot reload disposes it; a
+  // bare call would stack observers on every activation.
+  for (const name of ['hideTranscriptSettingRow', 'syncCardHeaderLabels']) {
+    assert.match(
+      clientSource,
+      new RegExp(`ctx\\.effect\\(${name},`),
+      `${name} must be registered as a disposable effect`,
+    )
+  }
+})
+
+test('the card header reads the first half of the host title', () => {
+  // The host composes the header as `label + " · " + detail` (its own
+  // `message.turnProcess.separator`), where the detail is the live command or the
+  // reasoning text. The design's header is the label alone, and truncation cannot
+  // express that: the tail starts after a separator whose position CSS cannot know.
+  // So `client.js` rewrites the label's text node, and it must also drop the
+  // `data-shimmer-text` ghost the host paints behind it — the stylesheet hides that
+  // ghost, and a rewrite that missed the mirror would put the tail back on screen.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.match(css, /\[class\*='_text_'\]\[data-shimmer-text\]::after\s*\{[^}]*content:\s*none/, 'the ghost must be off')
+
+  assert.match(clientSource, /function syncCardHeaderLabels\(\)/, 'the label must be rewritten by the browser half')
+  assert.match(clientSource, /var TITLE_SEPARATOR = ' · '/, "the separator must be the host's own")
+  // The header is the card's DIRECT first child. A bare `div:first-child` also
+  // matches every row, whose own first child is its label — measured, that made a
+  // finished card read `执行了命令 执行了命令` on each of its rows.
+  assert.match(
+    clientSource,
+    /var CARD_LABEL = ":scope > div:first-child span\[class\*='_text_'\]"/,
+    'the label lookup must be scoped to the card header, not to every row',
+  )
+  const body = /function syncCardHeaderLabels\(\) \{[\s\S]*?\n    \}\n\n    \/\*\*/.exec(clientSource)
+  assert.ok(body, 'the label logic must resolve to one function')
+  assert.match(body[0], /indexOf\(TITLE_SEPARATOR\)/, 'the cut is made at the separator')
+  assert.match(body[0], /nodeValue = text\.slice\(0, at\)/, 'only the first half is kept')
+  // The label is re-rendered on every streamed token, so a one-off pass would be
+  // overwritten at once: this has to observe, and it has to skip the ghost.
+  assert.match(body[0], /new MutationObserver/, 'the label streams, so the cut must be observed')
+  assert.match(body[0], /characterData: true/, 'a streamed token arrives as a characterData change')
+  assert.match(body[0], /hasAttribute\('data-shimmer-text'\)/, 'the ghost must be left alone')
+  assert.match(
+    clientSource,
+    /ctx\.effect\(syncCardHeaderLabels,/,
+    'the label logic must be registered as a disposable effect',
+  )
+})
+
+test('a finished tool reports what it did, not the next analysis', () => {
+  // Reported: "刚运行完命令，不是应该显示「执行了命令」之类的结果吗". The host's live
+  // label is `summary.running ?? 'thinking'`, so with no tool running it falls back
+  // to 正在分析请求 — between two tools, and for the whole rest of a turn whose last
+  // row was a tool. The card must announce the result instead.
+  //
+  // The strings are the host's own `message.turnProcess.done.*`, hard-coded in both
+  // locales because this half has no dictionary (the same arrangement as the
+  // settings row). Every variant and every refining tool must have one, or a card
+  // would keep the wrong wording for that tool.
+  for (const [label, locale] of [
+    ['执行了命令', 0],
+    ['修改了文件', 0],
+    ['已读取文件', 0],
+    ['已搜索代码', 0],
+    ['已写入文件', 0],
+    ['已调用工具', 0],
+    ['已读取图片', 0],
+    ['已搜索网页', 0],
+    ['已访问网页', 0],
+    ['已协调子智能体', 0],
+    ['更新了计划', 0],
+    ['向用户提出了问题', 0],
+    ['Ran commands', 1],
+    ['Edited files', 1],
+    ['Read files', 1],
+  ]) {
+    assert.ok(clientSource.includes(`'${label}'`), `the done label ${label} must be hard-coded (${locale})`)
+  }
+  // The tools whose wording differs from their row variant are looked up by
+  // `data-tool` first: a `read` variant carries both a read and a read_image.
+  const byTool = /var DONE_BY_TOOL = \{([\s\S]*?)\n    \}/.exec(clientSource)
+  assert.ok(byTool, 'the tool table must exist')
+  for (const tool of ['read_image', 'web_search', 'web_fetch', 'subagent', 'ask_user_question']) {
+    assert.match(byTool[1], new RegExp(`${tool}:`), `${tool} must override its variant's wording`)
+  }
+  const byVariant = /var DONE_BY_VARIANT = \{([\s\S]*?)\n    \}/.exec(clientSource)
+  assert.ok(byVariant, 'the variant table must exist')
+  for (const variant of ['read', 'search', 'write', 'edit', 'bash', 'code', 'others']) {
+    assert.match(byVariant[1], new RegExp(`\\b${variant}:`), `the ${variant} variant must have a done label`)
+  }
+
+  // Only a FINISHED row reports a result. A row that is still running keeps the
+  // host's 正在… wording, and so does a finished reasoning row: the model really is
+  // analysing again, which is exactly what 正在分析请求 says.
+  const running = /function runningLabel\(card\) \{[\s\S]*?\n      \}/.exec(clientSource)
+  assert.ok(running, 'the label must be chosen per card state')
+  assert.match(running[0], /\[data-state='running'\]/, 'a running row keeps the host wording')
+  assert.match(running[0], /\[data-shimmer\]/, 'a streaming row keeps the host wording')
+  assert.match(running[0], /getAttribute\('data-tool'\)/, "the tool's own label wins over the variant's")
+  assert.match(running[0], /getAttribute\('data-variant'\)/, 'the row variant is the fallback')
+  assert.equal(/think/.test(byVariant[1] + byTool[1]), false, 'a reasoning row is not a tool and has no result')
+
+  // Only the running turn's card is rewritten; a closed card keeps the host's own
+  // summary title (执行了命令，修改了文件，已读取文件等), which is what the user asked to
+  // keep for folded history.
+  assert.match(clientSource, /var result = card === live \? runningLabel\(card\) : null/, 'only the live card is rewritten')
+})
+
+test('the transcript-mode setting row is hidden, not removed', () => {
+  // Section 7 gives every mode the same behaviour, so the selector is a control
+  // with no effect. React owns that node; deleting it makes the host's next
+  // reconciliation throw, so `client.js` marks it and the sheet takes it out of
+  // the flow.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.match(css, /body \[data-dsh-hide\]\s*\{[^}]*display:\s*none/, 'a marked settings row must leave the flow')
 })
 
 test('every status-surface literal is re-pointed for the dark palette', () => {
@@ -475,8 +868,11 @@ test('every status-surface literal is re-pointed for the dark palette', () => {
   const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
   for (const [label, re] of [
     ['the completed pill', /body\[data-ds-dark-theme\] \[data-turn-process\]\s*\{[^}]*background-color:\s*rgba\(255, 255, 255, 0\.06\)/],
-    ['the card title', /body\[data-ds-dark-theme\] \[data-step-process\]:not\(\[hidden\]\) \[data-process-activity\]\s*\{[^}]*color:\s*#e2e8f0/],
-    ['the thinking mark', /body\[data-ds-dark-theme\] \[data-step-process\]:not\(\[hidden\]\):has\(\[data-process-activity='thinking'\]\) \[data-step-process-icon\]\s*\{[^}]*color:\s*#60a5fa/],
+    ['the card accent', /body\[data-ds-dark-theme\] \[data-step-process\]:not\(\[hidden\]\)\s*\{[^}]*--dsh-card-accent:\s*#60a5fa/],
+    // The dark base rule dims every card's mark, and it sits after the light ACTIVE
+    // rule, so the lit card takes the accent back — otherwise a running card would
+    // show a dimmed glyph while its fill stayed lit.
+    ['the lit card mark', /body\[data-ds-dark-theme\] \[data-step-process\]:not\(\[hidden\]\)\[data-dsh-turn-live\]\s*\{[^}]*--dsh-card-icon:\s*var\(--dsh-card-accent\)/],
     ['the running hint', /body\[data-ds-dark-theme\] \[data-chat-running\]\s*\{[^}]*color:\s*#60a5fa/],
   ]) {
     assert.match(css, re, `${label} must be re-pointed for the dark palette`)
@@ -670,17 +1066,17 @@ test('the three chat text surfaces share one type size', () => {
   }
 })
 
-test('the merged process cards share the chat type size', () => {
-  // One `[data-step-process]` card stacks three of the host's type scales:
-  // measured live, the header button renders 16px (it reads
-  // `--dsh-content-font-size`, i.e. the host's user setting), every row title and
-  // summary renders 14px (`--dsh-content-font-size-secondary`), and the reasoning
-  // copy sits on a 21px line box. None of them is the chat's 13px, so the card
-  // read as a third, unrelated text size beside the message. These four families
-  // are the ones that *declare* a size — the bare `_text` leaves inherit from
-  // them, which is why the rule must not name `_text`: the same class paints the
-  // terminal command and code lines inside the card, and those stay on the code
-  // scale.
+test('the merged process cards read at the transcript\'s own type size', () => {
+  // The design draws the card one step below the chat (12px label, 11px detail),
+  // but on screen that made the card a third text size between the user's message
+  // and the assistant's — reported as "思考卡片详情的字体大小改为和其他消息字体大小一致
+  // (12px->13px)". The card therefore follows the transcript's 13px, and keeps its
+  // hierarchy through weight and colour instead of size.
+  //
+  // These four families are the ones that *declare* a size; the bare `_text` leaves
+  // inherit from them, which is why the rules must not name `_text`: the same class
+  // paints the terminal command and code lines inside the card, and those stay on
+  // the code scale.
   const css = compiledCss()
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
   const rules = [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
@@ -688,17 +1084,39 @@ test('the merged process cards share the chat type size', () => {
     body: m[2],
   }))
 
+  const matching = (selector) => {
+    const found = rules.filter((rule) => rule.selectors.includes(selector))
+    assert.ok(found.length > 0, `${selector} must be styled`)
+    return found.at(-1).body
+  }
+
+  const title = matching("body [data-step-process]:not([hidden]) [class*='_title']")
+  assert.match(title, /font-size:\s*13px/, "the row label matches the transcript's own size")
+  assert.match(title, /font-weight:\s*500/, 'the row label keeps its medium weight')
+
+  // The compaction row is a row like any other: same 13px scale on both of its
+  // halves, and the same `truncate` on the detail. Its title is a fixed phrase
+  // (上下文已压缩), so it takes the size and weight without the ellipsis.
+  const compTitle = matching(
+    "body [data-step-process]:not([hidden]) [data-step-process-content] [class*='compactionTitle']",
+  )
+  assert.match(compTitle, /font-size:\s*13px/, 'the compaction row title matches the transcript')
+  assert.match(compTitle, /font-weight:\s*500/, 'the compaction row title is a row label')
+
   for (const [selector, what] of [
-    ["body [data-step-process]:not([hidden]) [class*='_title']", 'the card header and row titles'],
     ["body [data-step-process]:not([hidden]) [class*='_summary']", 'the reasoning and tool summaries'],
     ["body [data-step-process]:not([hidden]) [class*='_fileLink']", 'the tool file link'],
-    ["body [data-step-process]:not([hidden]) [class*='compaction']", 'the compaction row inside a card'],
+    [
+      "body [data-step-process]:not([hidden]) [data-step-process-content] [class*='compactionSummary']",
+      'the compaction row detail inside a card',
+    ],
   ]) {
-    const matching = rules.filter((rule) => rule.selectors.includes(selector))
-    assert.ok(matching.length > 0, `${what} must be styled`)
-    const body = matching.at(-1).body
-    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${what} must read the shared size`)
-    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `${what} must read the shared line-height`)
+    const body = matching(selector)
+    assert.match(body, /font-size:\s*13px/, `${what} matches the transcript's own size`)
+    // The design's detail is `truncate`; the host only sets `nowrap`, so a long
+    // command used to run past the card's edge (measured: 665px body, overflowing).
+    assert.match(body, /text-overflow:\s*ellipsis/, `${what} must end in an ellipsis`)
+    assert.match(body, /overflow:\s*hidden/, `${what} must not overflow the card`)
   }
 
   // The card's code surfaces (`_terminal`, `_ioCard`, `pre`, inline `code`) keep
@@ -708,13 +1126,36 @@ test('the merged process cards share the chat type size', () => {
     rule.selectors.some((s) => s.startsWith('body [data-step-process]:not([hidden]) ')),
   )
   for (const rule of cardRule) {
-    if (!/font-size:\s*var\(--dsh-chat-font-size\)/.test(rule.body)) continue
+    if (!/font-size:\s*13px/.test(rule.body)) continue
     assert.deepEqual(
       rule.selectors.filter((s) => /_text|terminal|_ioCard|code/.test(s)),
       [],
       'the card type rule must not repaint the code surfaces',
     )
   }
+})
+
+test('a row is the design 14px glyph, an 8px gap, label and detail', () => {
+  // The host draws the row's glyph at `calc(14px + font-delta)` = 16px in an 18px
+  // slot, and puts a 2px dot with 8px margins between the kind label and its
+  // detail. The design has a 14px glyph (`w-3.5`) and an 8px gap (`gap-2`) with no
+  // dot, so the slot and the glyph are shrunk and the dot is removed. Measured, the
+  // row stays 26px tall, which is what the card's caps are built on.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  const lead = /body \[data-step-process\]:not\(\[hidden\]\) \[data-step-process-content\] \[class\*='_leading'\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(lead, 'the row slot must be sized')
+  assert.match(lead[1], /width:\s*14px/, 'the design glyph is 14px wide')
+  assert.match(lead[1], /height:\s*14px/, 'the design glyph is 14px tall')
+  assert.match(lead[1], /margin-right:\s*8px/, "the design's gap-2 after the glyph")
+
+  const glyph = /body \[data-step-process\]:not\(\[hidden\]\) \[data-step-process-content\] \[class\*='_leading'\] svg\s*\{([^}]*)\}/.exec(css)
+  assert.ok(glyph, 'the glyph itself must be sized, not just its slot')
+  assert.match(glyph[1], /width:\s*14px/, "the host's font-delta size must be overridden")
+  assert.match(glyph[1], /height:\s*14px/, "the host's font-delta size must be overridden")
+
+  const dot = /body \[data-step-process\]:not\(\[hidden\]\) \[data-step-process-content\] \[class\*='_sep'\],\s*body \[data-step-process\]:not\(\[hidden\]\) \[data-step-process-content\] \[class\*='_separator'\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(dot, 'both separator spellings must be covered')
+  assert.match(dot[1], /display:\s*none/, 'the design has no dot between label and detail')
 })
 
 test('the assistant prose is anchored on the markdown container', () => {
@@ -1364,8 +1805,11 @@ test('the composer keymap breaks the line on Enter and submits on Ctrl/Cmd+Enter
     false,
     'Shift+Enter must not submit any more',
   )
+  // A viewport gate is a `matchMedia` on a WIDTH query. A colour-scheme query is
+  // not one, and the device-theme override legitimately asks the system whether
+  // it prefers dark, so the assertion names the width form rather than the API.
   assert.equal(
-    /matchMedia/.test(clientSource),
+    /matchMedia\(\s*['"`]\([^'"`]*width/.test(clientSource),
     false,
     'the line break is no longer viewport-dependent, so no viewport gate may remain',
   )
@@ -1450,4 +1894,113 @@ test('移动端 drops the sidebar panel entries and reclaims the collapsed rail'
   ]) {
     assert.equal(re.test(outside), false, `${what} must survive above 900px`)
   }
+})
+
+test('a device can go dark while the Host preference stays light', () => {
+  // The Host stores ONE `ui-theme.preference` for the whole installation and
+  // writes the active palette INLINE on `body`, so `data-ds-dark-theme` alone
+  // changes nothing: measured on the live host, adding that attribute left
+  // `--dsw-alias-bg-base` at `#FFFFFF`. The device override therefore has to be
+  // an `!important` block keyed on its own attribute.
+  const css = compiledCss()
+  const block = /body\[data-dsh-device-theme='dark'\]\s*\{([^}]*)\}/.exec(css)
+  assert.ok(block, 'the per-device dark block must exist and be anchored on its own attribute')
+
+  // `!important` is load-bearing, not defensive: without it the Host's inline
+  // declaration wins and the device stays light.
+  const declarations = block[1].match(/--dsw-[a-z0-9-]+:[^;]+;/g) ?? []
+  assert.ok(declarations.length > 50, 'the block must re-point the whole palette, not a sample')
+  for (const declaration of declarations) {
+    assert.match(declaration, /!important/, `${declaration} must beat the Host's inline value`)
+  }
+
+  // It must agree with the TOKENS layer's own `dark` column, or a device in dark
+  // would differ from a Host in dark.
+  const tokens = /var TOKENS = (\{[\s\S]*?\n    \})/.exec(clientSource)
+  assert.ok(tokens, 'the TOKENS layer must stay in the client half')
+  const layer = (0, eval)(`(${tokens[1]})`)
+  for (const [name, value] of Object.entries(layer)) {
+    if (value.light === value.dark) continue
+    assert.ok(
+      block[1].includes(`${name}: ${value.dark} !important`),
+      `${name} must carry the same dark value the TOKENS layer declares`,
+    )
+  }
+
+  // The structural rules key on the Host's attribute, so the device switch has
+  // to drive that one too — dark tokens over light geometry reads as broken.
+  assert.match(clientSource, /HOST_DARK_ATTR\s*=\s*'data-ds-dark-theme'/)
+  assert.match(clientSource, /toggleAttribute\(HOST_DARK_ATTR/)
+})
+
+test('the session list drops the projections a list row never reads', () => {
+  // Measured on the live host: `session/list` is 3.1 MB for 1875 Sessions, of
+  // which `turnOutline` is 1.0 MB, `imageLimits` 233 KB and `modelSelection`
+  // 197 KB. Trimming the recognised keys took the same response to 883 KB with
+  // the sidebar, the composer chips and the context meter all unchanged.
+  const source = readFileSync(join(root, 'src', 'index.ts'), 'utf8')
+  const keep = /const SESSION_LIST_KEEP = \[([^\]]*)\]/.exec(source)
+  assert.ok(keep, 'the kept-key list must stay declared as data, not inlined in the script')
+
+  // The keys a list row or the rail reads. `title` is the row label; the rest
+  // are the badges. Anything absent here is dropped from the list response and
+  // arrives again from the open Session's own projection stream.
+  for (const key of ['title', 'sessionListMetadata', 'workingDirectory']) {
+    assert.match(keep[1], new RegExp(`'${key}'`), `${key} must survive the trim`)
+  }
+  for (const dropped of ['turnOutline', 'imageLimits', 'modelSelection', 'tokenUsage']) {
+    assert.equal(
+      keep[1].includes(`'${dropped}'`),
+      false,
+      `${dropped} is not read by a list row and must stay out of the kept set`,
+    )
+  }
+
+  // It must be injected into `<head>`, ahead of every application script: the
+  // RPC transport binds `globalThis.fetch` at module initialisation, so a patch
+  // installed later from the browser half never sees the call (measured: 4 calls
+  // seen, all an unrelated plugin's polling).
+  assert.match(source, /kind: 'script', placement: 'head'/, 'the trim must render into head')
+  assert.match(source, /webserver\/index-inject/, 'it rides the webserver injection hook')
+
+  // And it must be inert on anything it does not recognise: a throw here would
+  // cost the whole session list, which is worse than 2 MB.
+  assert.match(source, /if \(!Array\.isArray\(items\)\) return response/)
+  assert.match(source, /catch \{\s*\n\s*return response/, 'a failed parse must return the response untouched')
+  assert.match(source, /if \(!response\.ok\) return response/)
+})
+
+test('history pages ask for a budget a turn-aligned page can actually respect', () => {
+  // Measured against the live host on a 28 MB Session, same `beforeSeq`: the
+  // default 500-message budget returns 3993 KB / 1675 records, while 120/50
+  // returns 1415 KB / 766 records — 65% less for one "load older", with
+  // `hasMore` still true so paging simply continues.
+  //
+  // The budget is a REQUEST parameter (`maxMessages` + `turnWindow`), so the
+  // Host validates it rather than us: `paginate` rejects a window whose
+  // `minMessages` exceeds `maxMessages` ("must be a positive safe integer no
+  // greater than maxMessages"), which is why the two values move together.
+  const source = readFileSync(join(root, 'src', 'index.ts'), 'utf8')
+  const declaration = /const HISTORY_PAGE_BUDGET = (\{[^\n]*\}) as const/.exec(source)
+  assert.ok(declaration, 'the page budget must stay declared as data, not inlined in the script')
+  const budget = (0, eval)(`(${declaration[1]})`)
+  const max = budget.maxMessages
+  const min = budget.turnWindow.minMessages
+  assert.ok(Number.isSafeInteger(max) && max > 0, 'maxMessages must be a positive integer')
+  assert.ok(Number.isSafeInteger(min) && min > 0, 'minMessages must be a positive integer')
+  assert.ok(min <= max, 'the Host rejects a window whose minMessages exceeds maxMessages')
+  assert.ok(max < 500, 'the default budget is what this replaces; it must be smaller')
+
+  // Two Turn starts are what keeps a page aligned to whole turns rather than
+  // cutting mid-turn, so the rewrite must not drop that half of the window.
+  assert.equal(budget.turnWindow.minTurns, 2, 'pages must still stop on a Turn boundary')
+
+  // Rewriting a POST body means re-sending it; a request that is not the one
+  // shape we recognise must go through byte-identical, or paging breaks.
+  assert.match(source, /'\/api\/session\/page'/, 'it targets the history page endpoint')
+  const rewrite = /function historyPageBudgetScript\(\)[\s\S]*?\n\}/.exec(source)
+  assert.ok(rewrite, 'the rewrite must stay a separate head script')
+  const forward = rewrite[0].match(/return native\.apply\(this, arguments\)/g) ?? []
+  assert.ok(forward.length >= 3, 'every unrecognised shape must be forwarded untouched')
+  assert.match(rewrite[0], /catch \{\s*\n\s*return native\.apply\(this, arguments\)/, 'an unreadable body must leave the request alone')
 })
