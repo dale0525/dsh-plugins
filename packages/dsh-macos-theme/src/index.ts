@@ -19,6 +19,9 @@
  * under `/api` would sort ahead of the fence and bypass it entirely. Instead the
  * fence is consulted per request, see {@link apply}.
  *
+ * The second host-side job is trimming the `session/list` response, see
+ * {@link SESSION_LIST_TRIM}.
+ *
  * @module @logictan/dsh-macos-theme
  */
 
@@ -28,6 +31,7 @@ import { readFile, stat } from 'node:fs/promises'
 import Schema from '@deepseek-ai/schemastery'
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { HostConnectionHandle } from '@deepseek-ai/dsh-client-connection'
 
@@ -84,6 +88,136 @@ const FONT_FILES = new Map<string, string>([
 
 /** Resolved next to this module's build output (`lib/`), so `../assets/fonts/`. */
 const FONT_DIR = new URL('../assets/fonts/', import.meta.url)
+
+/**
+ * Projection keys the SESSION LIST is allowed to keep.
+ *
+ * `session/list` returns every visible Session with its whole projection block,
+ * and the block is what a conversation needs — not what a list row needs. On
+ * this machine that is 3.1 MB for 1875 Sessions, of which `turnOutline` alone
+ * (one entry per turn, `prompt` and `response` text included) is 1.0 MB,
+ * `imageLimits` 233 KB and `modelSelection` 197 KB. A row shows a title, a
+ * timestamp and a running dot.
+ *
+ * The kept keys are the ones a list row or the rail actually reads. Everything
+ * else arrives again, in full, from the per-Session projection stream when the
+ * Session is opened — `useProjection` subscribes to the OPEN conversation, so
+ * trimming the list cannot starve the chat view.
+ */
+const SESSION_LIST_KEEP = ['title', 'workingDirectory', 'sessionListMetadata', 'subagentCatalog', 'agentPreset', 'subagent', 'subagentTiming'] as const
+
+/**
+ * Head script that trims each `session/list` response before the app parses it.
+ *
+ * A head injection, not a plugin-side `fetch` wrapper: the RPC transport binds
+ * `globalThis.fetch` when its module initialises, so a wrapper installed later
+ * from this plugin's browser half never sees the call. Measured — a patch from
+ * the plugin observed 4 calls (all an unrelated plugin's polling) while the real
+ * `session/list` went through untouched. `webserver/index-inject` rows render
+ * into `<head>` ahead of every application script, which is the only placement
+ * that wins that race.
+ *
+ * It must stay a no-op on anything unexpected: a response that is not the
+ * envelope it recognises, a failed parse, or an absent `items` array is returned
+ * untouched, because a broken list would cost far more than 2 MB.
+ */
+function sessionListTrimScript(): string {
+  return `(() => {
+  const KEEP = ${JSON.stringify(SESSION_LIST_KEEP)}
+  const native = globalThis.fetch
+  if (typeof native !== 'function') return
+  globalThis.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || ''
+    const pending = native.apply(this, arguments)
+    if (url.indexOf('/api/session/list') < 0) return pending
+    return pending.then((response) => {
+      if (!response.ok) return response
+      return response.clone().text().then((text) => {
+        let trimmed = text
+        try {
+          const body = JSON.parse(text)
+          const items = body && body.result && body.result.value && body.result.value.items
+          if (!Array.isArray(items)) return response
+          for (const item of items) {
+            const values = item && item.projections && item.projections.values
+            if (!values || typeof values !== 'object') continue
+            for (const key of Object.keys(values)) {
+              if (KEEP.indexOf(key) < 0) delete values[key]
+            }
+          }
+          trimmed = JSON.stringify(body)
+        } catch {
+          return response
+        }
+        return new Response(trimmed, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        })
+      })
+    })
+  }
+})()`
+}
+
+/**
+ * Page budget this plugin asks for when the chat loads older history.
+ *
+ * The app opens a Session with `maxMessages: 500` and keeps it for every
+ * "load older" page. Measured on a 28 MB Session at one fixed `beforeSeq`, that
+ * budget returns 3993 KB / 1675 records, of which a handful of long assistant
+ * messages dominate; the same page at 120/50 is 1415 KB / 766 records. `hasMore`
+ * stays true either way, so the reader simply pages a few more times.
+ *
+ * Both numbers move together on purpose: the Host's `paginate` validates
+ * `turnWindow.minMessages <= maxMessages` and rejects the request otherwise, so
+ * lowering only the cap would make every page fail. `minTurns: 2` is kept
+ * because it is what stops a page on a Turn boundary instead of mid-turn.
+ */
+const HISTORY_PAGE_BUDGET = { maxMessages: 120, turnWindow: { minMessages: 50, minTurns: 2 } } as const
+
+/**
+ * Head script that lowers the history-page budget on the way out.
+ *
+ * This is a request rewrite, not a response trim: `session/page` takes the page
+ * budget as a parameter, so asking for less is both smaller on the wire and
+ * cheaper on the Host than receiving 9 MB and discarding most of it.
+ *
+ * Head injection for the same reason as the list trim — the RPC transport binds
+ * `globalThis.fetch` at module initialisation, so anything installed from this
+ * plugin's browser half misses the call entirely.
+ *
+ * Every path that is not the exact request it knows about is forwarded
+ * untouched: a body that fails to parse, a body without `payload.args.request`,
+ * or an error while re-encoding. A dropped page would leave the reader unable
+ * to scroll back at all, which is far worse than one large page.
+ */
+function historyPageBudgetScript(): string {
+  return `(() => {
+  const BUDGET = ${JSON.stringify(HISTORY_PAGE_BUDGET)}
+  const native = globalThis.fetch
+  if (typeof native !== 'function') return
+  globalThis.fetch = function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || ''
+    if (url.indexOf('/api/session/page') < 0) return native.apply(this, arguments)
+    const body = init && typeof init.body === 'string' ? init.body : null
+    if (body === null) return native.apply(this, arguments)
+    let rewritten
+    try {
+      const message = JSON.parse(body)
+      const request = message && message.payload && message.payload.args && message.payload.args.request
+      if (!request || typeof request !== 'object') return native.apply(this, arguments)
+      if (typeof request.maxMessages !== 'number') return native.apply(this, arguments)
+      request.maxMessages = BUDGET.maxMessages
+      request.turnWindow = BUDGET.turnWindow
+      rewritten = JSON.stringify(message)
+    } catch {
+      return native.apply(this, arguments)
+    }
+    return native.call(this, input, { ...init, body: rewritten })
+  }
+})()`
+}
 
 interface ServedFont {
   readonly body: Buffer
@@ -176,5 +310,18 @@ export function apply(ctx: Context): void {
         }),
       'macos-theme: fonts',
     )
+  })
+
+  /* The list-payload trim rides the webserver's own injection hook, which the
+     theme plugin also uses, so it needs no route and no trust fence of its own:
+     it only adds markup to index responses the Host already decided to serve.
+     Registered unconditionally rather than inside the `webServer` scope, because
+     `index-inject` is an event, not a service — injecting `webServer` for it
+     would turn "no webserver here" into "no theme at all". `ctx.on` already
+     returns the disposer cordis ties to this plugin's fiber, so it is called
+     directly, exactly as every Host listener of this event does. */
+  ctx.on('webserver/index-inject', (table: IndexInjection[]) => {
+    table.push({ kind: 'script', placement: 'head', text: sessionListTrimScript() })
+    table.push({ kind: 'script', placement: 'head', text: historyPageBudgetScript() })
   })
 }
