@@ -242,6 +242,24 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   正确做法是每次激活都重写已有标签的 `textContent`（复用标签，不重复追加）。
   实测症状：新加的规则在页面样式表里 0 处命中，而测试全绿。
 
+- **要拦截宿主的 RPC 请求，只能在 head 注入里做，插件侧包 `globalThis.fetch` 永远无效**：
+  RPC 传输层在**模块初始化时**就绑定了 `globalThis.fetch`，插件后加载，它的包装器看不到
+  已经绑定好的那次调用。实测：插件侧包装器只捕获到 4 次无关的轮询请求，真正的
+  `session/list` 原样通过。唯一赢下这个竞态的位置是 `webserver/index-inject` 钩子的
+  `kind: 'script'` + `placement: 'head'`，它渲染进 `<head>`、排在所有应用脚本之前。
+  排查时注意：核对注入是否生效要 grep **注入脚本里的实际字符串**（如 `const KEEP`），
+  不是源码里的常量名（如 `SESSION_LIST_KEEP`）—— 按后者搜会得出「没注入」的错误结论。
+
+- **优先改请求参数，而不是收下大响应再裁**：`session/page` 这类端点把预算作为参数接收
+  （`maxMessages` / `turnWindow`），改小后重发让服务端只生成小页，请求与响应同时变小、
+  宿主也少做功。改响应只能省带宽，宿主已经付过计算的代价。
+  前提是预算确实在请求体里 —— 首屏 `doOpen` 用的是客户端常量 `HISTORY_PAGE_OPTIONS`，
+  插件改不到，别去试着裁首屏正文。
+  改请求体时**认不出的形状必须原样转发**（解析失败、缺 `payload.args.request`、
+  字段类型不对、重编码抛错）：吞掉一个翻页请求会让用户完全无法回看历史，
+  代价远大于一次大页。实测数据与预算曲线见
+  `docs/research/2026-10-21-session-payload-reduction.md`。
+
 - **本地验证脚手架发布后要清三处，漏一处就还在读本地**：`pnpm-workspace.yaml` 的
   `overrides:` 块、`package.json` 里聚合包的 `file:` 指针、以及重装后的 `pnpm-lock.yaml`。
   判据：`grep "<仓库绝对路径>" pnpm-lock.yaml` 无输出，且包目录是真目录（非软链）、
