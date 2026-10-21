@@ -457,6 +457,65 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The conversation View is pinned to 对话.
+     *
+     * The strip is hidden by the stylesheet, so the View cannot be changed by hand,
+     * and the last way in was a tool row's 「查看」 button: it calls the host's
+     * `inspectCall`, which opens the trajectory View with a focus target. Measured
+     * live, one click on a `read` row flipped the strip to 轨迹, replaced the
+     * conversation with the trajectory ledger, and persisted `view: "trajectory"` in
+     * the session's store — with no control left that leads back. The affordance is
+     * hidden in CSS; this is the repair for a selection that is already wrong (a
+     * preference persisted before that rule shipped, or any path the host adds
+     * later). The View state belongs to the host, so the repair drives the chat tab
+     * the user would have clicked.
+     */
+    function keepChatView() {
+      var scheduled = false
+      var timer = 0
+
+      /** The two labels the host ships for the chat View, per locale. */
+      function chatTab() {
+        var tabs = document.querySelectorAll("[data-conversation-tabs] [role='tab']")
+        for (var i = 0; i < tabs.length; i++) {
+          var label = (tabs[i].textContent || '').trim()
+          if (label === '对话' || label === 'Chat') return tabs[i]
+        }
+        return null
+      }
+
+      function repair() {
+        scheduled = false
+        var chat = chatTab()
+        if (chat === null) return
+        if (chat.getAttribute('aria-selected') === 'true') return
+        chat.click()
+      }
+
+      /* Coalesced and deferred: the observer runs on every mutation of a streaming
+         conversation, and the click is a host state update that must not arrive
+         while the host is still committing the switch. */
+      function schedule() {
+        if (scheduled) return
+        scheduled = true
+        timer = setTimeout(repair, 0)
+      }
+
+      schedule()
+      var observer = new MutationObserver(schedule)
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['aria-selected'],
+      })
+      return function () {
+        observer.disconnect()
+        clearTimeout(timer)
+      }
+    }
+
+    /**
      * Apply the theme.
      *
      * The `theme` service is resolved through a nested `inject` rather than the
@@ -477,6 +536,8 @@ window.__ModuleLoader__.load({
       }, 'macos-theme: styles')
 
       ctx.effect(installComposerKeys, 'macos-theme: composer keys')
+
+      ctx.effect(keepChatView, 'macos-theme: chat view')
 
       ctx.inject(['theme'], function (scoped) {
         scoped.effect(function () {

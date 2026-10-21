@@ -559,6 +559,14 @@ body [data-conversation-tabs] {
   display: none;
 }
 
+/* The strip is the only control that leaves the trajectory View, so with it gone
+   that View would be a trap. Its last entry point is the tool row's 「查看」 button
+   (`inspectCall`), which is removed here; the View itself is repaired in
+   `client.js`, which cannot be done from a stylesheet. */
+body [class*='_inspectButton'] {
+  display: none;
+}
+
 /* ==========================================================================
    7. Conversation flow
    ========================================================================== */

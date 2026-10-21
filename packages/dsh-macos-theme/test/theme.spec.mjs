@@ -245,6 +245,41 @@ test('the tab strip is hidden, anchored on its data attribute', () => {
   assert.equal(/\[class\*=["']_tabs["']\]/.test(css), false, 'tabs must not anchor on the `_tabs` class suffix')
 })
 
+test('the trajectory view is closed off, and a stuck session returns to chat', () => {
+  // The strip is hidden above, so the last way into the trajectory View is a tool
+  // row's 「查看」 button: it calls the host's `inspectCall`, which opens that View
+  // with a focus target. Measured live: one click on a `read` row flipped the strip
+  // to 轨迹, rendered the trajectory ledger, and persisted `view: "trajectory"` in
+  // the session's store — with no control left that leads back to 对话. So the
+  // affordance is hidden, and the browser half re-selects the chat tab whenever the
+  // strip reports another View (a preference persisted before this rule shipped, or
+  // any path the host adds later).
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.match(
+    css,
+    /body \[class\*='_inspectButton'\]\s*\{[^}]*display:\s*none/,
+    'the inspect affordance is the last entry point into the View',
+  )
+
+  assert.match(clientSource, /function keepChatView\(\)/, 'the View must be repaired by the browser half')
+  const body = /function keepChatView\(\) \{[\s\S]*?\n    \}/.exec(clientSource)
+  assert.ok(body, 'the repair must resolve to one function')
+  assert.match(body[0], /\[data-conversation-tabs\] \[role='tab'\]/, 'the strip is the stable anchor')
+  // The tab carries no id or data attribute, so its label is the only handle; both
+  // locales must be listed or the repair silently never fires in one of them.
+  for (const label of ['对话', 'Chat']) {
+    assert.ok(body[0].includes(`'${label}'`), `${label} must be recognised as the chat tab`)
+  }
+  assert.match(body[0], /aria-selected/, 'the selected tab is what tells the Views apart')
+  assert.match(body[0], /\.click\(\)/, 'the repair drives the tab the user would have clicked')
+  assert.match(body[0], /new MutationObserver/, 'the selection is re-rendered, so the repair must observe')
+  assert.match(
+    clientSource,
+    /ctx\.effect\(keepChatView,/,
+    'the repair must be registered as a disposable effect',
+  )
+})
+
 test('the substring-matched selectors are qualified to the element they mean', () => {
   // `[class*='x']` is a substring match, so it also matches every descendant
   // whose class contains the same local name. Both of these were measured
