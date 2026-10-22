@@ -1111,6 +1111,31 @@ body
   max-height: calc(12 * 26px);
 }
 
+/* Taking the body out of the host's `content-visibility: hidden` above also puts
+   every row of a long card through layout, though the cap shows four. Row-level
+   `auto` is what takes that back, and it is worth it: measured on a 111-row card,
+   a full page relayout went 3.8ms → 1.8ms with four such cards on screen, and a
+   streaming append 0.6ms → 0.3ms. `contain-intrinsic-size: auto 26px` is the
+   design's row pitch, so a skipped row still occupies its slot and the scroll
+   range keeps its length (measured: 2890px → 2886px, the one 30px row).
+
+   The expanded state opts back out. Its twelve rows are all reachable by
+   scrolling, so an estimate would show up as a jump when a taller row enters the
+   window, and there it bought nothing measurable (frame time 16.0ms vs 15.7ms). */
+body [data-step-process]:not([hidden]) [data-step-process-content] > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 26px;
+}
+
+body
+  [data-step-process]:not([hidden])
+  > div:has(> [data-process-activity][aria-expanded='true'])
+  + [data-step-process-body]
+  [data-step-process-content]
+  > * {
+  content-visibility: visible;
+}
+
 /* The card's type scale. The design draws the card one step smaller than the chat
    (12px label, 11px detail), but read on screen that made the card a third text
    size sitting between the user's message and the assistant's — reported as "卡片

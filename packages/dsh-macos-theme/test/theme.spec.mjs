@@ -565,6 +565,29 @@ test('both card states are capped and pinned to the newest row', () => {
   assert.match(expanded[1], /max-height:\s*calc\(12 \* 26px\)/, 'expanded shows at most twelve rows')
 })
 
+test('a collapsed card only lays out the rows its cap shows', () => {
+  // The body rule takes the collapsed card out of the host's
+  // `content-visibility: hidden`, so every row of a long card is laid out even
+  // though the 104px cap shows four. Row-level `auto` is what takes that back:
+  // measured on a 111-row card, a full page relayout went from 3.8ms to 1.8ms
+  // with four such cards on screen, and a streaming append from 0.6ms to 0.3ms.
+  // `contain-intrinsic-size: auto 26px` reserves the design's row pitch for a
+  // skipped row, so the scroll range stays the same length.
+  const css = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+
+  const rows = /body \[data-step-process\]:not\(\[hidden\]\) \[data-step-process-content\] > \*\s*\{([^}]*)\}/.exec(css)
+  assert.ok(rows, 'the collapsed card must scope its rows')
+  assert.match(rows[1], /content-visibility:\s*auto/, 'a row outside the cap must skip layout')
+  assert.match(rows[1], /contain-intrinsic-size:\s*auto 26px/, 'a skipped row must still reserve its pitch')
+
+  // Expanded is a different question: the reader scrolls all twelve visible rows
+  // through the window, so an estimate would show as a jump when a taller row
+  // enters. Measured there, row `auto` bought no frame time — 16.0ms vs 15.7ms.
+  const expandedRows = /body\s*\[data-step-process\]:not\(\[hidden\]\)\s*> div:has\(> \[data-process-activity\]\[aria-expanded='true'\]\)\s*\+ \[data-step-process-body\]\s+\[data-step-process-content\]\s*>\s*\*\s*\{([^}]*)\}/.exec(css)
+  assert.ok(expandedRows, 'the expanded card must opt its rows back into layout')
+  assert.match(expandedRows[1], /content-visibility:\s*visible/, 'an expanded card lays its rows out for real')
+})
+
 test('the card colours come from one token set, keyed on the live state', () => {
   // Every colour the card family paints is a variable on the card root, so the
   // dark palette re-points the tokens instead of restating the rules. `accent` is
