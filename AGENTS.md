@@ -126,7 +126,8 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
 新包不能走 CI 首发，必须先由用户人工发一次并配好 trusted publisher——**顺序、命令与理由见「📤 发布」**，
 那里是发布规则的唯一真源，本节不重复。
 
-配好 trust 之后，该包**后续所有更新**都走 CI/CD，不再人工发布。
+**做完这一节不等于交付完成**：还要按「📤 发布 → 首发交接」把两条命令按实际包名填好交给用户。
+本节只讲仓库侧要改什么，交接格式在那边。
 
 **闭环：聚合包必须跟着升版并发出去。** 子插件首发只把它自己放上 npm；此时线上的
 `@logictan/dsh-plugins-all` 还是不含它的旧版本，`dsh plugin add …@latest` 自然带不出它。
@@ -452,7 +453,29 @@ git subtree pull --prefix=packages/<pkg> <url> <tag>
 所以新包必须先由用户人工发一次，再配 trust，之后才交给 CI。**命令见 `README.md` 的「发布」。**
 
 **Agent 不得代为执行新包发布**：本机 `npm publish` 需要 OTP，会以 `npm error code EOTP` 失败。
-把命令原样交给用户，等用户确认 trust 配好后再进 CI/CD。
+
+### 首发交接：必须把两条命令原样给用户
+
+新插件做完、门禁全绿之后，**Agent 的交付不算完成**，直到它把下面两条命令按实际包名填好、
+逐字交给用户执行。不要只说「请你人工发布一次」——用户需要能直接粘贴的命令：
+
+```sh
+cd packages/<name> && npm publish --access public
+npm trust github @logictan/<name> --file publish.yml --repo dale0525/dsh-plugins --allow-publish
+```
+
+交付消息里要同时给出：① 这两条命令；② 一句「执行完告诉我，我再升聚合包版本走 CI」；
+③ 该包的版本号，因为用户要确认发出去的是哪一个。缺任何一项，用户就得回头问。
+
+> `--allow-publish` 不可省：2026-09-03 之后创建的 trust 配置默认只允许 `npm stage publish`，
+> 少了这个 flag，CI 首次直接发布会被拒（`PUT ... E404`）。
+>
+> **两条命令的顺序也不能反**：trusted publisher 只能配在已存在的包上，
+> 先 `npm trust` 会因包不存在而失败。
+
+用户确认 trust 配好之后，Agent 才继续：升 `packages/all` 版本 → 聚合包走 CI/CD。
+在此之前聚合包不能发——它会把 `^<子包版本>` 写成一个 registry 上还不存在的版本，
+`pnpm install --frozen-lockfile` 在 CI 第一步就解析失败。
 
 ### 更新已发布包：走 CI/CD，**禁止手动发布**
 
