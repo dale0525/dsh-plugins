@@ -243,6 +243,16 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   正确做法是每次激活都重写已有标签的 `textContent`（复用标签，不重复追加）。
   实测症状：新加的规则在页面样式表里 0 处命中，而测试全绿。
 
+- **要替换宿主渲染的元素，只能用纯 CSS，换 DOM 节点会被 React 重建回去**：宿主渲染的元素都带
+  `__reactFiber$*` / `__reactProps$*`，React 按自己的 fiber 调和，不认 DOM 里实际是谁。实测
+  （2026-10-22，侧边栏 `svg[data-state='ongoing']`）：把 3 个转圈 `replaceChild` 成自制元素，
+  起初成功；连点 6 次展开/收起后自制元素剩 0 个、宿主 SVG 又变回 3 个。判据：取
+  `Object.keys(el)` 里以 `__reactFiber` 开头的键，非空即 React 拥有，任何 DOM 手术都只是临时的。
+  可行做法是「藏掉宿主元素 + 在父级用伪元素重画」：`svg[data-state='ongoing']{display:none}` 配
+  `span:has(> svg[data-state='ongoing'])::after{content:'';…}`，实测重渲染后 `display` 与伪元素
+  `animationName` 都不变。伪元素**不能**直接挂在 SVG 上（SVG 元素不生成伪元素），所以必须用
+  `:has()` 反向选父格 —— 那一格的类名是构建哈希、`data-state` 在里层，除 `:has()` 没有别的锚点。
+
 - **要拦截宿主的 RPC 请求，只能在 head 注入里做，插件侧包 `globalThis.fetch` 永远无效**：
   RPC 传输层在**模块初始化时**就绑定了 `globalThis.fetch`，插件后加载，它的包装器看不到
   已经绑定好的那次调用。实测：插件侧包装器只捕获到 4 次无关的轮询请求，真正的
