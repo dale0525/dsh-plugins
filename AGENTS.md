@@ -282,6 +282,15 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   实测 2026-10-18：装 `file:…/dsh-better-reasoning-effort` 后 `bundles` 多出该项；摘掉它、只留
   `dependencies` 里的 `file:` 指针后安装与加载都正常。**未验证**不摘是否会硬崩——本次在重启前就摘了。
 
+- **插件里漏掉的 `'error'` 监听会杀死整个宿主进程，不是一个功能坏掉**：`EventEmitter` 对
+  `error` 事件没有监听者时直接抛出，而宿主把它兜成 `dsh: fatal uncaught exception` 后退出。
+  于是「连不上某台机器」这种日常失败会变成用户要重启 DSH。**`once('error')` 是最危险的写法**：
+  一次失败可能连发多个 `error`（实测 `ssh2` 对一条被对端 `destroy` 的连接发两个，第二个是
+  `Connection lost before handshake`），第一个被 `once` 消费掉，第二个无人接管即崩。
+  一律用常驻的 `on('error')`，并在回调里自己保证幂等。判据：连一个「接受后立刻 `socket.destroy()`」
+  的本地 `net` 服务器，装 `process.on('uncaughtException')` 收集器，断言它为空——这条测试在改回
+  `once` 后必须转红，否则它没在守这条线。
+
 - **设置 UI 保存会重写整个 `<profile>/cordis.patch.yml` 行，把该行里的注释全部丢掉**：
   官方设置表单按行重新序列化 config，不是就地改一个值。实测 2026-10-18（pi-ai 的
   `maxRequestImageBytes` 经插件卡片保存一次）：全文注释 134 → 127 行，缺的正是 `llm-pi-ai`
