@@ -139,7 +139,21 @@ export async function connect({ host, password, knownHosts, recordHostKey, signa
   client.once('ready', () => {
     accepted({ client, fingerprint: acceptedFingerprint });
   });
-  client.once('error', (error) => {
+  // `on`, NOT `once`, and it must stay attached for the client's whole life.
+  //
+  // ssh2 emits more than one error for a single failed connection: after a
+  // socket-level failure (`read ECONNRESET`) it also emits a fatal
+  // `Connection lost before handshake` from its own teardown path. With
+  // `once`, the listener is gone by then and Node turns the second error into an
+  // uncaught exception, which the host reports as `fatal uncaught exception` and
+  // dies from. A connection to an unreachable host could therefore take down the
+  // whole process — the worst possible outcome for a tool whose job is to reach
+  // machines that may be offline.
+  //
+  // A permanent listener that only settles the first time keeps every later
+  // error contained. Nothing is lost: the promise is already rejected, and the
+  // caller has moved on.
+  client.on('error', (error) => {
     rejected(describeConnectError(error, host));
   });
 
@@ -241,7 +255,7 @@ export async function runCommand({ client, command, timeoutMs = DEFAULT_COMMAND_
       stream.once('close', (code, signalName) => {
         finish(resolve, { stdout: truncateStream(stdout), stderr: truncateStream(stderr), code, signal: signalName });
       });
-      stream.once('error', (streamError) => finish(reject, streamError));
+      stream.on('error', (streamError) => finish(reject, streamError));
     });
   });
 }

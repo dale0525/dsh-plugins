@@ -268,3 +268,37 @@ test('connect failures are translated into something a caller can act on', () =>
   const auth = describeConnectError(Object.assign(new Error('All configured authentication methods failed'), { level: 'client-authentication' }), host);
   assert.match(auth.message, /认证失败/);
 });
+
+test('a connection dropped mid-handshake cannot crash the process', async () => {
+  // The regression this pins, seen in a real host: a socket that accepts the TCP
+  // connection and then closes it makes ssh2 emit TWO errors — the socket-level
+  // one first, then a fatal `Connection lost before handshake` from its own
+  // teardown. With a `once` listener the second one is unhandled, and Node turns
+  // it into an uncaught exception that kills the whole host process. The plugin
+  // must contain that, because the hosts it exists to reach are often offline.
+  const { createServer } = await import('node:net');
+  const server = createServer((socket) => socket.destroy());
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+
+  const seen = [];
+  const onUncaught = (error) => seen.push(error);
+  process.on('uncaughtException', onUncaught);
+  try {
+    await assert.rejects(
+      connect({
+        host: { alias: 'dead', host: '127.0.0.1', port, username: 'root' },
+        password: 'pw',
+        knownHosts: { entries: {} },
+        recordHostKey: () => {},
+      }),
+      /连接 dead/,
+    );
+    // The second error arrives asynchronously, after the rejection settles.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  } finally {
+    process.off('uncaughtException', onUncaught);
+    server.close();
+  }
+  assert.deepEqual(seen, [], 'no error may escape to the process');
+});
