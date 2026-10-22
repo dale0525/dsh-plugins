@@ -101,6 +101,47 @@ test('credentials: includeSecrets=true 携带明文值（含仅存在于 .creden
   assert.equal(v.valid, true);
 });
 
+test('credentials: 一个 ref 里装着 JSON 账号池时，额度字段原样往返（不拆、不改写）', async () => {
+  // MODAL_H3_ACCOUNTS 是单个 ref，值是整份账号池 JSON（含每个账号的
+  // monthly_credit_usd）。同步只搬 ref 的字符串值，所以额度能跟着走的前提是
+  // adapter 绝不解析、绝不重写这个值——一旦它开始按 JSON 处理，额度字段就可能
+  // 在往返中被丢掉，而没有任何测试会发现。
+  const pool = JSON.stringify({
+    tokens: [
+      { name: 'acc1', token_id: 'ak-1', token_secret: 's1', monthly_credit_usd: 30 },
+      { name: 'acc2', token_id: 'ak-2', token_secret: 's2', monthly_credit_usd: 12.5 },
+    ],
+  });
+  const src = makeContext('win32', 'C:\\Users\\alice');
+  await src.fs.writeFile('.credentials.yaml', Buffer.from(
+    `version: 1\nrefs:\n  MODAL_H3_ACCOUNTS: ${JSON.stringify(pool)}\n`,
+  ));
+  const adapter = new CredentialsAdapter({ namespaces: [] });
+
+  const out = await adapter.export(src, { includeSecrets: true });
+  const item = out.data.credentials.find((c) => c.ref === 'MODAL_H3_ACCOUNTS');
+  assert.equal(item?.value, pool, '值必须逐字等于写入的那份 JSON');
+  assert.deepEqual(
+    JSON.parse(item!.value!).tokens.map((t: { monthly_credit_usd: number }) => t.monthly_credit_usd),
+    [30, 12.5],
+    '额度字段随值一起走，未被拆解或丢弃',
+  );
+
+  // 写回端：快照里带的明文值原样落盘。
+  const dst = makeContext('linux', '/home/bob');
+  const dstAdapter = new CredentialsAdapter({ namespaces: [] });
+  const sections = new Map<string, unknown>([['credentialsStatus', out.data]]);
+  const items = await dstAdapter.analyzeImport(out.data, makeImportContext(dst, sections));
+  for (const item of items) await dstAdapter.applyItem(item, makeImportContext(dst, sections));
+  const written = dst.credentials.values.get('MODAL_H3_ACCOUNTS');
+  assert.equal(written, pool, '写回的值必须与源逐字相同');
+  assert.deepEqual(
+    JSON.parse(written!).tokens.map((t: { monthly_credit_usd: number }) => t.monthly_credit_usd),
+    [30, 12.5],
+    '额度字段没有在写回时丢失',
+  );
+});
+
 test('credentials: includeSecrets=false 时凭据文件存在也不带值（普通备份不变）', async () => {
   const ctx = makeContext('win32', 'C:\\\\Users\\\\alice');
   ctx.settings.ns.set('llm-deepseek', { value: { apiKeyEnv: 'DEEPSEEK_API_KEY' }, revision: 1, secrets: [] });
