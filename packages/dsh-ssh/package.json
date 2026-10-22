@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-ssh",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH SSH: run commands and move files on configured SSH hosts from the agent, addressing hosts by alias, with passwords kept in the credential store. DSH SSH 子插件。",
   "type": "module",
   "main": "lib/index.js",
