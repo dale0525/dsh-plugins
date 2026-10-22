@@ -19,6 +19,14 @@ allowBuilds:
   '@google/genai': false
   protobufjs: false
   esbuild: false
+  # ssh2 的 install 脚本只是试着用 node-gyp 编一个**可选**的 crypto 绑定，失败即退出 0；
+  # cpu-features 是它的可选原生依赖，缺失时 lib/protocol/constants.js 走 catch 分支。
+  # 两者都不跑，ssh2 仍是纯 JS 实现（实测 exec + SFTP 收发正常）——这正是本插件要的：
+  # 跨平台不依赖编译工具链。
+  # 这里只解决**本仓库开发时**的安装：dsh-ssh 把 ssh2 打成 bundle 后，它只是 devDependency，
+  # 用户 profile 里不装它、也就没有这条脚本要审批（理由见 packages/dsh-ssh/build.mjs 抬头）。
+  cpu-features: false
+  ssh2: false
 
 linkWorkspacePackages: true
 

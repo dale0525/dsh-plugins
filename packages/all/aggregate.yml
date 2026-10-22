@@ -29,6 +29,13 @@ patchFrom:
   # gradient, the floating window and the per-column surfaces. It is cosmetic and
   # additive, so it coexists with every other plugin here.
   - ../dsh-macos-theme
+  # dsh-ssh replaces the `secret-safe-ssh` skill: it registers the four `ssh_*`
+  # tools itself (no MCP row) and runs over `ssh2`, so it needs no `ssh`/`scp`
+  # binary, no python and no POSIX shell — the same code path works on Windows.
+  # Hosts are a config list of alias/host/port/username; each host's password is
+  # the credential `SSH_PASSWORD_<ALIAS>` (set it on the Plugins page), so the
+  # row carries no config and no secret ever lands in cordis.patch.yml.
+  - ../dsh-ssh
   # The shared component layer every plugin's settings card imports. It has a row
   # of its own so `dsh-client-modules` puts it into the browser module table — a
   # package that is only a `dependencies` entry never gets there, and the
@@ -76,6 +83,13 @@ deps:
   # gradient, the floating window and the per-column surfaces. It is cosmetic and
   # additive, so it coexists with every other plugin here.
   - ../dsh-macos-theme
+  # dsh-ssh replaces the `secret-safe-ssh` skill: it registers the four `ssh_*`
+  # tools itself (no MCP row) and runs over `ssh2`, so it needs no `ssh`/`scp`
+  # binary, no python and no POSIX shell — the same code path works on Windows.
+  # Hosts are a config list of alias/host/port/username; each host's password is
+  # the credential `SSH_PASSWORD_<ALIAS>` (set it on the Plugins page), so the
+  # row carries no config and no secret ever lands in cordis.patch.yml.
+  - ../dsh-ssh
   # The shared component layer every plugin's settings card imports. It has a row
   # of its own so `dsh-client-modules` puts it into the browser module table — a
   # package that is only a `dependencies` entry never gets there, and the

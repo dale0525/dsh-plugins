@@ -329,6 +329,31 @@
     - id: macos-theme
       name: '@logictan/dsh-macos-theme'
 
+# from ../dsh-ssh
+# Patch row of @logictan/dsh-ssh.
+#
+# Two rules this file must keep, both enforced elsewhere:
+#
+#  - `name` is the BARE package name. A subpath (`@logictan/dsh-ssh/client`)
+#    resolves to no manifest, so the loader cannot read `dsh.bundle.patch` and
+#    the row never mounts. The browser half is reached through the package's
+#    `./client` export, which `dsh-client-modules` reads from the manifest —
+#    never from this row.
+#  - `id` equals the host half's `export const name` ('dsh-ssh' in src/index.js).
+#    `node scripts/aggregate.mjs --check` does NOT validate row-id uniqueness;
+#    `pnpm run check:host` does, and a duplicate hard-crashes the host with
+#    `duplicate loader entry id`. The "equals `export const name`" half has no
+#    automated check at all and is verified by hand.
+#
+# The row carries no `config:` — host passwords are NOT a patch value. They live
+# in the credentials file ($DSH_HOME/.credentials.yaml, one `SSH_PASSWORD_<ALIAS>`
+# ref per host) and are edited from the Plugins page. That is what keeps them out
+# of `cordis.patch.yml`, which `dsh-config-manager` exports verbatim into every
+# config-sync snapshot.
+- insert:
+    - id: dsh-ssh
+      name: '@logictan/dsh-ssh'
+
 # from ../dsh-plugins-shared-client
 # The shared component layer's own row.
 #
