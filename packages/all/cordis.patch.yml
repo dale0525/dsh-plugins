@@ -284,6 +284,32 @@
     - id: worktree-session
       name: '@logictan/dsh-worktree-session'
 
+# from ../dsh-modal-h3
+# Patch row of @logictan/dsh-modal-h3.
+#
+# Two rules this file must keep, both enforced elsewhere:
+#
+#  - `name` is the BARE package name. A subpath (`@logictan/dsh-modal-h3/client`)
+#    resolves to no manifest, so the loader cannot read `dsh.bundle.patch` and the row
+#    never mounts. The browser half is reached through the package's `./client` export,
+#    which `dsh-client-modules` reads from the manifest — never from this row.
+#  - `id` equals the host half's `export const name` ('modal-h3' in src/index.js).
+#    `node scripts/aggregate.mjs --check` does NOT validate row-id uniqueness;
+#    `pnpm run check:host` does, and a duplicate hard-crashes the host with
+#    `duplicate loader entry id`. The "equals `export const name`" half has no
+#    automated check at all and is verified by hand.
+#
+# The row carries no `config:` — this plugin has no configuration of its own. The
+# Modal account pool is NOT a patch value: it lives in the credentials file
+# ($DSH_HOME/.credentials.yaml, ref MODAL_H3_ACCOUNTS) and is edited from the
+# Plugins page. That is what makes the tokens survive config sync without ever
+# appearing as plaintext in a patch row, and it is also why the pool is a single
+# credential rather than one ref per account: credential refs cannot be
+# enumerated, so a pool split across N refs could not be listed back.
+- insert:
+    - id: modal-h3
+      name: '@logictan/dsh-modal-h3'
+
 # from ../dsh-macos-theme
 # The dsh-macos-theme bundle patch.
 #

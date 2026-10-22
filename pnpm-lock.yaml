@@ -53,6 +53,9 @@ importers:
       '@logictan/dsh-macos-theme':
         specifier: ^0.1.9
         version: link:../dsh-macos-theme
+      '@logictan/dsh-modal-h3':
+        specifier: ^0.1.0
+        version: link:../dsh-modal-h3
       '@logictan/dsh-openviking':
         specifier: ^0.4.11
         version: link:../dsh-openviking
@@ -464,6 +467,22 @@ importers:
       typescript:
         specifier: ~5.7.2
         version: 5.7.3
+
+  packages/dsh-modal-h3:
+    dependencies:
+      '@logictan/dsh-plugins-shared-client':
+        specifier: ^0.1.0
+        version: link:../dsh-plugins-shared-client
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.5
+        version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+      '@deepseek-ai/dsh-home-paths':
+        specifier: ^0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-tools':
+        specifier: ^0.2.1-rc.2
+        version: 0.2.1-rc.2(f4f5dafa2004c02f6afbbbc8518bca23)
 
   packages/dsh-openviking:
     devDependencies:

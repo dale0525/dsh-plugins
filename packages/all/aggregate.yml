@@ -17,6 +17,13 @@ patchFrom:
   - ../dsh-reasoning-strip
   - ../dsh-stitch-designer
   - ../dsh-worktree-session
+  # dsh-modal-h3 registers the six `mcp__modal_h3__*` tools itself and needs no
+  # MCP row. Its Modal account pool is a credential (MODAL_H3_ACCOUNTS), not a
+  # patch value, so the row carries no config — set the pool from the Plugins
+  # page. The plugin ships the Modal App and its pinned assets under app/ and
+  # assets/, so no external repository or pixi workspace is needed: `pixi` on
+  # PATH is the only host prerequisite.
+  - ../dsh-modal-h3
   # dsh-macos-theme re-paints the whole UI: it stacks a token override layer on
   # whichever base theme is active and injects the structural CSS for the desktop
   # gradient, the floating window and the per-column surfaces. It is cosmetic and
@@ -57,6 +64,13 @@ deps:
   # to the `STITCH_API_KEY` credential (set it on the Plugins page).
   - ../dsh-stitch-designer
   - ../dsh-worktree-session
+  # dsh-modal-h3 registers the six `mcp__modal_h3__*` tools itself and needs no
+  # MCP row. Its Modal account pool is a credential (MODAL_H3_ACCOUNTS), not a
+  # patch value, so the row carries no config — set the pool from the Plugins
+  # page. The plugin ships the Modal App and its pinned assets under app/ and
+  # assets/, so no external repository or pixi workspace is needed: `pixi` on
+  # PATH is the only host prerequisite.
+  - ../dsh-modal-h3
   # dsh-macos-theme re-paints the whole UI: it stacks a token override layer on
   # whichever base theme is active and injects the structural CSS for the desktop
   # gradient, the floating window and the per-column surfaces. It is cosmetic and

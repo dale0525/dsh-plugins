@@ -1,0 +1,65 @@
+{
+  "schema": "dsh-novel.modal-h3.ref2va-turbo6.manifest.v1",
+  "repo": "Comfy-Org/MiniMax-H3",
+  "immutable_revision": "93acf8c91365d40dc32a3abd19af06df6b6f7c65",
+  "t8": {
+    "repo": "T8mars/comfyui-minimax-h3-audio-T8",
+    "commit": "5ff46c253192e9d8cae185280fd34f4b4add063b"
+  },
+  "artifacts": [
+    {
+      "role": "ref2va_hybrid_nonpruned",
+      "repo": "sandpies/Minimax-H3-fl2va-ref2va-hybrid-unpruned-int8",
+      "revision": "f6c3ed3748f553b390c091988cdfc9eafded5e3e",
+      "path": "diffusion_models/minimax_h3_hybrid_fl2va_ref2va_b25-49_unpruned_int8.safetensors",
+      "size_bytes": 34038892614,
+      "sha256": "c0c028f2e26fe0018ea730abfa2fae91b11704ae8bd93065fed3f43a043a6417",
+      "source_path": "minimax_h3_hybrid_fl2va_ref2va_b25-49_unpruned_int8.safetensors"
+    },
+    {
+      "role": "clip_nvfp4",
+      "repo": "Comfy-Org/MiniMax-H3",
+      "revision": "93acf8c91365d40dc32a3abd19af06df6b6f7c65",
+      "path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "size_bytes": 15687142551,
+      "sha256": "35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6"
+    },
+    {
+      "role": "video_vae",
+      "repo": "Comfy-Org/MiniMax-H3",
+      "revision": "93acf8c91365d40dc32a3abd19af06df6b6f7c65",
+      "path": "vae/minimax_h3_video_vae_fp16.safetensors",
+      "size_bytes": 5207808496,
+      "sha256": "7c1f131492e7eddacaac9069a61b81bdd39de5cc96561e677c5eab1cdce5e522"
+    },
+    {
+      "role": "audio_vae",
+      "repo": "Comfy-Org/MiniMax-H3",
+      "revision": "93acf8c91365d40dc32a3abd19af06df6b6f7c65",
+      "path": "vae/minimax_h3_audio_vae_fp32.safetensors",
+      "size_bytes": 605254808,
+      "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48"
+    },
+    {
+      "role": "turbo_lora_ema",
+      "repo": "t8star/minimax-h3-4step-turbo-loras-comfyui-exp",
+      "revision": "01f469a8202af0dce8ac3be08ab20009d19f00bd",
+      "source_path": "minimax_h3_turbo_4步加速ema_comfyui.safetensors",
+      "path": "loras/minimax_h3_turbo_4步加速ema_comfyui.safetensors",
+      "size_bytes": 779858752,
+      "sha256": "b07ab477437c6a525dfdaf11107722aad609975ac172f3b577a7a87b228ff7b3",
+      "strength_model": 1
+    },
+    {
+      "role": "mystic_lora_v1",
+      "repo": "civitai/MysticXXX_MMH3-V1",
+      "revision": "3226233",
+      "source_url": "https://civitai.com/api/download/models/3226233",
+      "path": "loras/MysticXXX_MMH3-V1.safetensors",
+      "size_bytes": 596451528,
+      "sha256": "7dd837f4c5420d4ec59f3ff1757b3f9d264a6c0f120d65d9c4f59c77584dd0be",
+      "strength_model": 0.5,
+      "nfe": 6
+    }
+  ]
+}

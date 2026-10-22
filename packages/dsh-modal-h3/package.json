@@ -1,0 +1,87 @@
+{
+  "name": "@logictan/dsh-modal-h3",
+  "version": "0.1.0",
+  "description": "DSH Modal H3: MiniMax H3 Ref2VA video generation on Modal as native mcp__modal_h3__* tools, with a multi-account pool kept in a credential. DSH Modal H3 视频生成子插件。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "external": [
+        "@logictan/dsh-plugins-shared-client"
+      ],
+      "inject": [
+        "slots",
+        "remote",
+        "remote.credentials"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "app",
+    "assets",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test && python3 -m unittest discover -s tests -p \"test_*.py\"",
+    "build": "node build.mjs",
+    "prepare": "node build.mjs",
+    "prepack": "node build.mjs",
+    "test:py": "python3 -m unittest discover -s tests -p \"test_*.py\""
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "modal",
+    "minimax",
+    "video-generation",
+    "text-to-video",
+    "reference-to-video"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-modal-h3"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-home-paths": "^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.1.5-alpha.1 || ^0.1.6-alpha.1 || ^0.1.7-alpha.1 || ^0.1.7-rc.1 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@logictan/dsh-plugins-shared-client": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-home-paths": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@logictan/dsh-plugins-shared-client": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-home-paths": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2"
+  }
+}
