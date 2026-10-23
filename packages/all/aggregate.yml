@@ -42,6 +42,15 @@ patchFrom:
   # consumer's `require` fails with `missed the module table`. Consumers declare
   # it in `dsh.client.external`, which orders this row ahead of them.
   - ../dsh-plugins-shared-client
+  # dsh-lan-access serves the Web UI on one configurable port reachable from both
+  # the LAN and 127.0.0.1, by binding the wildcard address itself and forwarding
+  # to the host's own listener with the authority rewritten. That is the only
+  # shape that works: `webserver` rejects a wildcard bind, and a wildcard
+  # listener on the host's port would be shadowed by the host's specific one.
+  # The access password is the credential DSH_LAN_ACCESS_PASSWORD (set it on the
+  # Plugins page), so the row carries no config. Its port must differ from the
+  # host's own listener port, or loopback traffic would bypass the plugin's gate.
+  - ../dsh-lan-access
 deps:
   - ../dsh-config-manager
   - ../dsh-easyrewrite
@@ -96,3 +105,12 @@ deps:
   # consumer's `require` fails with `missed the module table`. Consumers declare
   # it in `dsh.client.external`, which orders this row ahead of them.
   - ../dsh-plugins-shared-client
+  # dsh-lan-access serves the Web UI on one configurable port reachable from both
+  # the LAN and 127.0.0.1, by binding the wildcard address itself and forwarding
+  # to the host's own listener with the authority rewritten. That is the only
+  # shape that works: `webserver` rejects a wildcard bind, and a wildcard
+  # listener on the host's port would be shadowed by the host's specific one.
+  # The access password is the credential DSH_LAN_ACCESS_PASSWORD (set it on the
+  # Plugins page), so the row carries no config. Its port must differ from the
+  # host's own listener port, or loopback traffic would bypass the plugin's gate.
+  - ../dsh-lan-access
