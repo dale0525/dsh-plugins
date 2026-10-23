@@ -78,6 +78,15 @@ numbers, and `offset`/`limit` paging the local `read` tool uses. Only the head o
 the file is transferred (512 KiB), so a larger file gets a footer saying the
 later lines were not scanned rather than a false "end of file".
 
+`ssh_read`, `ssh_upload` and `ssh_download` need the server's SFTP subsystem.
+Embedded and minimal systems often have none — OpenWrt routers, for instance,
+answer the subsystem request with exit code 127 — and on those hosts the three
+tools fail with a message naming the missing subsystem. `ssh_exec` still works,
+so reading falls back to `sed -n '1,200p' file` and transferring to the host's
+own means. The plugin does not detect this ahead of time: a host's subsystems are
+only known by asking it, and a probe on every call would cost a round trip to
+learn what the failing call already says.
+
 The timeout budget is reported in the result header (`timeout_budget: 120s`),
 never after the output — a trailing `timeout: 300s` reads as "this command timed
 out", which is exactly what it does not mean. A multi-line command is echoed by
