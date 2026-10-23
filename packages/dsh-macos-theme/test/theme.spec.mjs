@@ -20,6 +20,31 @@ function compiledCss() {
   return JSON.parse(match[1])
 }
 
+/**
+ * The compiled stylesheet as (selector list, body) pairs. `@media` blocks nest
+ * rules, so a selector can be preceded by `{` as well as `}`; the run between
+ * braces covers both.
+ */
+function compiledRules() {
+  const stripped = compiledCss().replace(/\/\*[\s\S]*?\*\//g, '')
+  return [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({
+    selectors: m[1].split(',').map((s) => s.trim()),
+    body: m[2],
+  }))
+}
+
+/**
+ * Every declaration that applies to an exact selector, merged in source order.
+ * A surface is usually split across rules (one sets the face, another the
+ * weight), so the effective value is the merge, not the last rule alone.
+ */
+function lastRule(selector) {
+  const bodies = compiledRules()
+    .filter((rule) => rule.selectors.includes(selector))
+    .map((rule) => rule.body)
+  return bodies.length === 0 ? undefined : bodies.join('\n')
+}
+
 test('host half exports the plugin surface the loader needs', () => {
   assert.equal(plugin.name, 'macos-theme')
   assert.equal(typeof plugin.apply, 'function')
@@ -1187,6 +1212,221 @@ test('the assistant prose is anchored on the markdown container', () => {
   // restyled the wrong element and left the prose at 14px.
   const css = compiledCss()
   assert.ok(css.includes("[class*='_markdown']"), 'the prose must anchor on the markdown container')
+})
+
+test('markdown headings take the transcript face on a stepped ladder', () => {
+  // The host drew h2 at 22px/31px/700 in `-apple-system` — a third of the way to a
+  // page title, in a face nothing else in the transcript uses. Reported as
+  // "标题类字体…还没有和其他消息样式统一". The face and the colour now follow the
+  // transcript; the sizes stay a ladder above the 13px prose, because a heading
+  // the same size as its paragraph stops reading as a heading.
+  //
+  // `:not([data-markdown-variant='compact'])` keeps the thinking block out: the
+  // host already sets its headings to `inherit` on an 8px/4px margin, and a
+  // document-sized heading there would push the block apart.
+  const prose =
+    "body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact'])"
+  for (const tag of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
+    const body = lastRule(`${prose} ${tag}`)
+    assert.ok(body, `${tag} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `${tag} takes the chat face`)
+    assert.match(body, /color:\s*var\(--dsw-alias-label-primary\)/, `${tag} is a label, not the host's heading ink`)
+    // The prose's 1.7 leading is sized for long CJK paragraphs; at 22px it would
+    // open a gap wider than the break the margins already give.
+    assert.match(body, /line-height:\s*1\.35/, `${tag} uses a heading leading, not the prose's`)
+    assert.doesNotMatch(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${tag} must not collapse onto the prose size`)
+  }
+
+  // Each rank is its own size, and every one is above the 13px body.
+  const ladder = { h1: 22, h2: 18, h3: 15, h4: 14, h5: 14, h6: 14 }
+  for (const [tag, size] of Object.entries(ladder)) {
+    assert.match(lastRule(`${prose} ${tag}`), new RegExp(`font-size:\\s*${size}px`), `${tag} sits at ${size}px`)
+  }
+
+  // The host's `margin: 32px 0 16px` is a document's break, not a transcript's;
+  // the break is kept, stepped with the size.
+  assert.match(lastRule(`${prose} h1`), /margin:\s*24px 0 10px/, 'h1 keeps the largest break')
+  assert.match(lastRule(`${prose} h2`), /margin:\s*20px 0 8px/, 'h2 keeps a paragraph-sized break')
+  assert.match(lastRule(`${prose} h3`), /margin:\s*14px 0 6px/, 'h3 keeps a smaller break')
+
+  // Weight still carries the rank inside a group.
+  assert.match(lastRule(`${prose} h1`), /font-weight:\s*600/, 'h1 is the top rank')
+  assert.match(lastRule(`${prose} h2`), /font-weight:\s*600/, 'h2 is the second rank')
+  assert.match(lastRule(`${prose} h3`), /font-weight:\s*500/, 'h3 drops to medium')
+  assert.match(lastRule(`${prose} h4`), /font-weight:\s*400/, 'h4 and below are plain')
+})
+
+test('markdown tables stay on the transcript type scale', () => {
+  // The host's table cells are 15px/24px `-apple-system` with `padding: 10px 16px`
+  // and first/last-child padding resets; the design language has no 15px step, so
+  // a table read as a foreign block inside the prose.
+  const prose =
+    "body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact'])"
+  for (const selector of [`${prose} th`, `${prose} td`]) {
+    const body = lastRule(selector)
+    assert.ok(body, `${selector} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `${selector} takes the chat face`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${selector} takes the chat size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `${selector} takes the chat line-height`)
+    // Symmetric padding cancels the host's `:first-child`/`:last-child` resets,
+    // which would otherwise pull the outer cells flush to the rule.
+    assert.match(body, /padding:\s*6px 12px/, `${selector} gets a symmetric, transcript-sized pad`)
+  }
+})
+
+test('the turn-trigger card reads as one of the transcript cards', () => {
+  // 「继续执行目标」/「自动化任务」 renders a `section[data-turn-trigger]` at
+  // radius 20px, a 17px/400 Fira Code title and a 40px left inset — a third card
+  // shape next to the 12px/1px process card and the 8px process pill.
+  const root = lastRule('body [data-turn-trigger]')
+  assert.ok(root, 'the trigger card must be styled')
+  assert.match(root, /border-radius:\s*12px/, 'the card shares the process card radius')
+  assert.match(root, /border-width:\s*1px/, 'the card shares the process card hairline')
+  assert.match(root, /border-color:\s*var\(--dsw-alias-border-l3\)/, 'and the same border token')
+  assert.match(root, /background-color:\s*var\(--dsw-alias-turn-trigger-bg\)/, 'and the host trigger surface')
+
+  for (const [selector, what] of [
+    ["body [data-turn-trigger] [class*='_title']", 'the card title'],
+    ["body [data-turn-trigger] [class*='_time']", 'the card timestamp'],
+    ["body [data-turn-trigger] [class*='_explanation']", 'the card explanation'],
+    ["body [data-turn-trigger] [class*='_content']", 'the expanded body'],
+  ]) {
+    const body = lastRule(selector)
+    assert.ok(body, `${what} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `${what} takes the chat face`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${what} takes the chat size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `${what} takes the chat line-height`)
+  }
+})
+
+test('the expanded card body keeps the transcript type scale', () => {
+  // Inside an expanded process card the leaves that declare their own size are
+  // already 13px, but the feature cards are not: `data-search` measured 16px, and
+  // `data-read`/`data-diff` 14px/22px in SF Mono, dragging every child that
+  // inherits (file paths, line numbers, line bodies, expand buttons) with them.
+  const card = "body [data-step-process]:not([hidden]) [data-step-process-content]"
+  for (const kind of ['search', 'read', 'diff']) {
+    const body = lastRule(`${card} [data-${kind}]`)
+    assert.ok(body, `the ${kind} body must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `the ${kind} body takes the chat face`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `the ${kind} body takes the chat size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `the ${kind} body takes the chat line-height`)
+
+    // The root rule alone is not enough: each card's own `_body` restates
+    // `font: var(--dsw-font-markdown-code-block)`, which resets the size to 14px.
+    // They are code viewers, so they keep the code step — the same 12px the
+    // markdown code block uses — not the prose size.
+    const code = lastRule(`${card} [data-${kind}] [class*='_body']`)
+    assert.ok(code, `the ${kind} code body must be styled`)
+    assert.match(code, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `the ${kind} code body takes the chat face`)
+    assert.match(code, /font-size:\s*12px/, `the ${kind} code body keeps the code step`)
+  }
+
+  // The search card's header is chrome: its match summary and copy button were
+  // `--dsw-font-xs-13` in the system face.
+  for (const leaf of ['_summary', '_copyButton']) {
+    const body = lastRule(`${card} [data-search] [class*='${leaf}']`)
+    assert.ok(body, `the search ${leaf} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `the search ${leaf} takes the chat face`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `the search ${leaf} takes the chat size`)
+  }
+
+  // The code-block banner is a chrome strip belonging to the code block, which the
+  // theme keeps on its own 11px/18px step (it carries 11px icons and a language
+  // tag). Only the face is repainted, so the strip reads in the theme's typeface
+  // without resizing the code it labels.
+  const banner = lastRule(`${card} [data-code-block-banner]`)
+  assert.ok(banner, 'the code-block banner must be styled')
+  assert.match(banner, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'the banner takes the chat face')
+  assert.doesNotMatch(banner, /font-size:/, "the banner keeps the code block's own step")
+
+  // Two leaves inside the card name `--ds-font-family-code` themselves and so are
+  // not reached by any ancestor rule: the banner's language tag and the diff stat.
+  // Only their face moves; their sizes are deliberate (11px chrome, and a count
+  // derived one step below the row).
+  const language = lastRule(`${card} [data-code-block-banner] [class*='_language']`)
+  assert.ok(language, 'the language tag must be styled')
+  assert.match(language, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'the language tag takes the chat face')
+  assert.doesNotMatch(language, /font-size:/, 'the language tag keeps the banner step')
+
+  const diffStat = lastRule(`${card} [class*='diffStat']`)
+  assert.ok(diffStat, 'the diff stat must be styled')
+  assert.match(diffStat, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'the diff stat takes the chat face')
+  assert.doesNotMatch(diffStat, /font-size:/, 'the diff stat keeps its derived count size')
+
+  // The inspect card states `--dsw-font-xs-13` in the system face on its root, so
+  // everything that inherits is the right size in the wrong face; its caption,
+  // badge, subtitle and description state 12px themselves. Addressed by the
+  // stable `_localName` suffix, which is unique to that card inside a process
+  // card (checked against the live tree). Its `_code` declares its own size, so
+  // the code keeps the code scale.
+  const inspect = lastRule(`${card} [data-inspect]`)
+  assert.ok(inspect, 'the inspect card must be styled')
+  assert.match(inspect, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'the inspect card takes the chat face')
+
+  for (const [selector, what] of [
+    [`${card} [class*='_caption']`, 'the inspect caption'],
+    [`${card} [class*='_badge']`, 'the inspect badge'],
+    [`${card} [class*='_subtitle']`, 'the inspect subtitle'],
+    [`${card} [class*='_description']`, 'the inspect description'],
+  ]) {
+    const body = lastRule(selector)
+    assert.ok(body, `${what} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `${what} takes the chat face`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${what} takes the chat size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `${what} takes the chat line-height`)
+  }
+})
+
+test('inline code follows the prose instead of the host 0.875em step', () => {
+  // The host sets `code { font-size: .875em !important }`, so 13px prose renders
+  // its inline code at 11.375px — a third size between prose and the 12px block
+  // scale. Only `!important` outranks the host's own `!important`.
+  const body = lastRule(
+    "body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] :not(pre) > code",
+  )
+  assert.ok(body, 'inline code must be styled')
+  assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)\s*!important/, 'the host em-based size must be beaten')
+
+  // Inside a heading the chip stays `1em`: pinning it to 13px would put a small
+  // chip in the middle of an 18–22px line. The descendant form is deliberate — a
+  // chip sits directly in the heading, so `h2 :not(pre) > code` (an element inside
+  // a non-`pre` element inside the heading) never matches it.
+  const inHeading = lastRule(
+    "body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] h2 code",
+  )
+  assert.ok(inHeading, 'heading inline code must be styled')
+  assert.match(inHeading, /font-size:\s*1em\s*!important/, 'a heading chip follows its heading')
+})
+
+test('a failed turn speaks in the transcript type scale', () => {
+  // 「任务已停止」 renders `div.Sixlwa_turnErrorRow` at 15px/22px from the host's
+  // `--dsh-content-font-size-secondary` + delta tokens: one size up from every
+  // other row in the transcript, on the same surface.
+  const kinds = ['turn-error', 'turn-max-tokens']
+  for (const kind of kinds) {
+    const row = lastRule(`body [data-chat-flow-kind='${kind}'] [class*='turnErrorRow']`)
+    assert.ok(row, `the ${kind} row must be styled`)
+    assert.match(row, /font-size:\s*var\(--dsh-chat-font-size\)/, `the ${kind} row takes the chat size`)
+    assert.match(row, /line-height:\s*var\(--dsh-chat-line-height\)/, `the ${kind} row takes the chat line-height`)
+  }
+  for (const [kind, leaf] of [
+    ['turn-error', 'turnErrorTitle'],
+    ['turn-error', 'turnErrorMessage'],
+    ['turn-max-tokens', 'turnErrorMessage'],
+    ['turn-max-tokens', 'maxTokensTitle'],
+  ]) {
+    const body = lastRule(`body [data-chat-flow-kind='${kind}'] [class*='${leaf}']`)
+    assert.ok(body, `the failure leaf ${leaf} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `${leaf} takes the chat face`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${leaf} takes the chat size`)
+  }
+
+  // A warning surface reads as a warning through the theme's own amber, not the
+  // host's `state-warn-primary`; the token carries the light/dark pair.
+  const warn = lastRule("body [data-chat-flow-kind='turn-max-tokens'] [class*='maxTokensTitle']")
+  assert.ok(warn, 'the token-cap notice must be styled')
+  assert.match(warn, /color:\s*var\(--dsh-theme-warn\)/, 'the warning ink comes from the theme token')
 })
 
 test('rules competing with a base class carry a scope prefix', () => {

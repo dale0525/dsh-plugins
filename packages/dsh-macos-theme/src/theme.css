@@ -141,6 +141,7 @@ body [data-step-process]:not([hidden]),
 body header[data-window-drag],
 body [data-conversation-tabs] > [role='tab'][aria-selected='true'],
 body [data-turn-process],
+body [data-turn-trigger],
 body [data-chat-flow-kind='assistant-step'] code,
 body .md-code-block,
 body [class*='groupSection']:has(> * > [data-row-key^='workspace:']),
@@ -1345,6 +1346,239 @@ body .md-code-block pre {
      local-installation dependency the chat font exists to avoid. Fira Code is a
      programming font and is already bundled, so code uses it too. */
   font-family: var(--dsh-chat-font, inherit);
+}
+
+/* Markdown headings.
+   The host drew h2 at 22px/31px/700 in `-apple-system` — a third of the way to a
+   page title, in a face nothing else in the transcript uses. Reported as
+   "标题类字体…还没有和其他消息样式统一". The face and the colour now follow the
+   transcript; the sizes stay a ladder above the 13px prose, because a heading
+   that is the same size as its paragraph stops reading as a heading.
+
+   The ladder is 22 / 18 / 15 / 14 on a 13px body, and the line box is 1.35
+   rather than the prose's 1.7: the transcript's generous leading is sized for
+   long CJK paragraphs, and at 22px it would open a gap wider than the break the
+   margins already give. Weight still carries the rank inside a group.
+
+   `:not([data-markdown-variant='compact'])` keeps the thinking block out: the
+   host already flattens its headings to `inherit` on an 8px/4px margin, and a
+   document-sized heading inside a collapsed reasoning row would push it apart.
+   `_compact` is also a class on the same element, but the attribute is the
+   stable spelling. */
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h1,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h2,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h3,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h4,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h5,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h6 {
+  font-family: var(--dsh-chat-font, inherit);
+  line-height: 1.35;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The host's `margin: 32px 0 16px` is a document's break, not a transcript's: it
+   opened more air above a heading than a whole paragraph occupies. The break is
+   kept, stepped with the size. The host's `*:first-child`/`*:last-child` rules
+   flatten the outer edges, so these only ever apply between blocks. */
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+}
+
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h3 {
+  font-size: 15px;
+  font-weight: 500;
+  margin: 14px 0 6px;
+}
+
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h4,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h5,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) h6 {
+  font-size: 14px;
+  font-weight: 400;
+  margin: 14px 0 6px;
+}
+
+/* Markdown tables. The cells were 15px/24px in `-apple-system` — the transcript
+   language has no 15px step, so a table read as a foreign block inside the prose.
+   The cells take the prose size exactly: unlike a heading, a cell is not a rank.
+   The host's `padding: 10px 16px` is paired with `:first-child`/`:last-child`
+   resets in the host sheet, which only makes sense when the outer cells are meant
+   to sit flush against a full-width rule. A transcript table is a compact block,
+   so the pad is symmetric and one step tighter; that also cancels the resets. */
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) th,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown']:not([data-markdown-variant='compact']) td {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+  padding: 6px 12px;
+}
+
+/* Inline code. The host sets `font-size: .875em !important`, so 13px prose
+   rendered its inline code at 11.375px — a third size between the prose and the
+   12px block scale. Only `!important` outranks the host's own `!important`.
+
+   Inside a heading it stays `1em`, which is what the host already declares there:
+   pinning it to 13px would put a small chip in the middle of a 22px line. The
+   descendant form is deliberate — a chip sits directly in the heading, so the
+   `:not(pre) > code` shape above never matches it. */
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] :not(pre) > code {
+  font-size: var(--dsh-chat-font-size) !important;
+}
+
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] h1 code,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] h2 code,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] h3 code,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] h4 code,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] h5 code,
+body [data-chat-flow-kind='assistant-step'] [class*='_markdown'] h6 code {
+  font-size: 1em !important;
+}
+
+/* ==========================================================================
+   7b. The turn-trigger card and the expanded card body.
+   ========================================================================== */
+
+/* 「继续执行目标」/「自动化任务」. The host renders it as its own shape: radius
+   `--dsw-radius-xl`, a .5px hairline, and a 17px/400 title in the chat face. That
+   made it a third card next to the 12px/1px process card and the process pill, so
+   it is dressed to match the process card — same radius, same 1px hairline, same
+   border token — while keeping the host's own trigger surface so hover still
+   works (the host's `:hover` rule is a class+pseudo-class, which outranks this
+   one and is left to win). */
+body [data-turn-trigger] {
+  @apply rounded-[12px] border;
+  border-color: var(--dsw-alias-border-l3);
+  background-color: var(--dsw-alias-turn-trigger-bg);
+}
+
+/* Its four text leaves were each on a different step: the title at 17px, the
+   timestamp and explanation at 12px, the body at 12px. All four read as one
+   card, so they share the transcript's size and face. */
+body [data-turn-trigger] [class*='_title'],
+body [data-turn-trigger] [class*='_time'],
+body [data-turn-trigger] [class*='_explanation'],
+body [data-turn-trigger] [class*='_content'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* The header's 16px inline padding is right, but the body indented its text 40px
+   — a hanging indent that lines it up under nothing once the title lost its
+   larger size. It aligns with the header's text instead. */
+body [data-turn-trigger] [class*='_body'] {
+  padding: 0 12px 12px;
+}
+
+/* Expanded card body. The leaves that declare their own size are already 13px;
+   these feature cards are not, and every child that inherits from them was
+   dragged along: `data-search` at 16px, `data-read`/`data-diff` at 14px/22px in
+   SF Mono.
+
+   The root rule alone does not reach the code: each card's own `_body` re-states
+   `font: var(--dsw-font-markdown-code-block)` (14px SF Mono), so the body is
+   addressed too. These three are code viewers, so they keep the code step — the
+   same 12px the markdown code block uses — rather than the prose 13px; the
+   gutter, line numbers and expand affordances inherit it. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-search],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-read],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-diff] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-search] [class*='_body'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-read] [class*='_body'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-diff] [class*='_body'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: 12px;
+}
+
+/* The search card's own header is chrome, not code: its match summary and copy
+   button are `--dsw-font-xs-13` in the system face. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-search] [class*='_summary'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-search] [class*='_copyButton'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* The code-block banner belongs to the code block, which keeps its own 11px/18px
+   step (it carries 11px icons and a language tag), so only the face is repainted
+   here — resizing it would grow the icons and the strip. The language tag states
+   `--ds-font-family-code` itself, so it is named too; otherwise one strip would
+   show two faces side by side. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-code-block-banner],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-code-block-banner] [class*='_language'] {
+  font-family: var(--dsh-chat-font, inherit);
+}
+
+/* The diff stat (`+1 −1`) is the last surface in a card that still names
+   `--ds-font-family-code` itself. Only the face is repainted: its size is a
+   deliberate one-step-down count, derived from the row size. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [class*='diffStat'] {
+  font-family: var(--dsh-chat-font, inherit);
+}
+
+/* The inspect card states `--dsw-font-xs-13` in the system face on its root, so
+   every child that inherits (`_text`, the `dt`/`dd` field pairs) is already the
+   right size in the wrong face. Its `_code` declares its own size, so the code
+   inside keeps the code scale. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-inspect] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* Its caption, badge, subtitle and description state 12px themselves, so
+   inheritance does not reach them. Addressed by `_localName` suffix, which is the
+   only stable part of a CSS-module class; each of these four is unique to that
+   card inside a process card. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [class*='_caption'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [class*='_badge'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [class*='_subtitle'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [class*='_description'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* ==========================================================================
+   7c. Failure and warning surfaces.
+   ========================================================================== */
+
+/* 「任务已停止」 and the token-cap notice share one row component, and it reads
+   from the host's `--dsh-content-font-size-secondary` + delta pair: measured
+   15px/22px, one step above every other row on the same surface. The face was
+   already right, so only the size and the line box move. */
+body [data-chat-flow-kind='turn-error'] [class*='turnErrorRow'],
+body [data-chat-flow-kind='turn-max-tokens'] [class*='turnErrorRow'] {
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+body [data-chat-flow-kind='turn-error'] [class*='turnErrorTitle'],
+body [data-chat-flow-kind='turn-error'] [class*='turnErrorMessage'],
+body [data-chat-flow-kind='turn-max-tokens'] [class*='maxTokensTitle'],
+body [data-chat-flow-kind='turn-max-tokens'] [class*='turnErrorMessage'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+}
+
+/* The token-cap notice is a warning, so it takes the theme's own amber rather
+   than the host's `state-warn-primary`. The token carries the light/dark pair, so
+   no second rule is needed for the dark palette. */
+body [data-chat-flow-kind='turn-max-tokens'] [class*='maxTokensTitle'] {
+  color: var(--dsh-theme-warn);
 }
 
 /* ==========================================================================
