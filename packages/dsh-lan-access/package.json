@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-lan-access",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH LAN access: serve the Web UI on one configurable port reachable from the LAN and from 127.0.0.1, with either the plugin's own password or no authentication at all, and no profile patch edits. DSH 局域网访问子插件。",
   "type": "module",
   "main": "lib/index.js",

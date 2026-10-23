@@ -126,20 +126,39 @@ export function responseHeaders(rawHeaders) {
 }
 
 /**
- * The request target to forward.
+ * The request target to forward, with the host's launch token removed.
  *
- * The host's launch token is dropped: this listener has its own gate, and
- * forwarding a token would make the plugin's port a second door for anyone who
- * saw the token in `dsh web`'s output.
+ * The token is dropped because this listener has its own gate: forwarding it
+ * would make the plugin's port a second door for anyone who read the token from
+ * `dsh web`'s output.
+ *
+ * Everything else is copied BYTE FOR BYTE, and that is not fastidiousness. The
+ * host serves client bundles through a combo URL:
+ *
+ *     /plugins/??a/client.js,b/client.js&rev=1cffe43252a9
+ *
+ * The path contains `?`, `@` and `,`, and the query begins at the FIRST `?` —
+ * so the bundle list is the path and only `&rev=` is a parameter. Parsing with
+ * `URL` and re-serializing with `searchParams` re-encodes the whole thing as one
+ * escaped query key, every script then 404s, and the browser reports it as
+ * `HTML did not preload @deepseek-ai/dsh-client-modules/client.js`. That is a
+ * broken UI reached through this plugin's port and nowhere else.
  *
  * @param rawUrl - the incoming request target.
- * @returns path plus query, without `token`.
+ * @returns the same target, minus any `token` parameter.
  */
 export function forwardedTarget(rawUrl) {
-  const url = new URL(rawUrl ?? '/', 'http://dsh.invalid');
-  url.searchParams.delete('token');
-  const search = url.searchParams.toString();
-  return `${url.pathname}${search === '' ? '' : `?${search}`}`;
+  const raw = rawUrl === undefined || rawUrl === '' ? '/' : rawUrl;
+  const queryAt = raw.indexOf('?');
+  if (queryAt === -1) return raw;
+  const path = raw.slice(0, queryAt);
+  const kept = raw
+    .slice(queryAt + 1)
+    .split('&')
+    // A segment whose KEY is `token` is the parameter; `tokenish=` is not.
+    .filter((segment) => segment.split('=', 1)[0] !== 'token')
+    .join('&');
+  return kept === '' ? path : `${path}?${kept}`;
 }
 
 /**

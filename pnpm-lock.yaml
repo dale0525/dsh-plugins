@@ -48,7 +48,7 @@ importers:
         specifier: ^2.0.7
         version: link:../dsh-imagegen
       '@logictan/dsh-lan-access':
-        specifier: ^0.1.0
+        specifier: ^0.1.1
         version: link:../dsh-lan-access
       '@logictan/dsh-loop-guard':
         specifier: ^1.1.8

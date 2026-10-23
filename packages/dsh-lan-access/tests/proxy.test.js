@@ -116,6 +116,28 @@ test('the forwarded target drops the launch token', () => {
   assert.equal(forwardedTarget(undefined), '/');
 });
 
+test('a combo asset URL survives, because its commas and @ are not a query', () => {
+  // The host bundles many client bundles into one request:
+  //   /plugins/??a/client.js,b/client.js&rev=1234
+  // There is no `?` before the comma list -- the query STARTS at the first `?`,
+  // so the list is the PATH and only `&rev=` is a parameter. Re-encoding it as
+  // a query turned the list into one escaped key and every script 404'd, which
+  // the browser reports as "HTML did not preload <module>/client.js".
+  const raw = '/plugins/??@deepseek-ai/dsh-client-modules/client.js&rev=3c2722f46a08';
+  assert.equal(forwardedTarget(raw), raw);
+
+  const many = '/plugins/??a/client.js,b/client.js&rev=1cffe43252a9';
+  assert.equal(forwardedTarget(many), many);
+});
+
+test('only a real token parameter is dropped, and the rest is left byte-for-byte', () => {
+  // Encoding must not be normalized either: the host signs nothing here, but a
+  // request the browser already encoded should arrive exactly as it left.
+  assert.equal(forwardedTarget('/a%20b/c?x=%2F&token=t'), '/a%20b/c?x=%2F');
+  assert.equal(forwardedTarget('/x?y=1&token=t&z=2'), '/x?y=1&z=2');
+  assert.equal(forwardedTarget('/x?tokenish=1'), '/x?tokenish=1');
+});
+
 test('the upgrade head is a well-formed request line plus headers', () => {
   const head = upgradeHeadline({ method: 'GET' }, { host: '127.0.0.1:3080', connection: 'Upgrade' }, '/ws');
   assert.equal(head, 'GET /ws HTTP/1.1\r\nhost: 127.0.0.1:3080\r\nconnection: Upgrade\r\n\r\n');
