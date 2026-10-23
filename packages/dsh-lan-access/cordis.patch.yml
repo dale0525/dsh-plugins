@@ -1,0 +1,26 @@
+# Patch row of @logictan/dsh-lan-access.
+#
+# Two rules this file must keep, both enforced elsewhere:
+#
+#  - `name` is the BARE package name. A subpath (`@logictan/dsh-lan-access/client`)
+#    resolves to no manifest, so the loader cannot read `dsh.bundle.patch` and
+#    the row never mounts. The browser half is reached through the package's
+#    `./client` export, which `dsh-client-modules` reads from the manifest —
+#    never from this row.
+#  - `id` equals the host half's `export const name` ('dsh-lan-access' in
+#    src/index.js). `node scripts/aggregate.mjs --check` does NOT validate row-id
+#    uniqueness; `pnpm run check:host` does, and a duplicate hard-crashes the host
+#    with `duplicate loader entry id`. The "equals `export const name`" half has
+#    no automated check at all and is verified by hand.
+#
+# The row carries no `config:` — the access password is NOT a patch value. It
+# lives in the credentials store as `DSH_LAN_ACCESS_PASSWORD` and is edited from
+# the Plugins page. That is what keeps it out of `cordis.patch.yml`, which
+# `dsh-config-manager` exports verbatim into every config-sync snapshot.
+#
+# Port and auth mode are also left out on purpose: they are ordinary settings the
+# card writes, and a value pinned here would be silently overridden the first
+# time the user touches the form.
+- insert:
+    - id: dsh-lan-access
+      name: '@logictan/dsh-lan-access'
