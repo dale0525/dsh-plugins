@@ -54,7 +54,7 @@ importers:
         specifier: ^1.1.8
         version: link:../dsh-loop-guard
       '@logictan/dsh-macos-theme':
-        specifier: ^0.1.11
+        specifier: ^0.1.12
         version: link:../dsh-macos-theme
       '@logictan/dsh-modal-h3':
         specifier: ^0.1.0
