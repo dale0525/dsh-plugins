@@ -635,6 +635,14 @@ pnpm run check:host                           # 宿主世代兼容 + patch 行 i
 > 把并发限到 1 即全绿，单独只跑这两个包稳定复现，换成轻包搭伴稳定通过）。该包源码可**逐字节未改**，
 > 属调度副作用而非回归。判据：先 `git diff <base> -- <该包>/` 确认未改，再看并发限 1 是否转绿。
 
+> **偶发失败的归属只能靠「改动前后同次数对比」判定，不能靠单次复跑**：一条测试时红时绿，
+> 跑一次通过说明不了任何事——它本来就有失败概率。判据是把改动 stash 掉，在干净 HEAD 上以**同样的次数**
+> 重复跑同一文件，比较两边的失败次数：相等即既有问题（本次实测 `dsh-ssh` 的
+> `recordHostKey` 写文件与断言之间的竞态、`utils.parseKey(...).getPublicSSH` 的偶发失败，
+> 改动前后各 12 次/20 次，失败次数分别为 3/3、1/1）。次数不同才可能是回归，再去查机制。
+> 直接读代码猜「我是不是引入了竞态」不可靠：这两处的写盘本来就是 fire-and-forget，
+> 竞态在改动前就存在，只看代码会误判成自己刚写坏。
+
 > **测试的 TMPDIR 陷阱（macOS，仅 `dsh-config-manager`）**：该包的符号链接类测试
 > （`packages/dsh-config-manager/src/**/*.test.ts`，如 `utils/recursive-walk.test.ts`、
 > `utils/atomic-write.test.ts`）建真实符号链接，而 macOS 的 `/var/folders/...` 是
