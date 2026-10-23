@@ -1183,6 +1183,224 @@ test('the merged process cards read at the transcript\'s own type size', () => {
   }
 })
 
+test('the ask-question card reads at the transcript type size', () => {
+  // The card is a tool row's expanded body. Its own leaves state
+  // `font-size: var(--dsh-content-font-size, 14px)`, which follows the user's
+  // editor setting — measured 17px/27px for both the question and its answer, in
+  // a transcript that reads at 13px. The row's 「提问」 label beside it is already
+  // 13px/18px, so the opened card was the only surface at a third size.
+  //
+  // Anchored on `[data-tool='ask_user_question']`, the tool's own id: `_question`
+  // and `_answer` are substring anchors that also cover `_questionList`,
+  // `_unansweredQuestion` and the reply bubble's `_answerLabel`, so the scope has
+  // to come from the row rather than from the local name.
+  //
+  // These four are the leaves that declare a size of their own; every other text
+  // node in the card (`_item`, `_questionList`, `_answerLine`, `_skipped`) only
+  // inherits, so they follow. `_answer` covers `_answerLine`, and `_question`
+  // covers `_questionList` and `_unansweredQuestion` as substring matches.
+  for (const leaf of ['_question', '_answer', '_verdict', '_unansweredQuestion']) {
+    const body = lastRule(`body [data-tool='ask_user_question'] [class*='${leaf}']`)
+    assert.ok(body, `the ask card's ${leaf} must be styled`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `the ask card's ${leaf} takes the chat size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `the ask card's ${leaf} takes the chat line-height`)
+  }
+})
+
+test('the model-retry row reads at the transcript type size', () => {
+  // 「已重试模型请求（1/5） · 1s」 is a process row like the tool rows beside it, but
+  // the host sets it from `--dsh-content-font-size-secondary` (`Sixlwa_retryRow`,
+  // measured 15px/22px) while those read 13px/18px — one row in the middle of the
+  // process flow at a size of its own.
+  //
+  // Everything else about it already matches the transcript: measured on the live
+  // row, family, weight, colour and letter-spacing are identical to the chat body,
+  // so the size is the only thing to correct. The expanded `_retryDetails` declares
+  // the same host step and is a child of the row, so it is named explicitly rather
+  // than left to inherit a size it overrides.
+  //
+  // Scoped by the host's own `data-chat-flow-kind="model-retry"` marker: the row is
+  // a `details` element with no `[data-turn-process]` ancestor (verified — it sits
+  // as a member of the turn's process flow, not inside the pill), so the existing
+  // process-row rules do not reach it. The marker is on the flow WRAPPER, not on
+  // the `details`, and the host sets both the row and its `_retryDetails` from
+  // `--dsh-content-font-size-secondary` directly — a direct declaration beats
+  // inheritance, so styling the wrapper alone leaves the row at 15px (measured).
+  for (const [selector, what] of [
+    ["body [data-chat-flow-kind='model-retry'] [class*='_retryRow']", 'the retry row'],
+    ["body [data-chat-flow-kind='model-retry'] [class*='_retryDetails']", 'the expanded detail block'],
+  ]) {
+    const body = lastRule(selector)
+    assert.ok(body, `${what} must be styled`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${what} takes the chat size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `${what} takes the chat line-height`)
+  }
+})
+
+test('the composer stat dock reads at the transcript type size', () => {
+  // The two stat pills under the composer read one host step above the transcript
+  // and disagreed with each other: `bOPqQW_anchor` is
+  // `calc(--dsh-content-font-size-secondary - 1px)` (measured 14px/22px) and
+  // `JObwrW_trigger` is `--dsh-content-font-size-secondary` (measured 15px/22px),
+  // so 「11 轮 696 步 · 178 tok/s」 and 「37%」 sat at two sizes in one row.
+  //
+  // They live in the dock, which is a sibling of `[data-composer-card]`, so the
+  // dock slot is the anchor — scoping to the card would miss both. The trigger is
+  // qualified to `button` for the same reason the composer's chips are: `_trigger`
+  // is a substring match.
+  for (const [selector, what] of [
+    ["body [data-composer-dock] [class*='_anchor']", 'the stat pill'],
+    ["body [data-composer-dock] button[class*='_trigger']", 'the context meter'],
+  ]) {
+    const body = lastRule(selector)
+    assert.ok(body, `${what} must be styled`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${what} takes the chat size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `${what} takes the chat line-height`)
+  }
+})
+
+test('the stat dock separator carries a glyph instead of the middle dot', () => {
+  // The dock reads as two icon-and-figure groups: 「951 (175/s)」 and
+  // 「113M (97%)」, then the context meter's 「22%」 untouched. Each pill's leading
+  // host icon serves the first figure — the gauge for steps, the database for the
+  // token total — and the second figure rides behind it in brackets, so the two
+  // glyphs that used to stand between the figures are gone.
+  //
+  // The gap between the figure and its bracket comes from the host's `·`
+  // separator, which is the only element sitting exactly between them: it keeps
+  // its box and loses its text (`font-size: 0`), so it costs no node and the
+  // rewrite stays text-only — the tree React owns is never rebuilt, so a re-render
+  // writes into nodes that are still attached. Only the leading side needs the
+  // margin; a trailing one would leave a gap inside the bracket.
+  const sep = lastRule("body [data-composer-dock] [class*='_sep']")
+  assert.ok(sep, 'the separator must be styled')
+  assert.match(sep, /font-size:\s*0\b/, 'the middle dot must not render')
+  assert.match(sep, /margin:\s*0 0 0 6px/, 'only the leading side needs a gap')
+  assert.equal(/mask-image/.test(sep), false, 'the separator is a spacer now, not a glyph')
+  assert.equal(/(^|[^-])width:/.test(sep), false, 'a spacer must not be given a fixed width')
+
+  // With the glyphs gone the label is plain text again: the flex run existed only
+  // to centre them, and keeping it would turn the figures into flex items with a
+  // `gap` of their own.
+  assert.equal(lastRule("body [data-composer-dock] [class*='_label']"), undefined, 'the label is plain inline text again')
+
+  // The variable this package invented for the two dropped icons must go with
+  // them; leaving it behind would be dead CSS.
+  assert.equal(compiledCss().includes('--dsh-dock-glyph'), false, 'the two dropped glyphs leave no dead rule behind')
+})
+
+/**
+ * The stat dock's text reduction. Every value is derived from what the host
+ * rendered, so the four pure decisions are the whole locale-independent surface:
+ * the host ships `{turns} 轮 {steps} 步 · {tps} tok/s` and
+ * `{count} tok · 缓存命中 {percent}%`, and none of those words survive.
+ */
+function dockFigures() {
+  const match = /var UNIT_SCALE = [\s\S]*?function percentFigure\(text\) \{[\s\S]*?\n    \}/.exec(clientSource)
+  assert.ok(match, 'the built client half must carry the stat-dock figures')
+  return new Function(`${match[0]}\nreturn { firstFigure, lastFigure, usageFigure, percentFigure, formatTokens }`)()
+}
+
+test('the stat dock reduces each figure to the number alone', () => {
+  const { firstFigure, lastFigure, usageFigure, percentFigure } = dockFigures()
+
+  // Steps are the LAST figure of the host's two-figure count: 「12 轮 902 步」 and
+  // 「12 turns 902 steps」 both have to yield 902, which no word-shaped regex can do
+  // for both locales at once.
+  assert.equal(lastFigure('12 轮 902 步'), '902')
+  assert.equal(lastFigure('12 turns 902 steps'), '902')
+  assert.equal(lastFigure('902 步'), '902')
+
+  // Speed keeps its per-second reading but loses the word: the figure is the
+  // FIRST number of 「175 tok/s」, and the unit is restored as `/s` by the caller.
+  assert.equal(firstFigure('175 tok/s'), '175')
+  assert.equal(firstFigure('12.5 tok/s'), '12.5')
+
+  // Usage keeps its K/M/B unit and gains the B the host never emits: its own
+  // formatter stops at M, so a billion-token session reads 「1000M」 there.
+  assert.equal(usageFigure('842 tok'), '842')
+  assert.equal(usageFigure('1.5K tok'), '1.5K')
+  assert.equal(usageFigure('108M tok'), '108M')
+  assert.equal(usageFigure('999M tok'), '999M')
+  assert.equal(usageFigure('1200M tok'), '1.2B')
+
+  // The cache rate keeps its sign; the label in front of it does not.
+  assert.equal(percentFigure('缓存命中 97%'), '97%')
+  assert.equal(percentFigure('Cache hit 97%'), '97%')
+
+  // Anything unreadable yields null, which is the caller's signal to leave the
+  // host's own wording in place rather than print a half-stripped figure.
+  assert.equal(lastFigure('步数'), null)
+  assert.equal(firstFigure('tok/s'), null)
+  assert.equal(percentFigure('缓存命中'), null)
+})
+
+test('the stat dock rewrite only touches the text nodes the host owns', () => {
+  // React keeps a reference to every node it rendered. Removing a text node and
+  // substituting a span leaves React updating a detached node, so the dock freezes
+  // on a stale figure — the rewrite therefore writes `nodeValue` in place and
+  // nothing else. The three-child shape is the detailed layout (figure, separator,
+  // figure); compact mode renders one figure, and any shape this does not
+  // recognise is left exactly as the host drew it.
+  const rewrite = /function rewriteComposerStats\(\) \{[\s\S]*?\n    \}/.exec(clientSource)
+  assert.ok(rewrite, 'the client half must carry the stat dock rewrite')
+  assert.match(rewrite[0], /node\.nodeValue !== text/, 'a figure is rewritten in place')
+  assert.equal(/replaceChild|removeChild|innerHTML|textContent\s*=/.test(rewrite[0]), false, 'the host tree must not be rebuilt')
+  assert.match(rewrite[0], /nodes\.length !== 3/, 'only the two-figure layout is rewritten')
+  assert.match(rewrite[0], /nodeType !== 1/, 'the separator must be where the host put it')
+
+  // The bracketed figure is the THIRD node — the separator span keeps the gap and
+  // its own text stays as the host wrote it (hidden by `font-size: 0`). Both units
+  // are restored here because both templates dropped them: the host's 「tok/s」
+  // becomes `/s`, and the brackets are what mark the figure as secondary.
+  assert.match(rewrite[0], /writeFigure\(nodes\[2\], '\(' \+ second \+ '\)'\)/, 'the second figure is bracketed')
+  assert.match(rewrite[0], /speed === null \? null : speed \+ '\/s'/, 'the speed keeps its per-second unit')
+
+  assert.match(clientSource, /ctx\.effect\(rewriteComposerStats, 'macos-theme: composer stats'\)/)
+})
+
+test('the turn-end row reads at the transcript type size with one glyph size', () => {
+  // The row closing an assistant turn carries five controls from three host
+  // components, and they disagreed with each other on both counts:
+  //   text  — the clock and the usage badge read
+  //           `calc(--dsh-content-font-size-secondary - 1px)`, measured 14px/27px
+  //           in a transcript that reads at 13px/22px;
+  //   glyph — `xzv4MW_action` asks for `calc(17px + font-delta)` = 20px inside a
+  //           31px button whose content box is 19px, so it overflows and renders
+  //           19x20, while the feedback pair and the usage badge ask for
+  //           `calc(15px + font-delta)` = 18px. Measured across one row:
+  //           19x20, 18x18, 18x18, 19x20, 18x18.
+  //
+  // `[data-turn-tail]` is the host's marker for this node, so the row is scoped by
+  // it rather than by any one component's local name — all three live inside it.
+  // The glyph takes the transcript's own 14px (`w-3.5`), the size the process rows
+  // and the code block's copy button already use.
+  for (const selector of [
+    "body [data-turn-tail] [class*='_timeEnd']",
+    "body [data-turn-tail] button[class*='_trigger']",
+  ]) {
+    const body = lastRule(selector)
+    assert.ok(body, `${selector} must be styled`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `${selector} takes the chat size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `${selector} takes the chat line-height`)
+  }
+
+  // The glyph rule carries the `_actions` wrapper as well as the button: the host
+  // sizes the clock-end glyph with `.xzv4MW_actions[data-clock='end'] .xzv4MW_action
+  // svg`, which is 0-3-1. Anchoring only on the button is 0-2-3, so the host would
+  // still win — measured, the copy and branch glyphs stayed 19x20 until the wrapper
+  // was added.
+  for (const selector of [
+    "body [data-turn-tail] [class*='_actions'] button[class*='_action'] svg",
+    "body [data-turn-tail] button[class*='_trigger'] svg",
+  ]) {
+    const body = lastRule(selector)
+    assert.ok(body, `${selector} must be sized`)
+    assert.match(body, /width:\s*14px/, `${selector} takes the transcript glyph width`)
+    assert.match(body, /height:\s*14px/, `${selector} takes the transcript glyph height`)
+  }
+})
+
 test('a row is the design 14px glyph, an 8px gap, label and detail', () => {
   // The host draws the row's glyph at `calc(14px + font-delta)` = 16px in an 18px
   // slot, and puts a 2px dot with 8px margins between the kind label and its
@@ -1861,9 +2079,13 @@ test('the composer chips step down to an icon square together on 移动端', () 
     'the mobile model square must take the chip radius',
   )
 
-  // Nothing of this may leak above the breakpoint.
+  // Nothing of this may leak above the breakpoint. The scan is scoped to the card
+  // the chips live in: `font-size: 0` is a general trick, and the stat dock under
+  // the composer uses it for its own reason (retiring the host's `·`), so an
+  // unscoped search would report that as a leak.
   const outside = css.replace(mobile[0], '')
-  assert.equal(/font-size:\s*0/.test(outside), false, 'the chips keep their labels on the desktop')
+  const desktopChips = [...outside.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((m) => m[1].includes('[data-composer-card]'))
+  assert.equal(desktopChips.some((m) => /font-size:\s*0/.test(m[2])), false, 'the chips keep their labels on the desktop')
   for (const suffix of ['_triggerLabel', '_triggerEffort']) {
     assert.equal(
       new RegExp(`\\[data-slot='conversation\\.input\\.model'\\] button\\[class\\*='_trigger'\\] \\[class\\*='${suffix}'\\][^{]*\\{[^}]*display:\\s*none`).test(outside),

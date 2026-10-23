@@ -38,7 +38,8 @@
  * Class names carry a build-path-derived hash (`Wcetya_*` locally, `A55DgG_*`
  * in CI), so only build-stable hooks are used: `[data-slot="..."]`,
  * `[data-row-key^="..."]`, `[data-chat-flow-kind="..."]`, `[data-turn-process]`,
- * `[data-composer-card]`, `[data-window-drag]`, and `[class*="_localName"]`
+ * `[data-composer-card]`, `[data-composer-dock]`, `[data-tool="..."]`,
+ * `[data-window-drag]`, and `[class*="_localName"]`
  * where the local name after the underscore is stable across builds.
  */
 @tailwind utilities;
@@ -1552,6 +1553,77 @@ body [data-step-process]:not([hidden]) [data-step-process-content] [class*='_des
   line-height: var(--dsh-chat-line-height);
 }
 
+/* The ask-question card is a tool row's expanded body, and it was the last surface
+   in the transcript on a size of its own: its question and answer state
+   `font-size: var(--dsh-content-font-size, 14px)`, which follows the user's editor
+   setting — measured 17px/27px, while the 「提问」 label on the row above it is
+   13px/18px and the prose around it 13px. So opening the card made one row change
+   type size.
+
+   Anchored on the tool's own id rather than on the local names: `_question` and
+   `_answer` are substring anchors that also cover `_questionList`,
+   `_unansweredQuestion` and the reply bubble's `_answerLabel`, so the scope has to
+   come from the row. These four are the only leaves that declare a size; `_item`,
+   `_questionList`, `_answerLine` and `_skipped` inherit and follow. */
+body [data-tool='ask_user_question'] [class*='_question'],
+body [data-tool='ask_user_question'] [class*='_answer'],
+body [data-tool='ask_user_question'] [class*='_verdict'],
+body [data-tool='ask_user_question'] [class*='_unansweredQuestion'] {
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* The model-retry row — 「已重试模型请求（1/5） · 1s」, expandable to the delay and
+   the failure reason. It is a process row like the tool rows beside it, but the
+   host sets it from `--dsh-content-font-size-secondary` (`Sixlwa_retryRow`,
+   measured 15px/22px) while those read 13px/18px, so one row in the middle of the
+   process flow sat at a size of its own. Measured on the live row, family, weight,
+   colour and letter-spacing already match the transcript — the size is the whole
+   difference.
+
+   Scoped by the host's `data-chat-flow-kind="model-retry"` marker: the row is a
+   `details` element with no `[data-turn-process]` ancestor (it is a member of the
+   turn's process flow, not inside the pill), so the process-row rules above miss
+   it. That marker sits on the flow wrapper, not on the `details` itself, so the
+   row has to be named by its local name — the wrapper alone would only change what
+   the row inherits, and the host sets both the row and its `_retryDetails` from
+   `--dsh-content-font-size-secondary` directly, which beats inheritance. */
+body [data-chat-flow-kind='model-retry'] [class*='_retryRow'],
+body [data-chat-flow-kind='model-retry'] [class*='_retryDetails'] {
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* The row that closes an assistant turn — copy, the feedback pair, branch, the
+   「用量 N tok」 badge and the clock. Three host components meet here and they
+   disagreed on both the text and the glyph:
+
+   - text: the clock (`_timeEnd`) and the usage badge read
+     `calc(--dsh-content-font-size-secondary - 1px)` = 14px/27px in a transcript
+     that reads at 13px/22px;
+   - glyph: `_action` asks for `calc(17px + font-delta)` = 20px inside a 31px
+     button whose 6px padding leaves a 19px content box, so it overflowed and
+     rendered 19x20, while the feedback pair and the badge asked for
+     `calc(15px + font-delta)` = 18px. One row measured 19x20, 18x18, 18x18,
+     19x20, 18x18.
+
+   Scoped by the host's own `[data-turn-tail]` marker, which wraps all three
+   components, rather than by any one of their local names. The glyph takes the
+   transcript's 14px (`w-3.5`) — the size the process rows and the code block's
+   copy button already use. Only the glyph moves: the 31px button stays the hover
+   target, and the row keeps its height. */
+body [data-turn-tail] [class*='_timeEnd'],
+body [data-turn-tail] button[class*='_trigger'] {
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+body [data-turn-tail] [class*='_actions'] button[class*='_action'] svg,
+body [data-turn-tail] button[class*='_trigger'] svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* ==========================================================================
    7c. Failure and warning surfaces.
    ========================================================================== */
@@ -1734,6 +1806,41 @@ body [data-composer-card] [class*='_primary'] {
 body [data-composer-card] [class*='_row'] {
   padding-top: 0;
   padding-bottom: 0;
+}
+
+/* The stat dock under the composer — 「12 轮 902 步 · 175 tok/s」「108M tok · 缓存命中
+   97%」「22%」. The two pills come from different components and each reads its own
+   host step: the stats are `calc(--dsh-content-font-size-secondary - 1px)` (measured
+   14px/22px) and the context meter is `--dsh-content-font-size-secondary` (measured
+   15px/22px), so one row showed two sizes, both above the transcript's 13px.
+
+   The dock is a SIBLING of `[data-composer-card]`, not a descendant, so it needs its
+   own anchor: every rule above scoped to the card misses it. `button[...]` on the
+   trigger follows the rule the composer's own chips already keep — `_trigger` is a
+   substring match, and the meter's button is the only element in the dock whose
+   class carries it (measured n=1). */
+body [data-composer-dock] [class*='_anchor'],
+body [data-composer-dock] button[class*='_trigger'] {
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* The dock reads as two icon-and-figure groups, not as two sentences: 「951 (175/s)」
+   and 「113M (97%)」, then the context meter's 「22%」, which is already that shape.
+
+   Each pill already opens with a host icon, and those two keep the roles they had —
+   the gauge for the step count, the database for the token total. The second figure
+   now rides behind its partner in brackets rather than standing on a glyph of its
+   own, so both of the icons this package drew for it are gone.
+
+   What is left is the gap between a figure and its bracket, and the host's `·`
+   separator is the only element sitting exactly there: it keeps its box and loses
+   its text, so the rewrite stays text-only (the client half writes the three text
+   nodes and leaves the tree React owns intact — see `rewriteComposerStats`). The
+   trailing margin goes, or the bracket would be pushed away from the figure. */
+body [data-composer-dock] [class*='_sep'] {
+  margin: 0 0 0 6px;
+  font-size: 0;
 }
 
 /* ==========================================================================

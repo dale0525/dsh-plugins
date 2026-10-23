@@ -1049,6 +1049,140 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The stat dock under the composer: four figures, each behind its own glyph.
+     *
+     * The host composes two sentences — `12 轮 902 步 · 175 tok/s` and
+     * `108M tok · 缓存命中 97%` — out of `stats.counts`, `message.tokensPerSecond`,
+     * `message.turnUsage.count` and `stats.cacheHit`. The design keeps the figures
+     * alone, so every word in those four templates has to go, and the stylesheet
+     * cannot do it: a template's words sit at positions CSS cannot name.
+     *
+     * The figures are recovered from the rendered text rather than from the host's
+     * numbers, which this half never sees. That is also why no locale table is
+     * needed: 「12 轮 902 步」 and `12 turns 902 steps` both END in the step count,
+     * so "the last number in the string" reads both.
+     *
+     * Nothing here rebuilds a node. React owns this subtree and re-renders it on
+     * every streamed token, so a substituted span would be reconciled against a
+     * detached node and the dock would freeze on a stale figure — the rewrite writes
+     * `nodeValue` in place and keeps the host's own element (the `·` separator, now
+     * carrying the second glyph) exactly where React put it.
+     */
+
+    /** Exponents for the K/M/B suffixes a token figure can carry. */
+    var UNIT_SCALE = { '': 0, K: 3, M: 6, B: 9 }
+
+    /** The first number in a string, decimals included, or null. */
+    function firstFigure(text) {
+      var match = /\d+(?:\.\d+)?/.exec(text)
+      return match === null ? null : match[0]
+    }
+
+    /** The last number in a string, decimals included, or null. */
+    function lastFigure(text) {
+      var found = text.match(/\d+(?:\.\d+)?/g)
+      return found === null ? null : found[found.length - 1]
+    }
+
+    /** K/M/B at one decimal below a hundred, whole numbers above it. */
+    function formatTokens(value) {
+      if (value < 1e3) return String(Math.round(value))
+      var unit = value < 1e6 ? 'K' : value < 1e9 ? 'M' : 'B'
+      var scaled = value / Math.pow(10, UNIT_SCALE[unit])
+      return (scaled >= 100 ? String(Math.round(scaled)) : String(Math.round(scaled * 10) / 10)) + unit
+    }
+
+    /**
+     * A token figure with its unit, rescaled to K/M/B.
+     *
+     * The host's own formatter stops at M, so a session past a billion reads `1000M`
+     * there; the figure is re-derived from the value it printed, which is what gives
+     * the B step any meaning at all.
+     */
+    function usageFigure(text) {
+      var match = /^\s*(\d+(?:\.\d+)?)\s*([KMB]?)/.exec(text)
+      if (match === null) return null
+      var value = parseFloat(match[1])
+      if (!isFinite(value)) return null
+      return formatTokens(value * Math.pow(10, UNIT_SCALE[match[2]]))
+    }
+
+    /** The percentage in a cache-hit label, sign kept, or null. */
+    function percentFigure(text) {
+      var match = /(\d+(?:\.\d+)?)\s*%/.exec(text)
+      return match === null ? null : match[1] + '%'
+    }
+
+    function rewriteComposerStats() {
+      var PILL = '[data-composer-dock] [data-composer-stat]'
+
+      function writeFigure(node, text) {
+        if (node.nodeValue !== text) node.nodeValue = text
+      }
+
+      /**
+       * Reduce one pill. The detailed layout is `figure · figure`; compact renders
+       * the second figure alone, and the meter is a different component, so both of
+       * those — and any shape this does not recognise — are left as the host drew
+       * them rather than guessed at.
+       */
+      function sync(pill) {
+        var label = pill.querySelector("[class*='_label']")
+        if (label === null) return
+        var nodes = label.childNodes
+        if (nodes.length !== 3) return
+        var sep = nodes[1]
+        if (sep.nodeType !== 1) return
+        var head = nodes[0].nodeType === 3 ? nodes[0].nodeValue : null
+        var tail = nodes[2].nodeType === 3 ? nodes[2].nodeValue : null
+        if (head === null || tail === null) return
+        var stat = pill.getAttribute('data-composer-stat')
+        var first = null
+        var second = null
+        if (stat === 'activity') {
+          first = lastFigure(head)
+          var speed = firstFigure(tail)
+          second = speed === null ? null : speed + '/s'
+        } else if (stat === 'usage') {
+          first = usageFigure(head)
+          second = percentFigure(tail)
+        }
+        if (first === null || second === null) return
+        writeFigure(nodes[0], first)
+        writeFigure(nodes[2], '(' + second + ')')
+      }
+
+      function sweep() {
+        var pills = document.querySelectorAll(PILL)
+        for (var i = 0; i < pills.length; i++) sync(pills[i])
+      }
+
+      /* Coalesced like the two effects above it: the observer sees every mutation of
+         a streaming conversation, and the pass queries the document. A write that
+         changes nothing is skipped by `writeFigure`, so the pass cannot feed itself,
+         but a scheduled one is still the difference between a few passes per frame
+         and one per token. */
+      var scheduled = false
+      var timer = 0
+      function schedule() {
+        if (scheduled) return
+        scheduled = true
+        timer = setTimeout(function () {
+          scheduled = false
+          sweep()
+        }, 0)
+      }
+
+      sweep()
+      var observer = new MutationObserver(schedule)
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+      return function () {
+        observer.disconnect()
+        clearTimeout(timer)
+      }
+    }
+
+    /**
      * Apply the theme.
      *
      * The `theme` service is resolved through a nested `inject` rather than the
@@ -1077,6 +1211,8 @@ window.__ModuleLoader__.load({
       ctx.effect(syncCardHeaderLabels, 'macos-theme: card header labels')
 
       ctx.effect(keepChatView, 'macos-theme: chat view')
+
+      ctx.effect(rewriteComposerStats, 'macos-theme: composer stats')
 
       ctx.inject(['theme'], function (scoped) {
         scoped.effect(function () {
