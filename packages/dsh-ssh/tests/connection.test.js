@@ -19,7 +19,9 @@ import {
   connect,
   describeConnectError,
   downloadFile,
+  readRemotePrefix,
   runCommand,
+  shellQuote,
   truncateStream,
   uploadFile,
 } from '../src/connection.js';
@@ -211,11 +213,11 @@ test('upload then download round-trips the exact bytes', async () => {
   try {
     const { client } = await open(server);
     try {
-      const uploaded = await uploadFile({ client, localPath: local, remotePath: '/remote/payload.txt' });
+      const uploaded = await uploadFile({ client, host: 'nas', localPath: local, remotePath: '/remote/payload.txt' });
       assert.equal(uploaded.bytes, Buffer.byteLength(content));
       assert.equal(server.files.get('/remote/payload.txt')?.toString(), content);
 
-      const downloaded = await downloadFile({ client, remotePath: '/remote/payload.txt', localPath: back });
+      const downloaded = await downloadFile({ client, host: 'nas', remotePath: '/remote/payload.txt', localPath: back });
       assert.equal(downloaded.bytes, Buffer.byteLength(content));
       assert.equal(await readFile(back, 'utf8'), content);
     } finally {
@@ -233,13 +235,134 @@ test('downloading a missing remote file fails instead of leaving an empty local 
   try {
     const { client } = await open(server);
     try {
-      await assert.rejects(() => downloadFile({ client, remotePath: '/nope.txt', localPath: local }));
+      await assert.rejects(() => downloadFile({ client, host: 'nas', remotePath: '/nope.txt', localPath: local }));
     } finally {
       client.end();
     }
   } finally {
     await server.close();
   }
+});
+
+test('readRemotePrefix returns the head of a file and reports when it was capped', async () => {
+  const server = await startServer({
+    files: {
+      '/srv/small.txt': 'line one\nline two\n',
+      '/srv/big.txt': 'z'.repeat(1_000),
+    },
+  });
+  try {
+    const { client } = await open(server);
+    try {
+      const small = await readRemotePrefix({ client, host: 'nas', path: '/srv/small.txt', maxBytes: 4_096 });
+      assert.equal(small.text, 'line one\nline two\n');
+      assert.equal(small.fileBytes, 18);
+      assert.equal(small.capped, false);
+
+      // One byte over the cap is enough to know there is more, and the text
+      // stops at the cap rather than at whatever the last read returned.
+      const big = await readRemotePrefix({ client, host: 'nas', path: '/srv/big.txt', maxBytes: 100 });
+      assert.equal(big.text.length, 100);
+      assert.equal(big.bytes, 100);
+      assert.equal(big.fileBytes, 1_000);
+      assert.equal(big.capped, true);
+    } finally {
+      client.end();
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test('readRemotePrefix does not end the text with half a UTF-8 character', async () => {
+  // Each character is three bytes, so a 4-byte cap lands inside one. Decoding
+  // the cut buffer would append a replacement glyph that is not in the file.
+  const server = await startServer({ files: { '/srv/cjk.txt': '一二三四五' } });
+  try {
+    const { client } = await open(server);
+    try {
+      const result = await readRemotePrefix({ client, host: 'nas', path: '/srv/cjk.txt', maxBytes: 4 });
+      assert.equal(result.text, '一');
+      assert.equal(result.text.includes('\ufffd'), false);
+      assert.equal(result.capped, true);
+    } finally {
+      client.end();
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test('a host without an SFTP subsystem says so instead of reporting exit code 127', async () => {
+  // Seen on a real OpenWrt router: the subsystem request exits 127, and ssh2's
+  // raw text ("Received exit code 127 while establishing SFTP session") reads as
+  // a plugin bug rather than as "this host has no SFTP".
+  const server = await startServer({ sftp: false });
+  try {
+    const { client } = await open(server);
+    try {
+      await assert.rejects(
+        () => readRemotePrefix({ client, host: 'nas', path: '/etc/passwd', maxBytes: 100 }),
+        (error) => {
+          assert.match(error.message, /没有提供 SFTP 子系统/);
+          assert.match(error.message, /ssh_exec/);
+          return true;
+        },
+      );
+    } finally {
+      client.end();
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test('a download from a host without SFTP says the same thing', async () => {
+  // A separate connection, because the failed subsystem request leaves the first
+  // client unusable — reusing it would test ssh2's "Not connected" instead.
+  const server = await startServer({ sftp: false });
+  try {
+    const { client } = await open(server);
+    try {
+      await assert.rejects(
+        () => downloadFile({ client, host: 'nas', remotePath: '/etc/passwd', localPath: '/tmp/never' }),
+        /没有提供 SFTP 子系统/,
+      );
+    } finally {
+      client.end();
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test('a missing remote file names the host and the path', async () => {
+  // `No such file` on its own does not say which file, and a caller that passed
+  // the wrong path has nothing to correct itself with.
+  const server = await startServer({});
+  try {
+    const { client } = await open(server);
+    try {
+      await assert.rejects(
+        () => readRemotePrefix({ client, host: 'nas', path: '/srv/nope.txt', maxBytes: 100 }),
+        (error) => {
+          assert.match(error.message, /nas/);
+          assert.match(error.message, /\/srv\/nope\.txt/);
+          return true;
+        },
+      );
+    } finally {
+      client.end();
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+test('a workdir is quoted so a directory name cannot become a second command', () => {
+  assert.equal(shellQuote('/srv/app'), "'/srv/app'");
+  assert.equal(shellQuote("/srv/o'brien"), "'/srv/o'\\''brien'");
+  assert.equal(shellQuote('/srv/a; rm -rf /'), "'/srv/a; rm -rf /'");
 });
 
 test('an over-long stream keeps its head and its tail, and says it was cut', () => {

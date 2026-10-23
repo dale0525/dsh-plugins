@@ -28,6 +28,9 @@ const SFTP = utils.sftp;
  * @param options.hostKey - a private key to present; generated when omitted.
  * @param options.exec - `(command) => {stdout, stderr, code}`; defaults to echoing.
  * @param options.files - initial remote tree, `{path: string|Buffer}`.
+ * @param options.sftp - whether to offer the SFTP subsystem; defaults to true.
+ *   A server without it is a real case (OpenWrt, minimal containers) and the
+ *   plugin has to say so rather than surface ssh2's exit code.
  * @returns the server handle: `{host, port, publicKey, files, setExec, close}`.
  */
 export async function startServer(options = {}) {
@@ -79,6 +82,9 @@ export async function startServer(options = {}) {
         });
 
         session.on('sftp', (acceptSftp) => {
+          // A server that does not offer SFTP exits the subsystem request with
+          // 127, which is what the plugin has to translate.
+          if (options.sftp === false) return acceptSftp().exit(127);
           const sftp = acceptSftp();
           const handles = new Map();
           let nextHandle = 1;
@@ -98,17 +104,18 @@ export async function startServer(options = {}) {
             sftp.handle(reqid, openHandle(filename, write));
           });
 
-          sftp.on('READ', (reqid, handle) => {
+          sftp.on('READ', (reqid, handle, offset, length) => {
             const entry = handles.get(handle.readUInt32BE(0));
             const data = files.get(entry?.path) ?? Buffer.alloc(0);
-            // The client asks for whole files by repeated reads; `fastGet` stops
-            // on the first EOF status, which is what this models.
             if (entry === undefined) return sftp.status(reqid, SFTP.STATUS_CODE.FAILURE);
-            if (entry.offset === undefined) entry.offset = 0;
-            if (entry.offset >= data.length) return sftp.status(reqid, SFTP.STATUS_CODE.EOF);
-            const chunk = data.subarray(entry.offset);
-            entry.offset += chunk.length;
-            sftp.data(reqid, chunk);
+            // A positioned read, which is what the plugin uses: `offset` is the
+            // file position and `length` the most bytes to return. `fastGet`
+            // passes position 0 and tracks its own progress, so both clients are
+            // served by honouring the arguments rather than a cursor here.
+            const start = typeof offset === 'number' ? offset : 0;
+            if (start >= data.length) return sftp.status(reqid, SFTP.STATUS_CODE.EOF);
+            const wanted = typeof length === 'number' && length > 0 ? length : data.length - start;
+            sftp.data(reqid, data.subarray(start, start + wanted));
           });
 
           sftp.on('WRITE', (reqid, handle, offset, data) => {
@@ -133,9 +140,25 @@ export async function startServer(options = {}) {
 
           sftp.on('STAT', (reqid, path) => {
             const data = files.get(path);
-            if (data === undefined) return sftp.status(reqid, SFTP.STATUS_CODE.NO_SUCH_FILE);
-            sftp.attrs(reqid, { mode: 0o100644, size: data.length, uid: 0, gid: 0, atime: 0, mtime: 0 });
+            if (data !== undefined) {
+              sftp.attrs(reqid, { mode: 0o100644, size: data.length, uid: 0, gid: 0, atime: 0, mtime: 0 });
+              return;
+            }
+            // A directory is any path some file lives under, so the plugin's
+            // "this is a directory, not a file" branch has a real case to hit.
+            if (isDirectory(path)) {
+              sftp.attrs(reqid, { mode: 0o040755, size: 0, uid: 0, gid: 0, atime: 0, mtime: 0 });
+              return;
+            }
+            sftp.status(reqid, SFTP.STATUS_CODE.NO_SUCH_FILE);
           });
+
+          /** Whether any tracked file lives under `path`. */
+          function isDirectory(path) {
+            const prefix = path.endsWith('/') ? path : `${path}/`;
+            for (const known of files.keys()) if (known.startsWith(prefix)) return true;
+            return false;
+          }
         });
       });
     });

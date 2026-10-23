@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { apply, name } from '../src/index.js';
+import { readTool } from '../src/tools.js';
 import { startServer } from './support/server.js';
 
 /**
@@ -118,11 +119,11 @@ test('the row id equals the host half name, which nothing automated checks', () 
   assert.equal(name, 'dsh-ssh');
 });
 
-test('a full host gets four tools, each with an executor and a unique name', () => {
+test('a full host gets five tools, each with an executor and a unique name', () => {
   const { registered } = mount({ hosts: [], systemPrompt: true });
   assert.deepEqual(
     registered.map((definition) => definition.name),
-    ['ssh_list', 'ssh_exec', 'ssh_upload', 'ssh_download'],
+    ['ssh_list', 'ssh_exec', 'ssh_read', 'ssh_upload', 'ssh_download'],
   );
   for (const definition of registered) {
     assert.equal(typeof definition.execute, 'function', `${definition.name} has no executor`);
@@ -144,7 +145,7 @@ test('a host without a system prompt still gets the tools', () => {
   // Read through `get` rather than `inject` precisely for this case: a declared
   // dependency would let a missing prompt take the tools with it.
   const { registered, sections } = mount({ hosts: [] });
-  assert.equal(registered.length, 4);
+  assert.equal(registered.length, 5);
   assert.deepEqual(sections, []);
 });
 
@@ -154,9 +155,14 @@ test('the announced section is unique, ordered, and states the alias and passwor
   assert.equal(section.name, 'plugin:dsh-ssh');
   assert.equal(section.order, 170);
   assert.match(section.text, /ssh_list/);
+  assert.match(section.text, /ssh_read/);
   assert.match(section.text, /alias/);
   assert.match(section.text, /密码/);
   assert.match(section.text, /不是交互式/);
+  // The rule the agent already follows locally has to be restated for the
+  // remote side, or `cat` stays the only way it knows to read a remote file.
+  assert.match(section.text, /不要用 `cat`/);
+  assert.match(section.text, /workdir/);
 });
 
 test('ssh_list reports the configured hosts and which of them have a password', async () => {
@@ -174,6 +180,179 @@ test('ssh_list reports the configured hosts and which of them have a password', 
   ]);
   assert.match(value.message, /2 台/);
   assert.match(value.message, /未设置密码：vps/);
+});
+
+test('workdir becomes a cd in the command text, quoted, and refuses to run elsewhere', async () => {
+  const server = await startServer({ exec: (command) => ({ stdout: `${command}\n`, stderr: '', code: 0 }) });
+  const home = await mkdtemp(join(tmpdir(), 'dsh-ssh-home-'));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+  try {
+    const { registered } = mount({
+      hosts: [{ alias: 'nas', host: server.host, port: server.port, username: 'demo' }],
+      passwords: { SSH_PASSWORD_NAS: 'pw' },
+    });
+    // The SSH exec request has no working-directory field, so the only way to
+    // honour `workdir` is to put it in the command. What the server received is
+    // therefore the whole contract, and it must be quoted: a directory named
+    // `my dir; rm -rf /` has to stay a directory name.
+    const value = await tool(registered, 'ssh_exec').execute(
+      { alias: 'nas', command: 'pwd', workdir: "/srv/my dir; rm -rf /" },
+      {},
+    );
+    assert.match(value.stdout, /^cd '\/srv\/my dir; rm -rf \/' \|\| exit 1\npwd\n$/);
+    assert.equal(value.workdir, '/srv/my dir; rm -rf /');
+    // The caller's own command is what gets reported back, not the cd prefix.
+    assert.equal(value.command, 'pwd');
+
+    const withoutWorkdir = await tool(registered, 'ssh_exec').execute({ alias: 'nas', command: 'pwd' }, {});
+    assert.equal(withoutWorkdir.stdout, 'pwd\n');
+    assert.equal(withoutWorkdir.workdir, undefined);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    await server.close();
+  }
+});
+
+test('a workdir with a single quote survives quoting intact', async () => {
+  const server = await startServer({ exec: (command) => ({ stdout: `${command}\n`, stderr: '', code: 0 }) });
+  const home = await mkdtemp(join(tmpdir(), 'dsh-ssh-home-'));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+  try {
+    const { registered } = mount({
+      hosts: [{ alias: 'nas', host: server.host, port: server.port, username: 'demo' }],
+      passwords: { SSH_PASSWORD_NAS: 'pw' },
+    });
+    const value = await tool(registered, 'ssh_exec').execute(
+      { alias: 'nas', command: 'pwd', workdir: "/srv/o'brien" },
+      {},
+    );
+    assert.match(value.stdout, /^cd '\/srv\/o'\\''brien' \|\| exit 1\n/);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    await server.close();
+  }
+});
+
+test('ssh_read returns a numbered window over a real remote file, and pages with offset', async () => {
+  const server = await startServer({
+    files: { '/srv/notes.txt': 'alpha\nbeta\ngamma\ndelta\n' },
+  });
+  const home = await mkdtemp(join(tmpdir(), 'dsh-ssh-home-'));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+  try {
+    const { registered } = mount({
+      hosts: [{ alias: 'nas', host: server.host, port: server.port, username: 'demo' }],
+      passwords: { SSH_PASSWORD_NAS: 'pw' },
+    });
+    const first = await tool(registered, 'ssh_read').execute({ alias: 'nas', path: '/srv/notes.txt' }, {});
+    assert.equal(first.offset, 1);
+    assert.deepEqual(first.lines, [
+      { number: 1, text: 'alpha' },
+      { number: 2, text: 'beta' },
+      { number: 3, text: 'gamma' },
+      { number: 4, text: 'delta' },
+    ]);
+    assert.equal(first.total_lines, 4);
+    assert.equal(first.capped, false);
+    assert.equal(first.path, '/srv/notes.txt');
+
+    const second = await tool(registered, 'ssh_read').execute(
+      { alias: 'nas', path: '/srv/notes.txt', offset: 3, limit: 1 },
+      {},
+    );
+    assert.deepEqual(second.lines, [{ number: 3, text: 'gamma' }]);
+
+    const [block] = readTool().output.render({}, second);
+    assert.match(block.text, /<path>nas:\/srv\/notes\.txt<\/path>/);
+    assert.match(block.text, /3: gamma/);
+    assert.match(block.text, /Use offset=4 to continue/);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    await server.close();
+  }
+});
+
+test('ssh_read says so when the file is larger than the read cap, instead of ending early', async () => {
+  // Just past the transfer cap: the file is bigger than what one call scans, so
+  // the window covers a prefix and the footer has to say the file continues.
+  const big = `${'x'.repeat(80)}\n`.repeat(Math.ceil((512 * 1024) / 81) + 200);
+  const server = await startServer({ files: { '/srv/big.log': big } });
+  const home = await mkdtemp(join(tmpdir(), 'dsh-ssh-home-'));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+  try {
+    const { registered } = mount({
+      hosts: [{ alias: 'nas', host: server.host, port: server.port, username: 'demo' }],
+      passwords: { SSH_PASSWORD_NAS: 'pw' },
+    });
+    const value = await tool(registered, 'ssh_read').execute({ alias: 'nas', path: '/srv/big.log' }, {});
+    assert.equal(value.capped, true);
+    const [block] = readTool().output.render({}, value);
+    assert.match(block.text, /later lines were not scanned/);
+    assert.match(block.text, /ssh_download/);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    await server.close();
+  }
+});
+
+test('ssh_read refuses a directory instead of reporting an empty file', async () => {
+  // The SFTP server models directories as "a path some file lives under", so
+  // `/srv` really is one here. Without the check, a directory stat reports size
+  // 0 and the caller gets an empty window that reads as an empty file.
+  const server = await startServer({ files: { '/srv/app/main.c': 'int main(void){}\n' } });
+  const home = await mkdtemp(join(tmpdir(), 'dsh-ssh-home-'));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+  try {
+    const { registered } = mount({
+      hosts: [{ alias: 'nas', host: server.host, port: server.port, username: 'demo' }],
+      passwords: { SSH_PASSWORD_NAS: 'pw' },
+    });
+    await assert.rejects(
+      () => tool(registered, 'ssh_read').execute({ alias: 'nas', path: '/srv' }, {}),
+      (error) => {
+        assert.match(error.message, /\/srv 是目录，不是文件/);
+        assert.match(error.message, /ls/);
+        return true;
+      },
+    );
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    await server.close();
+  }
+});
+
+test('ssh_read reports a missing file with the path it tried', async () => {
+  const server = await startServer({});
+  const home = await mkdtemp(join(tmpdir(), 'dsh-ssh-home-'));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+  try {
+    const { registered } = mount({
+      hosts: [{ alias: 'nas', host: server.host, port: server.port, username: 'demo' }],
+      passwords: { SSH_PASSWORD_NAS: 'pw' },
+    });
+    await assert.rejects(
+      () => tool(registered, 'ssh_read').execute({ alias: 'nas', path: '/srv/nope.txt' }, {}),
+      (error) => {
+        assert.match(String(error.message), /nope\.txt|No such file/);
+        return true;
+      },
+    );
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    await server.close();
+  }
 });
 
 test('an empty host table says so instead of listing nothing', async () => {

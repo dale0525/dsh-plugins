@@ -2,7 +2,7 @@
  * dsh-ssh — host half.
  *
  * Lets the agent run commands and move files on hosts the user configured, as
- * four `ssh_*` tools. It replaces the `secret-safe-ssh` skill, which spawned the
+ * five `ssh_*` tools. It replaces the `secret-safe-ssh` skill, which spawned the
  * real `ssh` binary with `SSH_ASKPASS` and a Python helper to feed the password:
  * that route needs OpenSSH, python and a POSIX shell on the DSH host, so it never
  * worked on Windows, and every call re-derived host facts from a YAML inventory
@@ -37,10 +37,20 @@ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { Config, findHost, normalizeHosts } from './config.js';
-import { connect, downloadFile, runCommand, uploadFile, DEFAULT_COMMAND_TIMEOUT_MS, MAX_COMMAND_TIMEOUT_MS } from './connection.js';
+import {
+  connect,
+  downloadFile,
+  readRemotePrefix,
+  runCommand,
+  shellQuote,
+  uploadFile,
+  DEFAULT_COMMAND_TIMEOUT_MS,
+  MAX_COMMAND_TIMEOUT_MS,
+} from './connection.js';
 import { SECTION_NAME, SECTION_ORDER, SSH_GUIDANCE } from './guidance.js';
 import { knownHostsPath, readKnownHosts, writeKnownHosts } from './known-hosts.js';
-import { TOOL_NAMES, downloadTool, execTool, listTool, uploadTool } from './tools.js';
+import { buildLineWindow, READ_LIMIT, READ_TRANSFER_MAX_BYTES } from './text-window.js';
+import { TOOL_NAMES, downloadTool, execTool, listTool, readTool, uploadTool } from './tools.js';
 
 export { Config };
 export { PASSWORD_REF_PREFIX, passwordRef } from './config.js';
@@ -49,7 +59,7 @@ export { PASSWORD_REF_PREFIX, passwordRef } from './config.js';
 export const name = 'dsh-ssh';
 
 /**
- * Mount the four tools and announce the route's contract.
+ * Mount the five tools and announce the route's contract.
  *
  * @param ctx - the plugin context.
  * @param config - live reference over {@link Config}, when the loader supplies one.
@@ -196,18 +206,61 @@ export function apply(ctx, config) {
             seconds === undefined
               ? DEFAULT_COMMAND_TIMEOUT_MS
               : Math.min(Math.max(1, Math.round(seconds)), MAX_COMMAND_TIMEOUT_MS / 1000) * 1000;
+          // The SSH `exec` request carries no working directory, so `workdir`
+          // becomes a `cd` in the command text. Quoted, and refused rather than
+          // silently ignored when the directory does not exist: a command that
+          // ran somewhere else and succeeded is worse than one that failed.
+          const command =
+            args.workdir === undefined
+              ? args.command
+              : `cd ${shellQuote(args.workdir)} || exit 1\n${args.command}`;
           const started = Date.now();
           const { client, fingerprint } = await open(host, exec?.signal);
           try {
-            const result = await runCommand({ client, command: args.command, timeoutMs, signal: exec?.signal });
+            const result = await runCommand({ client, command, timeoutMs, signal: exec?.signal });
             return {
               host: host.alias,
               address: `${host.host}:${host.port}`,
               command: args.command,
+              ...(args.workdir === undefined ? {} : { workdir: args.workdir }),
               exit_code: result.code ?? -1,
               stdout: result.stdout,
               stderr: result.stderr,
               duration_ms: Date.now() - started,
+              timeout_budget_seconds: Math.round(timeoutMs / 1000),
+              host_key: fingerprint,
+            };
+          } finally {
+            client.end();
+          }
+        },
+      }),
+      defineTool({
+        ...readTool(),
+        async execute(args, exec) {
+          const host = requireHost(args.alias);
+          const offset = args.offset === undefined ? 1 : Math.max(1, Math.round(args.offset));
+          const limit = args.limit === undefined ? READ_LIMIT : Math.max(1, Math.round(args.limit));
+          const { client, fingerprint } = await open(host, exec?.signal);
+          try {
+            const remote = await readRemotePrefix({
+              client,
+              host: host.alias,
+              path: args.path,
+              maxBytes: READ_TRANSFER_MAX_BYTES,
+              signal: exec?.signal,
+            });
+            const window = buildLineWindow(remote.text, { offset, limit, capped: remote.capped });
+            return {
+              host: host.alias,
+              address: `${host.host}:${host.port}`,
+              path: args.path,
+              offset: window.offset,
+              lines: window.lines,
+              total_lines: window.totalLines,
+              file_bytes: remote.fileBytes,
+              capped: remote.capped,
+              truncated_by_bytes: window.truncatedByBytes,
               host_key: fingerprint,
             };
           } finally {
@@ -222,7 +275,7 @@ export function apply(ctx, config) {
           const localPath = absolutePath(args.local_path, sessionCwd(exec));
           const { client } = await open(host, exec?.signal);
           try {
-            const { bytes } = await uploadFile({ client, localPath, remotePath: args.remote_path });
+            const { bytes } = await uploadFile({ client, host: host.alias, localPath, remotePath: args.remote_path });
             return {
               host: host.alias,
               address: `${host.host}:${host.port}`,
@@ -242,7 +295,7 @@ export function apply(ctx, config) {
           const localPath = absolutePath(args.local_path, sessionCwd(exec));
           const { client } = await open(host, exec?.signal);
           try {
-            const { bytes } = await downloadFile({ client, remotePath: args.remote_path, localPath });
+            const { bytes } = await downloadFile({ client, host: host.alias, remotePath: args.remote_path, localPath });
             return {
               host: host.alias,
               address: `${host.host}:${host.port}`,

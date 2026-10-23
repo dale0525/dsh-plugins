@@ -1,7 +1,7 @@
 # @logictan/dsh-ssh
 
-SSH for the DSH agent: four tools that run commands and move files on hosts the
-user configured, with the password kept out of the conversation.
+SSH for the DSH agent: five tools that run commands, read files and move files
+on hosts the user configured, with the password kept out of the conversation.
 
 ## Why not the `ssh` binary
 
@@ -54,6 +54,7 @@ would silently share one password.
 | --- | --- |
 | `ssh_list` | the configured hosts, their alias/host/port/username, and whether a password is stored. Opens no connection. |
 | `ssh_exec` | run one shell command; returns exit code, stdout and stderr |
+| `ssh_read` | read a remote text file as a line-numbered window, the same shape as the local `read` tool |
 | `ssh_upload` | copy one local file to the host over SFTP |
 | `ssh_download` | copy one file from the host over SFTP |
 
@@ -64,6 +65,24 @@ set of reachable machines.
 (`sudo`'s password prompt, an editor, `read`, a pager) blocks until its timeout
 and is then aborted. Each call opens its own connection and closes it, so no
 state (working directory, environment, background jobs) survives between calls.
+
+`ssh_exec` takes `workdir` instead of a `cd /x && …` prefix, matching the local
+bash tool. The SSH `exec` request has no working-directory field, so the plugin
+puts a quoted `cd` in front of the command and exits non-zero if the directory
+does not exist — running the command somewhere else and succeeding would be
+worse than failing.
+
+`ssh_read` exists so that reading a remote file does not mean `cat` through
+`ssh_exec`: it returns the same `<path>/<content>` envelope, 1-based line
+numbers, and `offset`/`limit` paging the local `read` tool uses. Only the head of
+the file is transferred (512 KiB), so a larger file gets a footer saying the
+later lines were not scanned rather than a false "end of file".
+
+The timeout budget is reported in the result header (`timeout_budget: 120s`),
+never after the output — a trailing `timeout: 300s` reads as "this command timed
+out", which is exactly what it does not mean. A multi-line command is echoed by
+its first line plus a line count, so a heredoc does not bury the output it
+produced.
 
 ## Host key verification
 

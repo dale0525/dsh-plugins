@@ -24,7 +24,7 @@ export const SECTION_ORDER = 170;
  * The route's contract, in the form a model needs before it runs a command.
  */
 export const SSH_GUIDANCE = [
-  '本机已安装 dsh-ssh 插件：让 Agent 在用户预配置的 SSH 主机上执行命令、上传下载文件。工具名 `ssh_list`、`ssh_exec`、`ssh_upload`、`ssh_download`。',
+  '本机已安装 dsh-ssh 插件：让 Agent 在用户预配置的 SSH 主机上执行命令、读文本文件、上传下载文件。工具名 `ssh_list`、`ssh_exec`、`ssh_read`、`ssh_upload`、`ssh_download`。',
   '',
   '主机用 alias 指代。先用 `ssh_list` 看有哪些 alias、各自是否有密码；不要自己猜主机名或 IP——表里没有的机器就是访问不到，需要用户先在「设置 → 插件 → dsh-ssh」里添加。',
   '',
@@ -32,7 +32,11 @@ export const SSH_GUIDANCE = [
   '',
   '`ssh_exec` 不是交互式会话：没有 TTY，等输入的命令（编辑器、`sudo` 密码提示、`read`、分页器）会一直挂到超时。改用非交互写法（`sudo -n`、`apt-get -y`、`systemctl --no-pager`、`GIT_TERMINAL_PROMPT=0`）。',
   '',
-  '每次调用都新建一条连接，用完即关，不要在调用之间假设有状态（当前目录、环境变量、后台任务都不会保留）。要连续操作就把命令串在一条里（`cd /x && make`）。',
+  '读远端文本文件用 `ssh_read`，不要用 `cat`——它返回与本地 `read` 工具相同的带行号窗口，同样接受 `offset` / `limit`。只在需要 shell 计算（`sed`、`awk`、`tail -f`、管道）时才用 `ssh_exec`。',
+  '',
+  '`ssh_exec` 的 `workdir` 取代 `cd /x && …` 前缀，语义与本地 bash 工具的 `workdir` 相同；目录不存在时直接失败，不会退到别的目录去跑。',
+  '',
+  '每次调用都新建一条连接，用完即关，不要在调用之间假设有状态（当前目录、环境变量、后台任务都不会保留）。要连续操作就把命令串在一条里。',
   '',
   '主机密钥按首次使用信任、之后变更即拒绝的策略校验。报「主机密钥校验失败」时不要绕过：先让用户确认那台机器是否重装过，再由用户决定是否清理 `$DSH_HOME/dsh-ssh/known-hosts.json` 里的对应条目。',
 ].join('\n');

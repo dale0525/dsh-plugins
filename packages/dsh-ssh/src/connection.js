@@ -206,6 +206,21 @@ export async function connect({ host, password, knownHosts, recordHostKey, signa
 }
 
 /**
+ * Quote one string for a POSIX shell.
+ *
+ * The SSH `exec` request has no working-directory field, so `workdir` has to
+ * become part of the command text. That makes quoting load-bearing: an
+ * unquoted directory name with a space would split, and one with `;` would run
+ * something the caller never asked for.
+ *
+ * @param value - the raw string.
+ * @returns the single-quoted form.
+ */
+export function shellQuote(value) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Run one command and collect its output.
  *
  * @param options.client - a ready client.
@@ -268,12 +283,13 @@ export async function runCommand({ client, command, timeoutMs = DEFAULT_COMMAND_
  * @param options.remotePath - absolute remote path.
  * @returns the number of bytes written.
  */
-export async function uploadFile({ client, localPath, remotePath }) {
-  const sftp = await openSftp(client);
+export async function uploadFile({ client, host, localPath, remotePath }) {
+  const context = { path: remotePath, host };
+  const sftp = await openSftp(client, context);
   await new Promise((resolve, reject) => {
-    sftp.fastPut(localPath, remotePath, (error) => (error ? reject(error) : resolve()));
+    sftp.fastPut(localPath, remotePath, (error) => (error ? reject(describeSftpError(error, context)) : resolve()));
   });
-  const stats = await stat(sftp, remotePath);
+  const stats = await stat(sftp, remotePath, context);
   return { bytes: stats.size };
 }
 
@@ -285,25 +301,178 @@ export async function uploadFile({ client, localPath, remotePath }) {
  * @param options.localPath - absolute local path.
  * @returns the number of bytes written.
  */
-export async function downloadFile({ client, remotePath, localPath }) {
-  const sftp = await openSftp(client);
-  const before = await stat(sftp, remotePath);
+export async function downloadFile({ client, host, remotePath, localPath }) {
+  const context = { path: remotePath, host };
+  const sftp = await openSftp(client, context);
+  const before = await stat(sftp, remotePath, context);
   await new Promise((resolve, reject) => {
-    sftp.fastGet(remotePath, localPath, (error) => (error ? reject(error) : resolve()));
+    sftp.fastGet(remotePath, localPath, (error) => (error ? reject(describeSftpError(error, context)) : resolve()));
   });
   return { bytes: before.size };
+}
+
+/**
+ * Turn an SFTP-level failure into something a model can act on.
+ *
+ * Two of these are indistinguishable from "the plugin is broken" as raw ssh2
+ * text, and both were hit on real hosts: a server without the SFTP subsystem
+ * (OpenWrt, minimal containers) reports `Received exit code 127 while
+ * establishing SFTP session`, and a missing file reports `No such file` without
+ * saying which file.
+ *
+ * @param error - the error ssh2 raised.
+ * @param context - `{path, host}` for the message.
+ * @returns an error carrying an actionable message.
+ */
+export function describeSftpError(error, { path, host }) {
+  const message = String((error && error.message) || error);
+  if (/establishing SFTP session|SFTP session termination/i.test(message)) {
+    return new Error(
+      `主机 ${host} 没有提供 SFTP 子系统（${message}）。` +
+        '读文件改用 ssh_exec（`sed -n "1,200p" 文件`），传文件改用 ssh_exec 的 base64 或该主机自带的方式。',
+    );
+  }
+  if (error && error.code === 2) {
+    return new Error(`主机 ${host} 上没有 ${path}（No such file）。`);
+  }
+  return new Error(`在 ${host} 上访问 ${path} 失败：${message}`);
 }
 
 /**
  * Open an SFTP channel.
  *
  * @param client - a ready client.
+ * @param context - `{path, host}` used to translate a failure.
  * @returns the SFTP session.
  */
-async function openSftp(client) {
+async function openSftp(client, context) {
   return new Promise((resolve, reject) => {
-    client.sftp((error, sftp) => (error ? reject(error) : resolve(sftp)));
+    client.sftp((error, sftp) => (error ? reject(describeSftpError(error, context)) : resolve(sftp)));
   });
+}
+
+/**
+ * Read at most `maxBytes` from the head of one remote file.
+ *
+ * Reading a prefix rather than the whole file is what keeps `ssh_read` usable on
+ * a log: the tool returns a line window anyway, so pulling a gigabyte to show
+ * the first hundred lines would spend the transfer on data that is thrown away.
+ * The cap is a read cap, not a file cap — `capped` reports when the file was
+ * bigger, so the caller can say so instead of pretending the file ended.
+ *
+ * Positioned reads rather than a read stream: ssh2's stream destroys without
+ * emitting `close` (`emitClose: false`), so "stop early" would leave the promise
+ * unsettled. Reading exactly the bytes asked for has no such edge.
+ *
+ * @param options.client - a ready client.
+ * @param options.path - remote path.
+ * @param options.maxBytes - how many bytes to pull at most.
+ * @param options.signal - caller cancellation.
+ * @returns `{text, bytes, fileBytes, capped}`.
+ */
+export async function readRemotePrefix({ client, host, path, maxBytes, signal }) {
+  const context = { path, host };
+  const sftp = await openSftp(client, context);
+  const attributes = await stat(sftp, path, context);
+  const isDirectory =
+    typeof attributes.isDirectory === 'function'
+      ? attributes.isDirectory()
+      : (attributes.mode & 0o170000) === 0o040000;
+  if (isDirectory) {
+    throw new Error(`${path} 是目录，不是文件。要列目录请用 ssh_exec 的 ls。`);
+  }
+  const fileBytes = attributes.size ?? 0;
+  const wanted = Math.min(fileBytes, maxBytes);
+  const handle = await openHandle(sftp, path, context);
+  try {
+    const buffer = Buffer.alloc(wanted);
+    let filled = 0;
+    while (filled < wanted) {
+      if (signal?.aborted === true) throw new Error('读取已取消');
+      const read = await readChunk(sftp, handle, buffer, filled, wanted - filled, filled, context);
+      if (read === 0) break;
+      filled += read;
+    }
+    const complete = buffer.subarray(0, filled);
+    return {
+      // A byte cut can land inside a multi-byte character; decoding the cut
+      // buffer would end the text with a replacement glyph that is not in the
+      // file. Trimming back to the last complete character keeps the last line
+      // readable.
+      text: decodeCompleteUtf8(complete),
+      bytes: complete.length,
+      fileBytes,
+      capped: fileBytes > maxBytes,
+    };
+  } finally {
+    await closeHandle(sftp, handle);
+  }
+}
+
+/**
+ * Decode UTF-8, dropping an incomplete trailing character.
+ *
+ * @param buffer - bytes read from the file.
+ * @returns the decoded text.
+ */
+function decodeCompleteUtf8(buffer) {
+  let end = buffer.length;
+  // At most three bytes of a UTF-8 sequence can trail, and only if the byte at
+  // `end` is a continuation (0b10xxxxxx) is the sequence unfinished.
+  for (let back = 1; back <= 3 && back <= buffer.length; back += 1) {
+    const byte = buffer[end - back];
+    if ((byte & 0xc0) !== 0x80) {
+      const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+      if (needed > back) end -= back;
+      break;
+    }
+  }
+  return buffer.subarray(0, end).toString('utf8');
+}
+
+/**
+ * Open one remote path for reading.
+ *
+ * @param sftp - the SFTP session.
+ * @param path - the remote path.
+ * @returns the file handle.
+ */
+function openHandle(sftp, path, context) {
+  return new Promise((resolve, reject) => {
+    sftp.open(path, 'r', (error, handle) =>
+      error ? reject(describeSftpError(error, context)) : resolve(handle),
+    );
+  });
+}
+
+/**
+ * Read one chunk at an explicit position.
+ *
+ * @param sftp - the SFTP session.
+ * @param handle - the open file handle.
+ * @param buffer - destination buffer.
+ * @param offset - where in the buffer to write.
+ * @param length - how many bytes to ask for.
+ * @param position - the file offset to read from.
+ * @returns the number of bytes read; 0 at end of file.
+ */
+function readChunk(sftp, handle, buffer, offset, length, position, context) {
+  return new Promise((resolve, reject) => {
+    sftp.read(handle, buffer, offset, length, position, (error, bytesRead) =>
+      error ? reject(describeSftpError(error, context)) : resolve(bytesRead),
+    );
+  });
+}
+
+/**
+ * Close one remote file handle.
+ *
+ * @param sftp - the SFTP session.
+ * @param handle - the handle to close.
+ * @returns nothing.
+ */
+function closeHandle(sftp, handle) {
+  return new Promise((resolve) => sftp.close(handle, () => resolve()));
 }
 
 /**
@@ -316,8 +485,10 @@ async function openSftp(client) {
  * @param path - the remote path.
  * @returns the attributes.
  */
-async function stat(sftp, path) {
+async function stat(sftp, path, context) {
   return new Promise((resolve, reject) => {
-    sftp.stat(path, (error, attributes) => (error ? reject(error) : resolve(attributes)));
+    sftp.stat(path, (error, attributes) =>
+      error ? reject(describeSftpError(error, context)) : resolve(attributes),
+    );
   });
 }
