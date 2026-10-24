@@ -39,7 +39,7 @@ import { Modal } from '../common/Modal.tsx'
 import { runStore, toSyncStoreSlice, type SyncStoreSlice } from '../run-store.ts'
 import { SYNC_CREDENTIAL_REF, SYNC_WEBDAV_CREDENTIAL_REF } from './sync-api.ts'
 import type {
-  SyncApi, SyncPushPayload, SyncStatusResponse,
+  SyncApi, SyncRole, SyncPushPayload, SyncStatusResponse,
 } from './sync-api.ts'
 import {
   channelTabModels, computeGithubLoginView, computeRemoteReady, computeSyncButtons,
@@ -638,6 +638,19 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
     void api.saveUiPrefs({ lastSyncChannel: ch }).catch(() => { /* 保存失败不阻断切换 */ })
   }
 
+  /** 切换本机同步角色：保存后刷新 status，让提示文案与选择器同步。busy 时禁用。 */
+  const handleRoleChange = async (role: SyncRole): Promise<void> => {
+    if (state.busy !== null) return
+    try {
+      await api.saveRole(role)
+      const info = await api.status()
+      patch({ statusInfo: info })
+      toast.ok(t(role === 'source' ? 'syncRole.savedSource' : 'syncRole.savedFollower'))
+    } catch (err) {
+      toast.error(`${t('syncRole.saveFailed')}：${redact(err instanceof Error ? err.message : String(err))}`)
+    }
+  }
+
   /** 活动通道的远端地址是否就绪（git=repoUrl 非空；webdav=webdavUrl 非空） */
   const remoteReady = computeRemoteReady(state.channel, state.repoUrl, state.webdavUrl)
   const buttons = computeSyncButtons(state.busy, remoteReady, uiT)
@@ -722,6 +735,28 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                   </span>
                 </div>
               )}
+            </div>
+            {/* 本机角色：决定启动期自动同步的方向。
+                source = 发起者（启动时无条件 push，本地覆盖远端）；
+                follower = 从属者（启动时无条件 pull，远端覆盖本地）。
+                这是本机私有设置（存 sync-config.json，不进任何同步分区），每台设备各自独立。 */}
+            <div className={css.factCell} style={{ gridColumn: '1 / -1', marginTop: 8 }}>
+              <span className={css.factLabel}>{t('syncRole.label')}</span>
+              <span className={css.factValue}>
+                <Select
+                  value={state.statusInfo?.role ?? 'follower'}
+                  onChange={(val) => { void handleRoleChange(val as SyncRole) }}
+                  options={[
+                    { value: 'follower', label: t('syncRole.follower') },
+                    { value: 'source', label: t('syncRole.source') },
+                  ]}
+                />
+              </span>
+              <span className={css.factHint}>
+                {(state.statusInfo?.role ?? 'follower') === 'source'
+                  ? t('syncRole.sourceHint')
+                  : t('syncRole.followerHint')}
+              </span>
             </div>
             <div className={css.actionRowTop}>
               <Button variant="primary" onClick={openChannelDialog}>

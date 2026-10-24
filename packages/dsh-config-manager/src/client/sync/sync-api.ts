@@ -30,6 +30,9 @@ import { ConfigManagerApiError } from '../api.ts';
 import { zhUiT, type UiT } from '../../ui/i18n.ts';
 
 /** 同步端点常量（与 Host 半 src/index.ts API 常量保持一致） */
+/** 本机同步角色：source = 发起者（启动时 push），follower = 从属者（启动时 pull）。 */
+export type SyncRole = 'source' | 'follower';
+
 export const SYNC_API = {
   status: '/api/dsh-config-manager/sync/status',
   push: '/api/dsh-config-manager/sync/push',
@@ -40,6 +43,7 @@ export const SYNC_API = {
   githubValidate: '/api/dsh-config-manager/sync/github/validate',
   config: '/api/dsh-config-manager/sync/config',
   uiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
+  role: '/api/dsh-config-manager/sync/role',
   rollback: '/api/dsh-config-manager/sync/rollback',
   lockRecover: '/api/dsh-config-manager/sync/lock/recover',
   recoveryDismiss: '/api/dsh-config-manager/sync/recovery/dismiss',
@@ -75,6 +79,8 @@ export interface SyncStatusResponse {
   transport?: { type: string; ref: string };
   /** 上次选择的同步通道（磁盘 ui-prefs.json；UI 回填优先于此，localStorage 仅兜底） */
   lastSyncChannel?: 'git' | 'webdav';
+  /** 本机同步角色（决定启动期自动同步方向；缺省 follower） */
+  role?: SyncRole;
   /** 环境锁分类摘要（只 state/attention，无 owner pid/op）：残留锁入口的徽章与可点判据 */
   lock?: RecoveryLockStatus;
   /** SAFE MODE 出口：未解决 incident 列表（空数组/缺省 = 无阻断）。reason 已由 Host 脱敏。 */
@@ -302,6 +308,12 @@ export class SyncApi {
    *  随 self 分区进导出备份）。纯偏好无 secret；失败由调用方静默降级（localStorage 兜底）。 */
   async saveUiPrefs(payload: { lastSyncChannel?: 'git' | 'webdav' }): Promise<{ ok: boolean; lastSyncChannel?: 'git' | 'webdav' }> {
     return postJson<{ ok: boolean; lastSyncChannel?: 'git' | 'webdav' }>(SYNC_API.uiPrefs, payload, this.t);
+  }
+
+  /** 保存本机同步角色（POST /sync/role）：决定启动期自动同步的方向。
+   *  source → 启动时无条件 push（本地覆盖远端）；follower → 无条件 pull（远端覆盖本地）。 */
+  async saveRole(role: SyncRole): Promise<{ ok: boolean; role: SyncRole }> {
+    return postJson<{ ok: boolean; role: SyncRole }>(SYNC_API.role, { role }, this.t);
   }
 
   /** 一键回滚：按 restoreId 调用 backup→rollback */

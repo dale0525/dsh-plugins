@@ -53,6 +53,20 @@ export interface WebDavConfig {
 }
 
 /**
+ * 本机在同步中的角色（类型定义在 core/auto-sync.ts，这里 re-export 保持单一来源）。
+ *
+ * - `source`：配置发起者。启动时无条件 push（本地覆盖远端）。
+ * - `follower`：从属者。启动时无条件 pull（远端覆盖本地）。
+ *
+ * 这是**本机私有**设置，存在 sync-config.json 里，不参与任何同步分区，
+ * 所以每台设备各自独立、不会互相覆盖。
+ */
+export type SyncRole = 'source' | 'follower';
+
+/** 缺省角色：从属者。新设备不会误把本地状态推到远端。 */
+export const DEFAULT_SYNC_ROLE: SyncRole = 'follower';
+
+/**
  * 完整双命名空间配置视图（v3 文件直接读取，供 status 路由回填另一通道的 repoUrl/url）。
  * 与可辨识联合 SyncConfig 不同：git 和 webdav 命名空间同时存在，可能缺失。
  */
@@ -60,6 +74,8 @@ export interface FullSyncConfig {
   transport: 'git' | 'webdav';
   git?: GitConfig;
   webdav?: WebDavConfig;
+  /** 本机角色（缺省 follower） */
+  role?: SyncRole;
 }
 
 /** 持久化的同步通道配置：可辨识联合（schemaVersion 恒 2） */
@@ -199,7 +215,35 @@ export async function readFullSyncConfig(dir: string): Promise<FullSyncConfig | 
       if (o['transport'] === 'webdav') transport = 'webdav'
     }
   } catch { /* 默认 git */ }
-  return { transport, git: both.git, webdav: both.webdav }
+  // 本机角色：读不到 / 非法值一律按缺省 follower（保守方向，不误推远端）
+  let role: SyncRole = DEFAULT_SYNC_ROLE
+  try {
+    const raw = await fs.readFile(file, 'utf8')
+    const parsed = parseJsonSafe(raw)
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const o = parsed as Record<string, unknown>
+      if (o['role'] === 'source') role = 'source'
+    }
+  } catch { /* 保持缺省 */ }
+  return { transport, git: both.git, webdav: both.webdav, role }
+}
+
+/**
+ * 只读本机角色（不关心通道是否配置）。
+ *
+ * 与 `readFullSyncConfig` 分开：角色在「尚未配置通道」时也可能已被设置过，
+ * 而后者在没有通道时直接返回 null。
+ */
+export async function readSyncRole(dir: string): Promise<SyncRole> {
+  const file = path.join(dir, SYNC_CONFIG_FILE)
+  try {
+    const parsed = parseJsonSafe(await fs.readFile(file, 'utf8'))
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const o = parsed as Record<string, unknown>
+      if (o['role'] === 'source') return 'source'
+    }
+  } catch { /* 读不到按缺省 */ }
+  return DEFAULT_SYNC_ROLE
 }
 
 /**
@@ -240,6 +284,35 @@ export async function writeSyncConfig(dir: string, cfg: SyncConfig): Promise<voi
     // 保留另一通道的 git 配置（存在时）
     if (existing.git !== undefined) payload.git = existing.git
   }
+  // 保留本机角色：它不随通道配置变化，但同一个文件里存着，
+  // 不显式带上就会被这次保存冲掉（下一次启动方向就错了）。
+  const role = await readSyncRole(dir);
+  if (role === 'source') payload.role = 'source';
+  await atomicWriteFile(file, stringifyJsonSafe(payload, { space: 2 }), { mode: 0o600 });
+}
+
+/**
+ * 写入本机角色。
+ *
+ * 与 `writeSyncConfig` 分开：改角色不该要求同时提交通道配置，
+ * 也不该因为「通道还没配」而失败。
+ */
+export async function writeSyncRole(dir: string, role: SyncRole): Promise<void> {
+  await fs.mkdir(dir, { recursive: true });
+  const file = path.join(dir, SYNC_CONFIG_FILE)
+  let payload: Record<string, unknown> = {
+    schemaVersion: SYNC_CONFIG_SCHEMA_VERSION,
+    transport: 'git',
+  };
+  try {
+    const parsed = parseJsonSafe(await fs.readFile(file, 'utf8'));
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      payload = parsed as Record<string, unknown>;
+    }
+  } catch { /* 文件不存在：按最小骨架写 */ }
+  // follower 是缺省值 → 不落字段，保持文件干净
+  if (role === 'source') payload.role = 'source';
+  else delete payload.role;
   await atomicWriteFile(file, stringifyJsonSafe(payload, { space: 2 }), { mode: 0o600 });
 }
 

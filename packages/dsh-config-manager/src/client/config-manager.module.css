@@ -1347,6 +1347,12 @@ button.statCard:focus-visible {
   white-space: nowrap;
 }
 
+.factHint {
+  font-size: 11px;
+  color: var(--dsw-alias-label-secondary);
+  line-height: 1.45;
+}
+
 .factValue {
   font-size: 12px;
   font-weight: 600;

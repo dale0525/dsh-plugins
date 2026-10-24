@@ -97,6 +97,7 @@ import { ImportNotConfirmedError, ImportUserSkippedError } from './core/types.ts
 import { createAdapters } from './adapters/index.ts'
 import { HOME_PATCH_FILE, PROFILE_PATCH_FILE } from './core/patch-layers.ts'
 import { createLocalPluginPackHook } from './core/local-plugin-host.ts'
+import { createBootGate } from './core/boot-gate.ts'
 import { createHardenedZipParser } from './security/zip-security.ts'
 import { atomicCopyFile, atomicWriteFile } from './utils/atomic-write.ts'
 import { EnvironmentLockManager, runWithMutationLock, EnvironmentLockUnavailableError, type MutationLockContext } from './utils/env-lock.ts'
@@ -117,8 +118,9 @@ import {
   type StoredMigrationHistoryEntry, MIGRATION_HISTORY_DIR,
 } from './core/migration-history.ts'
 import { loadSyncState, saveSyncState } from './sync/sync-state.ts'
+import { runAutoSync } from './core/auto-sync.ts'
 import {
-  readSyncConfig, readSyncConfigFor, readFullSyncConfig, writeSyncConfig, validateRepoUrl, validateWebDavUrl,
+  readSyncConfig, readSyncConfigFor, readSyncRole, readFullSyncConfig, writeSyncConfig, writeSyncRole, validateRepoUrl, validateWebDavUrl,
   isGitConfig, isWebDavConfig,
 } from './sync/sync-config.ts'
 import type { SyncConfig, FullSyncConfig, SyncTransportType } from './sync/sync-config.ts'
@@ -146,7 +148,7 @@ export const name = 'config-manager'
 export const inject = ['settings', 'credentials']
 
 /** Plugin version, kept in sync with package.json ("version"). */
-const PLUGIN_VERSION = '0.1.82'
+const PLUGIN_VERSION = '0.1.84'
 
 /** Plugin own package name — excluded from its own exported plugins list. */
 const PLUGIN_NAME = 'dsh-config-manager'
@@ -219,6 +221,8 @@ const API = {
   syncRollback: '/api/dsh-config-manager/sync/rollback',
   // m-sync-config：同步通道配置保存（UI 表单自动保存 /「保存配置」按钮；凭据写 DSH credentials）
   syncConfig: '/api/dsh-config-manager/sync/config',
+  // 本机同步角色（发起者 / 从属者）读写；决定启动期自动同步的方向
+  syncRole: '/api/dsh-config-manager/sync/role',
   // m-self：插件 UI 偏好（如上次选择的同步通道；ui-prefs.json，随 self 分区进备份）
   syncUiPrefs: '/api/dsh-config-manager/sync/ui-prefs',
   // issue #27/#31：显式回收 stale 残留环境锁（GUI「回收残留锁」按钮）
@@ -702,10 +706,26 @@ export class DshPatchFileFacade implements PatchFileFacade {
     const rows = new Map<string, unknown>()
     const order: string[] = []
     let doc: unknown
+    let readText = ''
     try {
-      doc = yaml.load(await fs.readFile(p, 'utf8'), { schema: PATCH_LOAD_SCHEMA })
-    } catch {
-      doc = undefined
+      readText = await fs.readFile(p, 'utf8')
+    } catch (err) {
+      // 文件不存在 = 空文档（首次写入）；其它读错误如实抛出，不猜
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    }
+    if (readText.trim() !== '') {
+      try {
+        doc = yaml.load(readText, { schema: PATCH_LOAD_SCHEMA })
+      } catch (err) {
+        // 解析失败时**必须拒绝写入**：下面按 order 重建会把整份文件覆盖成 `[]`，
+        // 等于静默清空用户全部 patch 行。调用方拿到异常可以回滚或报错，用户看得见。
+        throw new Error(
+          this.msg('host.patchUnparseable', {
+            file,
+            reason: err instanceof Error ? err.message : String(err),
+          }),
+        )
+      }
     }
     if (Array.isArray(doc)) {
       for (const item of doc) {
@@ -1596,6 +1616,8 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
             lastTransport: state.transport,
             // 上次选择的同步通道（磁盘 ui-prefs；UI 回填优先于此，localStorage 仅兜底）
             lastSyncChannel: uiPrefs.lastSyncChannel,
+            // 本机同步角色（决定启动期自动同步方向；缺省 follower）
+            role: await readSyncRole(syncDir),
             // 环境锁分类摘要（只 state/attention，无 owner pid/op）：残留锁入口据此显示状态徽章
             // 并决定「回收残留锁」是否可点。与恢复面板共用同一投影（见 recovery-orchestrator）。
             lock: recoveryStatus.body.lock,
@@ -1644,6 +1666,34 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
           })
         } catch (error) {
           writeSyncRouteError(res, error)
+        }
+      },
+    },
+    // ------------------------------------------------------ sync/role
+    // 本机同步角色：决定启动期自动同步的方向。
+    //  - source（发起者）→ 启动时无条件 push，本地覆盖远端
+    //  - follower（从属者）→ 启动时无条件 pull，远端覆盖本地
+    // 存在 sync-config.json（本机私有，不进任何同步分区），所以每台设备各自独立。
+    {
+      kind: 'exact',
+      path: API.syncRole,
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (body === undefined) {
+          writeJson(res, 400, { error: 'invalid JSON body' })
+          return
+        }
+        const role = body['role']
+        if (role !== 'source' && role !== 'follower') {
+          writeJson(res, 400, { error: 'role must be "source" or "follower"' })
+          return
+        }
+        try {
+          await writeSyncRole(syncDir, role)
+          writeJson(res, 200, { ok: true, role })
+        } catch (error) {
+          writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
         }
       },
     },
@@ -1978,7 +2028,14 @@ function makeRoutes(deps: RoutesDeps): { routes: WebRoute[]; makeSyncEngine: (cf
  * @param ctx - host plugin context carrying settings/credentials/webServer.
  * @param config - resolved plugin config.
  */
-export function apply(ctx: Context, config?: Config): void {
+/**
+ * 插件入口。
+ *
+ * 返回值可能是 Promise：启动期自动拉取需要宿主等到它完成再判定启动
+ * （`cordis._execute` 对 thenable 会 `return effect.then(...)`，
+ * 而 `loader.await()` 会等它，之后才 `auditStartupEntries`）。
+ */
+export function apply(ctx: Context, config?: Config): void | Promise<void> {
   if (config?.enabled === false) return
 
   const homeDir = resolveDshHome()
@@ -2172,6 +2229,9 @@ export function apply(ctx: Context, config?: Config): void {
     // 曾导致插件被静默丢失。导出时用 npm pack 把源码包一并放进备份，
     // 导入时用解包出的绝对路径重写 spec（见 adapters/plugins.ts 的 applyItem）。
     localPluginPack: createLocalPluginPackHook({ homeDir, dataDir }),
+    // 启动前门禁：拉取写完全部 patch 行与插件后，用宿主自己的启动口径判定下次启动是否可行
+    // （判定失败 → 整体回滚；详见 core/boot-gate.ts 与 adapters/plugins.ts 的 afterApply）。
+    bootGate: createBootGate(),
   })
 
   host.log.info('config-manager 已挂载', {
@@ -2233,4 +2293,63 @@ export function apply(ctx: Context, config?: Config): void {
       for (const dispose of disposers) dispose()
     }
   }, 'config-manager: routes')
+
+  // 启动期自动拉取（AUTO-PULL）。
+  //
+  // 为什么放在路由注册之后：拉取可能要几秒到几十秒，路由必须先可用，
+  // 否则这段时间 config manager 完全不可达。
+  //
+  // 为什么返回 Promise：`cordis._execute` 对 apply 返回的 thenable 会
+  // `return effect.then(...)`，而 `boot()` 的顺序是
+  // `mountRootInclude` → `loader.await()` → `auditStartupEntries`。
+  // 所以返回 Promise 就等于让宿主**等到拉取结束**再做启动判定 ——
+  // 这正是「配置与插件一起就位后才判定能否启动」所需的效果。
+  //
+  // 写盘触发的 HMR 重载不会被这次写入打断：`runReload` 先 `await applicationReady`，
+  // 而该 promise 在 `boot()` 返回之后才 commit，重载因此排到启动成功之后。
+  //
+  // 方向由**本机角色**决定，不靠比对「谁更新」：
+  //  - source（发起者）→ 无条件 push，本地覆盖远端。当前宿主是配置的发起者，
+  //    若它也拉取，「改了配置、重启前忘了推送」就会被线上旧配置覆盖。
+  //  - follower（从属者）→ 无条件 pull，远端覆盖本地。
+  const withGate = async <T>(
+    op: string,
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    // 与路由版保持同一套护栏（`withMutationGate(op, …)`）：
+    // 不取锁会让启动期这条路径与另一个进程并发写同一批文件；
+    // 不查 SAFE MODE 会在「上次 destructive 操作崩溃残留、待显式恢复」时覆盖掉现场。
+    if (host.safeModeIsBlocked?.() === true) {
+      throw new Error('SAFE MODE 激活（存在未恢复的 transaction），启动期自动同步已跳过')
+    }
+    return runWithMutationLock(
+      host.mutationLock,
+      { op, isBlocked: () => host.safeModeIsBlocked?.() ?? false },
+      async () => run(),
+    )
+  }
+  const resolveCfg = async (): Promise<SyncConfig | null> => {
+    const state = await loadSyncState(syncDir)
+    const channel = state.transport?.type === 'webdav' ? 'webdav' : 'git'
+    return readSyncConfigFor(syncDir, channel)
+  }
+  return runAutoSync({
+    hasSyncConfig: async () => (await resolveCfg()) !== null,
+    role: () => readSyncRole(syncDir),
+    push: async () => {
+      const cfg = await resolveCfg()
+      // 第二次读不到：与 hasSyncConfig 的「读不到按没有处理」同源，不能升级成失败。
+      if (cfg === null) return { ok: true, message: '同步通道配置已不存在，跳过' }
+      const report = await withGate('sync-push', async () => makeSyncEngine(cfg).push({}))
+      return { ok: report.ok, ...(report.ok ? {} : { message: report.warnings?.join('; ') ?? '推送失败' }) }
+    },
+    pull: async () => {
+      const cfg = await resolveCfg()
+      if (cfg === null) return { ok: true, rolledBack: false, message: '同步通道配置已不存在，跳过' }
+      return withGate('sync-pull', async () => makeSyncEngine(cfg).pullAndApply({}))
+    },
+    log: (message) => { host.log.info(message) },
+  }).then((result) => {
+    if (result === 'skipped') host.log.info('配置同步：未配置同步通道，跳过启动期自动同步')
+  })
 }
