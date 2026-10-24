@@ -728,6 +728,97 @@ test('整体回滚：applyItem 中途失败 + rollbackOnError → 目标恢复�
   }
 });
 
+test('收尾校验（afterApply）硬失败 + rollbackOnError → 整体回滚，且失败项如实进 executed', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-cm-afterapply-'));
+  try {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.settings.ns.set('general', { value: { theme: 'dark' }, revision: 1, secrets: [] });
+    const base = new MockSettingsAdapter();
+    // 收尾校验判失败（模拟 plugins 的启动门禁：写完之后才判得出「下次起不来」）
+    const gateAdapter: ConfigAdapter = Object.assign(Object.create(base) as ConfigAdapter, {
+      afterApply: async () => ({ severity: 'error' as const, message: '启动校验失败：这份配置会让 DSH 下次启动失败' }),
+    });
+    const adapters: ConfigAdapter[] = [gateAdapter];
+    const zipPath = path.join(tmp, 'x.zip');
+    await new Exporter({ ctx: src, adapters, now: () => new Date() }).export({ includeSecrets: false, outPath: zipPath });
+
+    const dst = makeContext('linux', '/home/bob');
+    dst.settings.ns.set('general', { value: { theme: 'light' }, revision: 7, secrets: [] });
+    const importer = new Importer({ ctx: dst, adapters, snapshotStore: new MemSnapshotStore() });
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'replace', resolutions: {}, pathMappings: [] });
+    const result = await importer.executeImportPlan(zipPath, plan, { confirm: true, rollbackOnError: true });
+
+    assert.equal(result.ok, false, '收尾校验失败必须让整个导入失败（否则下次启动才炸）');
+    assert.ok(result.rollback, '必须有回滚报告');
+    assert.equal(result.rollback.full, true, '快照覆盖目标应能完整回滚');
+    const failed = result.executed.find((e) => e.itemId === 'afterApply:settings');
+    assert.equal(failed?.status, 'failed', '收尾失败要如实进 executed（用户才知道是哪一关没过）');
+    assert.match(failed?.message ?? '', /启动校验失败/);
+    assert.equal(
+      (dst.settings.ns.get('general')?.value as { theme: string }).theme,
+      'light',
+      '回滚后目标应恢复导入前状态',
+    );
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('R11 回滚会把插件一起带回（导入期间升级的降级、新增的卸载）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-cm-r11-'));
+  try {
+    const src = makeContext('win32', 'C:\\Users\\alice');
+    src.settings.ns.set('general', { value: { theme: 'dark' }, revision: 1, secrets: [] });
+    const settingsAdapter = new MockSettingsAdapter();
+    const adapters: ConfigAdapter[] = [settingsAdapter];
+    const zipPath = path.join(tmp, 'x.zip');
+    await new Exporter({ ctx: src, adapters, now: () => new Date() }).export({ includeSecrets: false, outPath: zipPath });
+
+    const dst = makeContext('linux', '/home/bob');
+    // 导入前：a 是 1.0.0（稍后会被"升级"）
+    dst.plugins.installed.set('a', { name: 'a', version: '1.0.0', enabled: true });
+    // 导入后：a 升到 2.0.0，并多出一个 newbie —— 模拟拉取装了新版本插件
+    const port = {
+      calls: [] as string[],
+      async add(name: string, version: string) {
+        this.calls.push(`add:${name}@${version}`);
+        dst.plugins.installed.set(name, { name, version, enabled: true });
+      },
+      async remove(name: string) {
+        this.calls.push(`remove:${name}`);
+        dst.plugins.installed.delete(name);
+      },
+      async list() {
+        // 回滚时看到的「当前状态」= 导入后的状态（a 已升到 2.0.0，并多出 newbie）
+        return [
+          { name: 'a', version: '2.0.0', enabled: true },
+          { name: 'newbie', version: '9.9.9', enabled: true },
+        ];
+      },
+    };
+
+    const importer = new Importer({
+      ctx: dst, adapters, snapshotStore: new MemSnapshotStore(), pluginPort: port,
+    });
+    const plan = await importer.createImportPlan(zipPath, { strategy: 'replace', resolutions: {}, pathMappings: [] });
+
+    // 关键时序：快照在 executeImportPlan **内部**才拍（第 11 步），所以「导入期间插件被改」
+    // 必须在调用之前就位 —— 这样快照记下的是 a@1.0.0，而回滚时磁盘上是 a@2.0.0 + newbie。
+    // 也就是说：这里模拟的是「上一次拉取把插件装了/升了，快照记的是更早的基线」。
+    settingsAdapter.failNext = true;
+    const result = await importer.executeImportPlan(zipPath, plan, { confirm: true, rollbackOnError: true });
+
+    assert.equal(result.ok, false);
+    assert.ok(result.rollback?.plugins, '回滚报告必须带插件段');
+    assert.deepEqual(port.calls.sort(), ['add:a@1.0.0', 'remove:newbie'], '升级的要降级、新增的要卸载');
+    assert.equal(dst.plugins.installed.get('a')?.version, '1.0.0', 'a 应回到 1.0.0');
+    assert.equal(dst.plugins.installed.has('newbie'), false, 'newbie 应被卸载');
+    assert.equal(result.rollback.full, true);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test('插件安装失败（rollbackOnError=true）→ 非致命 warning，不回滚已导入配置', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-cm-pluginfail-'));
   try {

@@ -11,6 +11,7 @@
 import type { ZipArchive, ZipSafetyLimits } from '../utils/zip.ts';
 import type { MsgFunc } from './messages.ts';
 import { Analyzer } from './analyzer.ts';
+import type { PluginRollbackPort } from './rollback-plugins.ts';
 import type { PlanItemProgress } from './analyzer.ts';
 import type {
   ConfigAdapter, HostContext, ImportAnalysis, ImportDecisions, ImportPlan,
@@ -29,6 +30,14 @@ export interface ImporterOptions {
   parseZipOverride?: (buf: Uint8Array, limits?: ZipSafetyLimits) => ZipArchive;
   /** 消息翻译器（缺省 ctx.msg ?? zh） */
   msg?: MsgFunc;
+  /**
+   * 插件装卸通道（R11，透传给 Analyzer 的失败回滚）。
+   *
+   * 不传时由 Analyzer 按 ctx 现场构造官方 CLI 通道（`analyzer.ts` 的 `??` 兜底），
+   * 且仅在快照有 `beforePlugins` 基线时才构造 —— 无基线时不动插件（猜等于乱删）。
+   * 生产不注入本字段；它只为单测提供替身，避免真的起 pnpm 子进程。
+   */
+  pluginPort?: PluginRollbackPort;
 }
 
 export interface ExecuteOptions {

@@ -10,6 +10,7 @@
 import { resolveFileTarget } from './backup.ts';
 import { parsePatchLayerKey } from './patch-layers.ts';
 import { msgOf } from './messages.ts';
+import { rollbackPlugins, type PluginRollbackPort } from './rollback-plugins.ts';
 import type {
   ConfigAdapter, HostContext, RollbackReport, Snapshot, SnapshotEntry, SnapshotStore,
 } from './types.ts';
@@ -22,6 +23,13 @@ export interface RollbackOptions {
   /** 回滚 WAL（Phase 3）：每补偿完一条 entry 调用，供 Coordinator 记录 rollback.entryDone；
    *   crash during rollback 后 reconcile 从 WAL 判定已补偿/未补偿，避免盲目从头重做。 */
   entryDone?: (entryIndex: number) => Promise<void>;
+  /**
+   * 插件装卸通道（R11）。不传 = 不恢复插件（老行为），报告里标 `not-requested`。
+   *
+   * 为什么显式注入而不是在这里 new 一个：装卸要起 pnpm 子进程（几十秒），
+   * 单测要能在毫秒级跑完差异矩阵；生产由 sync-engine / analyzer 注入真实通道。
+   */
+  pluginPort?: PluginRollbackPort;
 }
 
 /** 逆序补偿单条快照条目；返回 null=成功，否则为失败原因 */
@@ -147,5 +155,44 @@ export async function rollback(opts: RollbackOptions): Promise<RollbackReport> {
     }
   }
 
-  return { full: failed.length === 0, restored, failed };
+  // 插件补偿（R11）：**放在配置条目之后**。
+  //
+  // 顺序有讲究：配置先回到导入前，插件再跟上。反过来的话中间会出现
+  // 「新插件 + 旧 patch 行」的组合 —— 那正是启动门禁要防的、可能让宿主起不来的状态。
+  // 现在这个顺序最坏也只是「旧插件 + 旧配置」，是可启动的。
+  //
+  // 插件安装不产生快照条目，所以这段不参与上面的逆序遍历；差异来自 snapshot.beforePlugins。
+  const pluginReport = opts.pluginPort === undefined
+    ? undefined
+    : await rollbackPlugins({
+      before: snapshot.beforePlugins,
+      port: opts.pluginPort,
+      profile: ctx.profile ?? 'default',
+    });
+
+  if (pluginReport !== undefined) {
+    for (const f of pluginReport.failed) {
+      failed.push({ item: `plugin:${f.name}`, reason: f.reason, manualHint: f.hint });
+    }
+    for (const name of pluginReport.removed) restored.push(`plugin:${name} (removed)`);
+    for (const entry of pluginReport.downgraded) restored.push(`plugin:${entry}`);
+    for (const entry of pluginReport.restored) restored.push(`plugin:${entry}`);
+  }
+
+  return {
+    full: failed.length === 0,
+    restored,
+    failed,
+    ...(pluginReport === undefined
+      ? { plugins: { downgraded: [], removed: [], restored: [], skipped: [], skippedReason: 'not-requested' as const } }
+      : {
+        plugins: {
+          downgraded: pluginReport.downgraded,
+          removed: pluginReport.removed,
+          restored: pluginReport.restored,
+          skipped: pluginReport.skipped,
+          ...(pluginReport.skippedReason === undefined ? {} : { skippedReason: pluginReport.skippedReason }),
+        },
+      }),
+  };
 }

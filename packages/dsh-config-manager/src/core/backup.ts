@@ -285,11 +285,16 @@ export async function createSnapshot(opts: CreateSnapshotOptions): Promise<Snaps
   const hostFileBackups = await backupHostFiles(ctx, blobs);
 
   // 4) 导入前插件清单（M2 restore 撤销插件对比基准；读取失败不阻断快照）
-  let beforePlugins: Snapshot['beforePlugins'] = [];
+  //
+  // 读取失败必须留 `undefined`（= 无基线），**绝不能退化成 `[]`**：
+  // `[]` 的语义是「导入前一个插件都没有」，回滚会把当前所有插件判成「导入期间新增」
+  // 并逐个卸载 —— 那是比回滚不完整严重得多的破坏。消费方见到 undefined 就不动插件。
+  let beforePlugins: Snapshot['beforePlugins'];
   try {
     beforePlugins = await ctx.plugins.listInstalled();
   } catch (err) {
-    ctx.log.warn(`快照登记插件清单失败: ${err instanceof Error ? err.message : String(err)}`);
+    beforePlugins = undefined;
+    ctx.log.warn(`快照登记插件清单失败（本次不做插件回滚）: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const snapshot: Snapshot = {

@@ -46,6 +46,8 @@ export function sectionFromItemId(itemId: string): SectionId | 'other' {
   if (itemId.startsWith('ui:')) return 'ui';
   if (itemId.startsWith('provider:')) return 'providers';
   if (itemId.startsWith('plugin:') || itemId.startsWith('patch:')) return 'plugins';
+  // 收尾校验（启动前门禁）失败项：归入 plugins —— 它判的正是 patch 行与插件版本的组合
+  if (itemId === 'afterApply:plugins') return 'plugins';
   if (itemId.startsWith('mcp:')) return 'mcp';
   if (itemId.startsWith('prompt:')) return 'prompts';
   if (itemId.startsWith('workspace:')) return 'workspaces';
@@ -128,6 +130,20 @@ export function renderRollbackReport(rr: RollbackReport, t: UiT = zhUiT): string
     return t('report.rollbackFull');
   }
   const lines = [t('report.rollbackPartial')];
+  // 插件补偿没跟上时必须单独点名：否则用户只看到「配置已恢复」，会以为整体安全，
+  // 而「旧 patch 行 + 新插件版本」正是启动门禁要防的组合。
+  const plugins = rr.plugins;
+  if (plugins !== undefined && plugins.skippedReason === 'no-baseline') {
+    lines.push(t('report.rollbackPluginsNoBaseline'));
+  } else if (plugins !== undefined) {
+    const stuck = rr.failed.filter((f) => f.item.startsWith('plugin:')).map((f) => f.item.slice('plugin:'.length));
+    if (stuck.length > 0) lines.push(t('report.rollbackPluginsMixed', { list: stuck.join(', ') }));
+    // 跳过的条目（如快照未记版本号）同样意味着「没回到基线」，必须说出来，
+    // 否则用户以为插件全都回去了。
+    if (plugins.skipped.length > 0) {
+      lines.push(t('report.rollbackPluginsSkipped', { list: plugins.skipped.join(', ') }));
+    }
+  }
   lines.push(t('report.rollbackManual'));
   for (const f of rr.failed) {
     lines.push(`  - ${f.item}: ${f.reason}${f.manualHint ? ` (${f.manualHint})` : ''}`);

@@ -12,6 +12,7 @@ import { SettingsAdapter, type NamespaceProvider } from './settings.ts';
 import { UiAdapter } from './ui.ts';
 import { ProvidersAdapter } from './providers.ts';
 import { PluginsAdapter, type LocalPluginPackHook } from './plugins.ts';
+import type { BootGateHook } from '../core/boot-gate.ts';
 import { McpAdapter } from './mcp.ts';
 import { PromptsAdapter } from './prompts.ts';
 import { SkillsAdapter } from './skills.ts';
@@ -46,6 +47,11 @@ export interface AdapterRegistryOptions {
    * 缺省 'dsh-config-manager'；传入 '' 表示不挂载（宿主自定义 dataDir 在 homeDir 外时）。
    */
   selfDir?: string;
+  /**
+   * 启动前门禁（宿主注入）。拉取写完全部 patch 行与插件后，用宿主的启动口径判定
+   * 「这份组合下次启动会不会起不来」；不注入 = 不校验（行为与改造前一致）。
+   */
+  bootGate?: BootGateHook;
 }
 
 /** 组装默认 adapter 列表（pluginFiles/sessions 恒挂载但 defaultIncluded=false，用户勾选才导出） */
@@ -55,7 +61,7 @@ export function createAdapters(options: AdapterRegistryOptions = {}): ConfigAdap
     new SettingsAdapter(namespaces),
     new UiAdapter(namespaces),
     new ProvidersAdapter(),
-    new PluginsAdapter(options.selfPluginName, options.localPluginPack),
+    new PluginsAdapter(options.selfPluginName, options.localPluginPack, options.bootGate),
     new McpAdapter(),
     new PromptsAdapter(),
     new SkillsAdapter(),

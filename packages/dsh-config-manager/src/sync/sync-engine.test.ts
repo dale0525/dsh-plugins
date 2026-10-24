@@ -28,6 +28,7 @@ import { FileSnapshotStore } from '../core/backup.ts';
 import type { SectionId } from '../schema/types.ts';
 import type { SectionData } from '../schema/types.ts';
 import type { ImportPlan } from '../core/types.ts';
+import type { BootGateHook } from '../core/boot-gate.ts';
 
 function makeImportPlan(seed: string): ImportPlan {
   return {
@@ -93,9 +94,11 @@ function makeEngine(opts: {
   transport: MemSyncTransport;
   stateDir: string;
   localSnapshotsDir?: string;
+  /** 启动前门禁（plugins 的 afterApply 用；不传 = 不校验） */
+  bootGate?: BootGateHook;
   extra?: Partial<ConstructorParameters<typeof SyncEngine>[0]>;
 }) {
-  const adapters = createAdapters({ namespaces: NS });
+  const adapters = createAdapters({ namespaces: NS, bootGate: opts.bootGate });
   const importer = new Importer({ ctx: opts.ctx, adapters, snapshotStore: new MemSnapshotStore() });
   return new SyncEngine({
     ctx: opts.ctx,
@@ -479,6 +482,106 @@ test('pullAndApply: 远端无快照 → 空报告（不写本地）', async () =
     assert.deepEqual(report.applied, []);
     assert.deepEqual(report.changes, []);
     assert.ok(report.message && report.message.includes('无快照'));
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('pullAndApply: 启动门禁判坏 → 整体回滚（只跑一轮，本次写入的行被回滚撤掉）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-gate-fail2-'));
+  try {
+    const remote: SyncSnapshot = {
+      id: 'remote-gate-fail2',
+      createdAt: '2026-08-16T12:00:00.000Z',
+      manifest: { schemaVersion: 1, dshVersion: '1.2.3', platform: 'win32', sectionIds: ['plugins'], containsSecrets: false },
+      sections: {
+        plugins: {
+          version: 1,
+          plugins: [],
+          patch: [{ file: 'profile:cordis.patch.yml', lineId: 'stale-row', raw: { id: 'stale-row', config: { nope: 1 } } }],
+        },
+      },
+    };
+    const transport = new MemSyncTransport();
+    transport.snapshots.set('remote-gate-fail2', remote);
+    transport.metas.push(computeSnapshotMeta(remote));
+
+    let rounds = 0;
+    const bootGate: BootGateHook = async () => {
+      rounds += 1;
+      return {
+        kind: 'report',
+        report: {
+          bad: [{ id: 'connection', kind: 'invalid', message: 'connection: /cookieMaxAgeDays must be integer' }],
+          warnings: [], checked: 4, skipped: 1, rows: 10, schemaComplete: true, schemaErrors: [],
+        },
+      };
+    };
+
+    const ctx = makeContext('win32', 'C:\\Users\\alice');
+    for (const n of NS) ctx.settings.registered.add(n);
+    const engine = makeEngine({ ctx, transport, stateDir: tmp, bootGate });
+
+    const report = await engine.pullAndApply();
+    assert.equal(report.ok, false, '门禁判坏必须让拉取失败（否则下次启动才炸）');
+    assert.equal(report.rolledBack, true, '必须整体回滚');
+    assert.ok(
+      report.message !== undefined && report.message.includes('cookieMaxAgeDays'),
+      `失败原因必须回给 UI：${report.message ?? '(无 message)'}`,
+    );
+    assert.equal(rounds, 1, '两态处置：只跑一轮，不再「丢掉重行重判」');
+    // 注意：这条断言证明的是「回滚撤掉了本次写入」，不是「门禁没有删它」——
+    // 门禁报的坏行是 connection，而本次写入的是 stale-row，两者不同。
+    assert.equal(ctx.patchFile.lines.has('stale-row'), false, '回滚应把本次写入的行撤掉');
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
+
+test('pullAndApply: 启动门禁判坏且丢不掉（不是本次写的行）→ 整体回滚，并把原因回给 UI', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-sync-gate-fail-'));
+  try {
+    const remote: SyncSnapshot = {
+      id: 'remote-gate-fail',
+      createdAt: '2026-08-16T12:00:00.000Z',
+      manifest: { schemaVersion: 1, dshVersion: '1.2.3', platform: 'win32', sectionIds: ['settings', 'plugins'], containsSecrets: false },
+      sections: {
+        settings: { version: 1, namespaces: { general: { value: { theme: 'dark' }, revision: 5, secrets: [] } } },
+        plugins: {
+          version: 1,
+          plugins: [],
+          patch: [{ file: 'profile:cordis.patch.yml', lineId: 'my-row', raw: { id: 'my-row', config: {} } }],
+        },
+      },
+    };
+    const transport = new MemSyncTransport();
+    transport.snapshots.set('remote-gate-fail', remote);
+    transport.metas.push(computeSnapshotMeta(remote));
+
+    // 坏行是 connection（必修行）→ 整体回滚
+    const bootGate: BootGateHook = async () => ({
+      kind: 'report',
+      report: {
+        bad: [{ id: 'connection', kind: 'invalid', message: 'connection: /cookieMaxAgeDays must be integer' }],
+        warnings: [], checked: 4, skipped: 1, rows: 10, schemaComplete: true, schemaErrors: [],
+      },
+    });
+
+    const ctx = makeContext('win32', 'C:\\Users\\alice');
+    for (const n of NS) ctx.settings.registered.add(n);
+    ctx.settings.ns.set('general', { value: { theme: 'light' }, revision: 9, secrets: [] });
+    const engine = makeEngine({ ctx, transport, stateDir: tmp, bootGate });
+
+    const report = await engine.pullAndApply();
+    assert.equal(report.ok, false, '门禁判坏必须让拉取失败（否则下次启动才炸）');
+    assert.equal(report.rolledBack, true, '必须整体回滚');
+    assert.ok(
+      report.message !== undefined && report.message.includes('cookieMaxAgeDays'),
+      `失败原因必须回给 UI（用户要知道改什么）：${report.message ?? '(无 message)'}`,
+    );
+    // 回滚：本次写进去的 patch 行与 settings 都恢复原状
+    assert.equal(ctx.patchFile.lines.has('my-row'), false, '本次写入的 patch 行应被回滚掉');
+    assert.deepEqual(ctx.settings.ns.get('general')?.value, { theme: 'light' }, 'settings 应恢复导入前值');
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }

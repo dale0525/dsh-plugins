@@ -41,6 +41,8 @@ import { msgOf, zhMsg } from '../core/messages.ts';
 import type { MsgFunc } from '../core/messages.ts';
 import { createSnapshot } from '../core/backup.ts';
 import { rollback } from '../core/rollback.ts';
+import { createPluginRollbackPort } from '../core/rollback-plugins-cli.ts';
+import { resolveProfileNameFromArgv } from '../core/plugin-cli.ts';
 import { FileSnapshotStore } from '../core/backup.ts';
 import type { Snapshot, SnapshotStore, TransactionSnapshotContext } from '../core/types.ts';
 import type { PlanItemProgress } from '../core/analyzer.ts';
@@ -93,6 +95,8 @@ export interface SyncPullOptions {
   snapshotId?: string;
   /** Phase 4 生产 journal↔snapshot 绑定（宿主 gate 注入；透传给 applyItems） */
   snapshotBinding?: TransactionSnapshotContext;
+  /** 执行期日志（启动前校验要跑 6–20 秒，不给这条通路用户只看到静默） */
+  onLog?: (line: string) => void;
 }
 
 export interface SyncPushReport {
@@ -326,6 +330,7 @@ export class SyncEngine {
       const report = await this.applyItems(preview.zipPath, preview.plan, {
         snapshotId: preview.snapshotId,
         ...(opts.snapshotBinding === undefined ? {} : { snapshotBinding: opts.snapshotBinding }),
+        ...(opts.onLog === undefined ? {} : { onLog: opts.onLog }),
       });
       return {
         ok: report.ok,
@@ -337,6 +342,9 @@ export class SyncEngine {
         warnings: report.warnings,
         failed: report.failed,
         needsRestart: report.needsRestart === true,
+        // 失败原因必须回给 UI：否则用户只看到「拉取失败」，不知道是哪一关没过、该做什么
+        // （如启动校验要求先升级插件）。取第一条失败项的消息。
+        ...(report.ok || report.failed[0]?.message === undefined ? {} : { message: report.failed[0].message }),
       };
     } finally {
       await fs.rm(path.dirname(preview.zipPath), { recursive: true, force: true });
@@ -498,6 +506,13 @@ export class SyncEngine {
     subPlan: ImportPlan,
     opts: {
       onItem?: (info: PlanItemProgress) => void;
+      /**
+       * 执行期日志（透传给 Importer.executeImportPlan → ImportContext.onLog）。
+       *
+       * 启动前校验要跑两轮子进程（约 6–20 秒），不给这条通路的话用户在界面上看到的是
+       * 一段无解释的静默，无法判断「卡住了」还是「在检查」。
+       */
+      onLog?: (line: string) => void;
       /** Phase 4 生产 journal↔snapshot 绑定（deferred；透传给 Importer.executeImportPlan） */
       snapshotBinding?: TransactionSnapshotContext;
       /**
@@ -546,12 +561,23 @@ export class SyncEngine {
       secretInputs: undefined,
       decryptedCredentials: undefined,
       onItem: opts.onItem,
+      onLog: opts.onLog,
       snapshotBinding: opts.snapshotBinding,
     });
 
     if (!result.ok) {
       // executeImportPlan 已内部回滚（rollbackOnError）；这里再显式 rollback 兜底（幂等）
-      try { await rollback({ ctx: this.ctx, snapshot, store, adapters: this.adapters }); } catch { /* noop */ }
+      try {
+        // R11：兜底回滚同样要带插件通道 —— executeImportPlan 内部已回滚过一次，
+        // 但那次若在插件补偿前中断，这里必须能把插件也带回来（幂等：无差异时不动插件）。
+        await rollback({
+          ctx: this.ctx,
+          snapshot,
+          store,
+          adapters: this.adapters,
+          pluginPort: createPluginRollbackPort(this.ctx.homeDir, this.ctx.profile ?? resolveProfileNameFromArgv()),
+        });
+      } catch { /* noop */ }
       return {
         ok: false,
         applied: [],

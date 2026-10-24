@@ -27,6 +27,9 @@ import type { Tombstone, TombstoneKind } from '../schema/tombstones.ts';
 import { DEFAULT_SENSITIVE_RELS, restoreVaultFiles } from '../security/vault.ts';
 import { createSnapshot, resolveFileTarget, resolveFileTargetRel } from './backup.ts';
 import { rollback } from './rollback.ts';
+import { createPluginRollbackPort } from './rollback-plugins-cli.ts';
+import { resolveProfileNameFromArgv } from './plugin-cli.ts';
+import type { PluginRollbackPort } from './rollback-plugins.ts';
 import { computeCompatibility } from './validator.ts';
 import { msgOf } from './messages.ts';
 import type { MsgFunc } from './messages.ts';
@@ -67,6 +70,11 @@ export interface AnalyzerOptions {
   parseZipOverride?: (buf: Uint8Array, limits?: ZipSafetyLimits) => ZipArchive;
   /** 消息翻译器（缺省 ctx.msg ?? zh） */
   msg?: MsgFunc;
+  /**
+   * 插件装卸通道（R11，缺省按 ctx 现场构造官方 CLI 通道）。
+   * 单测注入替身，避免真的起 pnpm 子进程。
+   */
+  pluginPort?: PluginRollbackPort;
 }
 
 interface Bundle {
@@ -119,6 +127,7 @@ export class Analyzer {
   private readonly dependencyChecker?: (command: string) => Promise<boolean>;
   private readonly parseZipFn: (buf: Uint8Array, limits?: ZipSafetyLimits) => ZipArchive;
   private readonly msg: MsgFunc;
+  private readonly pluginPort?: PluginRollbackPort;
   /** 会话内 bundle 缓存（zipPath → 解析结果），避免重复解压 */
   private readonly bundleCache = new Map<string, Bundle>();
 
@@ -130,6 +139,7 @@ export class Analyzer {
     this.dependencyChecker = opts.dependencyChecker;
     this.parseZipFn = opts.parseZipOverride ?? parseZip;
     this.msg = opts.msg ?? msgOf(opts.ctx);
+    this.pluginPort = opts.pluginPort;
   }
 
   /* ---------------- 第 1-6 步：ZIP 读入 → 安全解析 → manifest → 完整性 → schema ---------------- */
@@ -677,6 +687,33 @@ export class Analyzer {
         if (opts.rollbackOnError && outcome.executed.status === 'failed') break;
       }
       if (opts.rollbackOnError && anyFailed) break;
+      // 该 adapter 的项全部执行完 → 收尾校验（plugins 的启动前门禁；其余 adapter 未实现）
+      const items = byAdapter.get(adapterId) ?? [];
+      if (!anyFailed && items.length > 0 && adapter.afterApply !== undefined) {
+        let outcome: Awaited<ReturnType<NonNullable<ConfigAdapter['afterApply']>>>;
+        try {
+          outcome = await adapter.afterApply(importCtx, items);
+        } catch (err) {
+          outcome = {
+            severity: 'error',
+            message: this.msg('import.afterApplyFailed', {
+              adapter: adapterId,
+              reason: err instanceof Error ? err.message : String(err),
+            }),
+          };
+        }
+        if (outcome !== undefined) {
+          if (outcome.severity === 'error') {
+            // 硬失败：记到该分区的收尾项上，让用户看到是哪一关没过，再走整体回滚
+            executed.push({ itemId: `afterApply:${adapterId}`, status: 'failed', message: outcome.message });
+            anyFailed = true;
+            // 与逐项失败同款：只有 rollbackOnError 才中断后续分区（回滚是唯一出路）
+            if (opts.rollbackOnError) break;
+          } else {
+            warnings.push(outcome.message);
+          }
+        }
+      }
     }
 
     // 失败整体回滚（rollbackOnError）：逆序补偿 + 诚实报告
@@ -686,6 +723,15 @@ export class Analyzer {
         snapshot,
         store: this.snapshotStore,
         adapters: this.adapters,
+        // R11：插件安装不产生快照条目，必须显式把装卸通道传进来，否则「已回滚」只覆盖配置。
+        //
+        // 基线为空（无插件 / 旧快照）时不构造 port：`createPluginRollbackPort` 在构造期就解析
+        // profile 目录，而这一趟根本用不上它 —— 测试环境的 profile 不存在，白造一个会让
+        // 回滚平白多一条「读不到清单」的失败，把 full 打成 false。
+        pluginPort: this.pluginPort
+          ?? ((snapshot.beforePlugins ?? []).length === 0
+            ? undefined
+            : createPluginRollbackPort(this.ctx.homeDir, this.ctx.profile ?? resolveProfileNameFromArgv())),
       });
       // M1：回滚完成 → 快照标记 rolled-back（元数据写失败只告警，不影响回滚结论）
       await this.markSnapshotStatus(snapshot.id, 'rolled-back');

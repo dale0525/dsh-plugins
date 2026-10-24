@@ -19,6 +19,7 @@ test('report: sectionFromItemId 前缀推断', () => {
   assert.equal(sectionFromItemId('provider:pi-ai'), 'providers');
   assert.equal(sectionFromItemId('plugin:x'), 'plugins');
   assert.equal(sectionFromItemId('patch:line-1'), 'plugins');
+  assert.equal(sectionFromItemId('afterApply:plugins'), 'plugins');
   assert.equal(sectionFromItemId('mcp:filesystem'), 'mcp');
   assert.equal(sectionFromItemId('prompt:p1'), 'prompts');
   assert.equal(sectionFromItemId('workspace:ws-1'), 'workspaces');
@@ -84,6 +85,37 @@ test('report: 回滚报告 full / partial（zh 缺省 + en）', () => {
   assert.ok(partial.includes('manual recovery'));
   const partialZh = renderRollbackReport(makeRollbackReport(), zhT);
   assert.ok(partialZh.includes('请手动'));
+});
+
+test('report: 回滚时插件没跟上 → 单独点名（否则用户以为整体安全）', () => {
+  // 「旧 patch 行 + 新插件版本」正是启动门禁要防的组合，必须显式说出来
+  const stuck = renderRollbackReport({
+    full: false,
+    restored: [],
+    failed: [{ item: 'plugin:a', reason: 'npm 404', manualHint: 'dsh plugin --profile web add a@1.0.0' }],
+    plugins: { downgraded: [], removed: [], restored: [], skipped: [] },
+  }, zhT);
+  assert.ok(stuck.includes('这些插件没能跟着回退'), `应点名插件混合状态：${stuck}`);
+  assert.ok(stuck.includes('a'), '应列出具体插件名');
+  assert.ok(stuck.includes('dsh plugin --profile web add a@1.0.0'), '手动命令要能直接粘贴');
+
+  // 旧快照无基线：说明为什么没回退插件
+  const noBaseline = renderRollbackReport({
+    full: false,
+    restored: [],
+    failed: [{ item: 'settings:x', reason: 'conflict' }],
+    plugins: { downgraded: [], removed: [], restored: [], skipped: [], skippedReason: 'no-baseline' },
+  }, zhT);
+  assert.ok(noBaseline.includes('没有插件清单基线'), `应说明无基线：${noBaseline}`);
+
+  // 插件全都回退成功 → 不许出现混合状态文案
+  const clean = renderRollbackReport({
+    full: false,
+    restored: [],
+    failed: [{ item: 'settings:x', reason: 'conflict' }],
+    plugins: { downgraded: ['a@2 → 1'], removed: ['b'], restored: [], skipped: [] },
+  }, zhT);
+  assert.equal(clean.includes('这些插件没能跟着回退'), false, '插件都回退了就不该报警');
 });
 
 test('report: suggestedActions 仅「完成」（报告已内联全部详情，无空操作按钮）', () => {

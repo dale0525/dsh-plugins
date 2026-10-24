@@ -207,6 +207,18 @@ export interface PlanItem {
  * 引擎记为警告、不触发失败回滚（§34.17 单项失败不拖垮整体）。 */
 export interface ApplyResult { ok: boolean; message?: string; needsRestart?: boolean; warning?: boolean; }
 
+/** afterApply 结果：只表达「这一关过没过」，不携带写入动作（写入已由 applyItem 完成）。 */
+export interface AfterApplyOutcome {
+  /**
+   * error = 硬失败（计入 executed 的 failed 项）；warning = 非致命提示（进 warnings）。
+   *
+   * **是否回滚取决于引擎的 `rollbackOnError`**：为 true 时硬失败触发整体回滚，
+   * 为 false 时只把该项记为失败、其余照常执行完。当前生产调用方（拉取）恒传 true。
+   */
+  severity: 'error' | 'warning';
+  message: string;
+}
+
 /* ---------------- 三段式输入输出 ---------------- */
 
 export interface ImportAnalysis {
@@ -449,6 +461,21 @@ export interface RollbackReport {
   full: boolean;
   restored: string[];
   failed: { item: string; reason: string; manualHint?: string }[];
+  /**
+   * 插件补偿结果（R11）。
+   *
+   * 没有它时「已整体回滚」是**半句话**：配置回到了导入前，插件却留在导入后的版本，
+   * 而旧 patch 行 + 新插件版本正是启动门禁要防的组合。`full=false` 且这里非空时，
+   * 文案必须如实说明「配置已恢复、插件没跟上」这个混合状态。
+   */
+  plugins?: {
+    downgraded: string[];
+    removed: string[];
+    restored: string[];
+    /** 无基线（旧快照）或整体未执行时的原因 */
+    skippedReason?: 'no-baseline' | 'not-requested';
+    skipped: string[];
+  };
 }
 
 /* ---------------- 兼容性（§13.3 注释规则） ---------------- */
@@ -498,6 +525,18 @@ export interface ConfigAdapter<TSection = unknown> {
 
   /** 执行单个计划项（Importer 引擎按阶段调度） */
   applyItem(item: PlanItem, ctx: ImportContext): Promise<ApplyResult>;
+
+  /**
+   * 可选：本 adapter 的全部计划项执行完毕后的收尾校验。
+   *
+   * 唯一使用者是 plugins adapter 的**启动前门禁**：patch 行与插件版本在同一次拉取里一起变，
+   * 而「这份组合下一次启动会不会被宿主拒掉」只有在全部写完之后才判得出来（要读磁盘现状）。
+   * 引擎按 APPLY_ORDER 在每个 adapter 的项全部执行完后调用一次（该 adapter 无计划项则不调用），
+   * 并把该 adapter 的计划项原样传入。
+   * 返回 `error` 视为硬失败：引擎把它记为该分区的 failed 项，并在 `rollbackOnError`
+   * 为 true 时触发整体回滚（此时快照已存在，文件能真正回到导入前）。
+   */
+  afterApply?(ctx: ImportContext, items: readonly PlanItem[]): Promise<AfterApplyOutcome | undefined>;
 
   /** 结构校验 */
   validate(data: TSection, msg?: MsgFunc): Promise<ValidationResult>;

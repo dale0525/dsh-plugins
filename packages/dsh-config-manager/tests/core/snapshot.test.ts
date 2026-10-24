@@ -254,7 +254,16 @@ test('S-04 executeImportPlan 失败回滚 → 快照 status=rolled-back', async 
     const adapters = createAdapters({ namespaces: NS });
     const flaky = adapters.map((a) => (a.id === 'workspaces' ? new FlakyAdapter(a, 'workspace:ws-ops') : a));
     const store = new MemSnapshotStore();
-    const importer = new Importer({ ctx: dst, adapters: flaky, snapshotStore: store });
+    // R11：fixture 装了 dsh-ssh，快照会记基线 → 回滚会尝试补偿插件。
+    // 这里注入替身，否则会去起真的 pnpm 子进程（测试机没有那个 profile）。
+    const pluginPort = {
+      async add() {},
+      async remove() {},
+      async list() {
+        return [...dst.plugins.installed.values()];
+      },
+    };
+    const importer = new Importer({ ctx: dst, adapters: flaky, snapshotStore: store, pluginPort });
     const plan = await importer.createImportPlan(zipPath, {
       strategy: 'replace',
       resolutions: {},

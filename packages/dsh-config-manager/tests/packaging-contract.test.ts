@@ -11,6 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 const repoRoot = path.resolve(import.meta.dirname, '..');
@@ -98,6 +99,18 @@ test('P-2: files 仍包含 lib、src、cordis.patch.yml', () => {
     files.indexOf('!lib/**/*.map') > files.indexOf('lib'),
     "'!lib/**/*.map' 必须排在 'lib' 之后，否则排除不生效",
   );
+});
+
+test('P-3: files 含启动门禁子进程脚本，且该脚本确实在包里', () => {
+  // 门禁脚本用 `new URL('../../scripts/boot-gate-child.mjs', import.meta.url)` 定位，
+  // 且**不在** lib/ 下（tsc 只编译 src/）。漏进 files → 发布包里没有它 →
+  // 安装版的门禁恒判「无法执行」，静默降级为「不做校验」，而源码树里一切正常。
+  const rel = 'scripts/boot-gate-child.mjs';
+  const files = pkg.files ?? [];
+  assert.ok(files.includes(rel), `files 必须包含 '${rel}'。实际: ${JSON.stringify(files)}`);
+  assert.ok(existsSync(path.join(repoRoot, rel)), `${rel} 必须存在于包目录（门禁的唯一实现）`);
+  // 它必须排在 'lib' 之后不影响语义，但必须存在；同时不能误加 !lib 排除项把它挡掉
+  assert.ok(!files.some((f) => f.startsWith('!scripts')), 'files 不应排除 scripts/');
 });
 
 /* ------------------------------------------------------ 版本三处同步（AGENTS.md） */

@@ -23,6 +23,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createSnapshot } from '../core/backup.ts';
 import { rollback } from '../core/rollback.ts';
+import { createPluginRollbackPort } from '../core/rollback-plugins-cli.ts';
 import { zhMsg } from '../core/messages.ts';
 import { ImportNotConfirmedError } from '../core/types.ts';
 import { isFileSection } from '../schema/config.ts';
@@ -81,10 +82,16 @@ export interface ProfileManagerOptions {
   includeSections?: SectionId[];
 }
 
-/** 执行阶段顺序（与 core/analyzer.ts APPLY_ORDER 对齐：副作用大的 patch/安装最后） */
+/**
+ * 执行阶段顺序（与 core/analyzer.ts APPLY_ORDER 对齐：副作用大的 patch/安装最后）。
+ *
+ * `self` 必须在内：SelfAdapter.defaultIncluded = true，`includeSections` 会把它收进来、
+ * `analyzeSections` 也会为它产出计划项；本清单漏掉它，执行循环就永远遍历不到，
+ * 表现为 Profile 切换时 self 分区被**静默丢弃**（analyzer 侧同一缺陷曾作为 P1-1 修过）。
+ */
 export const APPLY_ORDER: readonly SectionId[] = [
   'settings', 'ui', 'providers', 'prompts', 'skills', 'agentPresets',
-  'agentInstructions', 'workspaces', 'pluginFiles', 'mcp', 'plugins', 'credentialsStatus',
+  'agentInstructions', 'workspaces', 'pluginFiles', 'mcp', 'plugins', 'credentialsStatus', 'self',
 ];
 
 /** Profile 名校验：拒绝路径穿越与非法字符 */
@@ -431,6 +438,8 @@ export class ProfileManager {
         snapshot,
         store: this.snapshotStore,
         adapters: this.adapters,
+        // R11：profile 切换同样会装插件，回滚必须把插件一起带回
+        pluginPort: createPluginRollbackPort(this.ctx.homeDir, name),
       });
       this.ctx.log.warn(`Profile "${name}" 切换失败，已回滚（${rollbackReport.full ? '完整' : '部分'}）`, {
         failed: executed.filter((e) => e.status === 'failed').map((e) => e.itemId),

@@ -20,10 +20,11 @@ import type { MsgFunc } from '../core/messages.ts';
 import { isPathSafe, normalizePath } from '../utils/paths.ts';
 import { PLUGIN_PATCH_REF_PREFIX } from '../core/backup.ts';
 import { HOME_PATCH_FILE, PROFILE_PATCH_FILE, patchLayerKey, parsePatchLayerKey } from '../core/patch-layers.ts';
+import { BOOT_GATE_OFF_ENV, bootGateDisabled, type BootGateHook } from '../core/boot-gate.ts';
 import { parsePnpmPatchedDependencies, sanitizePnpmWorkspacePatches } from './pnpm-workspace.ts';
 import type { LocalPluginTarball, PatchLine, PluginEntry, PluginsSection, PnpmPatchFile } from '../schema/types.ts';
 import type {
-  ApplyResult, ConfigAdapter, ExportOptions, ExportSection, HostContext,
+  AfterApplyOutcome, ApplyResult, ConfigAdapter, ExportOptions, ExportSection, HostContext,
   ImportContext, PlanItem, ValidationResult,
 } from '../core/types.ts';
 
@@ -143,10 +144,17 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
   private readonly selfName: string;
   /** T1：本地源（link:/file:）插件打包钩子；未注入 = 不打包（保持改造前行为） */
   private readonly localPack: LocalPluginPackHook | undefined;
+  /** 启动前门禁（宿主注入；未注入 = 不校验，行为与改造前一致） */
+  private readonly bootGate: BootGateHook | undefined;
 
-  constructor(selfName: string = 'dsh-config-manager', localPack?: LocalPluginPackHook) {
+  constructor(
+    selfName: string = 'dsh-config-manager',
+    localPack?: LocalPluginPackHook,
+    bootGate?: BootGateHook,
+  ) {
     this.selfName = selfName;
     this.localPack = localPack;
+    this.bootGate = bootGate;
   }
 
   async export(ctx: HostContext, _options: ExportOptions): Promise<ExportSection<PluginsSection>> {
@@ -584,6 +592,97 @@ export class PluginsAdapter implements ConfigAdapter<PluginsSection> {
       { lineId, raw: pl.raw, action: item.kind === 'Create' ? 'insert' : 'update' },
     ]);
     return { ok: true, needsRestart: true, message: msg('adapter.patchWritten', { ref: lineId }) };
+  }
+
+  /**
+   * 启动前门禁：plugins 分区的项（patch 行 + 插件安装）全部执行完后，用宿主自己的启动口径
+   * 判定「这份组合下一次启动会不会起不来」。
+   *
+   * 为什么在这里、不在计划阶段：patch 行与插件版本必须**一起**看，而计划阶段算的是
+   * 「写之前」的组合。此刻磁盘上已经是本次拉取的结果（patch 行已写、插件已按序装），
+   * 正是下次启动要读的那一份；同时外层快照已存在 → 判失败能真正回滚。
+   *
+   * 处置只有两态：**通过** 或 **整体回滚**。
+   *
+   * 为什么没有「先丢掉坏行再试」（早期设计过，已删除）：宿主的 `auditStartupEntries`
+   * 只在**必修行**失效时抛 StartupError，非必修行 config 非法只 warn。而子进程只对必修行
+   * 做 schema 校验，所以它报出的坏行必然属于必修行集合 —— 恰恰是最不该丢的那批
+   * （丢 `connection` 等于关掉局域网信任围栏）。两段式的丢弃分支因此永远不可达，
+   * 留着只会让下一个人以为存在一条「尽力恢复」的路径。
+   *
+   * 本方法**不写盘**：判定失败一律交给引擎整体回滚，避免出现「丢了一半」的中间态。
+   */
+  async afterApply(ctx: ImportContext, items: readonly PlanItem[]): Promise<AfterApplyOutcome | undefined> {
+    if (this.bootGate === undefined) return undefined;
+    const msg = ctx.msg;
+    // 没有任何**会真正写入**的 patch 行/插件项 → 本次导入没碰启动组合，不必花 10 秒去校验。
+    // 只看 id 前缀会把「全部 Skip」的导入也算成 touched，白跑两轮子进程。
+    const WRITTEN: ReadonlySet<string> = new Set(['Create', 'Update', 'Install']);
+    const touched = items.some(
+      (item) =>
+        (item.id.startsWith('patch:') || item.id.startsWith('plugin:')) && WRITTEN.has(item.kind),
+    );
+    if (!touched) return undefined;
+    const homeDir = ctx.target.homeDir;
+    const profile = ctx.target.profile ?? resolveProfileNameFromArgv();
+    if (bootGateDisabled()) {
+      ctx.onLog?.(`启动校验已按 ${BOOT_GATE_OFF_ENV} 关闭`);
+      return undefined;
+    }
+    ctx.onLog?.('启动校验：按刚落盘的 patch 与已装插件判定下次启动是否可行…');
+    const result = await this.bootGate({ homeDir, profile });
+    if (result === null) {
+      return { severity: 'warning', message: msg('adapter.bootGateUnavailable', { reason: msg('adapter.bootGateChildFailed') }) };
+    }
+    if (result.kind === 'broken-config') {
+      // patch 文件读不了 = 宿主下次启动同样读不了它（loadOptionalPatches 直接 throw）。
+      // 这不是「无法校验」，而是已经确定起不来 —— 必须硬失败，不能放行。
+      return {
+        severity: 'error',
+        message: msg('adapter.bootGateBrokenConfig', {
+          detail: result.detail,
+          profile,
+          env: BOOT_GATE_OFF_ENV,
+        }),
+      };
+    }
+    if (result.kind === 'child-failed') {
+      // 子进程非零退出：拿不到报告 → 按「无法校验」降级，与 report === null 同义。
+      // stderr 走 onLog（脱敏出口），不直写 process.stderr。
+      if (result.detail !== '') ctx.onLog?.(`启动校验子进程失败：${result.detail}`);
+      return undefined;
+    }
+    const report = result.report;
+    for (const warning of report.warnings) ctx.onLog?.(`启动校验告警：${warning}`);
+    if (!report.schemaComplete) {
+      // 宿主自己说这份 schema 是部分结果 → 逐行结论不可信，如实上报而不是当作通过
+      return {
+        severity: 'warning',
+        message: msg('adapter.bootGateIncomplete', {
+          detail: report.schemaErrors.join('; '),
+        }),
+      };
+    }
+    if (report.bad.length === 0) {
+      // checked === 0 表示一行都没校验到（宿主必修行一个都不在场 / 全部无 schema），
+      // 此时「通过」是假话：把「无法判定」报成「判定通过」会让人以为这份配置已被验证。
+      // 与 fail-open 只发生在子进程起不来（report === null）的约定保持一致。
+      if (report.checked === 0) {
+        ctx.onLog?.(`启动校验未执行有效判定（0 行可校验，${report.skipped} 行无 schema）——按未知处理，不阻断`);
+        return undefined;
+      }
+      ctx.onLog?.(`启动校验通过（${report.checked} 行已校验，${report.skipped} 行无 schema 可校验）`);
+      return undefined;
+    }
+    const detail = report.bad.map((row) => row.message).join('; ');
+    return {
+      severity: 'error',
+      message: msg('adapter.bootGateFailed', {
+        detail,
+        profile,
+        env: BOOT_GATE_OFF_ENV,
+      }),
+    };
   }
 
   async validate(data: PluginsSection, msg: MsgFunc = zhMsg): Promise<ValidationResult> {
