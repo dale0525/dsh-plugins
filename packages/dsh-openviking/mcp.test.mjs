@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Config } from "@deepseek-ai/dsh-mcp-client";
 import { resolveConfig } from "./config.mjs";
 import { apply } from "./index.mjs";
-import { buildMcpConfig, mountOpenVikingMcp, PROXY_PATH } from "./mcp.mjs";
+import { buildMcpConfig, mountOpenVikingMcp } from "./mcp.mjs";
 
 /**
  * Run `fn` with an env whose credential files live in a throwaway directory,
@@ -36,13 +36,12 @@ test("the mount config validates against the pinned bridge's own schema", () => 
   }, {});
   const parsed = Config(buildMcpConfig(config));
 
-  // stdio, not streamable-http: every other OpenViking integration reaches the
-  // server through this same proxy, and it owns the transport quirks.
-  assert.equal(parsed.transport, "stdio");
+  // streamable-http, not stdio: the server speaks MCP over HTTP natively, so a
+  // stdio bridge would cost one Node process (~17 MB phys_footprint) per root
+  // agent — 26 of them on this machine, 705 MB, for five distinct peers.
+  assert.equal(parsed.transport, "streamable-http");
   assert.equal(parsed.serverName, "openviking");
-  assert.equal(parsed.command, process.execPath);
-  assert.deepEqual(parsed.args, [PROXY_PATH]);
-  assert.equal(parsed.env.ELECTRON_RUN_AS_NODE, "1");
+  assert.equal(parsed.url, "http://127.0.0.1:1933/mcp");
   assert.equal(parsed.toolCallTimeoutMs, 60000);
   // Startup must not be fatal: recall, capture, and commit keep working when
   // only the MCP endpoint is down, and the bridge reconnects on its own.
@@ -50,145 +49,82 @@ test("the mount config validates against the pinned bridge's own schema", () => 
   assert.equal(parsed.reconnect.enabled, true);
 });
 
-test("the shipped proxy entrypoint exists at the mounted path", () => {
-  assert.equal(existsSync(PROXY_PATH), true);
-});
+test("the mounted headers are the ones the stdio proxy used to send", () => {
+  const config = resolveConfig({
+    endpoint: "https://ov.example.com/",
+    apiKey: "secret",
+    account: "acme",
+    user: "casey",
+    peerId: "workspace-peer",
+    recallPeerScope: "actor",
+    workspacePeer: false,
+  }, {});
+  const parsed = Config(buildMcpConfig(config, "session-peer"));
 
-test("credentials resolved by the plugin reach the proxy through the child env", async () => {
-  const { readProxyConfig } = await import("./servers/mcp-proxy.mjs");
-  await withCredentialFiles({}, ({ env: files, dir }) => {
-    const config = resolveConfig({
-      endpoint: "http://ov.example.com/",
-      apiKey: "secret",
-      account: "acme",
-      user: "casey",
-      peerId: "workspace-peer",
-    }, files, dir);
-    const { env } = buildMcpConfig(config);
-
-    assert.deepEqual(env, {
-      ELECTRON_RUN_AS_NODE: "1",
-      OPENVIKING_CREDENTIAL_SOURCE: "env",
-      OPENVIKING_URL: "http://ov.example.com",
-      OPENVIKING_BASE_URL: "",
-      OPENVIKING_MCP_URL: "http://ov.example.com/mcp",
-      OPENVIKING_BEARER_TOKEN: "",
-      OPENVIKING_API_KEY: "secret",
-      OPENVIKING_ACCOUNT: "acme",
-      OPENVIKING_USER: "casey",
-      OPENVIKING_PEER_ID: "workspace-peer",
-      OPENVIKING_AUTH_MODE: "trusted",
-      OPENVIKING_RECALL_PEER_SCOPE: "all",
-      OPENVIKING_DEBUG: "0",
-      OPENVIKING_DEBUG_LOG: "",
-      OPENVIKING_TIMEOUT_MS: "10000",
-    });
-
-    // The proxy must reconstruct the same target from that env alone — DSH
-    // scrubs credential-shaped names out of the inherited environment, so this
-    // is the only channel patch-provided values travel on.
-    const proxy = readProxyConfig(env, dir);
-    assert.equal(proxy.mcpUrl, "http://ov.example.com/mcp");
-    assert.equal(proxy.apiKey, "secret");
-    assert.equal(proxy.account, "acme");
-    assert.equal(proxy.user, "casey");
-    assert.equal(proxy.sendIdentityHeaders, true);
-    // The default is broad recall: the child still receives the runtime peer
-    // for possible actor-scoped use, but the shared mapper must not put it on
-    // the wire and hide memories from other workspaces.
-    assert.equal(proxy.peerId, "");
-
-    const actorConfig = resolveConfig({
-      endpoint: "http://ov.example.com/",
-      apiKey: "secret",
-      account: "acme",
-      user: "casey",
-      peerId: "workspace-peer",
-      recallPeerScope: "actor",
-    }, files, dir);
-    const actorEnv = buildMcpConfig(actorConfig).env;
-    assert.equal(actorEnv.OPENVIKING_RECALL_PEER_SCOPE, "actor");
-    const actorProxy = readProxyConfig(actorEnv, dir);
-    assert.equal(actorProxy.peerId, "workspace-peer");
+  // Same construction the runtime talks through, so the two halves cannot
+  // drift on the actor header that scopes recall to one workspace.
+  assert.deepEqual(parsed.headers, {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer secret",
+    "X-OpenViking-Account": "acme",
+    "X-OpenViking-User": "casey",
+    "X-OpenViking-Actor-Peer": "session-peer",
+    "User-Agent": config.userAgent,
   });
 });
 
-test("shared diagnostic settings reach the proxy through the child env", async () => {
-  const { readProxyConfig } = await import("./servers/mcp-proxy.mjs");
-  await withCredentialFiles({}, ({ env: files, dir }) => {
-    const logPath = join(dir, "dsh-proxy.log");
-    const config = resolveConfig({
-      endpoint: "http://ov.example.com",
-      workspacePeer: false,
-      debug: true,
-      debugLogPath: logPath,
-    }, files, dir);
-    assert.equal(config.debug, true);
-    assert.equal(config.debugLogPath, logPath);
+test("broad recall sends no actor header, exactly as the proxy did", () => {
+  const config = resolveConfig({
+    endpoint: "https://ov.example.com",
+    apiKey: "secret",
+    peerId: "workspace-peer",
+    workspacePeer: false,
+  }, {});
+  const parsed = Config(buildMcpConfig(config, "session-peer"));
 
-    const { env } = buildMcpConfig(config);
-    assert.equal(env.OPENVIKING_DEBUG, "1");
-    assert.equal(env.OPENVIKING_DEBUG_LOG, logPath);
+  // `recallPeerScope` defaults to all, and a proxy that sent the peer anyway
+  // would hide every other workspace's memories from the tools.
+  assert.equal(parsed.headers["X-OpenViking-Actor-Peer"], undefined);
+});
 
-    const proxy = readProxyConfig(env, dir);
-    assert.equal(proxy.debug, true);
-    assert.equal(proxy.debugLogPath, logPath);
+test("identity headers follow the resolved auth mode, not the mount", () => {
+  const trusted = resolveConfig({
+    endpoint: "https://ov.example.com",
+    apiKey: "secret",
+    account: "acme",
+    user: "casey",
+    authMode: "trusted",
+    workspacePeer: false,
+  }, {});
+  assert.equal(Config(buildMcpConfig(trusted)).headers["X-OpenViking-Account"], "acme");
+
+  // An api_key server reads the identity out of the key and ignores the
+  // headers, so naming the operator to it would leak without buying anything.
+  const keyed = resolveConfig({
+    endpoint: "https://ov.example.com",
+    apiKey: "secret",
+    account: "acme",
+    user: "casey",
+    authMode: "api_key",
+    workspacePeer: false,
+  }, {});
+  assert.equal(Config(buildMcpConfig(keyed)).headers["X-OpenViking-Account"], undefined);
+});
+
+test("credentials resolved from the credential files reach the mount headers", async () => {
+  await withCredentialFiles({ ovcli: { url: "https://ov.example.com/", api_key: "cli-key" } }, ({ env: files, dir }) => {
+    const config = resolveConfig({ workspacePeer: false }, files, dir);
+    assert.equal(config.apiKey, "cli-key");
+
+    // The mount no longer hands its answer to a child process, so the header
+    // block is the only channel the resolved credential travels on.
+    assert.equal(Config(buildMcpConfig(config)).headers.Authorization, "Bearer cli-key");
   });
 });
 
-test("the proxy accepts canonical diagnostic environment variables", async () => {
-  const { readProxyConfig } = await import("./servers/mcp-proxy.mjs");
-  await withCredentialFiles({}, ({ env: files, dir }) => {
-    const logPath = join(dir, "canonical-proxy.log");
-    const proxy = readProxyConfig({
-      ...files,
-      OPENVIKING_URL: "http://ov.example.com",
-      OPENVIKING_DEBUG: "1",
-      OPENVIKING_DEBUG_LOG: logPath,
-    }, dir);
-
-    assert.equal(proxy.debug, true);
-    assert.equal(proxy.debugLogPath, logPath);
-  });
-});
-
-test("disabled diagnostics are explicit in the child environment", () => {
-  withCredentialFiles({}, ({ env: files, dir }) => {
-    const config = resolveConfig({
-      endpoint: "http://ov.example.com",
-      workspacePeer: false,
-      debug: false,
-      debugLogPath: "",
-    }, files, dir);
-    const { env } = buildMcpConfig(config);
-
-    assert.equal(env.OPENVIKING_DEBUG, "0");
-    assert.equal(env.OPENVIKING_DEBUG_LOG, "");
-  });
-});
-
-test("the proxy keeps the legacy OV_DEBUG_LOG alias", async () => {
-  const { readProxyConfig } = await import("./servers/mcp-proxy.mjs");
-  await withCredentialFiles({}, ({ env: files, dir }) => {
-    const logPath = join(dir, "legacy-proxy.log");
-    const proxy = readProxyConfig({
-      ...files,
-      OPENVIKING_URL: "http://ov.example.com",
-      OPENVIKING_DEBUG: "0",
-      OPENVIKING_DEBUG_LOG: join(dir, "canonical-proxy.log"),
-      OV_DEBUG_LOG: logPath,
-    }, dir);
-
-    assert.equal(proxy.debug, true);
-    assert.equal(proxy.debugLogPath, logPath);
-  });
-});
-
-test("a key the plugin left empty stays empty in the proxy", async () => {
+test("a key the plugin left empty sends no Authorization header", async () => {
   // ovcli.conf naming only a url pins the chain to that file, so the runtime
-  // sends no key. The proxy's env names a url, which would have unpinned the
-  // chain there and let it fall through to the machine's root key.
-  const { readProxyConfig } = await import("./servers/mcp-proxy.mjs");
+  // sends no key — and the mount must not invent one from the machine's root key.
   await withCredentialFiles({
     ovcli: { url: "https://ov.example.com" },
     ov: { server: { root_api_key: "root-key" } },
@@ -196,80 +132,18 @@ test("a key the plugin left empty stays empty in the proxy", async () => {
     const config = resolveConfig({ workspacePeer: false }, files, dir);
     assert.equal(config.apiKey, "");
 
-    // The file paths stand in for the default ~/.openviking the child can
-    // still reach.
-    const proxy = readProxyConfig({ ...files, ...buildMcpConfig(config).env }, dir);
-    assert.equal(proxy.mcpUrl, "https://ov.example.com/mcp");
-    assert.equal(proxy.apiKey, "");
+    const parsed = Config(buildMcpConfig(config));
+    assert.equal(parsed.url, "https://ov.example.com/mcp");
+    assert.equal(parsed.headers.Authorization, undefined);
   });
 });
 
-test("what DSH lets the proxy inherit cannot fill a gap the runtime left", async () => {
-  const { readProxyConfig } = await import("./servers/mcp-proxy.mjs");
-  await withCredentialFiles({ ovcli: { url: "https://ov.example.com", api_key: "cli-key" } }, ({ env: files, dir }) => {
-    // DSH drops only names matching /KEY|PASSWORD|SECRET|TOKEN/i from what a
-    // child inherits, so these reach the proxy beside the forwarded ones. The
-    // repository makes the launch directory one a peer could be derived from.
-    const repo = join(dir, "repo");
-    mkdirSync(join(repo, ".git"), { recursive: true });
-    writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
-    const inherited = {
-      ...files,
-      OPENVIKING_CREDENTIALS_SOURCE: "cli",
-      OPENVIKING_ACCOUNT: "stale-account",
-      OPENVIKING_USER: "stale-user",
-      OPENVIKING_PEER_ID: "stale-peer",
-    };
-    const config = resolveConfig({ workspacePeer: false }, inherited, dir);
-    const seen = (c) => ({ account: c.account, user: c.user, peerId: c.peerId, sendIdentityHeaders: c.sendIdentityHeaders });
-    assert.deepEqual(seen(config), { account: "", user: "", peerId: "", sendIdentityHeaders: false });
-
-    const proxy = readProxyConfig({ ...inherited, ...buildMcpConfig(config).env }, repo);
-    assert.deepEqual(seen(proxy), seen(config));
-  });
-});
-
-test("the auth mode and timeout the host named reach the proxy too", async () => {
-  const { readProxyConfig } = await import("./servers/mcp-proxy.mjs");
-  await withCredentialFiles({}, ({ env: files, dir }) => {
-    const config = resolveConfig({
-      endpoint: "http://ov.example.com",
-      apiKey: "secret",
-      account: "acme",
-      user: "casey",
-      authMode: "api_key",
-      timeoutMs: 45000,
-    }, { ...files, OPENVIKING_AUTH_MODE: "trusted" }, dir);
-    assert.equal(config.sendIdentityHeaders, false, "the host's answer outranks the environment");
-
-    // Left to derive them, the proxy would call an account and user "trusted"
-    // and fall back to the harness default timeout.
-    const proxy = readProxyConfig(buildMcpConfig(config).env, dir);
-    assert.equal(proxy.sendIdentityHeaders, false);
-    assert.equal(proxy.timeoutMs, 45000);
-  });
-});
-
-test("an anonymous local server forwards no key or identity", () => {
+test("an anonymous local server sends no key or identity", () => {
   withCredentialFiles({}, ({ env: files, dir }) => {
-    const { env } = buildMcpConfig(resolveConfig({ endpoint: "http://127.0.0.1:1933", workspacePeer: false }, files, dir));
-
-    assert.deepEqual(env, {
-      ELECTRON_RUN_AS_NODE: "1",
-      OPENVIKING_CREDENTIAL_SOURCE: "env",
-      OPENVIKING_URL: "http://127.0.0.1:1933",
-      OPENVIKING_BASE_URL: "",
-      OPENVIKING_MCP_URL: "http://127.0.0.1:1933/mcp",
-      OPENVIKING_BEARER_TOKEN: "",
-      OPENVIKING_API_KEY: "",
-      OPENVIKING_ACCOUNT: "",
-      OPENVIKING_USER: "",
-      OPENVIKING_PEER_ID: "",
-      OPENVIKING_AUTH_MODE: "api_key",
-      OPENVIKING_RECALL_PEER_SCOPE: "all",
-      OPENVIKING_DEBUG: "0",
-      OPENVIKING_DEBUG_LOG: "",
-      OPENVIKING_TIMEOUT_MS: "10000",
+    const config = resolveConfig({ endpoint: "http://127.0.0.1:1933", workspacePeer: false }, files, dir);
+    assert.deepEqual(Config(buildMcpConfig(config)).headers, {
+      "Content-Type": "application/json",
+      "User-Agent": config.userAgent,
     });
   });
 });
@@ -306,26 +180,30 @@ test("apply mounts the tool surface instead of registering tools itself", () => 
   assert.deepEqual(registered, []);
   const bridge = mounted.find(entry => entry.plugin.name === "mcp-client");
   assert.ok(bridge, "the MCP bridge must be mounted");
-  assert.equal(bridge.config.env.OPENVIKING_URL, "http://127.0.0.1:1933");
+  assert.equal(bridge.config.url, "http://127.0.0.1:1933/mcp");
 });
 
 test("a scoped mount carries the session's peer instead of the host's", () => {
+  // Actor scope is the only one that puts a peer on the wire, so this is the
+  // configuration where the host's peer would leak into another session's
+  // search if the mount ignored the argument.
   const config = resolveConfig({
     endpoint: "http://127.0.0.1:1933",
     apiKey: "secret",
     peerId: "host-resolved-peer",
+    recallPeerScope: "actor",
     workspacePeer: false,
   }, {});
 
   // The root mount keeps the host's answer: it is the fallback for a session
   // the runtime has not seen yet.
-  assert.equal(Config(buildMcpConfig(config)).env.OPENVIKING_PEER_ID, "host-resolved-peer");
+  assert.equal(Config(buildMcpConfig(config)).headers["X-OpenViking-Actor-Peer"], "host-resolved-peer");
   // A session-scoped mount carries that session's own peer.
-  assert.equal(Config(buildMcpConfig(config, "session-peer")).env.OPENVIKING_PEER_ID, "session-peer");
+  assert.equal(Config(buildMcpConfig(config, "session-peer")).headers["X-OpenViking-Actor-Peer"], "session-peer");
   // A session with no peer must stay empty rather than inherit the host's,
   // which would scope a non-repository session to whatever project the host
   // happened to be started in.
-  assert.equal(Config(buildMcpConfig(config, "")).env.OPENVIKING_PEER_ID, "");
+  assert.equal(Config(buildMcpConfig(config, "")).headers["X-OpenViking-Actor-Peer"], undefined);
 });
 
 test("each root agent mounts a bridge carrying its own session's peer", () => {
@@ -356,7 +234,7 @@ test("each root agent mounts a bridge carrying its own session's peer", () => {
       on(event, handler) {
         handlers.set(event, handler);
       },
-    }, { endpoint: "http://127.0.0.1:1933", workspacePeer: true });
+    }, { endpoint: "http://127.0.0.1:1933", recallPeerScope: "actor", workspacePeer: true });
 
     const agentMounts = [];
     const agent = {
@@ -378,7 +256,7 @@ test("each root agent mounts a bridge carrying its own session's peer", () => {
     assert.equal(agentMounts[0].plugin.name, "mcp-client");
     assert.equal(agentMounts[0].config.serverName, "openviking");
     assert.equal(
-      agentMounts[0].config.env.OPENVIKING_PEER_ID,
+      agentMounts[0].config.headers["X-OpenViking-Actor-Peer"],
       "github.com-volcengine-openviking",
     );
     // The root mount remains, as the fallback for a session that never starts,
@@ -386,7 +264,7 @@ test("each root agent mounts a bridge carrying its own session's peer", () => {
     const rootBridges = rootMounts.filter(entry => entry.plugin.name === "mcp-client");
     assert.equal(rootBridges.length, 1);
     assert.notEqual(
-      rootBridges[0].config.env.OPENVIKING_PEER_ID,
+      rootBridges[0].config.headers["X-OpenViking-Actor-Peer"],
       "github.com-volcengine-openviking",
     );
   } finally {

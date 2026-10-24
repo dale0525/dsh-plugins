@@ -150,25 +150,23 @@ context sends no search request.
 
 ### How the tool surface is mounted
 
-`mcp.mjs` mounts `@deepseek-ai/dsh-mcp-client` on `servers/mcp-proxy.mjs`, the
-same stdio proxy every other OpenViking memory integration starts, so the model
-gets the server's full tool set instead of a hand-maintained subset and the
-transport behaves identically across harnesses. Pointing the bridge straight at
-the server's `/mcp` endpoint does not work: with `stateless_http=True` the
-server still answers `GET /mcp` with an idle 200 SSE stream, and once the MCP
-SDK client opens that standalone stream it stops resolving POST responses, so
-`tools/list` never returns. The proxy owns the transport itself and is
-unaffected.
+`mcp.mjs` mounts `@deepseek-ai/dsh-mcp-client` straight at the server's `/mcp`
+endpoint over streamable HTTP, so the model gets the server's full tool set
+instead of a hand-maintained subset.
 
-The bundle's resolved connection — url, MCP url, key, account, user and auth
-mode — travels to the proxy through the child environment, because DSH scrubs
-credential-shaped names out of the inherited env and a subprocess cannot see the
-Cordis patch. It goes with `OPENVIKING_CREDENTIAL_SOURCE=env`, so the proxy reads
-no config file and reaches the server exactly as the runtime does, including
-with no key when the runtime has none. A changed `ovcli.conf` therefore takes
-effect for the tools when DSH restarts the bundle, as it does for the runtime.
+It used to start a stdio proxy per mount instead — one Node process per root
+agent, each ~17 MB of phys_footprint. On a host with 25 live agents that came to
+26 processes and 705 MB to reach five distinct peers, which is why the mount
+speaks the transport itself.
 
-Two consequences follow from the proxy being one process per agent:
+The mount headers come from the same `buildOvHeaders` the runtime's own HTTP
+path uses, so the tool surface and the recall path cannot drift on the actor
+header. The protocol headers (`content-type`, `accept`, `mcp-protocol-version`,
+`mcp-session-id`) are left to the transport, which derives them from the
+exchange. `OPENVIKING_EXTRA_HEADERS` reaches the mount too, for deployments
+behind an authenticating gateway.
+
+Two consequences follow from the mount being per agent:
 
 - **The actor peer is the session's own.** The bridge is mounted per root agent
   with the peer that session resolved from its workspace, so a tool call carries
@@ -183,11 +181,10 @@ Two consequences follow from the proxy being one process per agent:
   Automatic capture still records the conversation itself.
 
 The bridge and the skill provider are mounted last in `apply()`, after every
-lifecycle registration, so a proxy that cannot start holds up nothing above it.
-Each root agent then gets its own bridge when it is announced. Subagents get
-none, for the same two reasons they get no recall: the mount list holds only
-ownerless agents, and `skipSubagentSessions` filters them again — every bridge
-starts its own proxy process.
+lifecycle registration, so an unreachable server holds up nothing above it. Each
+root agent then gets its own bridge when it is announced. Subagents get none,
+for the same two reasons they get no recall: the mount list holds only ownerless
+agents, and `skipSubagentSessions` filters them again.
 
 ### Why the skill gets its own provider
 

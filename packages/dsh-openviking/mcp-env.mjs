@@ -1,45 +1,39 @@
-import { fileURLToPath } from "node:url";
-
 import { MCP_SERVER_NAME } from "./config.mjs";
-import { forwardConnectionEnv } from "./shared/mcp-proxy-config.mjs";
-
-/** The same stdio proxy every other OpenViking memory integration starts. */
-export const PROXY_PATH = fileURLToPath(new URL("./servers/mcp-proxy.mjs", import.meta.url));
+import { buildOvHeaders } from "./shared/ov-http.mjs";
+import { parseExtraHeaders, resolveMcpActorPeerId } from "./shared/mcp-proxy-config.mjs";
 
 /**
- * Build the dsh-mcp-client config for the OpenViking stdio proxy.
+ * Build the dsh-mcp-client config for the OpenViking MCP endpoint.
  *
- * DSH scrubs credential-shaped names out of the environment a subprocess
- * inherits, and the Cordis patch is invisible to one, so the proxy cannot
- * resolve the connection the way this process did. It gets the answer instead:
- * the resolved connection, diagnostics, and this session's peer, forwarded
- * with the forced `env` source so the child reads no file and lands on exactly
- * these values — the empty ones included.
+ * The server speaks MCP over streamable HTTP natively, so the bridge connects
+ * to it directly. It used to start a stdio proxy per mount instead — one Node
+ * process per root agent, which on this machine meant 26 processes and 705 MB
+ * of phys_footprint to reach five distinct peers.
+ *
+ * The headers come from the same `buildOvHeaders` the runtime's own HTTP path
+ * uses, so the tool surface and the recall path cannot drift on the actor
+ * header that scopes recall to one workspace. The protocol headers are not
+ * listed here on purpose: the transport owns `content-type`,
+ * `mcp-protocol-version` and `mcp-session-id`, and derives `accept` itself.
  */
 export function buildMcpConfig(config, peerId = undefined) {
-  // In DSH Desktop, process.execPath is Electron's executable rather than a
-  // standalone Node binary. This tells Electron to run the proxy script as
-  // Node instead of attempting to launch a second Desktop instance.
-  const env = {
-    ELECTRON_RUN_AS_NODE: "1",
-    ...forwardConnectionEnv(config),
-    OPENVIKING_DEBUG: config.debug ? "1" : "0",
-    OPENVIKING_DEBUG_LOG: config.debugLogPath || "",
-  };
   // A mount can be scoped to one session, whose peer is not the host's: the
   // host resolves its copy of the config against its own cwd, so a session in
   // another project must override it. Passing "" is a real answer — a session
   // outside any workspace has no peer, and inheriting the host's would file
   // its memories under whichever project happened to launch the host.
-  if (peerId !== undefined) env.OPENVIKING_PEER_ID = peerId;
-  if (config.recallPeerScope) env.OPENVIKING_RECALL_PEER_SCOPE = config.recallPeerScope;
-  if (config.timeoutMs) env.OPENVIKING_TIMEOUT_MS = String(config.timeoutMs);
+  const actorPeerId = resolveMcpActorPeerId({
+    peerId: peerId === undefined ? config.peerId : peerId,
+    recallPeerScope: config.recallPeerScope,
+  });
   return {
-    transport: "stdio",
+    transport: "streamable-http",
     serverName: MCP_SERVER_NAME,
-    command: process.execPath,
-    args: [PROXY_PATH],
-    env,
+    url: config.mcpUrl,
+    headers: buildOvHeaders(config, {
+      actorPeerId,
+      extraHeaders: parseExtraHeaders(process.env.OPENVIKING_EXTRA_HEADERS),
+    }),
     toolCallTimeoutMs: config.mcpToolCallTimeoutMs,
   };
 }

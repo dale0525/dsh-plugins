@@ -22,7 +22,6 @@
     "session-id.mjs",
     "skills.mjs",
     "uri-guard.mjs",
-    "servers/",
     "shared/",
     "skills/",
     "locale/",
