@@ -223,6 +223,20 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   对齐到宿主世代后暴露的类型错误是**真实的**（实测 `dsh-imagegen` 对齐后暴露 7 个：
   宿主已删除 `SettingsScope` / `SettingsScopeSnapshot` / `SettingsSectionHooks`）。
   症状与上面 slots 那条相反：那条是「编译失败、运行正常」，这条是「编译通过、校验错对象」。
+- **MCP 服务端自己会说 streamable HTTP 时，不要给它套 stdio 代理**：`dsh-mcp-client` 的
+  `stdio` 分支每个挂载点起一个 Node 子进程，而插件通常按 root agent 挂载 —— 进程数与
+  会话数成正比，与真正不同的 peer 数无关。实测 `dsh-openviking` 按 25 个活跃 agent 挂载，
+  得到 **26 个 `mcp-proxy` 进程 / 705 MB `phys_footprint`**，只为 5 个不同 peer 服务；
+  单个空闲代理约 17 MB footprint，而它 10 小时只花 0.6–2.5 s CPU —— **成本全在内存**。
+  改法是把 `transport` 换成 `streamable-http` 并直连 `<endpoint>/mcp`，进程归零。
+  换传输时**协议头要留给 transport**（`content-type` / `accept` / `mcp-protocol-version` /
+  `mcp-session-id` 由它按交换过程推导），只补它不拥有的认证、身份、actor peer 与 UA。
+  这些头**必须复用运行时那条 header builder**（`buildOvHeaders`），否则工具面与 recall 路径
+  会在 actor peer 上漂移，表现为工具查到别的项目、recall 查到本项目的割裂。
+  另外，若代码里存在「直连不行」的既有注释，先实测再采信：本项目 README 曾记录
+  「服务端返回空闲 SSE 会让 `tools/list` 永不返回」，而 SDK 2.2.0 上该机制已不成立
+  （90 秒 23 轮 `tools/list` + `callTool` 零失败，独立 `GET /mcp` 仍挂 8 秒，但 SDK 只在
+  `initialized` 得到 202 时才去开那条流）。
 - **往侧边栏会话行塞图标会抹掉它的视觉缩进**：会话行与它所属的工作区行同处一个
   `groupSection`，两者的 `padding-inline-start` 都取自同一个 `--dsh-workspace-indent`，
   所以「会话看着比工作区缩进一级」**不是靠 padding 实现的**，而是靠行首那格固定 16px 的
