@@ -1047,6 +1047,37 @@ describe('composer picker status handling', () => {
     assert.equal(item.disabled, true, 'a second intent must not be recordable')
   })
 
+  it('shows the pending state as soon as the intent is recorded, without reopening the menu', async () => {
+    // The regression: `prepare` reset the status and bumped the retry counter,
+    // but the shared cache was only dropped when the menu *opened*. So the
+    // re-read answered with the snapshot taken before the pick, and the trigger
+    // kept naming the main checkout until the user opened the menu a second
+    // time -- the other place that drops the cache.
+    const worktrees = [
+      { path: '/repo-fresh', name: 'repo-fresh', isMain: true, prunable: false },
+      { path: '/repo-fresh/.worktrees/other', name: 'other', isMain: false, prunable: false },
+    ]
+    let recorded = false
+    globalThis.fetch = (url) => {
+      if (url === '/api/dsh-worktree/prepare') {
+        recorded = true
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) })
+      }
+      const body = recorded ? statusBody(worktrees, { waiting: true }) : statusBody(worktrees)
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(body) })
+    }
+
+    const mounted = await mount('/repo-fresh')
+    // Picking anything requires opening the menu first, which is what fills the
+    // cache with the pre-pick answer.
+    mounted.tree().props.anchor.props.onClick()
+    await settle()
+    mounted.tree().props.onSelect('__new__')
+    await settle()
+
+    assert.equal(labelOf(mounted), 'entry.pending')
+  })
+
   it('moves a new conversation into the checkout it picked, without a Workspace', async () => {
     // The whole point: a branch that already exists already has a directory, so
     // the conversation adopts it on its first message. Creating a Workspace for

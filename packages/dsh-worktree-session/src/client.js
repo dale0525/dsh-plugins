@@ -292,6 +292,12 @@ window.__ModuleLoader__.load({
         postPrepare(sessionId, cwd, target)
           .then(function () {
             setOpen(false)
+            // The read that filled the cache happened before the intent was
+            // recorded, so it cannot answer for the pending state. Dropping it
+            // here is what makes the re-read below see the new marker; leaving
+            // it cached left the trigger naming the old checkout until the menu
+            // was opened again (that being the other place that drops it).
+            statusCache.delete(cacheKey(cwd, sessionId))
             setStatus(null)
             setRetry(retry + 1)
           })
