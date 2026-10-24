@@ -397,6 +397,25 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
 > `evaluatePluginCompatibility(manifest, {}, <当前宿主版本>)`（`@deepseek-ai/dsh-app-boot` 导出），
 > 它才是门禁本身。
 
+> **新增启动期自动执行路径时，必须把路由层同名操作的全部护栏抄一遍**：路由层的 destructive 操作
+> 走 `withMutationGate(op, …)` 统一封装（全局互斥锁 + SAFE MODE 谓词 + journal + snapshot 绑定），
+> 而启动期路径是另写的一段代码，**不继承**这些封装。实测 2026-10-24 `dsh-config-manager` 的
+> 启动期自动同步：初版直接 `makeSyncEngine(cfg).pullAndApply({})`，不取锁、不查
+> `host.safeModeIsBlocked`、不传 `snapshotBinding` —— 于是「上次 destructive 操作崩溃残留、
+> 待显式恢复」时它仍会改写配置与插件，**把可恢复状态变成不可恢复**；同时与另一个持锁进程
+> 并发写同一批文件。判据：新路径落盘前，先列出同名路由的 handler 里调用了哪些封装，
+> 逐条确认启动路径也有等价调用。
+
+> **`apply` 返回 Promise 是让宿主「等它」的唯一办法，fire-and-forget 不会被执行完**：
+> Cordis 的 `_execute` 对 apply 返回的 thenable 会 `return effect.then(safeCollect)`，
+> 由 `loader.await()`（等每个 entry 的 fiber inertia）等到结束；`boot()` 的顺序是
+> `mountRootInclude` → `loader.await()` → `auditStartupEntries`，所以启动期写入的配置
+> 在启动判定之前就已就位。实测对照：返回 Promise 得到
+> `apply-called → async-work-done → inertia-settled`；改成不 await 的版本得到
+> `apply-called → inertia-settled → async-work-done-BUT-NOT-AWAITED`。
+> 写盘触发的 HMR 重载不会打断启动：`runReload` 先 `await applicationReady`，该 promise
+> 在 `boot()` 返回之后才 commit。
+
 ## 🔀 上游同步
 
 **同步是手工的。** 仓库只保留 `git subtree` 祖先和一个**只读**的查询工具：没有定时任务、
