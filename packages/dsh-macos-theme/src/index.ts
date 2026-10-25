@@ -219,6 +219,162 @@ function historyPageBudgetScript(): string {
 })()`
 }
 
+/**
+ * Head script that strips two fields out of the `session/follow` opening frame.
+ *
+ * The opening snapshot is what a Session shows before it can render anything, so
+ * on a slow link its size is the whole latency. Measured on the worst local
+ * Session (20 MB log, 6.3 MB opening frame at the default 500/50 budget):
+ *
+ *   assistant/message  4864 KB   of which `data.stream`  3719 KB
+ *   request/header      624 KB   of which `header.tools`  623 KB
+ *
+ * `data.stream` is the compact chunk log the Host keeps so a live attempt can be
+ * replayed with its original typing cadence. For a *settled* message the same
+ * text is already in `data.message.content`: across all 65 assistant messages of
+ * that Session the concatenated `stream` text equalled the concatenated
+ * `content` text character for character (917153 reasoning chars on both sides).
+ * Chat reads `data.stream` only through `streamUsage` and the first-token time,
+ * and usage is also present as `data.usage`, so nothing rendered depends on it.
+ *
+ * `header.tools` is a full tool-catalog snapshot repeated on every request in
+ * history. Only the trajectory panel renders it, and this theme hides that panel.
+ *
+ * Both are response-side: `session/follow` declares `assistantStream` as a
+ * required `const true`, so asking for a thinner snapshot is rejected outright
+ * (`gateway/input-invalid`) and the only lever is to drop the bytes on arrival.
+ *
+ * Arrival is why this lives in head injection. The RPC transport binds the
+ * socket's `message` listener at module initialisation, so a wrapper installed
+ * from this plugin's browser half would never see a frame; `<head>` renders
+ * ahead of every application script, so this listener runs first.
+ *
+ * Every path it does not recognise returns the frame untouched. A throw inside a
+ * socket message listener does not lose one field, it loses the entire opening
+ * snapshot — the reader then sits on "载入历史…" forever, which is the exact
+ * symptom this script exists to remove.
+ */
+function openingSnapshotTrimScript(): string {
+  return `(() => {
+  const proto = globalThis.WebSocket && globalThis.WebSocket.prototype
+  if (!proto || typeof proto.addEventListener !== 'function') return
+  const native = proto.addEventListener
+  proto.addEventListener = function (type, listener, options) {
+    if (type !== 'message' || typeof listener !== 'function') return native.apply(this, arguments)
+    const wrapped = function (event) {
+      const text = event && event.data
+      if (typeof text !== 'string') return listener.apply(this, arguments)
+      let trimmed = text
+      try {
+        const frame = JSON.parse(text)
+        const value = frame && frame.value
+        const records = value && value.records
+        if (!Array.isArray(records)) return listener.apply(this, arguments)
+        let changed = false
+        for (const record of records) {
+          const payload = record && record.event
+          if (!payload) continue
+          const data = payload.data
+          if (!data || typeof data !== 'object') continue
+          if (payload.type === 'assistant/message' && data.stream !== undefined) {
+            delete data.stream
+            changed = true
+            continue
+          }
+          if (payload.type === 'request/header') {
+            const header = data.header
+            if (header && typeof header === 'object' && header.tools !== undefined) {
+              delete header.tools
+              changed = true
+            }
+          }
+        }
+        if (!changed) return listener.apply(this, arguments)
+        trimmed = JSON.stringify(frame)
+      } catch {
+        return listener.apply(this, arguments)
+      }
+      return listener.call(this, { data: trimmed })
+    }
+    return native.call(this, type, wrapped, options)
+  }
+})()`
+}
+
+/**
+ * Page budget this plugin asks for when a Session is first opened.
+ *
+ * `HISTORY_PAGE_BUDGET` cannot serve here: it only shrinks what "load older"
+ * asks for, while the opening snapshot is what decides whether the Session opens
+ * at all. Measured on the worst local Session (20 MB log) over a throttled
+ * 2 Mbit/s / 80 ms link — a typical Tailscale relay:
+ *
+ *   app default 500/50, and also 120/50   6313 KB   first frame never arrived,
+ *                                                   socket closed 1006 after 16.4 s
+ *   this budget 120/10                     566 KB   arrived at 3.6 s, socket alive
+ *
+ * The default `minMessages: 50` is inert on that Session because `paginate` stops
+ * at the first Turn start it reaches once `count >= minMessages`, and the Turns
+ * there hold [91, 11, 1] messages: the newest Turn alone never reaches 50, so the
+ * scan ran to exhaustion and shipped all 103 messages — `maxMessages: 120` never
+ * fired. Lowering `minMessages` is therefore the only lever that moves the cut,
+ * and `maxMessages` stays as the backstop for a single oversized Turn.
+ *
+ * `minTurns: 2` is kept for the same reason as in `HISTORY_PAGE_BUDGET`: it is
+ * what makes the cut land on a Turn start instead of mid-turn. The cost is that a
+ * long Session now opens showing roughly the last two Turns and pages the rest in
+ * on scroll, which is the trade this budget deliberately makes.
+ */
+const OPENING_PAGE_BUDGET = { maxMessages: 120, turnWindow: { minMessages: 10, minTurns: 2 } } as const
+
+/**
+ * Head script that lowers the opening budget on the way out.
+ *
+ * `session/follow` takes the page budget as a request parameter, so asking for
+ * less is smaller on the wire *and* cheaper on the Host than receiving 6 MB and
+ * dropping most of it. That matters more here than for history pages: the whole
+ * point is the number of bytes that have to cross a slow link before anything
+ * renders.
+ *
+ * `assistantStream` cannot be used for this: the Host declares it as a required
+ * `const true` and rejects `false` with `gateway/input-invalid`, so the budget is
+ * the only thing a caller may lower.
+ *
+ * Head injection for the same reason as the other two scripts — the RPC transport
+ * binds the socket at module initialisation, so a wrapper installed later never
+ * sees the frame.
+ *
+ * Every path that is not the exact frame it knows about is forwarded untouched: a
+ * non-string payload, a frame that fails to parse, an endpoint it does not own, or
+ * a request without a numeric budget. Losing one `open` frame would leave the
+ * Session unopened, which is worse than one oversized snapshot.
+ */
+function openingPageBudgetScript(): string {
+  return `(() => {
+  const BUDGET = ${JSON.stringify(OPENING_PAGE_BUDGET)}
+  const proto = globalThis.WebSocket && globalThis.WebSocket.prototype
+  if (!proto || typeof proto.send !== 'function') return
+  const native = proto.send
+  proto.send = function (data) {
+    if (typeof data !== 'string') return native.apply(this, arguments)
+    let rewritten
+    try {
+      const frame = JSON.parse(data)
+      if (!frame || frame.type !== 'open' || frame.endpoint !== 'session/follow') return native.apply(this, arguments)
+      const request = frame.payload && frame.payload.args && frame.payload.args.request
+      if (!request || typeof request !== 'object') return native.apply(this, arguments)
+      if (typeof request.maxMessages !== 'number') return native.apply(this, arguments)
+      request.maxMessages = BUDGET.maxMessages
+      request.turnWindow = BUDGET.turnWindow
+      rewritten = JSON.stringify(frame)
+    } catch {
+      return native.apply(this, arguments)
+    }
+    return native.call(this, rewritten)
+  }
+})()`
+}
+
 interface ServedFont {
   readonly body: Buffer
   readonly etag: string
@@ -323,5 +479,7 @@ export function apply(ctx: Context): void {
   ctx.on('webserver/index-inject', (table: IndexInjection[]) => {
     table.push({ kind: 'script', placement: 'head', text: sessionListTrimScript() })
     table.push({ kind: 'script', placement: 'head', text: historyPageBudgetScript() })
+    table.push({ kind: 'script', placement: 'head', text: openingSnapshotTrimScript() })
+    table.push({ kind: 'script', placement: 'head', text: openingPageBudgetScript() })
   })
 }

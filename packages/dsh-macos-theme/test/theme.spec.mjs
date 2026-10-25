@@ -2489,3 +2489,99 @@ test('history pages ask for a budget a turn-aligned page can actually respect', 
   assert.ok(forward.length >= 3, 'every unrecognised shape must be forwarded untouched')
   assert.match(rewrite[0], /catch \{\s*\n\s*return native\.apply\(this, arguments\)/, 'an unreadable body must leave the request alone')
 })
+
+test('the opening snapshot drops the two fields the chat never reads', () => {
+  // Measured on the worst live Session (20 MB, 6.3 MB opening frame, 120/50):
+  //
+  //   assistant/message  4864 KB   of which `data.stream` 3719 KB
+  //   request/header      624 KB   of which `header.tools`  623 KB
+  //
+  // `data.stream` is the compact chunk log the Host keeps to replay an attempt's
+  // typing cadence. For a settled message the same text is already in
+  // `data.message.content`: across all 65 assistant messages of that Session the
+  // concatenated `stream` text was character-for-character equal to the
+  // concatenated `content` text (917153 reasoning chars both sides). Chat reads
+  // `data.stream` only for `streamUsage` and the first-token time, and usage is
+  // also on `data.usage`, so dropping it costs nothing that is rendered.
+  //
+  // `header.tools` is a full tool-catalog snapshot repeated on every request in
+  // history. The theme hides the trajectory panel (theme.css §6), which is the
+  // only view that renders it.
+  //
+  // Both fields are response-side only: `session/follow` takes `assistantStream`
+  // as a REQUIRED `const true`, so the Host rejects `false`
+  // (`gateway/input-invalid`), and the plugin cannot ask for a thinner snapshot.
+  const source = readFileSync(join(root, 'src', 'index.ts'), 'utf8')
+  const script = /function openingSnapshotTrimScript\(\)[\s\S]*?\n\}/.exec(source)
+  assert.ok(script, 'the snapshot trim must stay its own head script')
+
+  // It has to run before the app's own handler: the RPC transport binds the
+  // socket's `message` listener at module initialisation, so wrapping from this
+  // plugin's browser half misses every frame. Head injection is the only place
+  // that wins that race.
+  assert.match(source, /kind: 'script', placement: 'head'/, 'it must render into head')
+  assert.match(source, /webserver\/index-inject/, 'it rides the webserver injection hook')
+
+  // Both removals must be present and keyed off the frame's own shape, never off
+  // a byte offset: the wire frame is `{type:'item', streamId, value}` and the
+  // records sit in `value.records`.
+  assert.match(script[0], /'assistant\/message'/, 'it must target assistant messages')
+  assert.match(script[0], /delete .*\.stream|\.stream = undefined/, 'the chunk log must be dropped')
+  assert.match(script[0], /'request\/header'/, 'it must target request headers')
+  assert.match(script[0], /delete .*header\.tools|header\.tools = undefined/, 'the tool snapshot must be dropped')
+
+  // Inert on everything else. A throw inside a socket message listener does not
+  // degrade one frame, it loses the whole opening snapshot and the reader is
+  // left on "载入历史…" forever — exactly the symptom this replaces.
+  const forward = script[0].match(/return listener\.apply\(this, arguments\)/g) ?? []
+  assert.ok(forward.length >= 3, 'every unrecognised shape must reach the original listener')
+  assert.match(script[0], /catch \{\s*\n\s*return listener\.apply\(this, arguments\)/, 'a failed parse must reach the original listener')
+})
+
+test('the opening frame asks for a page small enough to arrive on a slow link', () => {
+  // Measured on the worst live Session (20 MB log) with the link throttled to
+  // 2 Mbit/s / 80 ms — a typical Tailscale relay:
+  //
+  //   500/50 or 120/50  6313 KB   first frame NEVER arrived; socket closed 1006 at 16.4 s
+  //   120/12            566 KB    arrived at 3.6 s, socket alive
+  //   120/10            566 KB    arrived at 3.6 s, socket alive
+  //
+  // 120/50 changed nothing because `paginate` stops at the first Turn start it
+  // meets once `count >= minMessages`, and that Session's Turns hold
+  // [91, 11, 1] messages: the newest Turn alone never reaches 50, so the scan
+  // ran to exhaustion and returned all 103 messages — `maxMessages: 120` never
+  // fired. `minMessages` is therefore the only lever, and `maxMessages` is the
+  // backstop for one oversized Turn.
+  const source = readFileSync(join(root, 'src', 'index.ts'), 'utf8')
+  const declaration = /const OPENING_PAGE_BUDGET = (\{[^\n]*\}) as const/.exec(source)
+  assert.ok(declaration, 'the opening budget must stay declared as data')
+  const budget = (0, eval)(`(${declaration[1]})`)
+  assert.ok(Number.isSafeInteger(budget.maxMessages) && budget.maxMessages > 0)
+  assert.ok(Number.isSafeInteger(budget.turnWindow.minMessages) && budget.turnWindow.minMessages > 0)
+  assert.ok(
+    budget.turnWindow.minMessages <= budget.maxMessages,
+    'the Host rejects a window whose minMessages exceeds maxMessages',
+  )
+  assert.equal(budget.turnWindow.minTurns, 2, 'the cut must still land on a Turn boundary')
+  assert.ok(
+    budget.turnWindow.minMessages < 50,
+    '50 is the value measured to be inert on a Session whose Turns are small',
+  )
+  assert.ok(budget.maxMessages < 500, 'it must ask for less than the app default')
+
+  // It is a REQUEST rewrite, so it has to touch the outbound frame. The app
+  // builds it as `{type:'open', streamId, endpoint, payload:{args:{request:{…}}}}`;
+  // the Host validates that shape strictly and rejects `assistantStream: false`
+  // outright, so the budget is the only thing that can be lowered.
+  const script = /function openingPageBudgetScript\(\)[\s\S]*?\n\}/.exec(source)
+  assert.ok(script, 'the budget rewrite must stay its own head script')
+  assert.match(script[0], /'session\/follow'/, 'it must target the opening stream')
+  assert.match(script[0], /WebSocket\.prototype|proto\.send/, 'it rewrites the outbound frame')
+  assert.match(script[0], /payload\.args\.request|args\.request/, 'it reaches the request object')
+
+  // Forward everything it does not recognise, and never let a rewrite throw:
+  // losing one `open` frame means the Session never opens at all.
+  const forward = script[0].match(/return native\.apply\(this, arguments\)/g) ?? []
+  assert.ok(forward.length >= 3, 'unrecognised frames must go out untouched')
+  assert.match(script[0], /catch \{\s*\n\s*return native\.apply\(this, arguments\)/, 'a failed parse must send the frame unchanged')
+})
