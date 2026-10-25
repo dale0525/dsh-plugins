@@ -682,6 +682,13 @@ body [data-turn-process] [class*='_chevron'] {
   color: #94a3b8;
 }
 
+/* The row's elapsed-time digits state `--ds-font-family-code` themselves (they want
+   tabular figures), so 「31s」 sat in SF Mono inside a label that reads Fira Code —
+   one row, two faces. Only the face is repainted; the size stays the row's. */
+body [data-turn-process] [class*='_durationNumber'] {
+  font-family: var(--dsh-chat-font, inherit);
+}
+
 /* In-progress hint ("深度求索中，用时 …"). The host colours the whole row from
    `--dsw-alias-label-deep-diving`, which resolves to indigo `#4338CA` — the last
    indigo surface in the chat. The design puts it on the theme's blue instead, so
@@ -1523,11 +1530,147 @@ body [data-step-process]:not([hidden]) [data-step-process-content] [data-code-bl
   font-family: var(--dsh-chat-font, inherit);
 }
 
+/* The card's `[class*='_title']` rule also reaches the code block's banner, whose
+   file name carries the same local name (`_title_1pq26_36`), and lifted that one
+   span to 13px/500 inside a strip whose language tag and line count stay at the
+   banner's own 11px/18px — one header, two sizes. The banner is chrome and keeps
+   the step the face rule above leaves it on, so the title is put back on it. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-code-block-banner] [class*='_title'] {
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 400;
+}
+
+/* The bash card's expanded terminal. It was the last surface in a card still on
+   the host's code-block scale: measured 14px/19px SF Mono for the command, the
+   cwd and every output line, against the 13px/22px Fira Code of the row's own
+   summary directly above it — so opening the row made its text grow.
+
+   The split follows the rest of the card rather than flattening it to one size.
+   The command line fills the same slot `_summary` fills in a read or search row,
+   so it reads at the transcript's size; the output is a code viewer like
+   `[data-read]`'s body, so it keeps the code step — the 12px the markdown code
+   block uses. The copy button and the 「退出码」 pill are the chrome around them
+   and read at the transcript size too: the pill was 12px/18px while the header
+   badge stating the same exit code is 13px.
+
+   Anchored on `[data-terminal]`, the primitive's own attribute: the command
+   shares `_text` with the card's copy, and `_line`/`_output` are local names the
+   read and diff viewers use as well, so the scope has to come from the row.
+
+   `_prompt` and `_output` are named rather than only the block: both re-state
+   `font: var(--dsl-terminal-font)` themselves, so a size set on `[data-terminal]`
+   alone is replaced one level down and every leaf that only inherits from them
+   (`_runStateLabel`, `_promptLine`, the 「无输出」 placeholder) stays on 14px/19px. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-terminal] [class*='_prompt'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-terminal] [class*='_cwd'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-terminal] [class*='_command'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-terminal] [class*='_copyButton'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-terminal] [class*='_status'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* The output pane and its lines, plus the 「无输出」 placeholder a command with no
+   output shows in their place: all three are the terminal's code surface. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-terminal] [class*='_output'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-terminal] [class*='_line'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [data-terminal] [class*='_empty'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: 12px;
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* Two more code viewers inside a card that state the host's 14px/19px SF Mono
+   themselves: the MCP input/output card (`ioCard`, the 输入/输出 payloads) and the
+   skill card's instructions `<pre>`. Both are code surfaces, so they take the code
+   step and the transcript face — the pair `[data-read]`'s body already reads at. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [class*='ioCard'],
+body [data-step-process]:not([hidden]) [data-step-process-content] pre[class*='_instructions'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: 12px;
+  line-height: var(--dsh-chat-line-height);
+}
+
 /* The diff stat (`+1 −1`) is the last surface in a card that still names
    `--ds-font-family-code` itself. Only the face is repainted: its size is a
    deliberate one-step-down count, derived from the row size. */
 body [data-step-process]:not([hidden]) [data-step-process-content] [class*='diffStat'] {
   font-family: var(--dsh-chat-font, inherit);
+}
+
+/* The image card's caption and its extra line — 「/private/tmp/x.png 2514x1668px」.
+   Both are captions, not code: the host draws the first from
+   `--dsw-font-markdown-code-block-small` (measured 14px/19px SF Mono) and the
+   second from `--dsw-font-xs-13` (13px/20px system face), so one caption block
+   read as two different things. They take the transcript's own size and face,
+   the pair the inspect card's caption already reads at. */
+body [data-step-process]:not([hidden]) [data-step-process-content] [class*='imageMeta'],
+body [data-step-process]:not([hidden]) [data-step-process-content] [class*='imageExtra'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+/* The compaction card's expanded body is the one markdown render in the
+   transcript that is not an assistant step, so none of the prose rules in 7a
+   reach it: measured 17px/27px `-apple-system` for its body text, 22px/31px/700
+   for its headings and 14.875px SF Mono for inline code, while the row above it
+   reads 13px/18px and the assistant prose beside it 13px/22px Fira Code.
+
+   It is prose, so it takes the same treatment and the same ladder as the
+   assistant body (7a): the sizes here are that ladder, repeated because those
+   rules are scoped to `assistant-step` — the `:not([data-markdown-variant])`
+   guard they carry has no counterpart on this kind, and widening them would
+   change every selector a test pins. Inline code is pinned with `!important`
+   for the same reason as there: the host's own `font-size: .875em` is
+   `!important`, and `.875em` of 13px would be a third size. */
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h1,
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h2,
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h3,
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h4,
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h5,
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h6 {
+  font-family: var(--dsh-chat-font, inherit);
+  line-height: 1.35;
+  color: var(--dsw-alias-label-primary);
+  margin: 14px 0 6px;
+}
+
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 24px 0 10px;
+}
+
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+}
+
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h3 {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h4,
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h5,
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h6 {
+  font-size: 14px;
+  font-weight: 400;
+}
+
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] :not(pre) > code {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size) !important;
 }
 
 /* The inspect card states `--dsw-font-xs-13` in the system face on its root, so

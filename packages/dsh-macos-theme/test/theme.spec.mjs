@@ -1596,6 +1596,102 @@ test('the expanded card body keeps the transcript type scale', () => {
   }
 })
 
+test('the expanded bash terminal splits into a command line and a code viewer', () => {
+  // The last surface in a card still on the host's code-block scale: measured
+  // 14px/19px SF Mono for the command, the cwd and every output line, against the
+  // 13px/22px Fira Code of the row's own summary directly above it — opening the
+  // row made its text grow.
+  //
+  // The split follows the rest of the card rather than flattening it: the command
+  // fills the slot `_summary` fills in a read or search row (transcript size), the
+  // output is a code viewer like `[data-read]`'s body (the 12px code step).
+  const card = "body [data-step-process]:not([hidden]) [data-step-process-content]"
+  const terminal = `${card} [data-terminal]`
+
+  // `_prompt` and `_output` re-state `font: var(--dsl-terminal-font)` themselves,
+  // so a size set on `[data-terminal]` alone is replaced one level down.
+  for (const leaf of ['_prompt', '_cwd', '_command', '_copyButton', '_status']) {
+    const body = lastRule(`${terminal} [class*='${leaf}']`)
+    assert.ok(body, `the terminal ${leaf} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `the terminal ${leaf} takes the chat face`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `the terminal ${leaf} takes the chat size`)
+    assert.match(body, /line-height:\s*var\(--dsh-chat-line-height\)/, `the terminal ${leaf} takes the chat line-height`)
+  }
+
+  for (const leaf of ['_output', '_line', '_empty']) {
+    const body = lastRule(`${terminal} [class*='${leaf}']`)
+    assert.ok(body, `the terminal ${leaf} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `the terminal ${leaf} takes the chat face`)
+    assert.match(body, /font-size:\s*12px/, `the terminal ${leaf} keeps the code step`)
+  }
+
+  // The card's own `[class*='_title']` rule reaches the code-block banner's file
+  // name (same local name), lifting one span of an 11px strip to 13px/500.
+  const bannerTitle = lastRule(`${card} [data-code-block-banner] [class*='_title']`)
+  assert.ok(bannerTitle, 'the banner file name must be put back on the banner step')
+  assert.match(bannerTitle, /font-size:\s*11px/, 'the banner file name matches its own strip')
+  assert.match(bannerTitle, /font-weight:\s*400/, 'and is not a row label')
+
+  // Two more code viewers that state the host's 14px/19px themselves.
+  for (const selector of [`${card} [class*='ioCard']`, `${card} pre[class*='_instructions']`]) {
+    const body = lastRule(selector)
+    assert.ok(body, `${selector} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `${selector} takes the chat face`)
+    assert.match(body, /font-size:\s*12px/, `${selector} keeps the code step`)
+  }
+
+  // The image card's caption pair: the first is on the code-block-small scale
+  // (14px/19px SF Mono), the second on `--dsw-font-xs-13` — one caption block in
+  // two faces and two sizes.
+  for (const leaf of ['imageMeta', 'imageExtra']) {
+    const body = lastRule(`${card} [class*='${leaf}']`)
+    assert.ok(body, `the image ${leaf} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `the image ${leaf} takes the chat face`)
+    assert.match(body, /font-size:\s*var\(--dsh-chat-font-size\)/, `the image ${leaf} takes the chat size`)
+  }
+})
+
+test('the compaction body is prose, on the same ladder as the assistant body', () => {
+  // The one markdown render in the transcript that is not an assistant step, so
+  // none of 7a reaches it: measured 17px/27px `-apple-system` body text,
+  // 22px/31px/700 headings and 14.875px SF Mono inline code, while the row above
+  // reads 13px/18px and the assistant prose beside it 13px/22px Fira Code.
+  const prose = "body [data-chat-flow-kind='compaction'] [class*='_markdown']"
+  const root = lastRule(prose)
+  assert.ok(root, 'the compaction prose must be styled')
+  assert.match(root, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'the compaction prose takes the chat face')
+  assert.match(root, /font-size:\s*var\(--dsh-chat-font-size\)/, 'the compaction prose takes the chat size')
+  assert.match(root, /line-height:\s*var\(--dsh-chat-line-height\)/, 'the compaction prose takes the chat line-height')
+
+  // The same ladder the assistant prose uses: a heading stays a rank above its
+  // paragraph, so it must not collapse onto 13px.
+  const ladder = { h1: 22, h2: 18, h3: 15, h4: 14, h5: 14, h6: 14 }
+  for (const [tag, size] of Object.entries(ladder)) {
+    const body = lastRule(`${prose} ${tag}`)
+    assert.ok(body, `${tag} must be styled`)
+    assert.match(body, /font-family:\s*var\(--dsh-chat-font, inherit\)/, `${tag} takes the chat face`)
+    assert.match(body, new RegExp(`font-size:\\s*${size}px`), `${tag} sits at ${size}px`)
+    assert.match(body, /line-height:\s*1\.35/, `${tag} uses a heading leading`)
+  }
+
+  // `!important` for the same reason as in the assistant body: the host's own
+  // `font-size: .875em !important` would render 13px inline code at 11.375px.
+  const code = lastRule(`${prose} :not(pre) > code`)
+  assert.ok(code, 'the compaction inline code must be styled')
+  assert.match(code, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'inline code takes the chat face')
+  assert.match(code, /font-size:\s*var\(--dsh-chat-font-size\)\s*!important/, 'the host em-based size must be beaten')
+})
+
+test('the elapsed-time digits follow the row they sit in', () => {
+  // `_durationNumber` states `--ds-font-family-code` itself (for tabular figures),
+  // so 「31s」 sat in SF Mono inside a Fira Code label — one row, two faces. Only
+  // the face moves: the size is the row's own.
+  const digits = lastRule("body [data-turn-process] [class*='_durationNumber']")
+  assert.ok(digits, 'the elapsed-time digits must be styled')
+  assert.match(digits, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'the digits take the chat face')
+  assert.doesNotMatch(digits, /font-size:/, 'the digits keep the row size')
+})
+
 test('inline code follows the prose instead of the host 0.875em step', () => {
   // The host sets `code { font-size: .875em !important }`, so 13px prose renders
   // its inline code at 11.375px — a third size between prose and the 12px block
