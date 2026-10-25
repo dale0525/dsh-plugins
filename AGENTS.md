@@ -303,6 +303,25 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   socket 何时被关**：未修复时首帧 `null`、约 16 s 被以 1006 关闭。
   别用「首帧多大」当判据，也别在局域网下反复测 —— 测不出来。
 
+- **裁响应字段前，先把该字段的每个读取点都找全，并确认「删掉」比「置空」安全**：
+  删字段是**破坏性**的，只要有一个读取点没判空，整条数据流就会断。实测 2026-10-25：
+  把 `assistant/message` 的 `data.stream` 删掉后，所有长会话变成空白屏、「加载更早」也
+  点了没反应，控制台只有一句
+  `[session-controller] event feed subscriber failed: TypeError: stream is not iterable`。
+  成因是 `assistantStreamFirstTokenTime`（`dsh-client-ui-trajectory`）直接
+  `for (const record of stream)`，**没有任何判空**；而 chat 侧那两处读取都有
+  `?? state.sample` / `event.data.usage ??` 短路保护 —— 只查 chat 会得出「安全」的错误结论。
+  判据：`grep -rn "data\.<字段>" --include=client.js` 把**所有** bundle 的读取点列出来
+  （当时 4 处：chat 2、trajectory 1、experimental-session-inspector 1），逐个看有没有守卫。
+  **更稳的默认做法是置空而不是删除**：`data.stream = []` 让所有读取方都安全
+  （`for...of []` 零次迭代、`lastAssistantStreamChunk` 返回 `undefined`），体积收益不变
+  （该字段占首屏 1685 KB）。同帧里 `assistant/attempt` 的 `stream` 只有 6 KB，不必动它。
+
+- **判断「某字段是否可裁」不能只按体积，要按「渲染路径是否真的走不到」**：
+  同一个字段，一个视图读、另一个视图不读。若该视图被主题隐藏（如本仓库隐藏了轨迹面板），
+  裁掉看似安全，但**订阅者异常是全局面**：它不属于某个视图，一旦抛出就中断整个事件流，
+  被隐藏的视图反而成了整屏空白的根因。
+
 - **本地验证脚手架发布后要清三处，漏一处就还在读本地**：`pnpm-workspace.yaml` 的
   `overrides:` 块、`package.json` 里聚合包的 `file:` 指针、以及重装后的 `pnpm-lock.yaml`。
   判据：`grep "<仓库绝对路径>" pnpm-lock.yaml` 无输出，且包目录是真目录（非软链）、
