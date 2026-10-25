@@ -276,8 +276,16 @@ function openingSnapshotTrimScript(): string {
           if (!payload) continue
           const data = payload.data
           if (!data || typeof data !== 'object') continue
-          if (payload.type === 'assistant/message' && data.stream !== undefined) {
-            delete data.stream
+          if (payload.type === 'assistant/message' && Array.isArray(data.stream) && data.stream.length > 0) {
+            // Emptied, never deleted. The trajectory ledger reads this without a
+            // guard (assistantStreamFirstTokenTime iterates it directly), and
+            // iterating undefined throws. Measured - deleting the key surfaced as
+            // "[session-controller] event feed subscriber failed: TypeError: stream
+            // is not iterable", which aborts the whole event feed and leaves the
+            // conversation blank, "load earlier" included. An empty array satisfies
+            // every reader: the loops iterate zero times and lastAssistantStreamChunk
+            // returns undefined.
+            data.stream = []
             changed = true
             continue
           }

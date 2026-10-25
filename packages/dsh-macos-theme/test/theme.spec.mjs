@@ -2526,7 +2526,14 @@ test('the opening snapshot drops the two fields the chat never reads', () => {
   // a byte offset: the wire frame is `{type:'item', streamId, value}` and the
   // records sit in `value.records`.
   assert.match(script[0], /'assistant\/message'/, 'it must target assistant messages')
-  assert.match(script[0], /delete .*\.stream|\.stream = undefined/, 'the chunk log must be dropped')
+  // Emptied, not deleted. Deleting the key broke every long conversation:
+  // `assistantStreamFirstTokenTime` does `for (const record of stream)` with no
+  // guard, so `undefined` threw "stream is not iterable" inside the event-feed
+  // subscriber and the chat rendered nothing at all — not even "load earlier".
+  // An empty array keeps every reader working (loops iterate zero times,
+  // `lastAssistantStreamChunk` returns undefined) while still dropping the bytes.
+  assert.match(script[0], /data\.stream = \[\]/, 'the chunk log must be emptied, never deleted')
+  assert.doesNotMatch(script[0], /delete data\.stream/, 'deleting the chunk log crashes the event feed')
   assert.match(script[0], /'request\/header'/, 'it must target request headers')
   assert.match(script[0], /delete .*header\.tools|header\.tools = undefined/, 'the tool snapshot must be dropped')
 
