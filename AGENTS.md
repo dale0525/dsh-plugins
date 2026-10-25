@@ -388,6 +388,9 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
 > **重启后核对「新代码是否真的进了提示词」，要读会话日志里最后一条 `request/header`。**
 > 同一会话里每条请求都留一份，第一条是**重启前**的旧快照。实测按第一条判定，得出「改动没生效」
 > 的错误结论，实际最新那条已是新工具清单（133 工具/220,287 字符 → 77 工具/106,064 字符）。
+> 工具清单在 **`data.header.tools`**，不在 `data.tools` 也不在 `data.request.tools` ——
+> 按后两个路径取会得到 0 条，看起来像「插件没挂上」，实际是路径写错。判据是
+> `data.header.tools[0]` 的键为 `name,description,parameters`。
 
 > **该命令靠 `lsof` 找端口 owner，而 `lsof` 在 `/usr/sbin`**：调用方 PATH 缺 `/usr/sbin` 时
 > `port_pid` 取空，输出 `owner pid none` 与 `==NOT LISTENING==`——**服务其实是好的**。
