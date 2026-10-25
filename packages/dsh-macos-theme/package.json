@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-macos-theme",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "macOS-native theme for DeepSeek Harness: a floating translucent workbench window on a sky-blue gradient desktop, with the macOS light and dark palettes. Pure UI plugin — the browser half stacks a token override layer on the active theme and injects the structural CSS the token layer cannot express.",
   "license": "MIT",
   "type": "module",
