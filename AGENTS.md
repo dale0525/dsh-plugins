@@ -278,12 +278,30 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
 - **优先改请求参数，而不是收下大响应再裁**：`session/page` 这类端点把预算作为参数接收
   （`maxMessages` / `turnWindow`），改小后重发让服务端只生成小页，请求与响应同时变小、
   宿主也少做功。改响应只能省带宽，宿主已经付过计算的代价。
-  前提是预算确实在请求体里 —— 首屏 `doOpen` 用的是客户端常量 `HISTORY_PAGE_OPTIONS`，
-  插件改不到，别去试着裁首屏正文。
   改请求体时**认不出的形状必须原样转发**（解析失败、缺 `payload.args.request`、
   字段类型不对、重编码抛错）：吞掉一个翻页请求会让用户完全无法回看历史，
   代价远大于一次大页。实测数据与预算曲线见
   `docs/research/2026-10-21-session-payload-reduction.md`。
+
+- **首屏预算在出站帧里，`maxMessages` 却可能是死参数**（2026-10-25 修正了此前
+  「首屏插件改不到」的错误结论）：首屏走 `session/follow` 流，页大小随 `open` 帧发出
+  （`payload.args.request.maxMessages` / `.turnWindow`），包一层 `WebSocket.prototype.send`
+  就能改。但 `paginate` 从最新往回扫，遇到 `turn/start` 时先判
+  `count >= minMessages && turns >= minTurns` 才允许截断，遇到 message 才用
+  `count >= maxMessages` 兜底 —— **当最近某个 Turn 的 message 数小于 `minMessages` 时，
+  那个 Turn 边界永远不算数**，扫描会耗尽历史、`maxMessages` 一次都不触发。
+  实测：一个 Turn 为 `[91, 11, 1]` 条 message 的会话，`120/50` 与 `500/50` 都是 6313 KB
+  （完全没变），把 `minMessages` 降到 12 才变成 566 KB，拐点在 15→12 之间。
+  所以「压了 `maxMessages` 却没变小」时，先数各 Turn 的 message 条数，别怀疑改写没生效。
+  `assistantStream` 不能用来减负：宿主声明为必需 `const true`，传 `false` 直接被拒。
+
+- **长会话「远程打不开」要在限速下才复现，判据是首帧是否到达**：局域网 6 MB 一两秒就传完，
+  一切正常；慢链路（Tailscale/外网）上它决定会话能不能打开。症状链是
+  「一直载入历史…→ socket 断开 →『重新连接中』→ 重连后列表未加载全显示『未命名』→
+  恢复标题 → 再次打开 → 再次超时」的循环。用 CDP
+  `Network.emulateNetworkConditions`（2 Mbit/s / 80 ms）复现，看**首帧有没有到达、
+  socket 何时被关**：未修复时首帧 `null`、约 16 s 被以 1006 关闭。
+  别用「首帧多大」当判据，也别在局域网下反复测 —— 测不出来。
 
 - **本地验证脚手架发布后要清三处，漏一处就还在读本地**：`pnpm-workspace.yaml` 的
   `overrides:` 块、`package.json` 里聚合包的 `file:` 指针、以及重装后的 `pnpm-lock.yaml`。

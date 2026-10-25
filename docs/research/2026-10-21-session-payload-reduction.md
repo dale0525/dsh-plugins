@@ -1,7 +1,12 @@
 # 会话载荷削减：三条可复用的路径与各自的边界
 
-> 状态：一手实测结论。数字全部来自本机运行中的 DSH（宿主 0.2.1-rc.2，一个 28 MB 压缩日志的会话），
-> 复现方式见 §5。结论已在 `@logictan/dsh-macos-theme` 0.1.9 落地。
+> 状态：一手实测结论。数字全部来自本机运行中的 DSH（宿主 0.2.1-rc.2）。
+> 复现方式见 §5。结论已在 `@logictan/dsh-macos-theme` 0.1.13 落地
+> （裁 `session/list`、压 `session/page`、压首屏 `session/follow` 并裁两个字段）。
+>
+> **2026-10-25 重要修正**：§3.3 原先写的「首屏不是瓶颈、插件改不到」**是错的**。
+> 慢链路（Tailscale/外网）上首屏帧大小直接决定会话能不能打开 —— 传不完就超时重连，
+> 表现为「一直载入历史 → 重新连接中 → 未命名 → 再循环」。详见 §3.3。
 
 ## 1. 问题
 
@@ -75,10 +80,65 @@
 打开会话时该会话自己的投影流会完整送达，`useProjection` 订阅的是当前打开的会话
 而非列表，所以裁列表不会饿死聊天视图。
 
-### 3.3 什么都不做（首屏）
+### 3.3 首屏（2026-10-25 修正：此前「不是瓶颈、改不到」的结论是错的）
 
-首屏 855 KB 不是瓶颈，且预算写在客户端常量里、不在请求体里，插件改不到。
-硬要改只能裁响应，但 `assistant/message` 是会话正文，裁错了用户直接看不到历史。
+**旧结论错在两处，都已实测推翻。**
+
+**其一：首屏可以改，预算就在出站帧里。** 之前判定「预算写在客户端常量
+`HISTORY_PAGE_OPTIONS` 里、插件改不到」，只对了一半：常量确实改不到，但首屏走的是
+`session/follow` **流**，它的页大小是随 `open` 帧发出的请求参数
+（`payload.args.request.maxMessages` / `.turnWindow`）。包一层
+`WebSocket.prototype.send` 就能改写，和 3.1 改 `session/page` 是同一类操作。
+`assistantStream` 那条路堵死：宿主把它声明为必需的 `const true`，传 `false` 直接被拒
+（`gateway/input-invalid`），所以只能改预算或裁响应。
+
+**其二：瓶颈不是体积，是「字节传不完」。** 局域网 6 MB 一两秒就完了，看不出问题；
+慢链路上它决定会话能不能打开。把链路限到 2 Mbit/s / 80 ms（典型 Tailscale 中继）实测
+最坏的本地会话（20 MB 日志）：
+
+| 首屏预算 | 帧大小 | 结果 |
+|---|---|---|
+| 500/50（App 默认） | 6313 KB | 首帧**始终未到达**，socket 在 **16.4 s** 被以 1006 关闭 |
+| 120/50 | 6313 KB | 同上（**完全没变**，原因见下） |
+| 120/12 | 566 KB | 3.6 s 到达，连接存活 |
+| 120/10 | 566 KB | 3.6 s 到达，连接存活 |
+
+症状链正是用户报的现象：一直「载入历史…」→ socket 断开 → 侧边栏底部「重新连接中」→
+重连成功但列表尚未加载、全显示「未命名」→ 恢复真实标题 → 再次打开会话 → 再次超时，
+直到某次碰巧成功。**局域网几乎不出现，Tailscale/外网访问才复现**，这就是它的指纹。
+
+**其三：`maxMessages` 在长 Turn 会话上可能是死参数，真正生效的是 `minMessages`。**
+`paginate` 从最新往回扫，遇到 `turn/start` 时先判
+`count >= minMessages && turns >= minTurns` 才允许在此截断，遇到 message 时判
+`count >= maxMessages` 兜底。上面那个会话的 Turn 只有 `[91, 11, 1]` 条 message：
+最近的 Turn 单独永远凑不到 `minMessages: 50`，于是扫描耗尽历史、把 103 条全给了你，
+`maxMessages: 120` 一次都没触发。把 `minMessages` 降到 12 才在第二个 Turn 起点停下。
+**拐点实测在 15→12 之间（6313 KB → 566 KB）。**
+
+> 推论：凡是「压 `maxMessages` 却毫无变化」的会话，先看它的 Turn 里各有多少条
+> message —— 单个 Turn 的 message 数小于 `minMessages` 时，那个 Turn 边界永远不算数。
+
+**其四：帧里有一半是重复内容。** 同一个 6313 KB 帧的构成：
+
+| 组成 | 大小 | 是否渲染需要 |
+|---|---|---|
+| `assistant/message` | 4864 KB | — |
+| ├ `data.stream` | 3719 KB | **不需要**：分块日志，与 `message.content` 文本逐字符相同 |
+| └ `message.content` | 1129 KB | 需要，正文 |
+| `request/header` | 624 KB | — |
+| └ `header.tools` | 623 KB | 只有轨迹面板渲染，本主题已隐藏 |
+
+`data.stream` 是宿主为还原「打字机节奏」保留的分块记录。对**已落定**的消息，同样的文本
+已经在 `data.message.content` 里：该会话全部 65 条 assistant 消息，`stream` 拼接文本与
+`content` 拼接文本**逐字符相等**（reasoning 两侧都是 917153 字符）。前端只有
+`streamUsage`（算 token 用量）和首 token 时间读它，而用量另有 `data.usage`。
+
+裁掉这两项后：6313 KB → 1961 KB（省 69%）。再叠 120/10：→ **235 KB**，
+2 Mbit/s 下 5.1 s 到达、连接存活（重启后实机复核）。
+
+**为什么裁剪必须做在到达侧而不是请求侧**：宿主 `follow` 把事件直接推进 `buffered`，
+没有插件可挂的裁剪点；`assistantStream: false` 又被 schema 拒绝。所以「少传」只能靠压预算，
+「少解析」才靠裁字段——两者不互相替代，慢链路真正需要的是前者。
 
 ## 4. 实现约束：为什么必须用 head 注入
 
@@ -113,6 +173,30 @@
 
 读 CDP 返回值时注意层级：`Runtime.evaluate` 的回复是
 `{ id, result: { result: { value } } }`，取 `out.result.result.value`。
+
+### 5.1 慢链路症状必须限速才能复现（2026-10-25）
+
+局域网测不出「打开不了」——6 MB 一两秒就传完，一切正常。要复现必须限速：
+
+```
+Network.emulateNetworkConditions
+  { offline: false, latency: 80, downloadThroughput: 2*1024*1024/8, uploadThroughput: 512*1024/8 }
+```
+
+2 Mbit/s / 80 ms 大致相当于 Tailscale 中继。判据不是「首帧多大」，而是
+**首帧有没有到达、socket 什么时候被关**：
+
+- 未修复：首帧 `null`（始终没到），socket 在 ~16 s 被以 **1006** 关闭。
+- 修复后：首帧 ~5 s 到达、235 KB，35 s 后 socket 仍 `readyState === 1`。
+
+测「首屏预算是否真的生效」时，直接手发一个 `session/follow` 的 `open` 帧、只取第一帧
+就关 socket，比点页面可靠得多；同时把返回的 `records` 长度和 `hasMore` 记下来，
+就能看出截断点落在哪个 Turn。
+
+**验证 head 注入是否生效**：grep 服务端返回的 HTML 里的**实际字符串**
+（如 `delete data.stream`、`minMessages":10`），不要 grep 源码里的函数名或常量名
+（如 `openingPageBudgetScript`、`OPENING_PAGE_BUDGET`）—— 后者永远搜不到，会得出
+「没注入」的错误结论。
 少取一层会得到 `undefined`，很容易被误判成「页面取不到值」。
 
 ## 6. 未做与边界
@@ -123,7 +207,10 @@
 - **`request/header.tools` 去重**（每份 103 KB，一页可达 3 份）与
   **`job/*` 与 `tool/*` 的重复**（同一批工具调用在两边各出现一次，`label` 两边都带完整命令行）
   都属宿主侧事件 schema 的改动，未做。
-- 以上三项都在宿主侧或需要新增按需端点，不在插件能改的范围。
+- ~~以上三项都在宿主侧或需要新增按需端点，不在插件能改的范围。~~
+  **2026-10-25 修正**：`request/header.tools` 与 `assistant/message` 的 `data.stream`
+  都可以在到达侧裁掉（见 §3.3），已落地在 `dsh-macos-theme` 的 head 注入里。
+  「宿主侧才能改」只对**源头少生成**成立，对**少传给浏览器**不成立。
 
 ### 6.1 冷开耗时：插件够不到的那一半
 
@@ -141,7 +228,11 @@
 缓存容量由 `dsh-session-query` 的 `preparedSessionCacheSize` 决定，默认 **5**；本机同时有 25 个
 活跃 agent，于是缓存持续被淘汰、反复重算。
 
-这条边界决定了插件能做什么：`@logictan/dsh-macos-theme` 的两个杠杆（裁 `session/list` 响应、
-把 `session/page` 的 `maxMessages` 压到 120）只减少**载荷与调用频次**，既不能降低宿主的解码 CPU，
+这条边界决定了插件能做什么：`@logictan/dsh-macos-theme` 的三个杠杆（裁 `session/list` 响应、
+把 `session/page` 的 `maxMessages` 压到 120、把首屏 `session/follow` 压到 120/10 并裁掉
+`data.stream` / `header.tools`）只减少**载荷与调用频次**，既不能降低宿主的解码 CPU，
 也不能让一次冷开变快。要动冷开本身，只能改 profile 里 `session-query-sqlite` 行的
 `preparedSessionCacheSize`（或宿主的解码路径）—— 那是宿主侧配置，不是插件能力。
+
+> 两者要分开算账：**冷开慢**是宿主解码 CPU，本地和远程都一样慢；
+> **远程打不开**是载荷传不完，只在慢链路出现。前者插件碰不到，后者可以。
