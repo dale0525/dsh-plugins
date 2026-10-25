@@ -183,6 +183,16 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   两者都缺时该 action 直接失败。
 - **根测试用 `pnpm test`，不用 `pnpm -r run test`**：`-r` 只覆盖 workspace 子项目，
   会跳过根包自己的 `scripts/*.test.mjs`。
+- **监听 waterfall 事件前先确认「有没有 peer 不调用 `next()`」，有就必须 `prepend: true`**：
+  cordis 的 waterfall 里，监听器不调用 `next()` 就等于**截断**链条，注册在它后面的监听器
+  **一次都不会执行**（不是拿到旧值，是完全不跑）。这类「决定者」在宿主里是常态：
+  `fs-observation-policy` 的 `fs/write-intent` / `fs/edit-intent` 监听器
+  （`(target, actor) => Promise.resolve().then(() => gate.writeIntent(target, actor))`）决定完直接返回，
+  而插件行的加载顺序**不由你控制**（按 profile patch 的行序）。于是「逻辑写得对、测试也绿、
+  真实部署里永不触发」——测试替身里没有那个 peer，所以永远复现不出来。
+  `dsh-workspace-changes` 监听同一对事件时正是为此加的 `{ prepend: true }`。
+  判据：注册时读一遍该事件的每个已知监听方，任一不调 `next()` 就 prepend；并补一条断言
+  `listener.options?.prepend === true` 的测试，否则这条线没人守。
 - **`inject` 是「必需」，只监听事件就不要 inject 那个服务**：`inject` 里的服务缺失时
   cordis **不调用该插件的 `apply`**，整个插件静默失效（实测：`inject: ['svc']` 且 svc 未提供
   → `apply` 从不执行；去掉 `inject` 即正常）。所以给插件加一条
