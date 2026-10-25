@@ -367,7 +367,7 @@ function makeCtx(services = {}) {
     listeners,
     ctx: {
       get: (key) => services[key],
-      on: (event, handler) => listeners.push({ event, handler }),
+      on: (event, handler, options) => listeners.push({ event, handler, options }),
       inject: (names, callback) => waits.push({ names, callback }),
       effect: (callback) => {
         callback()
@@ -843,14 +843,14 @@ describe('route mounting', () => {
     assert.equal(typeof harness.waits[0].callback, 'function')
   })
 
-  it('registers the pre-step listener even with no Web server at all', () => {
-    // The listener is the plugin's whole purpose; a deployment with no Web UI
-    // must still get it.
+  it('registers its listeners even with no Web server at all', () => {
+    // The listeners are the plugin's whole purpose; a deployment with no Web UI
+    // must still get them.
     const harness = mount({})
 
     assert.deepEqual(
       harness.listeners.map((entry) => entry.event),
-      ['agent/pre-step'],
+      ['fs/write-intent', 'fs/edit-intent', 'agent/pre-step'],
     )
   })
 })
@@ -1227,5 +1227,186 @@ describe('status route', () => {
     // No working-directory service in this deployment, so the menu must not
     // offer a flow that has nowhere to land.
     assert.equal(body.deferred, false)
+  })
+})
+
+describe('main checkout mutation warning', () => {
+  let root
+
+  before(async () => {
+    root = await fs.mkdtemp(join(tmpdir(), 'dsh-worktree-warn-'))
+  })
+
+  after(async () => {
+    await fs.rm(root, { recursive: true, force: true })
+  })
+
+  /**
+   * Run one registered intent listener the way the host's waterfall does.
+   *
+   * `next` answers with a sentinel: the listener owns no decision here, so what
+   * it returns has to be the peer's intent, untouched.
+   */
+  async function runIntent(ctx, event, target, actor) {
+    const listener = ctx.__harness.listeners.find((entry) => entry.event === event)
+    assert.ok(listener, `${event} listener is registered`)
+    return listener.handler(target, actor, () => Promise.resolve('peer-intent'))
+  }
+
+  /** An Agent stand-in that records what the plugin injects. */
+  function recordingAgent(session) {
+    const injected = []
+    return { injected, agent: { session, inject: (message) => injected.push(message) } }
+  }
+
+  it('warns when a Session in a linked worktree writes into the main checkout', async () => {
+    const repo = await makeRepo(root, 'warn-write')
+    const created = await createWorktree(repo, 'feature')
+    assert.equal(created.ok, true)
+    const worktreePath = created.value.path
+    const mainPath = await fs.realpath(repo)
+    const target = join(mainPath, 'seed.txt')
+    const { agent, injected } = recordingAgent(Session.create('session-warn-1'))
+    // The backend's key is opaque by contract; only `processPath` names a path
+    // that can be compared against git's own answer.
+    const mounted = mount({
+      workingDirectory: { get: () => worktreePath },
+      fs: { processPath: () => target },
+    })
+
+    const intent = await runIntent(mounted.ctx, 'fs/write-intent', { displayPath: 'seed.txt', targetKey: 'opaque' }, { agent })
+
+    // The plugin never owns the decision: a mounted guard still decides.
+    assert.equal(intent, 'peer-intent')
+    assert.equal(injected.length, 1)
+    assert.equal(injected[0].source.kind, 'plugin:worktree-session')
+    assert.equal(injected[0].source.form, 'notice')
+    const text = injected[0].content[0].text
+    assert.equal(text.includes(mainPath), true)
+    assert.equal(text.includes(worktreePath), true)
+    assert.equal(text.includes(target), true)
+  })
+
+  it('says nothing when the target is inside the Session own worktree', async () => {
+    // The checkout lives under the main checkout, so the main checkout contains
+    // it by path: only excluding the linked checkouts keeps this quiet.
+    const repo = await makeRepo(root, 'warn-own-worktree')
+    const created = await createWorktree(repo, 'feature')
+    assert.equal(created.ok, true)
+    const worktreePath = created.value.path
+    const target = join(worktreePath, 'seed.txt')
+    const { agent, injected } = recordingAgent(Session.create('session-warn-2'))
+    const mounted = mount({
+      workingDirectory: { get: () => worktreePath },
+      fs: { processPath: () => target },
+    })
+
+    const intent = await runIntent(mounted.ctx, 'fs/write-intent', { displayPath: target, targetKey: target }, { agent })
+
+    assert.equal(intent, 'peer-intent')
+    assert.deepEqual(injected, [])
+  })
+
+  it('says nothing when the Session works in the main checkout itself', async () => {
+    const repo = await makeRepo(root, 'warn-main-session')
+    const created = await createWorktree(repo, 'feature')
+    assert.equal(created.ok, true)
+    const mainPath = await fs.realpath(repo)
+    const target = join(mainPath, 'seed.txt')
+    const { agent, injected } = recordingAgent(Session.create('session-warn-3'))
+    const mounted = mount({
+      workingDirectory: { get: () => mainPath },
+      fs: { processPath: () => target },
+    })
+
+    await runIntent(mounted.ctx, 'fs/write-intent', { displayPath: target, targetKey: target }, { agent })
+
+    assert.deepEqual(injected, [])
+  })
+
+  it('says nothing in a repository that has no linked worktree', async () => {
+    const repo = await makeRepo(root, 'warn-no-worktree')
+    const mainPath = await fs.realpath(repo)
+    const target = join(mainPath, 'seed.txt')
+    const { agent, injected } = recordingAgent(Session.create('session-warn-4'))
+    const mounted = mount({
+      workingDirectory: { get: () => mainPath },
+      fs: { processPath: () => target },
+    })
+
+    await runIntent(mounted.ctx, 'fs/write-intent', { displayPath: target, targetKey: target }, { agent })
+
+    assert.deepEqual(injected, [])
+  })
+
+  it('says nothing when the deployment mounts no working-directory service', async () => {
+    const repo = await makeRepo(root, 'warn-no-service')
+    const created = await createWorktree(repo, 'feature')
+    assert.equal(created.ok, true)
+    const mainPath = await fs.realpath(repo)
+    const target = join(mainPath, 'seed.txt')
+    const { agent, injected } = recordingAgent(Session.create('session-warn-5'))
+    const mounted = mount({ fs: { processPath: () => target } })
+
+    const intent = await runIntent(mounted.ctx, 'fs/write-intent', { displayPath: target, targetKey: target }, { agent })
+
+    assert.equal(intent, 'peer-intent')
+    assert.deepEqual(injected, [])
+  })
+
+  it('warns on an edit intent as well, since edits mutate too', async () => {
+    const repo = await makeRepo(root, 'warn-edit')
+    const created = await createWorktree(repo, 'feature')
+    assert.equal(created.ok, true)
+    const worktreePath = created.value.path
+    const mainPath = await fs.realpath(repo)
+    const target = join(mainPath, 'seed.txt')
+    const { agent, injected } = recordingAgent(Session.create('session-warn-6'))
+    const mounted = mount({
+      workingDirectory: { get: () => worktreePath },
+      fs: { processPath: () => target },
+    })
+
+    const intent = await runIntent(mounted.ctx, 'fs/edit-intent', { displayPath: target, targetKey: target }, { agent })
+
+    assert.equal(intent, 'peer-intent')
+    assert.equal(injected.length, 1)
+    assert.equal(injected[0].content[0].text.includes(mainPath), true)
+  })
+
+  it('never blocks the mutation when the warning itself fails', async () => {
+    // "Warn, never block" is the whole contract, and it rests on this one catch:
+    // `processPath` belongs to a filesystem backend this plugin does not own and
+    // may reject a target it did not produce. A throw here would abort a write
+    // the peers just authorised.
+    const repo = await makeRepo(root, 'warn-failure')
+    const created = await createWorktree(repo, 'feature')
+    assert.equal(created.ok, true)
+    const { agent } = recordingAgent(Session.create('session-warn-7'))
+    const mounted = mount({
+      workingDirectory: { get: () => created.value.path },
+      fs: {
+        processPath: () => {
+          throw new Error('backend refused the target')
+        },
+      },
+    })
+
+    const intent = await runIntent(mounted.ctx, 'fs/write-intent', { displayPath: 'seed.txt', targetKey: 'opaque' }, { agent })
+
+    assert.equal(intent, 'peer-intent')
+  })
+
+  it('registers ahead of the peers, since the deciding peer ends the chain', async () => {
+    // `fs-observation-policy` answers without calling `next()`, so a listener
+    // registered behind it would never run at all — the warning would silently
+    // never fire in a real deployment.
+    const mounted = mount({})
+
+    for (const event of ['fs/write-intent', 'fs/edit-intent']) {
+      const listener = mounted.listeners.find((entry) => entry.event === event)
+      assert.ok(listener, `${event} listener is registered`)
+      assert.equal(listener.options?.prepend, true, `${event} listener is prepended`)
+    }
   })
 })

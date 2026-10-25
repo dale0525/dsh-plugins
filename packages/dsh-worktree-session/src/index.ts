@@ -44,12 +44,12 @@ import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import fs from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { basename, join, relative } from 'node:path'
+import { basename, isAbsolute, join, relative, sep } from 'node:path'
 import { promisify } from 'node:util'
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmRuntime } from '@deepseek-ai/dsh-llm'
 import { appendPluginRecord, pluginRecordOf, SessionId, type Session } from '@deepseek-ai/dsh-session'
 // Type-only: pull the Cordis Context augmentations (webServer / connection) and
@@ -209,6 +209,196 @@ export function readWorktreeRecords(session: Session): WorktreeRecords {
  */
 export function markWaiting(session: Session, from: string, target?: string): void {
   appendPluginRecord(session, WAITING, target === undefined ? { from } : { from, target })
+}
+
+/* ------------------------------------------------- main checkout guard */
+
+/**
+ * Producer identity stamped on every notice this guard injects.
+ *
+ * The plugin's own name, so one transcript attributes the warning to the plugin
+ * that raised it rather than to the harness.
+ */
+const PLUGIN_SOURCE = { kind: 'plugin:worktree-session' } as const
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'plugin:worktree-session': {
+      kind: 'plugin:worktree-session'
+      form: 'notice'
+      summary: string
+    }
+  }
+}
+
+/** The host's filesystem service, as this guard uses it. */
+interface FileSystemService {
+  /**
+   * Name the OS path a target stands for.
+   *
+   * Required rather than optional: without it the target key is opaque by
+   * contract, and guessing a path from it would be a guess about a backend this
+   * plugin does not own. Backends own target identity, so the answer is already
+   * canonical — that is, it can be compared against a resolved checkout path.
+   */
+  processPath(target: unknown): string
+}
+
+/**
+ * One checkout as this guard compares it.
+ *
+ * Paths are canonicalised, so that a repository reached through a symlink and
+ * the spelling git recorded name the same checkout.
+ */
+interface Checkout {
+  /** Absolute, symlink-resolved path. */
+  readonly path: string
+  /** Whether this is the repository's main checkout. */
+  readonly isMain: boolean
+}
+
+/**
+ * The two filesystem intent waterfalls, announced before a mutation lands.
+ *
+ * Declared here rather than imported because `@deepseek-ai/dsh-fs` is not a
+ * dependency of this package: a host generation without that service must still
+ * load this plugin, and it then simply never fires these events. Where the
+ * service is installed, its own declarations merge with these.
+ */
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'fs/write-intent'(target: unknown, actor: unknown, next: () => unknown): unknown
+    'fs/edit-intent'(target: unknown, actor: unknown, next: () => unknown): unknown
+  }
+}
+
+/**
+ * Whether `child` is `parent` or lies beneath it.
+ *
+ * Compared with `relative`, the same way the local backend answers its own
+ * `contains`: a sibling whose name merely starts with the parent's does not
+ * count, and neither does a `..` escape.
+ */
+function containsPath(parent: string, child: string): boolean {
+  const rest = relative(parent, child)
+  return rest === '' || (rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest))
+}
+
+/**
+ * Resolve symlinks in a directory, falling back to the directory itself.
+ *
+ * Git records the spelling a checkout was created with, which need not be the
+ * one a Session reaches it by — on macOS `/var` is a symlink to `/private/var`,
+ * so the two spellings of one repository would otherwise compare unequal. A
+ * directory that no longer resolves is a pruned worktree, and treating it as
+ * itself simply leaves it unmatched.
+ * @param path - absolute directory.
+ * @returns its canonical form.
+ */
+async function realpathOf(path: string): Promise<string> {
+  try {
+    return await fs.realpath(path)
+  } catch {
+    return path
+  }
+}
+
+/**
+ * The checkout a path belongs to, by the longest containing prefix.
+ *
+ * Longest wins rather than "first match" because the default worktree parent
+ * directory sits *inside* the main checkout: a `.worktrees/<branch>` path is
+ * contained by both the main checkout and its own worktree, and only the more
+ * specific answer is right. Worktrees outside the repository (git allows them
+ * anywhere) are unaffected, since nothing else contains them.
+ * @param checkouts - the repository's checkouts, main checkout included.
+ * @param candidate - canonical path to attribute.
+ * @returns the owning checkout, or undefined when none contains the path.
+ */
+function owningCheckout(checkouts: readonly Checkout[], candidate: string): Checkout | undefined {
+  let found: Checkout | undefined
+  for (const checkout of checkouts) {
+    if (!containsPath(checkout.path, candidate)) continue
+    if (found === undefined || checkout.path.length > found.path.length) found = checkout
+  }
+  return found
+}
+
+/**
+ * Build the warning for one mutation of the main checkout.
+ * @param main - the main checkout's path.
+ * @param worktree - the Session's own worktree.
+ * @param target - the path about to be mutated.
+ * @param tool - which mutation is under way.
+ * @returns the model-facing notice.
+ */
+function mainCheckoutNotice(
+  main: string,
+  worktree: string,
+  target: string,
+  tool: 'write' | 'edit',
+): ReturnType<typeof createUserMessage> {
+  const text = [
+    `This ${tool} targets ${JSON.stringify(target)}, which is in the repository's main checkout at ${JSON.stringify(main)} — not in the worktree this Session works in, ${JSON.stringify(worktree)}.`,
+    // Stated as "this notice does not block" rather than "the change was
+    // applied": both intents are announced before the write lands, so whether
+    // it succeeds is not known yet and the tool call reports that separately.
+    'This notice does not block or revert the change.',
+    'Proceed only if changing the main checkout is what you intend. If the change belongs in the worktree instead, make it there.',
+  ].join('\n')
+  return createUserMessage({
+    content: [{ type: 'text', text }],
+    source: {
+      ...PLUGIN_SOURCE,
+      form: 'notice',
+      summary: boundContextSummary(`${tool} outside the worktree: ${target}`),
+    },
+  })
+}
+
+/**
+ * Warn the Session when a mutation lands in the main checkout instead.
+ *
+ * Never blocks: the peers' intent is what the caller receives untouched, and
+ * the notice only tells the model where its own change is going, once the
+ * decision is already made.
+ *
+ * A Session only has a "wrong" checkout if it works in a linked worktree, so a
+ * Session in the main checkout — and one outside any repository — stays quiet.
+ * @param ctx - host plugin context.
+ * @param target - the resolved target about to be mutated.
+ * @param actor - the opaque tool-execution context, which carries the Agent.
+ * @param tool - which mutation is under way.
+ */
+async function warnMainCheckoutMutation(
+  ctx: Context,
+  target: unknown,
+  actor: unknown,
+  tool: 'write' | 'edit',
+): Promise<void> {
+  const agent = (actor as { agent?: Agent } | undefined)?.agent
+  if (agent === undefined) return
+  const cwd = (ctx.get('workingDirectory') as WorkingDirectoryService | undefined)?.get(agent.session)
+  if (cwd === undefined) return
+  const fileSystem = ctx.get('fs') as FileSystemService | undefined
+  if (fileSystem === undefined) return
+
+  const worktrees = await listWorktrees(cwd)
+  const checkouts = await Promise.all(
+    worktrees.map(async (entry): Promise<Checkout> => ({ path: await realpathOf(entry.path), isMain: entry.isMain })),
+  )
+  const worktree = owningCheckout(checkouts, await realpathOf(cwd))
+  // Its own checkout is the main one, so there is no other checkout to warn
+  // about: the Session is already editing where it lives.
+  if (worktree === undefined || worktree.isMain) return
+  // Already canonical: the backend derives a target key from `realpath` of the
+  // nearest existing ancestor, so no second resolution is needed here.
+  const targetPath = fileSystem.processPath(target)
+  // Another worktree or another repository is outside this guard's business.
+  const main = owningCheckout(checkouts, targetPath)
+  if (main === undefined || !main.isMain) return
+
+  agent.inject(mainCheckoutNotice(main.path, worktree.path, targetPath, tool))
 }
 
 /* -------------------------------------------------------------- git plumbing */
@@ -835,11 +1025,12 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
 }
 
 /**
- * Mount the deferred creation and the plugin's routes.
+ * Mount the deferred creation, the main-checkout warning, and the routes.
  *
- * The `agent/pre-step` listener is registered unconditionally: it reads every
- * optional service through `ctx.get` at call time, so a deployment that mounts
- * none of them still loads this plugin and simply has nothing to do.
+ * The `agent/pre-step` and `fs/*-intent` listeners are registered
+ * unconditionally: they read every optional service through `ctx.get` at call
+ * time, so a deployment that mounts none of them still loads this plugin and
+ * simply has nothing to do.
  *
  * `webServer` and `connection` are awaited through one nested `inject` rather
  * than read at apply time. A composed row order does not imply an activation
@@ -852,6 +1043,37 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
  * @param ctx - host plugin context.
  */
 export function apply(ctx: Context): void {
+  // File-class mutations are the only ones whose target arrives here already
+  // resolved. A shell command's target is the string the model typed, where
+  // guessing the paths it touches would warn on `cat` and miss `cd`.
+  for (const [event, tool] of [
+    ['fs/write-intent', 'write'],
+    ['fs/edit-intent', 'edit'],
+  ] as const) {
+    ctx.on(
+      event,
+      async (target: unknown, actor: unknown, next: () => unknown) => {
+        // A refusal (a stale version, an unread file) arrives as a rejection
+        // here and must stay a refusal: nothing is warned about, and the tool
+        // call fails exactly as it would without this plugin.
+        const intent = await next()
+        try {
+          await warnMainCheckoutMutation(ctx, target, actor, tool)
+        } catch (error) {
+          // "Warn, never block" has to hold structurally. `processPath` belongs
+          // to a filesystem backend this plugin does not own and may reject a
+          // target it did not produce, so a throw here would abort a write the
+          // peers just authorised.
+          ctx.logger.warn('worktree-session: main checkout warning failed: %o', error)
+        }
+        return intent
+      },
+      // Outermost: the deciding peer ends the chain without calling `next()`,
+      // so a listener registered behind it would never run.
+      { prepend: true },
+    )
+  }
+
   ctx.on('agent/pre-step', async (payload, next) => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
