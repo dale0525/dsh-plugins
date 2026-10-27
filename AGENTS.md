@@ -733,6 +733,15 @@ pnpm run check:host                           # 宿主世代兼容 + patch 行 i
 > 直接读代码猜「我是不是引入了竞态」不可靠：这两处的写盘本来就是 fire-and-forget，
 > 竞态在改动前就存在，只看代码会误判成自己刚写坏。
 
+> **时钟取样的断言必须注入 `now`，否则它按机器速度决定红绿**：`saveConfigSnapshot` 的
+> `createdAt` 取自真实时钟（`opts.now ?? () => new Date()`），而
+> `listConfigSnapshots` 按 `createdAt` 倒序、并列时退回 `id` 降序。同一测试里连着保存两次、
+> 又断言「先存的排在后面」时，只要两次落在**同一毫秒**，比较器就按 id 裁决，`old` 会排到
+> `new` 前面。实测两次连续写完成于同一毫秒的概率约 **27%**（200 次里 54 次），所以这条
+> 断言在快机器上大概率红、在慢机器上大概率绿——本地 12 次全绿而 CI 红，正是这个方向。
+> 判据是「这个测试有没有注入 `now`」，不是「本地跑几遍」：需要断言顺序就传
+> `now: () => new Date('...')`，或者只比较集合（`.map(id).sort()`）。
+
 > **测试的 TMPDIR 陷阱（macOS，仅 `dsh-config-manager`）**：该包的符号链接类测试
 > （`packages/dsh-config-manager/src/**/*.test.ts`，如 `utils/recursive-walk.test.ts`、
 > `utils/atomic-write.test.ts`）建真实符号链接，而 macOS 的 `/var/folders/...` 是
