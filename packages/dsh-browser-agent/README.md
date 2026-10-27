@@ -3,9 +3,17 @@
 A DSH browser agent that drives **your own Chrome** over CDP. Each page
 observation builds an indexed table of the visible controls; one TypeSafe
 `/v1/systemone` request decides both the **operation** (CLICK / TYPE_TEXT /
-SELECT / SCROLL_UP / SCROLL_DOWN / WAIT / DONE / BLOCKED) and the **target**
-element index; only `TYPE_TEXT` asks a second model for the field value, and
-that model comes from DSH's own `ctx.llm` service rather than a second key.
+SELECT / PRESS_KEY / SCROLL_UP / SCROLL_DOWN / WAIT / DONE / BLOCKED) and the
+**target** element index; only `TYPE_TEXT` asks a second model for the field
+value, and that model comes from DSH's own `ctx.llm` service rather than a
+second key.
+
+`TYPE_TEXT` inserts through the keyboard rather than assigning `element.value`:
+React and Vue track the value property, so an assignment updates their tracker
+and the `input` event they then see is discarded as a no-op — the field stays
+empty however convincing the trace looks. `PRESS_KEY` is the keyboard companion:
+a filled form still has to be submitted, and an open suggestion list still has
+to be accepted, and neither is reachable by clicking.
 
 ## Why it connects instead of launching
 
@@ -42,7 +50,7 @@ ends, so your window and tabs are left exactly as they were.
 | TypeSafe model | defaults to `jev-latest` |
 | CDP endpoint | defaults to `http://127.0.0.1:9222` |
 | Max steps | browser actions per run; defaults to 60 |
-| Text provider / model / reasoning effort | route for the `TYPE_TEXT` field-value call, chosen from the live model catalog. All empty = the session's own current route. |
+| Text provider / model / reasoning effort | route for the `TYPE_TEXT` field-value call, chosen from the live model catalog. All empty = the session's own current route; with no session route either, a `TYPE_TEXT` decision fails the run with a settings hint instead of being recorded as a failed step. |
 
 The TypeSafe key is a **credential**, entered once per device in the same card
 under *TypeSafe key*. It lives in `$DSH_HOME/.credentials.yaml` as
