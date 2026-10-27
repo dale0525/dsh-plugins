@@ -40,6 +40,17 @@ export const MAX_ACTIONS = 250;
 export const MAX_TEXT = 6000;
 
 /**
+ * Upper bound on the options one dropdown contributes.
+ *
+ * The value question's criteria map is capped at 255 entries by the API, so an
+ * unbounded option list would fail the request outright (measured: 300 options
+ * → HTTP 422 `Dictionary should have at most 255 items`). 200 leaves room for
+ * the question's own bookkeeping and keeps a long list from dominating the
+ * prompt. A dropdown truncated here still offers its first 200 alternatives.
+ */
+export const MAX_OPTIONS = 200;
+
+/**
  * The page-side snapshot. Serialized into the page by the caller, so every
  * limit it needs is a parameter.
  *
@@ -141,21 +152,17 @@ export function snapshot(limits) {
 
     if (element.tagName === 'SELECT') {
       const current = [...element.selectedOptions].map((option) => option.label).join(', ');
-      for (let i = 0; i < element.options.length; i += 1) {
-        const option = element.options[i];
+      const options = [];
+      for (const option of element.options) {
+        if (options.length >= limits.maxOptions) break;
         if (option.selected || option.disabled || option.closest('optgroup[disabled]')) continue;
-        actions.push({
-          ...base,
-          kind: 'select',
-          value: current,
-          optionLabel: option.label,
-          optionValue: option.value,
-          // The executor indexes the live <select>'s options directly, and the
-          // skip-list above makes this differ from the option's position in the
-          // offered list. Carrying the DOM position is what keeps them in step.
-          optionDomIndex: i + 1,
-        });
+        options.push({ label: option.label, value: option.value });
       }
+      // One action per dropdown, with its options as data. Emitting one action
+      // per option made the option count compete with every real control for
+      // MAX_ACTIONS: two 160-option dropdowns consumed the whole budget and left
+      // CLICK with no targets at all.
+      if (options.length > 0) actions.push({ ...base, kind: 'select', value: current, options });
       continue;
     }
 
@@ -214,4 +221,4 @@ export function snapshot(limits) {
 }
 
 /** The limits {@link snapshot} is called with. */
-export const SNAPSHOT_LIMITS = Object.freeze({ roles: ROLES, maxActions: MAX_ACTIONS, maxText: MAX_TEXT });
+export const SNAPSHOT_LIMITS = Object.freeze({ roles: ROLES, maxActions: MAX_ACTIONS, maxText: MAX_TEXT, maxOptions: MAX_OPTIONS });

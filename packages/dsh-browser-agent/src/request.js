@@ -50,6 +50,25 @@ Enter submits a form and accepts the highlighted suggestion; Tab commits a field
 Escape closes what is open; the arrows move inside an open list. Do not choose a key whose effect
 the recent actions already show.`;
 
+/** Instructions attached to a dropdown's value question. */
+const VALUE_RULES = `Choose the value to set on the dropdown named in this question, assuming the next
+operation is SELECT on it. Use the user's entire goal and the dropdown's current selection. Choose only
+an offered option; do not choose the option it already shows.`;
+
+/**
+ * The question id for the value one dropdown target is set to.
+ *
+ * One question per dropdown rather than one for all of them: the options of a
+ * different dropdown are never a valid answer, and a shared head would offer
+ * them anyway.
+ *
+ * @param target - the SELECT target index.
+ * @returns the question id.
+ */
+function valueQuestionId(target) {
+  return `select_value_${target}`;
+}
+
 /** The question id for one operation's target head. */
 function targetQuestionId(operation) {
   return `${operation.toLowerCase()}_target`;
@@ -119,6 +138,27 @@ export function buildRequest(input) {
     };
   }
 
+  // One value question per dropdown target: "set Country to France" is one
+  // action with a parameter, so the value is a separate head exactly like the
+  // key PRESS_KEY sends. Options are keyed by position, not by value: two
+  // options may carry the same value (or none at all), and a criteria map keyed
+  // by value would silently drop one of them.
+  for (const [target, candidate] of Object.entries(targets.SELECT ?? {})) {
+    questions[valueQuestionId(target)] = {
+      type: 'choice',
+      criteria: Object.fromEntries(
+        candidate.options.map((option, position) => [String(position + 1), option.label]),
+      ),
+      instructions: {
+        goal,
+        operation: 'SELECT',
+        target: `[${target}] ${candidate.label}`,
+        current_value: candidate.currentValue ?? '',
+        rules: [NEXT_ACTION_RULES, VALUE_RULES],
+      },
+    };
+  }
+
   return {
     model,
     state: {
@@ -182,6 +222,31 @@ export function resolveDecision(input) {
   const candidates = targets[operation];
   const targetAnswer = validateChoice(answers[targetQuestionId(operation)], Object.keys(candidates));
   const descriptor = candidates[targetAnswer.choice];
+
+  if (operation === 'SELECT') {
+    // The target is the dropdown; the value is the second head. Both are needed
+    // to execute, so a missing or invalid value answer refuses the decision
+    // rather than setting the dropdown to whatever the target happened to carry.
+    const valueAnswer = validateChoice(
+      answers[valueQuestionId(targetAnswer.choice)],
+      descriptor.options.map((_, position) => String(position + 1)),
+    );
+    const option = descriptor.options[Number(valueAnswer.choice) - 1];
+    return {
+      operation,
+      kind: KIND_FOR_OPERATION[operation],
+      target: targetAnswer.choice,
+      descriptor: { ...descriptor, option: option.value, optionLabel: option.label },
+      delta: 0,
+      confidence: operationAnswer.confidence,
+      targetConfidence: targetAnswer.confidence,
+      valueConfidence: valueAnswer.confidence,
+      operationProbabilities: operationAnswer.probabilities,
+      targetProbabilities: targetAnswer.probabilities,
+      valueProbabilities: valueAnswer.probabilities,
+    };
+  }
+
   return {
     operation,
     kind: KIND_FOR_OPERATION[operation],

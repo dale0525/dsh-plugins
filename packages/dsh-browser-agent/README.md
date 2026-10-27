@@ -15,6 +15,13 @@ empty however convincing the trace looks. `PRESS_KEY` is the keyboard companion:
 a filled form still has to be submitted, and an open suggestion list still has
 to be accepted, and neither is reachable by clicking.
 
+A `<select>` is **one** target carrying its options as data, and the value to set
+is a second question — "set Country to France" is one action with a parameter,
+not one action per country. Emitting an action per option also made the option
+count compete with every real control for the observer's action budget: two
+160-option dropdowns consumed it entirely and left `CLICK` with zero targets, so
+the Search button was not in the element table at all.
+
 ## Why it connects instead of launching
 
 Launching a browser cannot carry your login state. The `browser-use` provider's
@@ -38,6 +45,13 @@ per-device, one-time step.
 
 The plugin never closes that browser. It disconnects the CDP session when a run
 ends, so your window and tabs are left exactly as they were.
+
+A run also never drives one of your tabs. It opens a page of its own and closes
+it when the run ends, because a run navigates the page it drives and there is no
+reliable way to ask the browser which tab you are looking at: Playwright's
+connection turns on focus emulation, which makes **every** tab report
+`document.visibilityState === 'visible'` (measured on a real profile — three
+tabs, one active, all three read `visible`).
 
 ## Settings
 

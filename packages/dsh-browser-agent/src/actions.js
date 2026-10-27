@@ -8,11 +8,11 @@
  * construction rather than by post-hoc checking; a per-node index is what makes
  * the model's target unambiguous when a control is both clickable and fillable.
  *
- * A dropdown option is its own target, addressed `<element>:<option>`, because
- * "select France" is a different action from "select the Country dropdown". The
- * option target carries BOTH the value to set and the dropdown's current
- * selection, since the model needs the latter to decide and the executor needs
- * the former to act.
+ * A dropdown is ONE target carrying its options as data, and the value to set is
+ * a separate question — "set Country to France" is one action with a parameter,
+ * not one action per country. Emitting an action per option also made the option
+ * count compete with every real control for the observer's action budget: two
+ * 160-option dropdowns consumed it entirely and left `CLICK` with no targets.
  *
  * Pure and browser-free, so the numbering rules are testable offline.
  *
@@ -87,14 +87,10 @@ const SCROLL_STEP = 560;
  *
  * @param observed - one entry per observed control ACTION, not per node: a text
  *   field the observer marks fillable produces a `fill` entry and a `click`
- *   entry sharing one `node`, and a dropdown produces one `select` entry per
- *   selectable option. Every entry carries `label`/`value` for the ELEMENT and
- *   whatever of `checked`/`selected`/`expanded` the observer read; a `select`
- *   entry additionally carries `optionLabel`/`optionValue` for the option it
- *   offers, plus `optionDomIndex` — the option's 1-based position in the live
- *   `<select>`. That position is NOT the entry's position in `observed`: the
- *   observer skips options that are already selected or disabled, so the offered
- *   list is a subset.
+ *   entry sharing one `node`, and a dropdown produces a single `select` entry
+ *   carrying its selectable `options` as data. Every entry carries
+ *   `label`/`value` for the ELEMENT and whatever of
+ *   `checked`/`selected`/`expanded` the observer read.
  * @param [options] - `controls` lists the target-less operations the observer
  *   offers. Omit it to offer all of them.
  * @returns `elements` (the table sent as state), `targets` (per-operation
@@ -109,6 +105,10 @@ export function actionSpace(observed, options = {}) {
     const operation = OPERATION_FOR_KIND[action.kind];
     if (operation === undefined) continue;
 
+    // A dropdown with nothing to choose from is not an action: the value
+    // question would have one answer, and an empty criteria map cannot be sent.
+    if (operation === 'SELECT' && (action.options === undefined || action.options.length === 0)) continue;
+
     if (!indices.has(action.node)) {
       const element = {
         index: String(elements.length + 1),
@@ -120,7 +120,6 @@ export function actionSpace(observed, options = {}) {
       for (const key of STATE_KEYS) {
         if (action[key] !== undefined) element[key] = action[key];
       }
-      if (operation === 'SELECT') element.options = [];
       indices.set(action.node, element.index);
       elements.push(element);
     }
@@ -142,25 +141,14 @@ export function actionSpace(observed, options = {}) {
     }
 
     if (operation === 'SELECT') {
-      const option = {
-        index: `${index}:${element.options.length + 1}`,
-        label: action.optionLabel,
-        value: action.optionValue,
-      };
-      element.options.push(option);
-      group[option.index] = {
-        ...descriptor,
-        label: option.label,
-        value: option.value,
-        // The dropdown's own current selection travels with the option: the
-        // model needs it to decide, and the element row already carries it.
-        currentValue: action.value,
-        element: Number(index),
-        optionIndex: action.optionDomIndex,
-      };
-    } else {
-      group[index] = descriptor;
+      // One target per dropdown, carrying every option it offers. The value is
+      // a separate question (see `./request.js`), because "set Country to
+      // France" is one action with a parameter, not one action per country.
+      group[index] = { ...descriptor, currentValue: action.value, options: action.options };
+      continue;
     }
+
+    group[index] = descriptor;
   }
 
   const offered = options.controls ?? ['SCROLL_UP', 'SCROLL_DOWN', 'PRESS_KEY', 'WAIT'];

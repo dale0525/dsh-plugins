@@ -103,6 +103,10 @@ function fingerprint(observation) {
       action.checked,
       action.selected,
       action.expanded,
+      // A dropdown's options are data now, not action entries, so a cascading
+      // dropdown that rewrites them without changing its own selection would
+      // otherwise fingerprint identically.
+      action.options?.map((option) => [option.label, option.value]),
     ]),
   ]);
 }

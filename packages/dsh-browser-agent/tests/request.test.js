@@ -27,9 +27,10 @@ const TABLE = actionSpace([
     role: 'combobox',
     label: 'Sort',
     value: 'Relevance',
-    optionLabel: 'Price',
-    optionValue: 'price',
-    optionDomIndex: 1,
+    options: [
+      { label: 'Price', value: 'price' },
+      { label: 'Rating', value: 'rating' },
+    ],
   },
   // A click action on the dropdown element itself, so CLICK has target `4`.
   { node: 4, kind: 'click', role: 'combobox', label: 'Sort', value: 'Relevance' },
@@ -76,7 +77,7 @@ test('asks for the operation plus one target head per operation with targets', (
   const body = request();
   assert.deepEqual(
     Object.keys(body.questions).sort(),
-    ['click_target', 'operation', 'press_key', 'select_target', 'type_text_target'],
+    ['click_target', 'operation', 'press_key', 'select_target', 'select_value_4', 'type_text_target'],
   );
 });
 
@@ -91,7 +92,7 @@ test('offers exactly the target ids of its own operation to each target head', (
   const body = request();
   assert.deepEqual(Object.keys(body.questions.click_target.criteria).sort(), ['1', '2', '3', '4']);
   assert.deepEqual(Object.keys(body.questions.type_text_target.criteria), ['1']);
-  assert.deepEqual(Object.keys(body.questions.select_target.criteria), ['4:1']);
+  assert.deepEqual(Object.keys(body.questions.select_target.criteria), ['4']);
 });
 
 test('describes a target with its index, label and observed state', () => {
@@ -99,11 +100,12 @@ test('describes a target with its index, label and observed state', () => {
   const described = body.questions.click_target.criteria['3'];
   assert.match(described.element, /\[3\] In stock/);
   assert.equal(described.checked, 'false');
-  // A SELECT option is described by the option's label plus the dropdown's
-  // current selection.
-  const option = body.questions.select_target.criteria['4:1'];
-  assert.equal(option.element, '[4:1] Price');
-  assert.equal(option.current_value, 'Relevance');
+  // A dropdown is one target, described by its own label plus its current
+  // selection. Its options are not criteria of this head: they are the answer
+  // space of the separate value question.
+  const dropdown = body.questions.select_target.criteria['4'];
+  assert.equal(dropdown.element, '[4] Sort');
+  assert.equal(dropdown.current_value, 'Relevance');
 });
 
 test('names the operation each target head assumes', () => {
@@ -237,13 +239,15 @@ test('does not require the target heads the chosen operation did not select', ()
   const decision = resolveDecision({
     answers: {
       operation: choice(ids, 'SELECT', 0.6),
-      select_target: choice(['4:1'], '4:1', 0.95),
+      select_target: choice(['4'], '4', 0.95),
+      select_value_4: choice(['1', '2'], '1', 0.95),
     },
     targets: TABLE.targets,
     controls: TABLE.controls,
   });
   assert.equal(decision.kind, 'select');
-  assert.equal(decision.descriptor.optionIndex, 1);
+  assert.equal(decision.descriptor.option, 'price');
+  assert.equal(decision.descriptor.optionLabel, 'Price');
 });
 
 test('rejects a decision whose selected target head is missing', () => {
@@ -264,8 +268,8 @@ test('rejects a decision whose target belongs to another operation', () => {
     () => resolveDecision({
       answers: {
         operation: choice(ids, 'CLICK'),
-        // `1` and `2` are valid CLICK targets; `4:1` is SELECT-only.
-        click_target: choice(['1', '2', '4:1'], '4:1', 0.9),
+        // `1` and `2` are valid CLICK targets; `4` is SELECT-only.
+        click_target: choice(['1', '2', '4'], '4', 0.9),
       },
       targets: TABLE.targets,
       controls: TABLE.controls,
@@ -279,4 +283,91 @@ test('rejects a decision whose operation answer is missing', () => {
     () => resolveDecision({ answers: {}, targets: TABLE.targets, controls: TABLE.controls }),
     /Invalid TypeSafe response/,
   );
+});
+
+test('asks for the value of each dropdown target as its own question', () => {
+  const body = request();
+  const question = body.questions.select_value_4;
+  assert.equal(typeof question, 'object');
+  // The criteria are the dropdown's options, keyed by position: two options may
+  // carry the same value (or none), and a map keyed by value would drop one.
+  assert.deepEqual(question.criteria, { 1: 'Price', 2: 'Rating' });
+  assert.equal(question.instructions.operation, 'SELECT');
+  assert.equal(question.instructions.target, '[4] Sort');
+  assert.equal(question.instructions.current_value, 'Relevance');
+});
+
+test('resolves a dropdown to the value its own question chose', () => {
+  const ids = operationIds(TABLE.targets, TABLE.controls);
+  const decision = resolveDecision({
+    answers: {
+      operation: choice(ids, 'SELECT', 0.9),
+      select_target: choice(['4'], '4', 0.9),
+      select_value_4: choice(['1', '2'], '2', 0.9),
+    },
+    targets: TABLE.targets,
+    controls: TABLE.controls,
+  });
+  assert.equal(decision.descriptor.node, 4);
+  assert.equal(decision.descriptor.option, 'rating');
+  assert.equal(decision.descriptor.optionLabel, 'Rating');
+  assert.equal(decision.valueConfidence, 0.9);
+});
+
+test('rejects a dropdown value that was not offered', () => {
+  const ids = operationIds(TABLE.targets, TABLE.controls);
+  assert.throws(
+    () => resolveDecision({
+      answers: {
+        operation: choice(ids, 'SELECT', 0.9),
+        select_target: choice(['4'], '4', 0.9),
+        select_value_4: choice(['1', '2', '3'], '3', 0.9),
+      },
+      targets: TABLE.targets,
+      controls: TABLE.controls,
+    }),
+    /Invalid TypeSafe response/,
+  );
+});
+
+test('refuses a dropdown decision with no value answer at all', () => {
+  // Setting a dropdown to whatever it happened to carry is not the action the
+  // model asked for, so an unanswered value head refuses the decision.
+  const ids = operationIds(TABLE.targets, TABLE.controls);
+  assert.throws(
+    () => resolveDecision({
+      answers: {
+        operation: choice(ids, 'SELECT', 0.9),
+        select_target: choice(['4'], '4', 0.9),
+      },
+      targets: TABLE.targets,
+      controls: TABLE.controls,
+    }),
+    /Invalid TypeSafe response/,
+  );
+});
+
+test('keeps a long dropdown within the API criteria cap', () => {
+  // `ChoiceQuestion.criteria` rejects more than 255 entries (measured: 300
+  // options → HTTP 422), so the observer caps what one dropdown contributes.
+  const many = actionSpace([
+    {
+      node: 9,
+      kind: 'select',
+      role: 'combobox',
+      label: 'Country',
+      value: 'Germany',
+      options: Array.from({ length: 200 }, (_, i) => ({ label: `Country ${i}`, value: `c${i}` })),
+    },
+  ]);
+  const body = buildRequest({
+    goal: 'pick a country',
+    page: PAGE,
+    elements: many.elements,
+    targets: many.targets,
+    controls: many.controls,
+    history: [],
+    model: 'jev-latest',
+  });
+  assert.equal(Object.keys(body.questions.select_value_1.criteria).length, 200);
 });

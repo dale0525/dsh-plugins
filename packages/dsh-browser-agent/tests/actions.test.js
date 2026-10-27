@@ -58,25 +58,6 @@ test('never offers TYPE_TEXT for a control the observer did not mark fillable', 
   assert.equal(elements[0].checked, 'false');
 });
 
-test('indexes each dropdown option as its own target under SELECT', () => {
-  const { elements, targets } = actionSpace([
-    { node: 4, kind: 'select', role: 'combobox', label: 'Country', value: 'Germany', optionLabel: 'France', optionValue: 'fr', optionDomIndex: 2 },
-    { node: 4, kind: 'select', role: 'combobox', label: 'Country', value: 'Germany', optionLabel: 'Germany', optionValue: 'de', optionDomIndex: 1 },
-    { node: 4, kind: 'fill', role: 'combobox', label: 'Country', value: 'Germany' },
-  ]);
-  assert.equal(elements.length, 1);
-  // The element row shows the dropdown's CURRENT selection, not an option.
-  assert.equal(elements[0].label, 'Country');
-  assert.equal(elements[0].value, 'Germany');
-  assert.deepEqual(elements[0].options, [
-    { index: '1:1', label: 'France', value: 'fr' },
-    { index: '1:2', label: 'Germany', value: 'de' },
-  ]);
-  assert.deepEqual(Object.keys(targets.SELECT), ['1:1', '1:2']);
-  // The dropdown element itself is still clickable and fillable.
-  assert.deepEqual(elements[0].operations, ['SELECT', 'TYPE_TEXT']);
-});
-
 test('keeps a target descriptor executable', () => {
   const { targets } = actionSpace([clickable({ node: 42, role: 'link', label: 'Docs' })]);
   assert.deepEqual(targets.CLICK['1'], {
@@ -86,35 +67,6 @@ test('keeps a target descriptor executable', () => {
     label: 'Docs',
     value: '',
   });
-});
-
-test('describes a dropdown option target with its element and option index', () => {
-  const { targets } = actionSpace([
-    { node: 4, kind: 'select', role: 'combobox', label: 'Country', value: 'Germany', optionLabel: 'France', optionValue: 'fr', optionDomIndex: 1 },
-  ]);
-  assert.deepEqual(targets.SELECT['1:1'], {
-    node: 4,
-    operation: 'SELECT',
-    role: 'combobox',
-    label: 'France',
-    value: 'fr',
-    // The element's current selection travels with the option, because the
-    // model needs it to decide and the executor needs the option to act.
-    currentValue: 'Germany',
-    element: 1,
-    optionIndex: 1,
-  });
-});
-
-test('numbers a dropdown option by its position in the live select, not in the offered list', () => {
-  // The observer skips the option that is already selected, so the offered list
-  // is a SUBSET of the live <select>'s options. Numbering the target by its
-  // position in the offered list points the executor at the wrong option: here
-  // it would re-select the already-selected Germany instead of France.
-  const { targets } = actionSpace([
-    { node: 4, kind: 'select', role: 'combobox', label: 'Country', value: 'Germany', optionLabel: 'France', optionValue: 'fr', optionDomIndex: 2 },
-  ]);
-  assert.equal(targets.SELECT['1:1'].optionIndex, 2);
 });
 
 test('carries the observed state onto both the element row and its target', () => {

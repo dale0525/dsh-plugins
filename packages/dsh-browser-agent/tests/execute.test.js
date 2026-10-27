@@ -207,8 +207,11 @@ test('clicks the element the observation identified', async (t) => {
   assert.equal(result, 'clicked Go');
 });
 
-test('selects a dropdown option by its live position', async (t) => {
-  const element = fakeElement({ tagName: 'SELECT', options: [{ value: 'relevance' }, { value: 'price' }] });
+test('sets a dropdown to the value its value question chose', async (t) => {
+  const element = fakeElement({
+    tagName: 'SELECT',
+    options: [{ value: 'relevance' }, { value: 'price' }],
+  });
   const page = fakePage([[7, element]]);
   cleanup(t);
 
@@ -217,14 +220,65 @@ test('selects a dropdown option by its live position', async (t) => {
     decision: {
       operation: 'SELECT',
       kind: 'select',
-      target: '1:2',
-      descriptor: { node: 7, operation: 'SELECT', role: 'combobox', label: 'Price', value: 'price', optionIndex: 2 },
+      target: '1',
+      descriptor: {
+        node: 7,
+        operation: 'SELECT',
+        role: 'combobox',
+        label: 'Sort',
+        value: 'Relevance',
+        option: 'price',
+        optionLabel: 'Price',
+      },
     },
   });
 
   assert.deepEqual(element.writes, ['price']);
   assert.deepEqual(element.events, ['input', 'change']);
-  assert.equal(result, 'selected Price');
+  assert.equal(result, 'selected Price in Sort');
+});
+
+test('finds the chosen value even when the dropdown offers it out of order', async (t) => {
+  // The value is matched by option value, not by position: the observer skips
+  // options it will not offer, so a position from the offered list does not
+  // address the live <select>.
+  const element = fakeElement({
+    tagName: 'SELECT',
+    options: [{ value: 'relevance' }, { value: 'price' }, { value: 'rating' }],
+  });
+  const page = fakePage([[7, element]]);
+  cleanup(t);
+
+  await execute({
+    page,
+    decision: {
+      operation: 'SELECT',
+      kind: 'select',
+      target: '1',
+      descriptor: { node: 7, operation: 'SELECT', role: 'combobox', label: 'Sort', value: 'Relevance', option: 'rating', optionLabel: 'Rating' },
+    },
+  });
+
+  assert.deepEqual(element.writes, ['rating']);
+});
+
+test('reports a dropdown value that is no longer offered', async (t) => {
+  const element = fakeElement({ tagName: 'SELECT', options: [{ value: 'relevance' }] });
+  const page = fakePage([[7, element]]);
+  cleanup(t);
+
+  await assert.rejects(
+    execute({
+      page,
+      decision: {
+        operation: 'SELECT',
+        kind: 'select',
+        target: '1',
+        descriptor: { node: 7, operation: 'SELECT', role: 'combobox', label: 'Sort', value: 'Relevance', option: 'price', optionLabel: 'Price' },
+      },
+    }),
+    /no longer offered/,
+  );
 });
 
 test('refuses a target that left the page', async (t) => {

@@ -136,18 +136,18 @@ export async function execute(input) {
 
   if (decision.kind === 'select') {
     await page.evaluate(
-      ({ node, optionIndex }) => {
+      ({ node, value }) => {
         const element = window.__dshBrowserAgent.nodes.get(node);
-        const option = element.options[optionIndex - 1];
+        const option = [...element.options].find((candidate) => candidate.value === value);
         if (option === undefined) throw new Error('the option is no longer offered');
         element.value = option.value;
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(new Event('change', { bubbles: true }));
       },
-      { node: descriptor.node, optionIndex: descriptor.optionIndex },
+      { node: descriptor.node, value: descriptor.option },
     );
     await page.waitForTimeout(OPTION_SETTLE_MS);
-    return `selected ${descriptor.label}`;
+    return `selected ${descriptor.optionLabel} in ${descriptor.label}`;
   }
 
   throw new Error(`unsupported operation ${decision.operation}`);

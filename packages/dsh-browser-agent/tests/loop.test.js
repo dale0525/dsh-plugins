@@ -153,3 +153,32 @@ test('surfaces a missing text model instead of recording a failed step', async (
     /no provider\/model is configured/,
   );
 });
+
+test('reports a change that only altered a dropdown\'s offered options', async () => {
+  // Cascading dropdowns: picking a country rewrites the city dropdown's options
+  // while its current selection reads the same as before. Options used to be
+  // their own action entries, so they showed up in the fingerprint for free;
+  // now they are data on one action, and leaving them out of the fingerprint
+  // would report this change as no change.
+  const before = {
+    ...observation('https://shop.test/', 'Go'),
+    actions: [
+      { node: 1, kind: 'click', role: 'button', label: 'Go', value: '' },
+      { node: 2, kind: 'select', role: 'combobox', label: 'City', value: '', options: [{ label: 'Paris', value: 'paris' }] },
+    ],
+  };
+  const after = {
+    ...observation('https://shop.test/', 'Go'),
+    actions: [
+      { node: 1, kind: 'click', role: 'button', label: 'Go', value: '' },
+      { node: 2, kind: 'select', role: 'combobox', label: 'City', value: '', options: [{ label: 'Berlin', value: 'berlin' }] },
+    ],
+  };
+
+  const { bodies } = await drive({
+    observations: [before, after, after],
+    operations: ['WAIT', 'WAIT', 'DONE'],
+  });
+
+  assert.equal(bodies[1].state.recent_actions[0].page_changed, true);
+});
