@@ -19,7 +19,7 @@ import { buildRequest, resolveDecision } from './request.js';
 import { ask } from './typesafe.js';
 import { execute } from './execute.js';
 import { SNAPSHOT_LIMITS, snapshot } from './observe.js';
-import { fieldValue } from './value.js';
+import { assertTextRoute, fieldValue } from './value.js';
 
 /** Browser actions allowed per run. */
 export const DEFAULT_MAX_STEPS = 60;
@@ -77,6 +77,37 @@ export async function observe(page) {
 }
 
 /**
+ * Summarize everything about an observation that the model can act on.
+ *
+ * Used to tell the model whether its last action did anything. Reporting a
+ * constant `true` there hides the one signal that says a click landed on
+ * nothing, which is how a run spends its remaining steps re-clicking the same
+ * dead control. The url alone is not enough: most actions change the page
+ * without navigating, and the element table is exactly what a re-render
+ * rewrites.
+ *
+ * @param observation - one page-side snapshot.
+ * @returns a string that is equal for two indistinguishable observations.
+ */
+function fingerprint(observation) {
+  return JSON.stringify([
+    observation.url,
+    observation.title,
+    observation.text,
+    observation.controls,
+    observation.omitted,
+    observation.actions.map((action) => [
+      action.kind,
+      action.label,
+      action.value,
+      action.checked,
+      action.selected,
+      action.expanded,
+    ]),
+  ]);
+}
+
+/**
  * Run one task to completion.
  *
  * @param input - the page, the goal, the settings, the `ctx.llm` service, and
@@ -94,6 +125,10 @@ export async function run(input) {
   const steps = [];
   let decisions = 0;
   let status = 'max-steps';
+  // The fingerprint of the observation the last action was decided from. It
+  // cannot be resolved into `page_changed` until the next observation arrives,
+  // so the entry is corrected then.
+  let pending = null;
 
   for (let step = 1; step <= config.maxSteps; step += 1) {
     if (signal?.aborted) {
@@ -106,6 +141,11 @@ export async function run(input) {
       status = 'blocked';
       history.push({ action: 'the page has no body', kind: 'BLOCKED', text: '', page_changed: false });
       break;
+    }
+
+    if (pending !== null) {
+      pending.entry.page_changed = fingerprint(observation) !== pending.fingerprint;
+      pending = null;
     }
 
     const table = actionSpace(observation.actions, { controls: observation.controls });
@@ -142,6 +182,10 @@ export async function run(input) {
       break;
     }
 
+    // Before the try, so a configuration mistake ends the run instead of
+    // becoming one `failed: …` step among sixty.
+    if (decision.kind === 'fill') assertTextRoute(config.textRoute);
+
     let result;
     try {
       result = await execute({
@@ -172,12 +216,14 @@ export async function run(input) {
       confidence: decision.confidence,
       result,
     });
-    history.push({
+    const entry = {
       action: `${decision.operation} ${decision.descriptor?.label ?? ''}`.trim(),
       kind: decision.operation,
       text: decision.kind === 'fill' ? result : '',
-      page_changed: true,
-    });
+      page_changed: false,
+    };
+    history.push(entry);
+    pending = { fingerprint: fingerprint(observation), entry };
   }
 
   return {
