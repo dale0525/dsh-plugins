@@ -41,6 +41,7 @@
 | 2 | 只能回车提交的表单永远做不完 | `src/actions.js` 的操作词表只有 `CLICK / TYPE_TEXT / SELECT / SCROLL_UP / SCROLL_DOWN / WAIT / DONE / BLOCKED`，没有键盘、没有 Enter、没有 Esc | 12 步全停在「出发城市」，页面从未变化，第 1 步 Jev 就回 `BLOCKED`（只有 1 个决策）。同一页面 `@playwright/mcp` 用两次 `browser_type` + 一次 `browser_press_key` Enter 得到「结果：CA1234 航班 北京 → 上海」 |
 | 3 | 真实运行里 `TYPE_TEXT` 直接抛错 | `src/value.js` 的 `fieldValue()` 走 `ctx.llm`，空路由时抛 `Cannot read properties of undefined (reading 'stream')`；`loop.js` 把任何执行错误都吞成 `failed: …` 继续下一步 | 12 步里有 7 步在重试 `TYPE_TEXT`，直到步数耗尽 |
 | 4 | 会操作到用户没在看的那个标签页 | `src/cdp.js` 的 `activePage()` 返回 `context.pages()[0]` | 开了 3 个标签时选中 `https://www.uaa.com/`（不是用户当前页），随后 `run()` 把它导航走 |
+| | **已修（0.2.6）**：改为 `runPage()`，每次 run 新开一个自己的标签页并在结束时关掉 | | |
 | 5 | 新标签/对话框里的内容看不见 | 观察器只遍历顶层文档；只收集视口内元素（不滚动去找）；`password`/`file` 输入框被 `safe()` 整个跳过 | `target=_blank` 点击后多出第 6 个标签，循环仍在观察旧的 `about:blank`；iframe 与 shadow DOM 内的按钮在元素表里 0 条 |
 | 6 | 自激循环：明明没变却记成「页面变了」 | `src/loop.js:179` 把 `page_changed` 硬编码成 `true`，无论执行结果如何都追加 history | 10 步完全相同的 `TYPE_TEXT 邮箱 → typed "user@example.com" into 邮箱`，没有任何重复检测能中止 |
 
@@ -51,6 +52,8 @@
 - **`MAX_ACTIONS = 250` 被下拉选项吃满**：一个页面放两个各 160 项的 `<select>` 时，
   `omitted = 69`、`SELECT` 目标 250 个、**`CLICK` 目标 0 个**，连「搜索」按钮都不在元素表里
   （实测 `the Search button is in the element table? false`）。选项被截断是静默的。
+  **已修（0.2.6）**：`<select>` 收成一个 target + 一个值问题，同一页面复测 `omitted = 0`、
+  元素 3 个、`SELECT` 2 个、`CLICK` 1 个，「搜索」按钮在表里。
 
 顺带核实一条**不是** bug 的：`SELECT` 目标的键是「候选选项序号」，`optionIndex` 是 DOM 位次，
 两者在跳过已选项后仍对齐（`1:1 → Beta/optionIndex=2`，与 DOM 一致）。这里没有 off-by-one。
@@ -390,14 +393,28 @@ const vk = key.toUpperCase().codePointAt(0)   // '.' → 46
 | 2 | 新增键盘动作（`PRESS_KEY`，值域 `Enter`/`Tab`/`Escape`/方向键/组合键） | `actions.js` 词表 + `execute.js` 分支 + `request.js` 的问题描述 | 「只能回车提交」的表单现在完全做不完 |
 | 3 | `page_changed` 改成比对观察指纹（url + 元素表摘要），不再硬编码 `true` | `loop.js:179` | 没有它，模型永远看不出自己在原地打转 |
 | 4 | 修 `value.js` 的空路由报错信息，别让 `loop.js` 把配置错误吞成 `failed` | `value.js` + `loop.js` 的 catch | 不修则 1、2 在真实运行里仍跑不通 |
-| 5 | `activePage()` 不再取 `pages()[0]`：优先 `bringToFront` 过的页，或在 `run()` 开始时锁定目标 | `cdp.js` | 会误伤用户正在看的标签 |
+| 5 | `activePage()` 不再取 `pages()[0]`：每次 run 新开一个自己的标签页、结束时关掉，用户标签一律不动 | `cdp.js` + `index.js` | 会误伤用户正在看的标签 |
 | 6 | 选项不再占 `MAX_ACTIONS` 预算；`<select>` 收成一个 target + 一个「值」参数 | `observe.js` / `actions.js` | 两个大下拉就能把 `CLICK` 挤成 0 个 |
 
 第 5、6 条可以缓；第 1–4 条不做，这个插件在真实站点上就是不成立的。
 
-> **状态（2026-10-27 已实施）**：第 1–4 条已落地，`packages/dsh-browser-agent` 测试 62/62，
+> 第 5 条的落地方案相对本表有改动，原因见下方状态注记：原定的「优先 `bringToFront` 过的页」
+> 所依赖的判据（`document.visibilityState`）在 Playwright 连上后不可用。
+
+> **状态（2026-10-27 已实施）**：第 1–6 条全部落地，`packages/dsh-browser-agent` 测试 77/77，
 > 并在真实 Chrome 上复验：React 受控输入框填值后应用状态同步（旧写法在同一页面
 > `el.value = …` 后应用仍显示空值）、`PRESS_KEY Enter` 真的提交了表单、contenteditable 走同一键盘路径。
+>
+> 第 5 条的落地形状与原计划不同，因为原计划依赖的判据不成立：**Playwright 连上后
+> `document.visibilityState` 在所有标签上都读成 `visible`**（焦点模拟把后台标签也伪装成前台），
+> 必须先给每个页发 `Emulation.setFocusEmulationEnabled(false)` 才看得到真实值。实测同一
+> 浏览器三标签一前台，连着时三个都报 `visible`，关掉焦点模拟后只有前台那个 `hasFocus()` 为 true。
+> 即使拿到真实值，原方案仍是「把用户正在看的页面导航走」，所以改成**每次 run 新开一个标签页、
+> 结束时关掉，用户标签一律不动**（已实测：attach → 开页 → 关页 → disconnect 之后用户标签仍在）。
+>
+> 第 6 条除计划所述外还有两处连带改动：选项从动作表移走后，`fingerprint` 必须把
+> `action.options` 算进去，否则级联下拉改写选项而自身选中值不变时会被判成「页面没变」；
+> 另外值问题的 criteria 有 **255 项上限**（实测 300 项 → HTTP 422），故 `MAX_OPTIONS = 200`。
 > 第 3 条实现为「观察指纹」而不是 url 比较：同一 url 下打字与提交都能被判为已变化，空闲重观察判为未变化。
 > 第 5、6 条仍待做。
 
