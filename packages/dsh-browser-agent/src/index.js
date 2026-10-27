@@ -32,7 +32,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
-import { attach, activePage } from './cdp.js';
+import { attach, runPage } from './cdp.js';
 import { resolveTextRoute } from './config.js';
 import { run } from './loop.js';
 
@@ -136,8 +136,9 @@ export function apply(ctx, config) {
       }
 
       const browser = await attach(current.cdpEndpoint);
+      let page;
       try {
-        const page = await activePage(browser);
+        page = await runPage(browser);
         return await run({
           url: args.url,
           goal: args.goal,
@@ -153,8 +154,11 @@ export function apply(ctx, config) {
           signal: exec.signal,
         });
       } finally {
-        // Disconnect, never close: the browser is the user's, and closing it
-        // would take their windows and tabs with it.
+        // Close the page this run opened — it is ours, and leaving it behind
+        // would fill the user's window with one tab per run. Then disconnect,
+        // never close: the browser is the user's, and closing it would take
+        // their windows and tabs with it.
+        await page?.close().catch(() => {});
         await browser.close();
       }
     },

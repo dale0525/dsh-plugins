@@ -53,21 +53,27 @@ export async function attach(endpoint = DEFAULT_ENDPOINT) {
 }
 
 /**
- * The page a run should drive.
+ * The page a run should drive: a fresh one of its own.
  *
- * The user's own tab is reused when the context already has one, so a run does
- * not silently spawn windows; a new page is opened only when the context has
- * none. The first context is the browser's default one, which is where a
+ * A run navigates the page it drives, so reusing any existing tab destroys
+ * whatever the user had there. There is no way to pick the tab they are looking
+ * at instead: Playwright's connection turns on focus emulation, which makes
+ * EVERY tab report `document.visibilityState === 'visible'`. Measured on the
+ * real profile — three tabs, one active — all three read `visible` while
+ * attached, and only read the truth once
+ * `Emulation.setFocusEmulationEnabled(false)` reached each page. Rather than
+ * guess, the run opens its own page and leaves the user's tabs untouched.
+ *
+ * The first context is the browser's default one, which is where a
  * CDP-attached Chrome puts the profile's tabs.
  *
  * @param browser - the connection from {@link attach}.
- * @returns the page to drive.
+ * @returns a new page, owned by the run.
  */
-export async function activePage(browser) {
+export async function runPage(browser) {
   const context = browser.contexts()[0];
   if (context === undefined) {
     throw new Error('browser_agent: the attached Chrome exposes no browser context.');
   }
-  const pages = context.pages();
-  return pages.length > 0 ? pages[0] : await context.newPage();
+  return await context.newPage();
 }
