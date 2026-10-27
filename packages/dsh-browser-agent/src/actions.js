@@ -35,9 +35,29 @@ export const OPERATION_LABELS = Object.freeze({
 export const CONTROL_LABELS = Object.freeze({
   SCROLL_UP: 'Scroll the page up.',
   SCROLL_DOWN: 'Scroll the page down.',
+  PRESS_KEY: 'Press one key on the page, e.g. Enter to submit a filled form or Escape to dismiss a popup. A second question chooses the key.',
   WAIT: 'Wait for the page to update.',
   DONE: 'Every requirement is visibly satisfied.',
   BLOCKED: 'No supported operation can progress.',
+});
+
+/**
+ * The keys `PRESS_KEY` may send, with what each one is for.
+ *
+ * Kept to the keys that unblock a page rather than to a full keyboard: the
+ * operation exists because a filled form still needs submitting, an
+ * autocomplete list still needs accepting, and a popup still needs dismissing —
+ * none of which is reachable by clicking. Editing keys are not offered:
+ * `TYPE_TEXT` replaces a field's whole value, so character-by-character editing
+ * has nothing left to do.
+ */
+export const KEYS = Object.freeze({
+  Enter: 'Submit the form, or accept the highlighted autocomplete suggestion.',
+  Tab: 'Move focus to the next control, which also commits a field the page validates on blur.',
+  Escape: 'Dismiss an open popup, dropdown or autocomplete list.',
+  ArrowDown: 'Move to the next item in an open listbox or suggestion list.',
+  ArrowUp: 'Move to the previous item in an open listbox or suggestion list.',
+  'Control+Enter': 'Submit a multi-line field that treats a plain Enter as a newline.',
 });
 
 /** Observed operations that address a specific element, keyed by observer kind. */
@@ -143,11 +163,12 @@ export function actionSpace(observed, options = {}) {
     }
   }
 
-  const offered = options.controls ?? ['SCROLL_UP', 'SCROLL_DOWN', 'WAIT'];
+  const offered = options.controls ?? ['SCROLL_UP', 'SCROLL_DOWN', 'PRESS_KEY', 'WAIT'];
   const controls = {};
   for (const name of offered) {
     if (name === 'SCROLL_UP') controls.SCROLL_UP = { kind: 'scroll', label: CONTROL_LABELS.SCROLL_UP, delta: -SCROLL_STEP };
     else if (name === 'SCROLL_DOWN') controls.SCROLL_DOWN = { kind: 'scroll', label: CONTROL_LABELS.SCROLL_DOWN, delta: SCROLL_STEP };
+    else if (name === 'PRESS_KEY') controls.PRESS_KEY = { kind: 'press', label: CONTROL_LABELS.PRESS_KEY };
     else if (name === 'WAIT') controls.WAIT = { kind: 'wait', label: CONTROL_LABELS.WAIT };
   }
 

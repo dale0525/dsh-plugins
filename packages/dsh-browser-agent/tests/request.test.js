@@ -76,13 +76,13 @@ test('asks for the operation plus one target head per operation with targets', (
   const body = request();
   assert.deepEqual(
     Object.keys(body.questions).sort(),
-    ['click_target', 'operation', 'select_target', 'type_text_target'],
+    ['click_target', 'operation', 'press_key', 'select_target', 'type_text_target'],
   );
 });
 
 test('offers every operation, every control, DONE and BLOCKED to the operation question', () => {
   const criteria = request().questions.operation.criteria;
-  for (const key of ['CLICK', 'TYPE_TEXT', 'SELECT', 'SCROLL_UP', 'SCROLL_DOWN', 'WAIT', 'DONE', 'BLOCKED']) {
+  for (const key of ['CLICK', 'TYPE_TEXT', 'SELECT', 'SCROLL_UP', 'SCROLL_DOWN', 'PRESS_KEY', 'WAIT', 'DONE', 'BLOCKED']) {
     assert.equal(typeof criteria[key], 'string', `operation ${key} must be offered`);
   }
 });
@@ -145,7 +145,43 @@ test('omits target heads for operations with no candidates', () => {
     history: [],
     model: 'jev-latest',
   });
-  assert.deepEqual(Object.keys(body.questions).sort(), ['click_target', 'operation']);
+  assert.deepEqual(Object.keys(body.questions).sort(), ['click_target', 'operation', 'press_key']);
+});
+
+test('asks for the key PRESS_KEY sends, and resolves it into the key to press', () => {
+  const body = request();
+  const criteria = body.questions.press_key.criteria;
+  assert.equal(typeof criteria.Enter, 'string');
+  assert.equal(body.questions.press_key.instructions.operation, 'PRESS_KEY');
+
+  const ids = operationIds(TABLE.targets, TABLE.controls);
+  const decision = resolveDecision({
+    answers: {
+      operation: choice(ids, 'PRESS_KEY', 0.9),
+      press_key: choice(Object.keys(criteria), 'Enter', 0.9),
+    },
+    targets: TABLE.targets,
+    controls: TABLE.controls,
+  });
+  assert.equal(decision.operation, 'PRESS_KEY');
+  assert.equal(decision.kind, 'press');
+  assert.equal(decision.key, 'Enter');
+  assert.equal(decision.target, null);
+});
+
+test('rejects a key that was not offered', () => {
+  const ids = operationIds(TABLE.targets, TABLE.controls);
+  assert.throws(
+    () => resolveDecision({
+      answers: {
+        operation: choice(ids, 'PRESS_KEY', 0.9),
+        press_key: choice(['Enter', 'Escape', 'F5'], 'F5', 0.9),
+      },
+      targets: TABLE.targets,
+      controls: TABLE.controls,
+    }),
+    /Invalid TypeSafe response/,
+  );
 });
 
 test('resolves an operation without a target from the control set', () => {

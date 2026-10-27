@@ -15,7 +15,7 @@
  *
  * @module @logictan/dsh-browser-agent/request
  */
-import { CONTROL_LABELS, KIND_FOR_OPERATION, OPERATION_LABELS } from './actions.js';
+import { CONTROL_LABELS, KEYS, KIND_FOR_OPERATION, OPERATION_LABELS } from './actions.js';
 import { validateChoice } from './validate.js';
 
 /** How many recent actions are replayed into the state, matching upstream. */
@@ -40,6 +40,15 @@ const TARGET_RULES = `Choose the best observed target if the next operation is t
 Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
 a target for that operation; another question decides which operation to execute. Do not choose
 a field that already contains the requested value. Choose only an offered element index.`;
+
+/** The question id for the key `PRESS_KEY` sends. */
+const KEY_QUESTION = 'press_key';
+
+/** Instructions attached to the key question. */
+const KEY_RULES = `Choose the key to press, assuming the next operation is PRESS_KEY.
+Enter submits a form and accepts the highlighted suggestion; Tab commits a field and moves on;
+Escape closes what is open; the arrows move inside an open list. Do not choose a key whose effect
+the recent actions already show.`;
 
 /** The question id for one operation's target head. */
 function targetQuestionId(operation) {
@@ -102,6 +111,14 @@ export function buildRequest(input) {
     };
   }
 
+  if (controls.PRESS_KEY !== undefined) {
+    questions[KEY_QUESTION] = {
+      type: 'choice',
+      criteria: KEYS,
+      instructions: { goal, operation: 'PRESS_KEY', rules: [NEXT_ACTION_RULES, KEY_RULES] },
+    };
+  }
+
   return {
     model,
     state: {
@@ -136,6 +153,21 @@ export function resolveDecision(input) {
 
   if (targets[operation] === undefined) {
     const control = controls[operation];
+    if (operation === 'PRESS_KEY') {
+      const keyAnswer = validateChoice(answers[KEY_QUESTION], Object.keys(KEYS));
+      return {
+        operation,
+        kind: 'press',
+        key: keyAnswer.choice,
+        target: null,
+        descriptor: null,
+        delta: 0,
+        confidence: operationAnswer.confidence,
+        keyConfidence: keyAnswer.confidence,
+        operationProbabilities: operationAnswer.probabilities,
+        keyProbabilities: keyAnswer.probabilities,
+      };
+    }
     return {
       operation,
       kind: control === undefined ? (operation === 'DONE' ? 'done' : 'blocked') : control.kind,

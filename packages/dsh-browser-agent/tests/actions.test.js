@@ -17,7 +17,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { actionSpace, CONTROL_LABELS, OPERATION_LABELS } from '../src/actions.js';
+import { actionSpace, CONTROL_LABELS, KEYS, OPERATION_LABELS } from '../src/actions.js';
 
 /** A clickable control. */
 function clickable(overrides = {}) {
@@ -128,12 +128,13 @@ test('carries the observed state onto both the element row and its target', () =
   assert.equal(targets.CLICK['1'].expanded, 'false');
 });
 
-test('keeps the scroll and wait controls as operations without targets', () => {
+test('keeps the scroll, key and wait controls as operations without targets', () => {
   const { controls } = actionSpace([]);
-  assert.deepEqual(Object.keys(controls).sort(), ['SCROLL_DOWN', 'SCROLL_UP', 'WAIT']);
+  assert.deepEqual(Object.keys(controls).sort(), ['PRESS_KEY', 'SCROLL_DOWN', 'SCROLL_UP', 'WAIT']);
   assert.equal(controls.SCROLL_UP.kind, 'scroll');
   assert.equal(controls.SCROLL_UP.delta, -560);
   assert.equal(controls.SCROLL_DOWN.delta, 560);
+  assert.equal(controls.PRESS_KEY.kind, 'press');
   assert.equal(controls.WAIT.kind, 'wait');
 });
 
@@ -146,7 +147,13 @@ test('exposes the operation and control labels the request is built from', () =>
   for (const operation of ['CLICK', 'TYPE_TEXT', 'SELECT']) {
     assert.equal(typeof OPERATION_LABELS[operation], 'string');
   }
-  for (const control of ['SCROLL_UP', 'SCROLL_DOWN', 'WAIT', 'DONE', 'BLOCKED']) {
+  for (const control of ['SCROLL_UP', 'SCROLL_DOWN', 'PRESS_KEY', 'WAIT', 'DONE', 'BLOCKED']) {
     assert.equal(typeof CONTROL_LABELS[control], 'string');
+  }
+});
+
+test('offers the keys PRESS_KEY may send, each with what it is for', () => {
+  for (const key of ['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp', 'Control+Enter']) {
+    assert.equal(typeof KEYS[key], 'string', `key ${key} must be offered`);
   }
 });

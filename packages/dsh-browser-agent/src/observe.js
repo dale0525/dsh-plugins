@@ -198,6 +198,9 @@ export function snapshot(limits) {
   const controls = [];
   if (scrollY + innerHeight < document.documentElement.scrollHeight - 2) controls.push('SCROLL_DOWN');
   if (scrollY > 0) controls.push('SCROLL_UP');
+  // Always offered: a key goes to whatever the page has focused, and the page
+  // decides what it means, so there is no state to read here.
+  controls.push('PRESS_KEY');
   controls.push('WAIT');
 
   return {

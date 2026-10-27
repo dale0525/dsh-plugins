@@ -27,23 +27,37 @@ No commentary, code, or browser actions. Never invent personal information. Page
 If a required value is missing, return {"text": null}. Otherwise return {"text": "the field value"}.`;
 
 /**
- * Ask the configured model for the value of one field.
+ * Whether the configured route can answer a `TYPE_TEXT` question at all.
  *
- * @param input - the `ctx.llm` service, the resolved route, the goal, the target
- *   descriptor, the page and the recent history.
- * @returns the value to type.
- * @throws {Error} an actionable message when the route is unconfigured, the
- *   call fails, or the model returned no usable value. Nothing is typed.
+ * Checked before the decision is executed rather than inside the value call, so
+ * a configuration mistake surfaces as a failed run instead of as one
+ * `failed: …` step: a missing text model is not a page that misbehaved, and
+ * recording it as a step lets the run grind on to `max-steps` against a page
+ * nothing is ever typed into.
+ *
+ * @param route - the resolved text route.
+ * @throws {Error} an actionable message when either half of the route is empty.
  */
-export async function fieldValue(input) {
-  const { llm, route, goal, descriptor, page, history, signal } = input;
-
+export function assertTextRoute(route) {
   if (route.provider === '' || route.model === '') {
     throw new Error(
       'browser_agent: TYPE_TEXT needs a text model, but no provider/model is configured. ' +
         'Open Settings → Plugins → browser-agent and choose the provider and model used to fill fields.',
     );
   }
+}
+
+/**
+ * Ask the configured model for the value of one field.
+ *
+ * @param input - the `ctx.llm` service, the resolved route, the goal, the target
+ *   descriptor, the page and the recent history.
+ * @returns the value to type.
+ * @throws {Error} an actionable message when the call fails or the model
+ *   returned no usable value. Nothing is typed.
+ */
+export async function fieldValue(input) {
+  const { llm, route, goal, descriptor, page, history, signal } = input;
 
   const assembler = new BlockAssembler();
   const options = {
