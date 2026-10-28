@@ -341,7 +341,49 @@ node scripts/aggregate.mjs --check   # 校验生成物与清单一致（发版�
   `dsh plugin --profile <p> add file:<本地包>` 同时写 `dependencies` 与 `bundles`，而聚合包的 patch
   已经带着该子插件的挂载行，于是同一 `id` 有了两个来源（机制见「换包一律先删再加，不要并存」）。
   实测 2026-10-18：装 `file:…/dsh-better-reasoning-effort` 后 `bundles` 多出该项；摘掉它、只留
-  `dependencies` 里的 `file:` 指针后安装与加载都正常。**未验证**不摘是否会硬崩——本次在重启前就摘了。
+  `dependencies` 里的 `file:` 指针后安装与加载都正常。
+
+  **不摘不会硬崩，而是让该包从解析表里消失（2026-10-28 实测补全）。** 机制不是「重复 id」那条：
+  `collectProfileScopePackages` 先算依赖闭包，末尾再
+  `for (const layer of profile.layers) bundleLinks.delete(layer.packageName)`
+  —— 出现在 `bundles` 里的包会被当成独立 layer，于是刚进闭包的它又被**自己删掉**。
+  后果是 `createRuntimeResolution().entries` 里查不到该包，插件行的 `name` 无法路由，
+  宿主记 `failed to import`、该行 `did not activate`，**provider 从未注册**。
+  判据是解析表本身，不是日志（日志跨启动追加，旧报错会一直留在文件里）：
+
+  ```bash
+  node -e "const m=require('<宿主>/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js');
+  const prof=m.loadProfile('dsh','<profile>','<宿主>/package.json','<DSH_HOME>');
+  Promise.resolve(m.createRuntimeResolution({installAnchor:'<宿主>/package.json',home:'<DSH_HOME>',profile:prof}))
+    .then(r=>console.log(r.entries.some(e=>e.name==='<包名>'), r.entries.length))"
+  ```
+
+  返回 `false` 即命中本条；摘掉 `bundles` 里那一项后应变成 `true`（本次 573 → 574）。
+
+- **插件不要引入 require Node 内置模块的第三方 CJS 运行时依赖**：这类包会让插件**根本加载不起来**，
+  且报错完全看不出是依赖引起的。宿主 CJS 解析钩子（`ResolutionRouter.routeScoped`）对每个裸模块名调
+  `createRequire(parent).resolve.paths(name)`，该调用对 Node 内置模块（`fs` / `path` / `url` / `stream` …）
+  返回 `null` 而不是数组，紧跟着的 `for...of` 就抛：
+
+  ```
+  TypeError: createRequire.resolve.paths is not a function or its return value is not iterable
+  ```
+
+  `barePackageName` 本有 `isBuiltin(request)` 守卫，但内置模块是**被依赖包在 CJS 里 require 的**，
+  那一步由钩子的 CJS 分支接手，守卫拦不到。实测 `jsdom`（`dsh-browser-search` 0.1.0）与宿主
+  0.2.1-rc.2 必然撞上；移除后同一份代码立刻可加载。判据是**在宿主同款环境里 import 该包**——
+  普通 `node` 下 `import` 与 `require` 都会成功，所以本地绿不能证明宿主能加载。
+
+  **排查这类「插件行不激活」不要从报错行号往下读源码**，先花一条命令确认 provider / 导出是否注册。
+  对 `ctx.web` 这类可枚举的接缝，最省事的探针是临时把 profile 里指向它的选择项摘掉
+  （如 `searchProvider: browser-search`），让它报「多个可用 provider」：
+
+  ```
+  multiple usable web providers are registered (deepseek-official, deepseek-search-api, browser-search)
+  ```
+
+  名字出现在列表里就证明该插件**加载成功且已注册**；报 `configured web provider "x" is not registered`
+  才是真没加载。探针改完立刻恢复，别留在工作区。
 
 - **插件里漏掉的 `'error'` 监听会杀死整个宿主进程，不是一个功能坏掉**：`EventEmitter` 对
   `error` 事件没有监听者时直接抛出，而宿主把它兜成 `dsh: fatal uncaught exception` 后退出。
