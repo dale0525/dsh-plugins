@@ -27,7 +27,7 @@ importers:
         specifier: ^0.2.6
         version: link:../dsh-browser-agent
       '@logictan/dsh-browser-search':
-        specifier: ^0.1.0
+        specifier: ^0.1.1
         version: link:../dsh-browser-search
       '@logictan/dsh-config-manager':
         specifier: ^0.1.84
@@ -174,10 +174,6 @@ importers:
         version: 3.18.5
 
   packages/dsh-browser-search:
-    dependencies:
-      jsdom:
-        specifier: ^27.0.0
-        version: 27.4.0
     devDependencies:
       '@deepseek-ai/dsh-web':
         specifier: ^0.2.1-rc.2
@@ -185,6 +181,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.5
         version: 3.18.5
+      jsdom:
+        specifier: ^27.0.0
+        version: 27.4.0
 
   packages/dsh-config-manager:
     dependencies:
