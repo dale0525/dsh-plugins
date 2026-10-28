@@ -7,8 +7,6 @@
  *
  * @module @logictan/dsh-browser-search/engines
  */
-import { JSDOM } from 'jsdom';
-
 import { parseBingSerp } from './bing.js';
 import { connect, openHiddenPage, resolveRedirect, USER_AGENT } from './cdp.js';
 import { BLOCKED_SOURCE, EXTRACT_SOURCE } from './google.js';
@@ -136,7 +134,7 @@ export async function searchBing(query, signal, config) {
   if (!response.ok) throw new Error(`Bing answered HTTP ${response.status}`);
 
   const html = await response.text();
-  const results = parseBingSerp(new JSDOM(html).window.document);
+  const results = parseBingSerp(html);
   if (results.length === 0) throw new Error('Bing returned a page with no organic results');
   return results;
 }

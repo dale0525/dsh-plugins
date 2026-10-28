@@ -111,6 +111,26 @@ Google 的 class 名是混淆的，且**每次布局改版都会变**（同一�
   影响可忽略；需要登录态才能看到的页面请用 `web_fetch` 或 `browser_agent`。
 - **`web_fetch` 不受本插件影响。** 它由 `fetchProvider` 单独选择，本插件只接管搜索。
 
+## 为什么没有第三方运行时依赖
+
+这个插件**不引入任何第三方运行时依赖**，Bing 的 HTML 用扫描器解析而不是 DOM 库。
+
+原因不只是体积：`jsdom` 会让插件**根本加载不起来**。它是 CommonJS 包，内部 `require('fs')`
+这类 Node 内置模块；而 DSH 宿主的 CJS 解析钩子（`ResolutionRouter.routeScoped`）会对每个裸
+模块名调用 `createRequire(parent).resolve.paths(name)`，该调用对内置模块返回 `null`，紧接着的
+`for...of` 就抛：
+
+```
+TypeError: createRequire.resolve.paths is not a function or its return value is not iterable
+```
+
+宿主把这条错误记成 `failed to import`，插件的 provider 因此从未注册，`web_search` 报
+`configured web provider "browser-search" is not registered`。0.1.0 就踩了这个坑，0.1.1 移除
+`jsdom` 后修复。
+
+Bing 结果页只需要四个平坦的标记（`li.b_algo` / `h2 a` / `cite` / `p`），扫描器读它们和 DOM
+一样准，实测 9–10 条结果、424–573 ms。
+
 ## 开发
 
 ```bash
@@ -119,6 +139,9 @@ pnpm --filter @logictan/dsh-browser-search test
 
 测试不碰网络也不碰浏览器：Google 的提取逻辑跑在抓取下来的真实 SERP 快照上，Bing 的解析跑在
 真实响应快照上，CDP 协议层跑在假 socket 上。
+
+`jsdom` 只作为 **devDependency** 出现在 Google 提取器的测试里（那里需要一个真实 DOM 来跑
+注入页面的同一份源码），它不会进入发布的包。
 
 ## License
 

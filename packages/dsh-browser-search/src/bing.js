@@ -2,17 +2,83 @@
  * Bing SERP parsing for the plain-HTTP fallback.
  *
  * This is the path taken when Chrome is not reachable or Google refuses the
- * request. It runs on a static document, so unlike the Google extractor it is
- * never shipped into a page — it parses the response with jsdom in Node.
+ * request. It parses the response text directly — no DOM library — for two
+ * reasons:
  *
- * Bing's organic results are the `li.b_algo` items, which is a stable structural
- * marker (unlike Google's obfuscated class names) and the same markup a browser
- * receives. The RSS form of this endpoint is deliberately NOT used: its response
- * carries an explicit licence restricting the XML to "rendering Bing results
- * within an RSS aggregator for your personal, non-commercial use".
+ * 1. A DOM parser would be the plugin's only third-party runtime dependency, and
+ *    `jsdom` in particular breaks the host's module resolver: it is CommonJS and
+ *    `require`s Node builtins, and the host's CJS hook calls
+ *    `createRequire(...).resolve.paths(name)` on every bare name, which returns
+ *    `null` for builtins and throws `... is not iterable`. The plugin then fails
+ *    to import and its provider is never registered.
+ * 2. The markup it needs is three flat, stable landmarks — `li.b_algo`, `h2 a`,
+ *    `cite`, `p` — which a scanner reads as well as a DOM for this shape.
+ *
+ * The RSS form of this endpoint is deliberately NOT used: its response carries an
+ * explicit licence restricting the XML to "rendering Bing results within an RSS
+ * aggregator for your personal, non-commercial use".
  *
  * @module @logictan/dsh-browser-search/bing
  */
+
+/** Named and numeric character references that actually appear in Bing's text. */
+const ENTITIES = new Map([
+  ['amp', '&'],
+  ['lt', '<'],
+  ['gt', '>'],
+  ['quot', '"'],
+  ['apos', "'"],
+  ['nbsp', ' '],
+  ['#39', "'"],
+  ['#x27', "'"],
+]);
+
+/**
+ * Decode the character references Bing leaves in titles and snippets.
+ *
+ * Only the references in {@link ENTITIES} are decoded: an unknown name is left
+ * as written, because inventing a replacement would corrupt the snippet while
+ * leaving the original text is merely untidy.
+ *
+ * @param text - raw markup text.
+ * @returns the decoded text.
+ */
+function decodeEntities(text) {
+  return text.replaceAll(/&(#x?[0-9a-f]+|[a-z]+);/giu, (whole, name) => {
+    const direct = ENTITIES.get(name.toLowerCase());
+    if (direct !== undefined) return direct;
+    if (!name.startsWith('#')) return whole;
+    const code = name.startsWith('#x') || name.startsWith('#X')
+      ? Number.parseInt(name.slice(2), 16)
+      : Number.parseInt(name.slice(1), 10);
+    return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+  });
+}
+
+/**
+ * Strip tags, decode references, and collapse whitespace.
+ *
+ * Tags are removed WITHOUT leaving a separator: Bing highlights matched terms by
+ * wrapping them in `<strong>`, so `awesome-<strong>deepseek</strong>-harness`
+ * must read `awesome-deepseek-harness`. Whitespace between tags in the source
+ * survives the collapse, which is where the real word breaks come from.
+ */
+function textOf(html) {
+  return decodeEntities((html ?? '').replaceAll(/<[^>]*>/gu, '')).replaceAll(/\s+/gu, ' ').trim();
+}
+
+/**
+ * Read the value of one attribute out of an opening tag.
+ *
+ * @param tag - the raw opening tag, e.g. `<a href="…">`.
+ * @param attribute - the attribute name.
+ * @returns the decoded value, or undefined when absent.
+ */
+function attributeOf(tag, attribute) {
+  const match = new RegExp(`\\b${attribute}\\s*=\\s*("([^"]*)"|'([^']*)')`, 'iu').exec(tag);
+  if (match === null) return undefined;
+  return decodeEntities(match[2] ?? match[3] ?? '');
+}
 
 /**
  * Unwrap one Bing result link.
@@ -47,28 +113,36 @@ export function decodeBingUrl(href) {
 /**
  * Parse the organic results out of a Bing result page.
  *
- * @param document - the parsed result page.
+ * Each organic result is one `li.b_algo` block. Within it the heading anchor
+ * carries the title and the (encoded) destination, `cite` carries the display
+ * URL, and the first `p` carries the snippet.
+ *
+ * @param html - the result page's HTML.
  * @returns the results in page order; empty when the page holds none.
  */
-export function parseBingSerp(document) {
-  const normalize = (text) => (text ?? '').replace(/\s+/gu, ' ').trim();
-
+export function parseBingSerp(html) {
   const results = [];
-  for (const item of document.querySelectorAll('li.b_algo')) {
-    const heading = item.querySelector('h2 a');
+  for (const [, block] of (html ?? '').matchAll(/<li\b[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>([\s\S]*?)<\/li>/giu)) {
+    const heading = /<h2\b[^>]*>([\s\S]*?)<\/h2>/iu.exec(block);
     if (heading === null) continue;
 
-    const title = normalize(heading.querySelector('h2')?.textContent ?? heading.textContent);
+    const anchor = /<a\b([^>]*)>/iu.exec(heading[1]);
+    if (anchor === null) continue;
+
+    const title = textOf(heading[1]);
     if (title.length === 0) continue;
 
-    const url = decodeBingUrl(heading.getAttribute('href') ?? '');
+    const url = decodeBingUrl(attributeOf(anchor[0], 'href') ?? '');
     if (!URL.canParse(url)) continue;
+
+    const cite = /<cite\b[^>]*>([\s\S]*?)<\/cite>/iu.exec(block);
+    const paragraph = /<p\b[^>]*>([\s\S]*?)<\/p>/iu.exec(block);
 
     results.push({
       title,
       url,
-      displayUrl: normalize(item.querySelector('cite')?.textContent),
-      snippet: normalize(item.querySelector('.b_caption p, p')?.textContent),
+      displayUrl: textOf(cite?.[1]),
+      snippet: textOf(paragraph?.[1]),
     });
   }
   return results;

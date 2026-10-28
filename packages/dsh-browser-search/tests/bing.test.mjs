@@ -4,16 +4,13 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { JSDOM } from 'jsdom';
-
 import { decodeBingUrl, parseBingSerp } from '../src/bing.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serp = await readFile(join(here, 'fixtures/bing-serp.html'), 'utf8');
 
 test('parseBingSerp reads every organic result of the captured SERP', () => {
-  const doc = new JSDOM(serp).window.document;
-  const results = parseBingSerp(doc);
+  const results = parseBingSerp(serp);
 
   assert.equal(results.length, 9);
 
@@ -27,8 +24,7 @@ test('parseBingSerp reads every organic result of the captured SERP', () => {
 });
 
 test('parseBingSerp reports a real destination for every result', () => {
-  const doc = new JSDOM(serp).window.document;
-  for (const result of parseBingSerp(doc)) {
+  for (const result of parseBingSerp(serp)) {
     assert.match(result.url, /^https?:\/\//);
     assert.doesNotMatch(result.url, /bing\.com\/ck\//);
   }
@@ -44,6 +40,19 @@ test('decodeBingUrl unwraps the ck redirector and passes direct links through', 
 });
 
 test('parseBingSerp returns an empty list when the page holds no results', () => {
-  const doc = new JSDOM('<!DOCTYPE html><html><body><p>nothing</p></body></html>').window.document;
-  assert.deepEqual(parseBingSerp(doc), []);
+  assert.deepEqual(parseBingSerp('<!DOCTYPE html><html><body><p>nothing</p></body></html>'), []);
+});
+
+test('parseBingSerp decodes the entities Bing puts in titles and snippets', () => {
+  const html = `
+    <li class="b_algo">
+      <h2><a href="https://example.com/a">Tom &amp; Jerry&#39;s &quot;guide&quot;</a></h2>
+      <cite>https://example.com</cite>
+      <p>one &lt; two &amp;&amp; three &gt; zero</p>
+    </li>`;
+
+  const [result] = parseBingSerp(html);
+
+  assert.equal(result.title, 'Tom & Jerry\'s "guide"');
+  assert.equal(result.snippet, 'one < two && three > zero');
 });
