@@ -6,6 +6,12 @@ patchFrom:
   - ../dsh-easyrewrite
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch
+  # dsh-browser-search registers the `browser-search` provider on the web seam's
+  # search registry, replacing the paid DeepSeek search API without changing the
+  # `web_search` tool the model calls. Installing it only makes the provider
+  # AVAILABLE — which provider wins is decided by the `web` row's
+  # `searchProvider` in the profile, not by this row.
+  - ../dsh-browser-search
   - ../dsh-browser-agent
   - ../dsh-desktop-agent
   - ../dsh-openviking
@@ -56,6 +62,7 @@ deps:
   - ../dsh-easyrewrite
   - ../dsh-imagegen
   - ../dsh-fakeip-fetch
+  - ../dsh-browser-search
   - ../dsh-browser-agent
   - ../dsh-desktop-agent
   - ../dsh-openviking

@@ -80,6 +80,20 @@
     - id: fakeip-fetch
       name: '@logictan/dsh-fakeip-fetch'
 
+# from ../dsh-browser-search
+# dsh-browser-search bundle patch layer.
+#
+# One bare plugin row. The plugin registers the `browser-search` provider on the
+# `ctx.web` search registry; which provider actually wins is decided by the
+# `web` row's `searchProvider`, not by this row.
+#
+# Row id `browser-search` equals the host half's `export const name` in
+# src/index.js. It is checked by hand against every other row id in this
+# repository; `aggregate.mjs --check` does not validate id uniqueness.
+- insert:
+    - id: browser-search
+      name: '@logictan/dsh-browser-search'
+
 # from ../dsh-browser-agent
 # dsh-browser-agent bundle patch layer.
 #
