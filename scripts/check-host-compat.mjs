@@ -17,7 +17,7 @@
 //                                  （实测：0.2.0-rc.2 升级时 6 个已发布包的
 //                                    旧 manifest 被拒）
 //   R4 patch 行 id 重复         -> 宿主启动**硬崩**（duplicate loader entry id）
-//                                  AGENTS.md §新增子插件 把它列为「无人自动检查，
+//                                  dsh-plugin-lifecycle 技能 把它列为「无人自动检查，
 //                                  须人工核对」的手工步骤，此处接管。
 //
 // 判据来源：R2 直接调用**宿主自己的** evaluatePluginCompatibility，不手抄规则，

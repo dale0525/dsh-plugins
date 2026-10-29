@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 上游同步的**只读**工具。
 //
-// 同步本身是手工的：`git subtree pull` + 逐处裁定冲突，配方见 AGENTS.md §🔀 上游同步。
+// 同步本身是手工的：`git subtree pull` + 逐处裁定冲突，配方见 .agents/skills/dsh-plugin-upstream/SKILL.md。
 // 本脚本不 pull、不 checkout、不 rm、不 commit —— 它只回答三个问题（--preflight 会**打印** git rm 命令供人执行，自己不执行）：
 //
 //   --list            每个 fork 的上游是谁、上游最新到哪、我们现在是什么状态
@@ -266,7 +266,7 @@ const USAGE = [
   '--changed <id>    上游从真正的同步点到最新 tag 的改动（fetch 到 refs/dsh-sync/*，不动工作区）',
   '--preflight <id>  预演这次同步会撞哪些冲突，并分成「机械可裁定 / 需人工裁定」',
   '',
-  '本脚本是只读的：不 pull、不 checkout、不 rm、不 commit。同步手工做，配方见 AGENTS.md §🔀 上游同步。',
+  '本脚本是只读的：不 pull、不 checkout、不 rm、不 commit。同步手工做，配方见 .agents/skills/dsh-plugin-upstream/SKILL.md。',
 ].join('\n')
 
 function describeState(state) {
@@ -365,7 +365,7 @@ function showPreflight(target, log) {
   log('  ── 需人工裁定（' + split.judgment.length + '）')
   for (const c of split.judgment) log('     [' + c.kind + '] ' + c.path)
   log('')
-  log('  预检到此为止：不改工作区、不替你裁定。真同步仍是 `git subtree pull` + 逐处裁定（AGENTS.md §🔀 上游同步）。')
+  log('  预检到此为止：不改工作区、不替你裁定。真同步仍是 `git subtree pull` + 逐处裁定（.agents/skills/dsh-plugin-upstream/SKILL.md）。')
   return 0
 }
 

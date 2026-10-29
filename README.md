@@ -21,7 +21,7 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest
 | 路径 | 说明 |
 |---|---|
 | `packages/all/` | 聚合载体 `@logictan/dsh-plugins-all`；`aggregate.yml` 手写，`cordis.patch.yml` 与 `package.json` 是生成物 |
-| `packages/<pkg>/` | 各个子插件。有上游的走 `git subtree` fork，自制的直接放这里——判据见 `AGENTS.md` |
+| `packages/<pkg>/` | 各个子插件。有上游的走 `git subtree` fork，自制的直接放这里——判据见 `.agents/skills/dsh-plugin-lifecycle/SKILL.md` |
 | `packages/<pkg>/upstream.json` | 仅 fork 有：该包的上游身份（`id` / `url` / `prefix`） |
 | `scripts/aggregate.mjs` | 由 `aggregate.yml` 生成聚合 patch 与 dependencies |
 | `scripts/publish.mjs` | 按依赖边推导发布顺序（子插件 → 聚合包）；`npm run publish:plan` 预览 |
@@ -36,7 +36,7 @@ node scripts/aggregate.mjs             # 重新生成
 ```
 
 改子插件的 patch 行：编辑该子包自己的 `cordis.patch.yml`，再跑 `node scripts/aggregate.mjs`。
-新增一个子插件见 `AGENTS.md` 的「➕ 新增子插件」。
+新增一个子插件见 `.agents/skills/dsh-plugin-lifecycle/SKILL.md`。
 
 ## 发布
 
@@ -69,9 +69,9 @@ npm trust github <pkg> --file publish.yml --repo dale0525/dsh-plugins --allow-pu
 gh workflow run publish.yml --ref main -f dry_run=false
 ```
 
-细节见 `AGENTS.md` 的「📤 发布」。
+细节见 `.agents/skills/dsh-plugin-release/SKILL.md`。
 
 ## 生效方式
 
 改完之后要不要重启宿主，取决于改动落在哪一层。这张表是硬门禁与实测依据，
-维护在 `AGENTS.md` 的「🚀 生效门禁」；以那里为准。
+维护在 `.agents/skills/dsh-plugin-runtime/SKILL.md`；以那里为准。
