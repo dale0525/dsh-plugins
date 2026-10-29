@@ -85,16 +85,28 @@ assert.ok(/await realpath\(/.test(hostCode), '上探进程入口前必须 realpa
 assert.ok(/import \{[^}]*\brealpath\b[^}]*\} from 'node:fs\/promises'/.test(hostCode), '应导入 realpath');
 console.log('✓ 宿主版本探测不再引用未导入的模块');
 
-// 实测：修复后能从符号链接入口解析出宿主版本
+// 实测：修复后能从符号链接入口解析出宿主版本。
+// 只在**本机装了宿主**时跑：CI runner 没有 dsh，硬编码路径与版本号会让发布流水线
+// 在 Test 步骤必红（实测 run 40819732182）。这里改成「宿主在场才实测」，
+// 宿主不在场就跳过——静态检查（realpath / dirname 导入）上面已经覆盖，
+// 该函数的行为本身不依赖宿主版本号是不是某一个具体值。
 {
-  const src = hostCode.slice(hostCode.indexOf('async function readDshVersion'), hostCode.indexOf('\nasync function fetchLatestVersion'));
-  const fn = new Function('readFile', 'realpath', 'join', 'dirname', 'process', src + '\nreturn readDshVersion;');
   const { readFile, realpath } = await import('node:fs/promises');
   const { join, dirname } = await import('node:path');
-  const probe = { argv: ['node', '/opt/homebrew/bin/dsh', '--profile', 'web'] };
-  const v = await fn(readFile, realpath, join, dirname, probe)();
-  assert.equal(v, '0.2.1-rc.2', `符号链接入口应解析出宿主版本，实际得到 ${v}`);
-  console.log(`✓ 实测符号链接入口解析出宿主版本：${v}`);
+  const { execFile } = await import('node:child_process');
+  const dshPath = await new Promise((res) => {
+    execFile('which', ['dsh'], (err, out) => res(err ? null : String(out).trim() || null));
+  });
+  if (dshPath === null) {
+    console.log('· 本机未安装 dsh，跳过宿主版本实测（CI 环境属此类）');
+  } else {
+    const src = hostCode.slice(hostCode.indexOf('async function readDshVersion'), hostCode.indexOf('\nasync function fetchLatestVersion'));
+    const fn = new Function('readFile', 'realpath', 'join', 'dirname', 'process', src + '\nreturn readDshVersion;');
+    const probe = { argv: ['node', dshPath, '--profile', 'web'] };
+    const v = await fn(readFile, realpath, join, dirname, probe)();
+    assert.match(String(v), /^\d+\.\d+\.\d+/, `符号链接入口应解析出版本号，实际得到 ${v}`);
+    console.log(`✓ 实测符号链接入口解析出宿主版本：${v}`);
+  }
 }
 
 // =========================================================================
