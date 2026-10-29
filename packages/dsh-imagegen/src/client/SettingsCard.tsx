@@ -546,6 +546,32 @@ export function ImageGenSettingsCard(props: ImageGenSettingsCardProps) {
               ? <p className={css.failed} role="status">{t('settings.saveFailed')}</p>
               : null}
               </ConfigForm>
+              {/*
+                The staged edits — the channel list and the prompt-enhancement key —
+                are written here and nowhere else. The schema fields above commit
+                themselves on blur, so this band is not their save; it is the only
+                way out of a staged channel edit. Removing it (8baf7a1f2) left
+                `ChannelsForm.commit()` with no caller at all, so every channel
+                change was staged and then silently dropped.
+              */}
+              <div className={css.footer}>
+                <button
+                  type="button"
+                  className={css.discard}
+                  disabled={!state.dirty || state.saving || state.channels.saving}
+                  onClick={() => { props.discard(); props.channels.discard() }}
+                >
+                  {t('settings.discard')}
+                </button>
+                <button
+                  type="button"
+                  className={css.save}
+                  disabled={blocked}
+                  onClick={() => { void props.channels.commit(); void props.save() }}
+                >
+                  {t(!state.saving && !state.channels.saving ? 'settings.save' : 'settings.saving')}
+                </button>
+              </div>
             </div>
           </div>
         )

@@ -25,6 +25,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const card = readFileSync(join(root, 'src', 'client', 'SettingsCard.tsx'), 'utf8')
 const scope = readFileSync(join(root, 'src', 'client', 'settings-scope.ts'), 'utf8')
 const host = readFileSync(join(root, 'src', 'index.ts'), 'utf8')
+const locales = readFileSync(join(root, 'src', 'client', 'locales.ts'), 'utf8')
 
 test('the card renders the schema through the shared ConfigForm', () => {
   assert.match(card, /from '@logictan\/dsh-plugins-shared-client\/client'/)
@@ -107,17 +108,27 @@ test('the channel editor is passed as the form’s children, not beside it', () 
   )
 })
 
-test('the card no longer carries its own save and discard controls', () => {
-  // Commit-on-blur is the interaction the design specifies and the only one the
-  // host's slot contract can express: there is no page-level save band a plugin
-  // can reach.
-  assert.ok(
-    !/settings\.save\b|t\('settings\.save'\)/.test(card),
-    'the per-card save button must be gone',
-  )
-  assert.ok(
-    !/props\.discard\(\)/.test(card),
-    'the per-card discard button must be gone',
+test('the schema fields commit themselves, so the footer is only the staged forms\' save', () => {
+  // The migration's own contract: every scalar in the schema commits on blur and
+  // must NOT be staged here. There is no page-level save band a plugin can
+  // reach, so the schema fields cannot wait for one.
+  //
+  // This is NOT a reason to drop the footer. The staged forms below (the channel
+  // list, the prompt-enhancement key) have no commit-on-blur equivalent — the
+  // channel editor's own hint says "changes take effect with the card's Save
+  // button", and the card header shows an "Unsaved changes" badge. Deleting the
+  // footer (8baf7a1f2) left `ChannelsForm.commit()` with zero call sites, so
+  // every channel edit was staged and silently dropped.
+  for (const migrated of ['enabled', 'announceToAgent', 'allowAgentImageGeneration', 'promptApiUrl', 'promptModel']) {
+    assert.ok(
+      !new RegExp(`props\\.edit\\('${migrated}'`).test(card),
+      `${migrated} commits through the schema; staging it again would double-write`,
+    )
+  }
+  assert.match(
+    card,
+    /void props\.channels\.commit\(\);\s*void props\.save\(\)/,
+    'the footer save must write the staged channels together with the staged key',
   )
 })
 
@@ -167,4 +178,43 @@ test('the form handle and its snapshot keep their identity between calls', () =>
     /if \(snapshot !== cachedFrom\) \{/,
     'the projected snapshot must be cached against the scope snapshot identity',
   )
+})
+
+test('the card offers a save action, and it is the only thing that writes staged channels', () => {
+  // The crash this pins (reported 2026-10-29): the channel editor staged its
+  // edits and told the user they "take effect with the card's Save button", but
+  // the card had no Save button. `ChannelsForm.commit()` had no call site at
+  // all — every channel edit (add, delete, set default, per-channel key) was
+  // written into the draft and then dropped, with no way to persist it.
+  //
+  // A staged form whose save is unreachable is not a UI nit: it is a silent data
+  // loss path. Both halves are pinned here — the card must render the control,
+  // and the control must call commit.
+  assert.match(
+    card,
+    /props\.channels\.commit\(\)/,
+    'something in the card must call ChannelsForm.commit(); without a call site the staged channels can never be written',
+  )
+  assert.match(
+    card,
+    /t\(!?[^)]*'settings\.save'/,
+    'the save control must be labelled from settings.save (the key the discard/save pair used before the migration)',
+  )
+  // The discard half must reach BOTH staged forms: the scalars' secret field and
+  // the channels. Discarding only one leaves the card "dirty" with no way back.
+  assert.match(
+    card,
+    /props\.discard\(\);\s*props\.channels\.discard\(\)/,
+    'discard must reset both the staged secret field and the staged channels',
+  )
+})
+
+test('the save and discard copy exists in every shipped language', () => {
+  // The migration deleted these three keys from all three dictionaries while the
+  // code that used them was removed. Restoring the control without the copy
+  // would render the raw key (or an empty label) in zh/en/ru.
+  for (const key of ['settings.save', 'settings.saving', 'settings.discard']) {
+    const hits = [...locales.matchAll(new RegExp(`'${key}':`, 'g'))]
+    assert.equal(hits.length, 3, `${key} must be defined in zh, en and ru`)
+  }
 })
