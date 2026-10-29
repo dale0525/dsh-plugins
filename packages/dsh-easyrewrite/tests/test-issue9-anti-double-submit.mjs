@@ -226,91 +226,75 @@ assert.equal(fallbackFromBrokenPrimary, 'sess-4', '优先通道崩溃时降级�
 console.log('✓ safeOpenSession 降级与异常保护验证通过');
 
 // =========================================================================
-// [Test 5] Issue #10 幽灵队列清理（cleanGhostQueue）专项验证
+// [Test 5] Issue #10 幽灵队列：边界取 turn/end 即结构上不继承待处理项
 // =========================================================================
-console.log('[Test 5] Issue #10 DSH fork 幽灵队列清理与防御验证...');
+// 原实现 fork 后调 /bubble/clean-ghost 让宿主物理拔除「幽灵队列」。该缺陷的真正成因是
+// fork 前缀切在回合内部：入队 agent/inbox/spliced 恒在 turn/start 前一格、出队恒在其后
+// 一格，所以切点只要落在 turn/end 上，两者就都在前缀之外，子会话 inbox 为空。
+// 因此现在不清理，只保证边界算法本身正确。
+console.log('[Test 5] Issue #10 fork 边界不继承幽灵队列验证...');
 
-// 5.1 静态源码结构检测
-assert.ok(srcCode.includes('var cleanGhostQueue = function ()'), 'src 中必须包含 cleanGhostQueue 函数');
-assert.ok(bundleCode.includes('cleanGhostQueue'), '编译产物中必须包含 cleanGhostQueue 逻辑');
-assert.ok(srcCode.includes('function requestCleanGhostQueue('), 'src 中必须包含 requestCleanGhostQueue 函数');
-assert.ok(bundleCode.includes('requestCleanGhostQueue'), '编译产物中必须包含 requestCleanGhostQueue 逻辑');
-assert.ok(srcCode.includes('/bubble/clean-ghost'), 'src 中必须调用 /bubble/clean-ghost 路由');
-assert.ok(srcCode.includes('kind: "remove"'), 'cleanGhostQueue 必须使用 kind: "remove" 清理队列');
-assert.ok(srcCode.includes('updateQueue: function (itemId, action)'), 'inject 必须包含 updateQueue 接口');
+// 5.1 静态：清理通道与其宿主路由都已删除，边界改为本地计算
+assert.ok(!srcCode.includes('requestCleanGhostQueue'), 'src 中不得再有 requestCleanGhostQueue（宿主清理通道已删）');
+assert.ok(!bundleCode.includes('requestCleanGhostQueue'), '编译产物中不得再有 requestCleanGhostQueue');
+assert.ok(!/fetch\(\s*["']\/bubble\/(clean-ghost|recall)["']/.test(srcCode), 'src 中不得再有 /bubble/clean-ghost 或 /bubble/recall 的真实调用');
+assert.ok(!/fetch\(\s*["']\/bubble\/(clean-ghost|recall)["']/.test(bundleCode), '编译产物中不得再有这两条路由的真实调用');
+assert.ok(srcCode.includes('function computeRecallBoundary('), 'src 中必须包含 computeRecallBoundary 函数');
 
-// 5.2 动态模拟：Host 端与 Client 端双重拦截幽灵队列
-const hostCleanedSessions = [];
-const removedItems = [];
-const mockSession = {
-  sessionId: 'session-fork-child',
-  getSnapshot: () => ({
-    queue: [
-      { id: 'ghost-msg-1', placement: 'queued', text: '旧消息原文' },
-      { id: 'ghost-msg-2', placement: 'queued', text: '残留第二条' }
-    ]
-  }),
-  updateQueue: async (itemId, action) => {
-    removedItems.push({ itemId, action });
-    return { ok: true };
-  }
-};
+// 5.2 动态：从 src 抽出 computeRecallBoundary 求值，验证它选的是「目标之前最后一个 turn/end」
+const boundarySrc = srcCode.slice(
+  srcCode.indexOf('function computeRecallBoundary('),
+  srcCode.indexOf('function snapshotHasMore(')
+);
+// snapshotHasMore 作为参数注入（不拼源码，否则函数声明会遮蔽参数）
+const makeBoundary = new Function('log', 'hasChatSnapshot', 'getChatSnapshot', 'snapshotHasMore',
+  boundarySrc + '\nreturn computeRecallBoundary;');
+const testBoundary = makeBoundary(
+  () => {},
+  () => true,
+  (props) => props.__snapshot,
+  () => false
+);
 
-const mockPropsWithGhost = {
-  sessionId: 'session-fork-child',
-  ctxSessions: {
-    binding: (sid) => (sid === 'session-fork-child' ? { session: mockSession } : null)
-  }
-};
-
-// 提取并运行 cleanGhostQueue 逻辑
-async function testCleanGhostQueue(sessionId, props) {
-  const binding = (props.ctxSessions && typeof props.ctxSessions.binding === 'function')
-    ? props.ctxSessions.binding(sessionId)
-    : null;
-  const sessInst = binding ? binding.session : null;
-  const qItems = (sessInst && typeof sessInst.getSnapshot === 'function')
-    ? sessInst.getSnapshot().queue
-    : ((props.session && Array.isArray(props.session.queue)) ? props.session.queue : []);
-  const ghostItems = Array.isArray(qItems) ? qItems.filter((it) => it && it.id) : [];
-  if (ghostItems.length > 0) {
-    const pList = [];
-    for (let gi = 0; gi < ghostItems.length; gi++) {
-      const gId = ghostItems[gi].id;
-      if (sessInst && typeof sessInst.updateQueue === 'function') {
-        pList.push(sessInst.updateQueue(gId, { kind: 'remove' }));
-      }
-    }
-    if (pList.length > 0) {
-      await Promise.allSettled(pList);
-    }
-  }
+function timelineOf(turns) {
+  const map = new Map();
+  for (const t of turns) map.set(t.turn, { turn: t.turn, start: t.start, end: t.end, status: t.end ? 'closed' : 'open', steps: [], data: null });
+  return { turnOrder: turns.map((t) => t.turn), turns: map };
 }
 
-let submittedNewText = false;
-let submitOrder = [];
+// 场景 A：目标在第三回合内 → 边界 = 第二回合的 turn/end（严格小于 targetSeq 的最大值）
+const snapA = { timeline: timelineOf([
+  { turn: 1, start: { seq: 1 }, end: { seq: 10 } },
+  { turn: 2, start: { seq: 11 }, end: { seq: 20 } },
+  { turn: 3, start: { seq: 21 }, end: { seq: 30 } }
+]) };
+assert.deepEqual(testBoundary({ __snapshot: snapA }, 25), { atSeq: 20 }, '边界必须是目标之前最后一个 turn/end');
 
-async function simulateResumeSendFlow() {
-  submitOrder = [];
-  // 1. 回填草稿
-  submitOrder.push('setDraft');
-  // 2. 在提交前执行 cleanGhostQueue
-  await testCleanGhostQueue('session-fork-child', mockPropsWithGhost);
-  submitOrder.push('cleanGhostQueueSettled');
-  // 3. 执行真实 submit
-  submitOrder.push('ia.submit');
-}
+// 场景 B：目标恰是某回合的 turn/end 之后一格（下一回合首条）→ 仍取上一个 turn/end
+assert.deepEqual(testBoundary({ __snapshot: snapA }, 21), { atSeq: 20 });
 
-await simulateResumeSendFlow();
+// 场景 C：目标之前没有任何闭合回合（首条消息）→ no-boundary，走重置对话
+const snapC = { timeline: timelineOf([{ turn: 1, start: { seq: 1 }, end: { seq: 9 } }]) };
+assert.deepEqual(testBoundary({ __snapshot: snapC }, 3), { code: 'no-boundary' });
 
-assert.equal(removedItems.length, 2, '必须精确清空 2 条继承自 fork 的幽灵消息');
-assert.deepEqual(removedItems[0], { itemId: 'ghost-msg-1', action: { kind: 'remove' } });
-assert.deepEqual(removedItems[1], { itemId: 'ghost-msg-2', action: { kind: 'remove' } });
-assert.deepEqual(submitOrder, ['setDraft', 'cleanGhostQueueSettled', 'ia.submit'], '必须保证先清理完幽灵队列，才执行 ia.submit');
+// 场景 D：还有更早历史没加载 → host-fallback（调用方会先 loadThrough 再重算）
+const makeBoundaryHasMore = makeBoundary(
+  () => {},
+  () => true,
+  (props) => props.__snapshot,
+  () => true
+);
+assert.deepEqual(makeBoundaryHasMore({ __snapshot: snapC }, 3), { code: 'host-fallback' });
 
-console.log('✓ cleanGhostQueue 幽灵队列清理时序验证通过');
+// 场景 E：开放回合（无 turn/end）不算边界
+const snapE = { timeline: timelineOf([
+  { turn: 1, start: { seq: 1 }, end: { seq: 10 } },
+  { turn: 2, start: { seq: 11 }, end: undefined }
+]) };
+assert.deepEqual(testBoundary({ __snapshot: snapE }, 15), { atSeq: 10 }, '开放回合不得被当作边界');
+
+console.log('✓ computeRecallBoundary 边界选取验证通过');
 
 console.log('\n======================================');
 console.log('✔ Issue #9 与 Issue #10 所有专项测试全部通过！');
 console.log('======================================\n');
-
