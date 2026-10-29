@@ -36,7 +36,7 @@ importers:
         specifier: ^0.1.9
         version: link:../dsh-desktop-agent
       '@logictan/dsh-easyrewrite':
-        specifier: ^2.7.3
+        specifier: ^2.7.4
         version: link:../dsh-easyrewrite
       '@logictan/dsh-fakeip-fetch':
         specifier: ^0.1.3
