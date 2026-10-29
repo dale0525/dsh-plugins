@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-force-rules",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "DSH plugin that mechanizes five prose rules: no one-shot subagent delegations, no spinning while a seat runs, an upper bound on silence, seat authority limited to the instruction's own marker, and an explicitly named child route on every delegation that can select one. DSH 规则门禁子插件。",
   "type": "module",
   "main": "lib/index.js",
