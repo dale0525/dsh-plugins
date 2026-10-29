@@ -35,6 +35,19 @@
   宿主自己的监听方也这么写（`dsh-agent-preset-registry`、`dsh-session-reference` 都监听
   `system-prompt/assemble` 而不 inject `systemPrompt`）。
 
+- **在 `system-prompt/assemble` 里查工具注册表，作用域必须取 `context.scope`，不能取装配条目自己的字段**：
+  装配条目是**脱壳**的 `{name, description, parameters, deferLoading}`（`dsh-tools` 的 `schemaOf`），
+  没有 `agent` 字段。写成 `ctx.tools.get(tool.name, tool.agent)` 就等于 `get(name, undefined)`，
+  查的是**全局视图**；而 preset 组合把派单工具注册在**各 agent 自己的层**里（`dsh-tool-subagent`
+  的 `installScoped` → `candidate.ctx.inject([...])`），全局视图一个都看不到，于是判定恒为 false、
+  整个监听器静默空转——逻辑对、单测绿、真实部署零效果。
+  实测 2026-10-29 `dsh-force-rules` 0.4.1：本应给派单工具描述追加 534+466 字符的要求，
+  实际请求头里 `subagent` 停在宿主的 948 字符、零追加，派单模型从未看见「必须写授权标记」，
+  于是一个审查席位漏写标记被静默降为只读、连 `git rev-parse HEAD` 都被拒。
+  判据：`context.scope` 是宿主 `assembleContextFor(agent)` 传进来的 `{agent, scope: agent}` 那一份，
+  waterfall 原样透传；`ctx.tools.get(name, scope)` 才走 `chainLayers(scope)`。
+  测试替身必须能区分这两种查法（无 scope 时返回 `undefined`），否则这条线没有测试能守住。
+
 - **HTTP 路由处理器里读服务必须用 `ctx.get(name)`，不能用 `ctx.<name>`**：cordis 的 context 是
   Proxy，属性读只对**声明在 inject 里的服务**成立，否则抛 `cannot get property "<name>" without
   inject`。而路由处理器由宿主 HTTP 服务器在**另一个 fiber** 里调用，不是 `apply` 里 `ctx.inject`
