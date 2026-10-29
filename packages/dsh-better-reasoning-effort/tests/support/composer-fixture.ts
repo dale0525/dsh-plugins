@@ -239,8 +239,17 @@ export function makeCtx(api: RemoteApi, opts?: {
   }
 }
 
-/** Poll until the condition holds or the budget expires. */
-export async function waitFor(condition: () => boolean, budgetMs = 2000): Promise<void> {
+/**
+ * Poll until the condition holds or the budget expires.
+ *
+ * The budget is wall-clock, so it competes with whatever else the machine is
+ * doing. `pnpm test` runs packages two at a time (`--workspace-concurrency=2`);
+ * a sibling package's suite stealing the CPU starves this poller's event loop
+ * and the wait expires on a condition that does hold — a false red, reproducible
+ * on any run where loop-guard's 30s suite is picked as the partner. Keep the
+ * budget well above the observed ~1.5s so only a real regression can trip it.
+ */
+export async function waitFor(condition: () => boolean, budgetMs = 30000): Promise<void> {
   const deadline = Date.now() + budgetMs
   while (!condition()) {
     if (Date.now() > deadline) throw new Error('waitFor: condition not reached')
