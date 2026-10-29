@@ -122,12 +122,21 @@ function declaresBackgroundSwitch(ctx, exec) {
 /**
  * Whether this call can start a subagent seat.
  *
+ * The tool is resolved in the scope that owns it, and that scope differs by
+ * seam. A pending call carries its calling agent in `exec.agent`. An assembly
+ * entry does NOT: it is a detached `{ name, description, parameters }` record,
+ * so reading `exec.agent` there silently resolves the GLOBAL view instead — and
+ * a delegation tool registered into an agent's own layer is invisible from
+ * there, which made every annotation below a no-op on hosts that compose tools
+ * per agent. The assembly seam therefore passes its own `context.scope`.
+ *
  * @param ctx - the plugin context.
- * @param exec - the pending call.
+ * @param exec - the pending call, or an assembly entry naming the tool.
+ * @param scope - the scope that owns the tool; defaults to the calling agent.
  * @returns whether the called tool is a delegation tool.
  */
-function isDelegation(ctx, exec) {
-  const schema = ctx.tools.get(exec.name, exec.agent)?.output?.schema;
+function isDelegation(ctx, exec, scope = exec.agent) {
+  const schema = ctx.tools.get(exec.name, scope)?.output?.schema;
   return schema !== undefined && declaresSeat(schema);
 }
 
@@ -445,10 +454,11 @@ function declaresRoute(properties) {
  *
  * @param ctx - the plugin context.
  * @param exec - the pending call, or an assembly entry naming the tool.
+ * @param scope - the scope that owns the tool; defaults to the calling agent.
  * @returns whether the tool advertises `provider` and/or `model`.
  */
-function advertisesRoute(ctx, exec) {
-  return declaresRoute(ctx.tools.get(exec.name, exec.agent)?.parameters?.properties);
+function advertisesRoute(ctx, exec, scope = exec.agent) {
+  return declaresRoute(ctx.tools.get(exec.name, scope)?.parameters?.properties);
 }
 
 /**
@@ -709,13 +719,21 @@ export function apply(ctx) {
   //
   // Rule 5, second half: the route requirement, which the host's own description
   // presents as optional.
-  ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+  //
+  // `context.scope` is the assembly's own scope and is what the registry must be
+  // queried with: an assembly entry is a detached schema with no `agent` field,
+  // and a delegation tool registered into the agent's layer is absent from the
+  // global view. Without it both tests below answer false and this whole
+  // listener becomes a no-op — which is exactly how the requirement went
+  // missing from a real delegation.
+  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next();
+    const scope = context?.scope;
     let touched = false;
     const tools = assembly.tools.map((tool) => {
-      if (!isDelegation(ctx, tool)) return tool;
+      if (!isDelegation(ctx, tool, scope)) return tool;
       touched = true;
-      const requirement = advertisesRoute(ctx, tool)
+      const requirement = advertisesRoute(ctx, tool, scope)
         ? MARKER_REQUIREMENT + ' ' + ROUTE_REQUIREMENT
         : MARKER_REQUIREMENT;
       return { ...tool, description: tool.description + ' ' + requirement };

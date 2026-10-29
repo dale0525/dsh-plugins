@@ -150,10 +150,17 @@ function fakeSchedule() {
  *
  * `parents` maps a child session id to its durable parent, which is how the
  * plugin resolves lineage without depending on package-private internals.
+ *
+ * `agentScoped` names tools the host registers into an agent's OWN layer rather
+ * than the global one, so they resolve only when a scope is passed to
+ * `tools.get`. That is the arrangement a preset-composed host actually uses for
+ * the delegation tools, and it is what makes the difference between querying the
+ * registry with a scope and querying it without one observable here.
  */
-function harness({ definitions = {}, parents = {}, schedule, llm } = {}) {
+function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = [] } = {}) {
   const listeners = new Map();
   const registered = [];
+  const hiddenGlobally = new Set(agentScoped);
   const agents = new Map(
     Object.entries(parents).map(([id, parentSession]) => [
       id,
@@ -162,7 +169,10 @@ function harness({ definitions = {}, parents = {}, schedule, llm } = {}) {
   );
   const ctx = {
     tools: {
-      get: (toolName) => definitions[toolName],
+      get: (toolName, scope) => {
+        if (scope === undefined && hiddenGlobally.has(toolName)) return undefined;
+        return definitions[toolName];
+      },
       // The host returns the disposer that unregisters the tool; the plugin
       // does not need it, because `register` already ties the tool to the
       // plugin's fiber.
@@ -851,5 +861,38 @@ test('the route requirement lands exactly once across repeated assemblies', asyn
   const second = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
   assert.deepEqual(second, first, 'a stable description keeps the request header from churning every step');
   assert.equal(first.tools[0].description.split('child route').length - 1, 1);
+});
+
+// ---------------------------------------------------------------------------
+// The annotation must resolve the tool in the ASSEMBLY's scope, not the global
+// view.
+//
+// Observed on a real dsh 0.2.1-rc.2 deployment: every delegation tool was
+// registered into the agent's own layer (the preset composition installs them
+// per agent), so the global view held none of them. The listener read
+// `exec.agent` off an assembly entry — a detached `{name, description,
+// parameters}` record that carries no agent — fell through to the global view,
+// found nothing, and appended nothing. The requirement was therefore absent from
+// the request that delegated a real seat, and that seat was silently granted
+// read-only authority its instruction never declared.
+// ---------------------------------------------------------------------------
+
+test('a delegation tool visible only in the assembly scope still gets the requirement', async () => {
+  const { listeners } = harness({
+    definitions: { subagent: ROUTE_TOOL },
+    agentScoped: ['subagent'],
+  });
+  const scope = { id: 'agent-scope' };
+  const assembly = { tools: [{ name: 'subagent', description: 'Delegate a task.', parameters: {} }] };
+  const assembled = await fireAssembly(listeners, assembly, { agent: {}, scope }, async () => assembly);
+  assert.match(assembled.tools[0].description, /\[只读\]/, 'the marker requirement reaches the request');
+  assert.match(assembled.tools[0].description, /MUST name the child route/, 'the route requirement reaches it too');
+});
+
+test('an assembly with no scope falls back to the calling agent rather than crashing', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL } });
+  const assembly = { tools: [{ name: 'subagent', description: 'Delegate a task.', parameters: {} }] };
+  const assembled = await fireAssembly(listeners, assembly, undefined, async () => assembly);
+  assert.match(assembled.tools[0].description, /\[只读\]/, 'a scope-less assembly still annotates a globally registered tool');
 });
 
