@@ -30,13 +30,13 @@ importers:
         specifier: ^0.1.1
         version: link:../dsh-browser-search
       '@logictan/dsh-config-manager':
-        specifier: ^0.1.84
+        specifier: ^0.1.85
         version: link:../dsh-config-manager
       '@logictan/dsh-desktop-agent':
         specifier: ^0.1.9
         version: link:../dsh-desktop-agent
       '@logictan/dsh-easyrewrite':
-        specifier: ^2.7.4
+        specifier: ^2.7.5
         version: link:../dsh-easyrewrite
       '@logictan/dsh-fakeip-fetch':
         specifier: ^0.1.3
@@ -48,7 +48,7 @@ importers:
         specifier: ^0.1.1
         version: link:../dsh-goal-resume
       '@logictan/dsh-imagegen':
-        specifier: ^2.0.7
+        specifier: ^2.0.8
         version: link:../dsh-imagegen
       '@logictan/dsh-lan-access':
         specifier: ^0.1.1
