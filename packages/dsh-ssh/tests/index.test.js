@@ -414,7 +414,23 @@ test('exec runs on the configured host, records the host key, and returns the ex
 
     // The key was pinned where the guidance says it is, so the next connection
     // to this address is verified rather than trusted again.
-    const recorded = JSON.parse(await readFile(join(home, 'dsh-ssh', 'known-hosts.json'), 'utf8'));
+    //
+    // The write is deliberately fire-and-forget (`void writeKnownHosts(...)`):
+    // the in-memory trust decision is made synchronously so the password is
+    // never offered before it, and the connection must not wait on a disk
+    // round-trip. The file therefore lands a tick or two after exec() resolves —
+    // poll for it instead of racing it, or this fails ~1 run in 3 on a fast machine.
+    const knownHostsFile = join(home, 'dsh-ssh', 'known-hosts.json');
+    let recorded;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        recorded = JSON.parse(await readFile(knownHostsFile, 'utf8'));
+        break;
+      } catch (error) {
+        if (attempt >= 100) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
     assert.equal(recorded.entries[`${server.host}:${server.port}`], value.host_key);
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME;

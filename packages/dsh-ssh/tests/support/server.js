@@ -34,11 +34,34 @@ const SFTP = utils.sftp;
  * @returns the server handle: `{host, port, publicKey, files, setExec, close}`.
  */
 export async function startServer(options = {}) {
-  const hostKey = options.hostKey ?? utils.generateKeyPairSync('ed25519').private;
   // The fingerprint a client sees is over the PUBLIC key blob, so the handle
   // exposes that rather than the private key a test would otherwise fingerprint
   // by mistake.
-  const publicKey = utils.parseKey(hostKey).getPublicSSH();
+  //
+  // `utils.generateKeyPairSync('ed25519')` occasionally emits a keypair its own
+  // `parseKey` then rejects as "Malformed OpenSSH private key" — measured 4 in
+  // 3000, and deterministic for a given key (the same bad pair fails all 20
+  // retries). Both halves go bad together, so it is the generator, not the
+  // parse. `parseKey` reports this by RETURNING an Error object rather than
+  // throwing, which made `.getPublicSSH()` fail as "is not a function" in
+  // whichever test drew the bad pair (~1 run in 3 for this suite). Regenerate
+  // until the pair actually parses.
+  let hostKey;
+  let publicKey;
+  if (options.hostKey !== undefined) {
+    hostKey = options.hostKey;
+    publicKey = utils.parseKey(hostKey).getPublicSSH();
+    if (publicKey instanceof Error) throw publicKey;
+  } else {
+    for (;;) {
+      const generated = utils.generateKeyPairSync('ed25519');
+      const parsed = utils.parseKey(generated.private);
+      if (parsed instanceof Error) continue;
+      hostKey = generated.private;
+      publicKey = parsed.getPublicSSH();
+      break;
+    }
+  }
   const username = options.username ?? 'demo';
   const password = options.password ?? 'pw';
   const files = new Map(
