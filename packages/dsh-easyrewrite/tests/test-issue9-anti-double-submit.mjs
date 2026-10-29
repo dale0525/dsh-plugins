@@ -246,13 +246,12 @@ const boundarySrc = srcCode.slice(
   srcCode.indexOf('function computeRecallBoundary('),
   srcCode.indexOf('function snapshotHasMore(')
 );
-// snapshotHasMore 作为参数注入（不拼源码，否则函数声明会遮蔽参数）
-const makeBoundary = new Function('log', 'hasChatSnapshot', 'getChatSnapshot', 'snapshotHasMore',
+// snapshotHasMore 作为参数注入（不拼源码，否则函数声明会遮蔽参数）。
+// 快照本身走第三个参数：useChat/useSession 是 hook，函数内部不得再取（会抛 React #321）。
+const makeBoundary = new Function('log', 'snapshotHasMore',
   boundarySrc + '\nreturn computeRecallBoundary;');
 const testBoundary = makeBoundary(
   () => {},
-  () => true,
-  (props) => props.__snapshot,
   () => false
 );
 
@@ -268,30 +267,28 @@ const snapA = { timeline: timelineOf([
   { turn: 2, start: { seq: 11 }, end: { seq: 20 } },
   { turn: 3, start: { seq: 21 }, end: { seq: 30 } }
 ]) };
-assert.deepEqual(testBoundary({ __snapshot: snapA }, 25), { atSeq: 20 }, '边界必须是目标之前最后一个 turn/end');
+assert.deepEqual(testBoundary({}, 25, snapA), { atSeq: 20 }, '边界必须是目标之前最后一个 turn/end');
 
 // 场景 B：目标恰是某回合的 turn/end 之后一格（下一回合首条）→ 仍取上一个 turn/end
-assert.deepEqual(testBoundary({ __snapshot: snapA }, 21), { atSeq: 20 });
+assert.deepEqual(testBoundary({}, 21, snapA), { atSeq: 20 });
 
 // 场景 C：目标之前没有任何闭合回合（首条消息）→ no-boundary，走重置对话
 const snapC = { timeline: timelineOf([{ turn: 1, start: { seq: 1 }, end: { seq: 9 } }]) };
-assert.deepEqual(testBoundary({ __snapshot: snapC }, 3), { code: 'no-boundary' });
+assert.deepEqual(testBoundary({}, 3, snapC), { code: 'no-boundary' });
 
 // 场景 D：还有更早历史没加载 → host-fallback（调用方会先 loadThrough 再重算）
 const makeBoundaryHasMore = makeBoundary(
   () => {},
-  () => true,
-  (props) => props.__snapshot,
   () => true
 );
-assert.deepEqual(makeBoundaryHasMore({ __snapshot: snapC }, 3), { code: 'host-fallback' });
+assert.deepEqual(makeBoundaryHasMore({}, 3, snapC), { code: 'host-fallback' });
 
 // 场景 E：开放回合（无 turn/end）不算边界
 const snapE = { timeline: timelineOf([
   { turn: 1, start: { seq: 1 }, end: { seq: 10 } },
   { turn: 2, start: { seq: 11 }, end: undefined }
 ]) };
-assert.deepEqual(testBoundary({ __snapshot: snapE }, 15), { atSeq: 10 }, '开放回合不得被当作边界');
+assert.deepEqual(testBoundary({}, 15, snapE), { atSeq: 10 }, '开放回合不得被当作边界');
 
 console.log('✓ computeRecallBoundary 边界选取验证通过');
 

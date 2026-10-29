@@ -480,9 +480,15 @@ window.__ModuleLoader__.load({
     // ---------- 宿主会话快照读取兼容层（v2.4.0） ----------
     // dsh 0.1.2 起 chat 快照经 useChat 提供（ChatSnapshot 直接形态：order + nodes.get + hasMore），
     // 0.1.1-rc.2 经 useSession（会话快照，chat 子对象）。这里统一返回 chat 快照形态；不可用返回 null。
+    //
+    // 注意：useChat / useSession 都是 **React hook**，只能在渲染期调用。撤回/编辑的边界计算跑在
+    // 点击处理器里，直接调它会抛 React #321（"Invalid hook call"）——旧实现就是这么写的，
+    // 于是边界恒为 null、每次编辑都被判成「首条无边界」并重置整个对话（实测 2026-10-29，0.2.1-rc.2）。
+    // 因此快照在组件渲染期取一次存进 ref，事件处理器只读那份快照。
     function hasChatSnapshot(props) {
       return !!(props && ((typeof props.useChat === "function") || (typeof props.useSession === "function")));
     }
+    /** 渲染期读取 chat 快照（useChat / useSession 是 hook，只能在渲染期调用）。 */
     function getChatSnapshot(props) {
       try {
         if (props && typeof props.useChat === "function") return props.useChat(function (s) { return s; });
@@ -492,6 +498,148 @@ window.__ModuleLoader__.load({
         }
       } catch (eSnap) { /* ignore */ }
       return null;
+    }
+    /** 渲染期取快照存进 ref，供点击处理器读取（处理器内不得再调 hook）。 */
+    function useChatSnapshotRef(props, holder) {
+      holder.current = getChatSnapshot(props) || null;
+      return holder;
+    }
+
+    /**
+     * 撤回边界：目标消息之前**最后一个已闭合回合**的 `turn/end` 事件 seq。
+     *
+     * 取 turn/end 而不是回合内某个节点的 seq，是因为 fork 的前缀是「闭区间 0..atSeq」：
+     * 含 turn/end 时 `openTurnClosers` 无事可做，子会话继承的是真实的回合结束；
+     * 少一格就会留下一个开放回合，由宿主补一条 forked 结束语。
+     *
+     * 这条边界同时**天然避开幽灵队列**：真实日志里入队 `agent/inbox/spliced` 恒在
+     * `turn/start` 前一格、出队恒在其后一格（实测 5 个回合无一例外），所以切在
+     * turn/end 上时两者都在前缀之外，子会话的 inbox 投影为空。这就是原先
+     * `/bubble/clean-ghost` 想修的问题，边界取对了它就不存在。
+     *
+     * @param snapshot - 渲染期捕获的 chat 快照（事件处理器不得自行调 hook 取）。
+     * @returns `{atSeq}` 命中；`{code:"no-boundary"}` 窗口内确实没有更早的闭合回合；
+     *          `{code:"host-fallback"}` 还有更早历史没加载，需要先 loadThrough 再算。
+     */
+    function computeRecallBoundary(props, targetSeq, snapshot) {
+      try {
+        if (!snapshot) return null;
+        var timeline = snapshot.timeline;
+        if (!timeline || !timeline.turns || typeof timeline.turns.get !== "function") return null;
+        var best = -1;
+        timeline.turns.forEach(function (loc) {
+          if (!loc || !loc.end || typeof loc.end.seq !== "number") return;
+          if (loc.end.seq >= targetSeq) return;
+          if (loc.end.seq > best) best = loc.end.seq;
+        });
+        if (best >= 0) return { atSeq: best };
+        return { code: snapshotHasMore(props) ? "host-fallback" : "no-boundary" };
+      } catch (e) {
+        log("warn", "recall", "本地边界计算异常", { err: String(e && e.message ? e.message : e) });
+        return null;
+      }
+    }
+
+    /** 快照窗口外是否还有更早历史（决定「没找到边界」是真空还是没加载）。 */
+    function snapshotHasMore(props) {
+      try {
+        var sid = props.sessionId;
+        var binding = (props.ctxSessions && typeof props.ctxSessions.binding === "function") ? props.ctxSessions.binding(sid) : null;
+        var sess = binding ? binding.session : null;
+        if (sess && typeof sess.getSnapshot === "function") return sess.getSnapshot().hasMore === true;
+      } catch (e) { /* ignore */ }
+      return false;
+    }
+
+    /**
+     * 把会话窗口翻到能覆盖 targetSeq（官方 jump loader，逐页向后加载）。
+     * 用途：目标回合还没加载进快照时，本地算不出边界；先把窗口翻过去再重算。
+     * @returns 是否成功翻到（失败由宿主软失败并落 snapshot.loadingOlder，这里只报布尔）。
+     */
+    function loadThroughTarget(props, targetSeq) {
+      try {
+        var sid = props.sessionId;
+        var binding = (props.ctxSessions && typeof props.ctxSessions.binding === "function") ? props.ctxSessions.binding(sid) : null;
+        var sess = binding ? binding.session : null;
+        if (!sess || typeof sess.loadThrough !== "function") return Promise.resolve(false);
+        return Promise.resolve(sess.loadThrough(targetSeq)).then(function () { return true; }, function (err) {
+          log("warn", "recall", "loadThrough 失败", { targetSeq: targetSeq, err: String(err && err.message ? err.message : err) });
+          return false;
+        });
+      } catch (e) {
+        log("warn", "recall", "loadThrough 异常", { err: String(e && e.message ? e.message : e) });
+        return Promise.resolve(false);
+      }
+    }
+
+    // 稳健读取输入框当前文本：DOM 物理渲染优先 + projection 编辑器层 + state 快照兜底
+    function readCurrentComposerText(props, fallbackText) {
+      var domVal = "";
+      var projVal = "";
+      var snapVal = "";
+      var ishell = props.inputState || null;
+
+      // 1) DOM 物理读取（最高优先级）：直接获取用户在页面中实时敲入的内容（兼容 contenteditable 与 textarea）
+      try {
+        var el = document.querySelector([
+          "[data-input-scroll] [contenteditable='true']",
+          "[data-input-scroll] textarea",
+          "[data-composer-card='true'] [contenteditable='true']",
+          "[data-composer-card='true'] textarea",
+          "[contenteditable='true']",
+          "textarea"
+        ].join(","));
+        if (el) {
+          if (el.isContentEditable || el.getAttribute("contenteditable") === "true") {
+            var t = typeof el.innerText === "string" ? el.innerText : (el.textContent || "");
+            domVal = t.replace(/\r?\n$/g, "");
+          } else if (typeof el.value === "string") {
+            domVal = el.value;
+          }
+        }
+      } catch (eDom) { /* ignore */ }
+
+      // 2) 官方 Lexical 编辑器 projection 剪贴板文本
+      try {
+        if (ishell && ishell.projection && typeof ishell.projection.clipboardText === "string") {
+          projVal = ishell.projection.clipboardText;
+        }
+      } catch (eProj) { /* ignore */ }
+
+      // 3) 官方 state 快照（注意：打字过程中官方并未调用 publish，仅初次 setDraft 时落入）
+      try {
+        if (ishell && ishell.state && typeof ishell.state.getSnapshot === "function") {
+          var snap = ishell.state.getSnapshot();
+          if (snap && typeof snap.draft === "string") snapVal = snap.draft;
+        } else if (ishell && typeof ishell.draft === "string") {
+          snapVal = ishell.draft;
+        }
+      } catch (eSnap) { /* ignore */ }
+
+      var chosen = fallbackText;
+      var source = "fallback";
+
+      if (domVal !== "") {
+        chosen = domVal;
+        source = "dom";
+      } else if (projVal !== "") {
+        chosen = projVal;
+        source = "projection";
+      } else if (snapVal !== "") {
+        chosen = snapVal;
+        source = "snapshot";
+      }
+
+      log("info", "recall", "输入框文本读取诊断", {
+        source: source,
+        chosenLen: typeof chosen === "string" ? chosen.length : 0,
+        domLen: domVal.length,
+        projLen: projVal.length,
+        snapLen: snapVal.length,
+        fallbackLen: typeof fallbackText === "string" ? fallbackText.length : 0
+      });
+
+      return chosen;
     }
 
     // ---------- pending store（按会话；内存缓存 + localStorage 持久化 + 订阅） ----------
@@ -836,142 +984,6 @@ window.__ModuleLoader__.load({
           setTimeout(function () { try { if (bar.parentNode) bar.parentNode.removeChild(bar); } catch (e) { /* ignore */ } }, 3500);
         } catch (e) { /* ignore */ }
       }
-      /**
-       * 撤回边界：目标消息之前**最后一个已闭合回合**的 `turn/end` 事件 seq。
-       *
-       * 取 turn/end 而不是回合内某个节点的 seq，是因为 fork 的前缀是「闭区间 0..atSeq」：
-       * 含 turn/end 时 `openTurnClosers` 无事可做，子会话继承的是真实的回合结束；
-       * 少一格就会留下一个开放回合，由宿主补一条 forked 结束语。
-       *
-       * 这条边界同时**天然避开幽灵队列**：真实日志里入队 `agent/inbox/spliced` 恒在
-       * `turn/start` 前一格、出队恒在其后一格（实测 5 个回合无一例外），所以切在
-       * turn/end 上时两者都在前缀之外，子会话的 inbox 投影为空。这就是原先
-       * `/bubble/clean-ghost` 想修的问题，边界取对了它就不存在。
-       *
-       * @returns `{atSeq}` 命中；`{code:"no-boundary"}` 窗口内确实没有更早的闭合回合；
-       *          `{code:"host-fallback"}` 还有更早历史没加载，需要先 loadThrough 再算。
-       */
-      function computeRecallBoundary(props, targetSeq) {
-        try {
-          if (!hasChatSnapshot(props)) return null;
-          var snapshot = getChatSnapshot(props);
-          var timeline = snapshot && snapshot.timeline;
-          if (!timeline || !timeline.turns || typeof timeline.turns.get !== "function") return null;
-          var best = -1;
-          timeline.turns.forEach(function (loc) {
-            if (!loc || !loc.end || typeof loc.end.seq !== "number") return;
-            if (loc.end.seq >= targetSeq) return;
-            if (loc.end.seq > best) best = loc.end.seq;
-          });
-          if (best >= 0) return { atSeq: best };
-          return { code: snapshotHasMore(props) ? "host-fallback" : "no-boundary" };
-        } catch (e) {
-          log("warn", "recall", "本地边界计算异常", { err: String(e && e.message ? e.message : e) });
-          return null;
-        }
-      }
-
-      /** 快照窗口外是否还有更早历史（决定「没找到边界」是真空还是没加载）。 */
-      function snapshotHasMore(props) {
-        try {
-          var sid = props.sessionId;
-          var binding = (props.ctxSessions && typeof props.ctxSessions.binding === "function") ? props.ctxSessions.binding(sid) : null;
-          var sess = binding ? binding.session : null;
-          if (sess && typeof sess.getSnapshot === "function") return sess.getSnapshot().hasMore === true;
-        } catch (e) { /* ignore */ }
-        return false;
-      }
-
-      /**
-       * 把会话窗口翻到能覆盖 targetSeq（官方 jump loader，逐页向后加载）。
-       * 用途：目标回合还没加载进快照时，本地算不出边界；先把窗口翻过去再重算。
-       * @returns 是否成功翻到（失败由宿主软失败并落 snapshot.loadingOlder，这里只报布尔）。
-       */
-      function loadThroughTarget(props, targetSeq) {
-        try {
-          var sid = props.sessionId;
-          var binding = (props.ctxSessions && typeof props.ctxSessions.binding === "function") ? props.ctxSessions.binding(sid) : null;
-          var sess = binding ? binding.session : null;
-          if (!sess || typeof sess.loadThrough !== "function") return Promise.resolve(false);
-          return Promise.resolve(sess.loadThrough(targetSeq)).then(function () { return true; }, function (err) {
-            log("warn", "recall", "loadThrough 失败", { targetSeq: targetSeq, err: String(err && err.message ? err.message : err) });
-            return false;
-          });
-        } catch (e) {
-          log("warn", "recall", "loadThrough 异常", { err: String(e && e.message ? e.message : e) });
-          return Promise.resolve(false);
-        }
-      }
-
-      // 稳健读取输入框当前文本：DOM 物理渲染优先 + projection 编辑器层 + state 快照兜底
-      function readCurrentComposerText(fallbackText) {
-        var domVal = "";
-        var projVal = "";
-        var snapVal = "";
-        var ishell = props.inputState || null;
-
-        // 1) DOM 物理读取（最高优先级）：直接获取用户在页面中实时敲入的内容（兼容 contenteditable 与 textarea）
-        try {
-          var el = document.querySelector([
-            "[data-input-scroll] [contenteditable='true']",
-            "[data-input-scroll] textarea",
-            "[data-composer-card='true'] [contenteditable='true']",
-            "[data-composer-card='true'] textarea",
-            "[contenteditable='true']",
-            "textarea"
-          ].join(","));
-          if (el) {
-            if (el.isContentEditable || el.getAttribute("contenteditable") === "true") {
-              var t = typeof el.innerText === "string" ? el.innerText : (el.textContent || "");
-              domVal = t.replace(/\r?\n$/g, "");
-            } else if (typeof el.value === "string") {
-              domVal = el.value;
-            }
-          }
-        } catch (eDom) { /* ignore */ }
-
-        // 2) 官方 Lexical 编辑器 projection 剪贴板文本
-        try {
-          if (ishell && ishell.projection && typeof ishell.projection.clipboardText === "string") {
-            projVal = ishell.projection.clipboardText;
-          }
-        } catch (eProj) { /* ignore */ }
-
-        // 3) 官方 state 快照（注意：打字过程中官方并未调用 publish，仅初次 setDraft 时落入）
-        try {
-          if (ishell && ishell.state && typeof ishell.state.getSnapshot === "function") {
-            var snap = ishell.state.getSnapshot();
-            if (snap && typeof snap.draft === "string") snapVal = snap.draft;
-          } else if (ishell && typeof ishell.draft === "string") {
-            snapVal = ishell.draft;
-          }
-        } catch (eSnap) { /* ignore */ }
-
-        var chosen = fallbackText;
-        var source = "fallback";
-
-        if (domVal !== "") {
-          chosen = domVal;
-          source = "dom";
-        } else if (projVal !== "") {
-          chosen = projVal;
-          source = "projection";
-        } else if (snapVal !== "") {
-          chosen = snapVal;
-          source = "snapshot";
-        }
-
-        log("info", "recall", "输入框文本读取诊断", {
-          source: source,
-          chosenLen: typeof chosen === "string" ? chosen.length : 0,
-          domLen: domVal.length,
-          projLen: projVal.length,
-          snapLen: snapVal.length,
-          fallbackLen: typeof fallbackText === "string" ? fallbackText.length : 0
-        });
-
-        return chosen;
-      }
 
       async function doRecallThenSend(p) {
         if (sendingRef.current) return;
@@ -992,7 +1004,7 @@ window.__ModuleLoader__.load({
         try {
           var sid = props.sessionId;
           // 读取输入框当前文本（用户可能已修改）：重置/重发都使用修改后的内容
-          var sendText = readCurrentComposerText(p.draftText);
+          var sendText = readCurrentComposerText(props, p.draftText);
           // 极限场景判定（v2.4.0 改约）：窗口化快照上的 isFirstUserMessage 会误判（窗口起点=目标消息即误报首条），
           // 首条/截断场景由 computeRecallBoundary 判定：no-boundary 时走 resetConversation。
           // 本地只保留快照可判时的提前短路（no-boundary）。
@@ -1001,7 +1013,7 @@ window.__ModuleLoader__.load({
           // review L5：日志去内容化（只记长度，不落明文）
           log("info", "recall", "发送内容（修改后）", { sendLen: sendText.length, modelSel: !!msel });
           // review #7：client 直算边界（判定树），仅在快照无法判定时走保留的 host 路由 fallback
-          var localB = computeRecallBoundary(props, p.targetSeq);
+          var localB = computeRecallBoundary(props, p.targetSeq, chatSnapRef.current);
           var boundary = null;
           if (localB && localB.atSeq) {
             boundary = localB.atSeq;
@@ -1018,7 +1030,7 @@ window.__ModuleLoader__.load({
             // 而且它顺带把目标附近的回合真正加载进界面（撤回后用户看到的就是这段历史）。
             log("info", "recall", "目标在窗口外，loadThrough 后重算边界", { targetSeq: p.targetSeq });
             var loaded = await loadThroughTarget(props, p.targetSeq);
-            var afterLoad = loaded ? computeRecallBoundary(props, p.targetSeq) : null;
+            var afterLoad = loaded ? computeRecallBoundary(props, p.targetSeq, chatSnapRef.current) : null;
             if (afterLoad && afterLoad.atSeq) {
               boundary = afterLoad.atSeq;
             } else {
@@ -2717,6 +2729,8 @@ window.__ModuleLoader__.load({
       var sessionId = props.sessionId;
       var myKey = node && typeof node.key === "string" ? node.key : "";
       var pending = usePending(sessionId);
+      // 边界计算跑在点击处理器里，那里不能调 hook：快照在这里（渲染期）取好，处理器只读 ref。
+      var chatSnapRef = useChatSnapshotRef(props, React.useRef(null));
 
       // 撤回确认态：true 时操作区替换为行内确认胶囊（惰性提交——确认只是本地态，真正修改在发送时）
       var confirmState = React.useState(false);
@@ -3132,7 +3146,7 @@ window.__ModuleLoader__.load({
 
           // 收集底部输入框暂存草稿（文本与图片）：新会话中隔离保留
           var bDraftText = "";
-          try { bDraftText = readCurrentComposerText(""); } catch (eBT) { /* ignore */ }
+          try { bDraftText = readCurrentComposerText(props, ""); } catch (eBT) { /* ignore */ }
           var bImgIds = [];
           try {
             var curInState = props.inputState || null;
@@ -3147,11 +3161,11 @@ window.__ModuleLoader__.load({
 
           setEditing(false);
           log("info", "edit", "确定：编辑重发", { sessionId: sid, targetSeq: realSeq, len: newText.length, hasStaged: !!stagedDraftPayload });
-          var editBoundary = computeRecallBoundary(props, realSeq);
+          var editBoundary = computeRecallBoundary(props, realSeq, chatSnapRef.current);
           if (!editBoundary || editBoundary.code === "host-fallback") {
             if (editBoundary && editBoundary.code === "host-fallback") {
               var editLoaded = await loadThroughTarget(props, realSeq);
-              editBoundary = editLoaded ? computeRecallBoundary(props, realSeq) : null;
+              editBoundary = editLoaded ? computeRecallBoundary(props, realSeq, chatSnapRef.current) : null;
             }
           }
           if (!editBoundary || !editBoundary.atSeq) {
