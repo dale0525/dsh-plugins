@@ -8,9 +8,9 @@
  *  - `source`（发起者）→ 启动时无条件 **push**（本地覆盖远端）
  *  - `follower`（从属者）→ 启动时无条件 **pull**（远端覆盖本地）
  *
- * 角色存在本机私有文件 `sync-config.json` 里。它不在任何同步分区中（同步范围是
- * `syncAdapters()`，而该文件是 syncDir 下的插件私有状态），所以每台设备的角色
- * 互相独立、不会随配置传播到别的设备。
+ * 角色存在本机私有文件 `sync-config.json` 里。该文件本身在 `self` 分区白名单内
+ * （通道配置 git/webdav 要跨设备迁移），所以 `SelfAdapter` 导出时剥掉 `role`、
+ * 导入时保留目标机已有的 `role`：通道配置跟着快照走，角色永远留在本机。
  *
  * 时序依据（宿主与 Cordis 实现，逐条已核实）：
  *  1. `cordis._execute` 对 apply 返回的 thenable 会 `return effect.then(safeCollect)`，

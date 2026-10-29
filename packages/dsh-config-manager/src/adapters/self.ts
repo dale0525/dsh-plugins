@@ -20,7 +20,9 @@
  */
 import path from 'node:path';
 import { msgOf } from '../core/messages.ts';
-import type { ExportOptions, ExportSection, HostContext } from '../core/types.ts';
+import type {
+  ApplyResult, ExportOptions, ExportSection, HostContext, ImportContext, PlanItem,
+} from '../core/types.ts';
 import type { FilesSection } from '../schema/types.ts';
 import { sha256Hex } from '../utils/hashing.ts';
 import { FileCollectionAdapter } from './file-collection.ts';
@@ -56,7 +58,7 @@ export class SelfAdapter extends FileCollectionAdapter {
       // ctx.fs.readFile 语义 = 相对 homeDir 的完整路径 → 拼接 baseDir；产出仍为相对 baseDir
       const data = await ctx.fs.readFile(path.join(this.baseDir, rel)).catch(() => null);
       if (data === null) continue; // 未创建过的配置文件跳过（如从未配置市场/同步）
-      files.push({ relativePath: rel, data, contentHash: sha256Hex(data) });
+      files.push({ relativePath: rel, data: stripLocalRole(rel, data), contentHash: sha256Hex(data) });
     }
     if (files.length === 0) {
       warnings.push(msgOf(ctx)('adapter.dirEmpty', { type: this.displayName }));
@@ -67,5 +69,68 @@ export class SelfAdapter extends FileCollectionAdapter {
       counts: { files: files.length },
       warnings,
     };
+  }
+
+  /**
+   * 导入：通道配置按快照写回，但**本机角色保持本机**。
+   *
+   * `sync/sync-config.json` 同时装着通道配置（要跨设备）和 `role`（要各设备独立）。
+   * 直接整份写回会让一台改成 source 后、其他设备拉取也变 source，于是多台同时 push
+   * 互相覆盖——这正是 `src/core/auto-sync.ts` 抬头声明「角色互相独立」时想避免的。
+   * 所以这里把快照内容与目标机现有角色合并后再写：快照赢通道字段，本机赢 role。
+   */
+  override async applyItem(item: PlanItem, ctx: ImportContext): Promise<ApplyResult> {
+    const ref = item.target?.ref;
+    if (ref === undefined || ref !== SYNC_CONFIG_REL) return super.applyItem(item, ctx);
+    const data = ctx.sections.get(this.id) as FilesSection | undefined;
+    const file = data?.files.find((f) => f.relativePath === ref);
+    if (file === undefined) return super.applyItem(item, ctx);
+    const merged = mergeLocalRole(file.data, await ctx.target.fs.readFile(path.join(this.baseDir, ref)).catch(() => null));
+    if (merged === null) return super.applyItem(item, ctx);
+    const patched: FilesSection = {
+      version: data!.version,
+      files: data!.files.map((f) => (f.relativePath === ref ? { ...f, data: merged } : f)),
+    };
+    const patchedCtx: ImportContext = { ...ctx, sections: new Map(ctx.sections).set(this.id, patched) };
+    return super.applyItem(item, patchedCtx);
+  }
+}
+
+/** 同步通道配置文件（相对 baseDir）：唯一一个需要「拆分合并」的文件。 */
+const SYNC_CONFIG_REL = 'sync/sync-config.json';
+
+/** 从导出内容里剥掉本机角色；非该文件 / 解析不了 → 原样返回。 */
+function stripLocalRole(rel: string, data: Uint8Array): Uint8Array {
+  if (rel !== SYNC_CONFIG_REL) return data;
+  const parsed = parseObject(data);
+  if (parsed === null || !('role' in parsed)) return data;
+  delete parsed['role'];
+  return Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
+}
+
+/**
+ * 把快照里的通道配置与本机现有角色合并。
+ *
+ * @returns 合并后的字节；本机没有角色（全新机器）或快照/本机都不可解析时返回 null，
+ *          让调用方退回整份写回（此时本来就没有角色要保护）。
+ */
+function mergeLocalRole(incoming: Uint8Array, local: Uint8Array | null): Uint8Array | null {
+  if (local === null) return null;
+  const localParsed = parseObject(local);
+  if (localParsed === null || !('role' in localParsed)) return null;
+  const incomingParsed = parseObject(incoming);
+  if (incomingParsed === null) return null;
+  incomingParsed['role'] = localParsed['role'];
+  return Buffer.from(`${JSON.stringify(incomingParsed, null, 2)}\n`, 'utf8');
+}
+
+/** 解析成普通对象；不是 JSON 对象（含损坏）返回 null。 */
+function parseObject(data: Uint8Array): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(data).toString('utf8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
   }
 }
