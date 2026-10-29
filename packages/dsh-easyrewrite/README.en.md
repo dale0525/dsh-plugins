@@ -199,10 +199,9 @@ JSON lines: `{ t, level, tag, message, data }`.
 
 ```
 dsh-easyrewrite/
-├── lib/index.js          # host half: boundary resolution + /bubble/recall, /bubble/log
-├── src/client.src.js     # client template (icons inlined at build)
-├── assets/               # recall / edit icons (PNG, theme-adaptive via CSS invert)
-├── build.mjs             # assets → data-URL → lib/client.js
+├── lib/index.js          # host half: update check + pnpm up (only two routes left)
+├── src/client.src.js     # client half (icons are inline SVG, coloured via currentColor)
+├── build.mjs             # src → lib (plain copy, no bitmap inlining)
 ├── DESIGN.md             # full interaction design (v1.0, 20 product decisions)
 ├── PROJECT_PLAN.md       # roadmap, architecture, git workflow
 └── docs/                 # api-facts, m0-verify

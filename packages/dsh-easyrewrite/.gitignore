@@ -5,9 +5,11 @@
 # renders them, but this repo is a private self-use fork and does not carry its
 # upstream's marketing surface in version control.
 #
-# `assets/` is deliberately NOT ignored: `assets/edit.png` and
-# `assets/recall.png` are build inputs — `build.mjs` base64-inlines them into
-# `lib/client.js`, so a fresh clone cannot build without them.
+# `assets/` held the two button icons as white-backed PNGs, base64-inlined into
+# `lib/client.js`. They were replaced by inline SVG (see `iconSvg` in
+# src/client.src.js): the bitmaps had an opaque white ground, so dark mode could
+# only reach them through `filter: invert(1)`, which turned the ground black and
+# left the 1080px source visibly soft at 18px. Nothing reads `assets/` now.
 /docs/images/
 
 # Local packaging artifacts

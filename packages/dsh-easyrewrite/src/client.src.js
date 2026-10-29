@@ -1,9 +1,8 @@
 /**
  * dsh-easyrewrite — browser half（Part 2.1）。
  *
- * 本文件是**源码模板**：图标以占位符 __DASH_EDIT_ICON__ / __DASH_RECALL_ICON__ 标记，
- * 由 build.mjs 读取 assets/*.png 内联为 data URL 后生成 lib/client.js。
- * 改图标：替换 assets/edit.png、assets/recall.png → 执行 npm run build。
+ * 图标是内联 SVG（见下方 iconSvg / ICON_PATHS），描边走 currentColor，颜色随按钮继承。
+ * 改图标：直接改 ICON_PATHS 里的 path（16px 网格、四周留 ~2px 安全边距）→ 执行 npm run build。
  */
 window.__ModuleLoader__.load({
   id: "@logictan/dsh-easyrewrite",
@@ -39,35 +38,24 @@ window.__ModuleLoader__.load({
 
     var NS = "dsh-easyrewrite";
 
-    /** 统一日志：默认静默（仅上报 host 落盘）；调试模式（localStorage dsh-easyrewrite:debug=1）时打印控制台。 */
+    /**
+     * 统一日志：默认静默，调试模式（localStorage dsh-easyrewrite:debug=1 或 ?dsh-er-debug）时打控制台。
+     * 只走 console：客户端 runner 给每个插件的 console 加 `[cordis:<pluginId>]` 前缀，
+     * error 级还会镜像进本包的加载报告，所以不需要自带上报通道。
+     * 撤回一次会产生几十条 info，无条件打会淹没控制台——保留调试门控。
+     */
     function debugEnabled() {
       try { if (localStorage.getItem("dsh-easyrewrite:debug") === "1") return true; } catch (e) { /* ignore */ }
       try { return /\?dsh-er-debug/.test(location.search || ""); } catch (e) { return false; }
     }
     function log(level, tag, message, data) {
-      try {
-        if (debugEnabled()) {
-          var prefix = "[dsh-easyrewrite][" + level + "] " + (tag ? "[" + tag + "] " : "");
-          if (level === "error") console.error(prefix + message, data !== undefined ? data : "");
-          else if (level === "warn") console.warn(prefix + message, data !== undefined ? data : "");
-          else console.info(prefix + message, data !== undefined ? data : "");
-        }
-        try {
-          fetch("/bubble/log", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ level: level, tag: tag, message: message, data: data !== undefined ? data : null }),
-            keepalive: true
-          }).catch(function () { /* 静默 */ });
-        } catch (e) { /* 静默 */ }
-      } catch (e) { /* 静默 */ }
+      if (!debugEnabled()) return;
+      var prefix = "[dsh-easyrewrite][" + level + "] " + (tag ? "[" + tag + "] " : "");
+      if (level === "error") console.error(prefix + message, data !== undefined ? data : "");
+      else if (level === "warn") console.warn(prefix + message, data !== undefined ? data : "");
+      else console.info(prefix + message, data !== undefined ? data : "");
     }
 
-    /** 操作区图标（构建期内联，自包含） */
-    var ICONS = {
-      edit: "data:image/png;base64,__DASH_EDIT_ICON__",
-      recall: "data:image/png;base64,__DASH_RECALL_ICON__"
-    };
 
     // ---------- 设置读取（localStorage；设置页 UI 在 M3 提供） ----------
     var SETTING_KEYS = {
@@ -418,6 +406,33 @@ window.__ModuleLoader__.load({
     var ctxConversationRef = null; // apply 时注入 conversation 服务
     var ctxUiConversationRef = null; // v2.4.0: dsh 0.1.2 的 uiConversation 服务（弱引用；0.1.1-rc.2 无此服务时为 null）
     var ctxUiWorkspaceRef = null;    // v2.4.0: dsh 0.1.2 的 uiWorkspace 服务（弱引用）
+    var ctxWorkspacesRef = null;     // 官方 workspaces 控制器（inject 内，直接属性读可用）
+    /**
+     * 取消归档一个会话（版本翻页 / 重置对话要先把目标会话从归档列表里捞回来）。
+     *
+     * 用官方 `workspaces.unarchiveSession(id)`，不再走自建路由。两代客户端的返回值不同形：
+     * `WorkspaceController`（服务名 `workspaces`）的 d.ts 写 `Promise<void>`，运行时却把
+     * `RemoteResult` 原样返回；`UiWorkspaceService` 真的返回 `Promise<void>`。
+     * 所以判据是「拿到对象且带布尔 ok 才读 ok，否则以 resolve 为成功」——把 undefined 当失败
+     * 会让 `uiWorkspace` 这条通道永远报失败。
+     */
+    function unarchiveSessionCompat(id) {
+      var target = (ctxUiWorkspaceRef && typeof ctxUiWorkspaceRef.unarchiveSession === "function")
+        ? ctxUiWorkspaceRef
+        : ((ctxWorkspacesRef && typeof ctxWorkspacesRef.unarchiveSession === "function") ? ctxWorkspacesRef : null);
+      if (!target) {
+        log("warn", "session", "unarchive 不可用：workspaces 服务缺失", { sessionId: id });
+        return Promise.resolve(false);
+      }
+      return Promise.resolve(target.unarchiveSession(id)).then(function (res) {
+        var ok = (res && typeof res.ok === "boolean") ? res.ok : true;
+        if (!ok) log("warn", "session", "unarchive 被宿主拒绝", { sessionId: id, error: res && res.error });
+        return ok;
+      }, function (err) {
+        log("warn", "session", "unarchive 抛错", { sessionId: id, err: String(err && err.message ? err.message : err) });
+        return false;
+      });
+    }
     /** v2.4.0：图片 URL 解析双宿主兼容——props.loadImage（两代都有）/ rc.2 resolveImage / rc.1 uiConversation.imageUrl */
     async function resolveImageCompat(sessionId, ref, props) {
       if (props && typeof props.loadImage === "function") {
@@ -505,20 +520,8 @@ window.__ModuleLoader__.load({
     function writePending(sessionId, p) {
       pendingCache[sessionId] = p;
       try {
-        if (p === null) {
-          localStorage.removeItem(PENDING_PREFIX + sessionId);
-          // 处理完成（发送/取消/编辑确定）→ 删除自动备份（无感）
-          try {
-            fetch("/bubble/backup/delete", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ sessionId: sessionId }),
-              keepalive: true
-            }).catch(function () { /* 静默 */ });
-          } catch (e) { /* 静默 */ }
-        } else {
-          localStorage.setItem(PENDING_PREFIX + sessionId, JSON.stringify(p));
-        }
+        if (p === null) localStorage.removeItem(PENDING_PREFIX + sessionId);
+        else localStorage.setItem(PENDING_PREFIX + sessionId, JSON.stringify(p));
       } catch (e) { /* 静默 */ }
       var ls = pendingListeners.slice();
       for (var i = 0; i < ls.length; i++) { try { ls[i](); } catch (e) { /* ignore */ } }
@@ -615,39 +618,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 向 Host 端请求物理拔除 fork 继承的幽灵队列（Issue #10 根治核心）。
-     * DSH 的 sessions.fork 会贪婪切入 boundary 到下一个 turn/start 之间的非回合事件，
-     * 导致旧消息的 agent/inbox/spliced 入队事件被子会话继承，而配对出队事件被截断，
-     * 在 Host 端的 Agent.inbox.nextTurn 留下悬空旧消息。
-     * 本函数直接调用 Host 路由 /bubble/clean-ghost 操作宿主 agent.inbox 彻底移除它。
-     */
-    async function requestCleanGhostQueue(targetSessionId) {
-      if (!targetSessionId) return { ok: false, cleared: 0, removedIds: [] };
-      try {
-        var resp = await fetch("/bubble/clean-ghost", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ sessionId: targetSessionId })
-        });
-        if (resp.ok) {
-          var data = await resp.json();
-          log("info", "clean-ghost", "Host 幽灵队列清理完成", {
-            sessionId: targetSessionId,
-            cleared: data.cleared,
-            removedIds: data.removedIds
-          });
-          return data;
-        }
-      } catch (e) {
-        log("warn", "clean-ghost", "请求 clean-ghost 异常（降级继续）", {
-          sessionId: targetSessionId,
-          err: String(e && e.message ? e.message : e)
-        });
-      }
-      return { ok: false, cleared: 0, removedIds: [] };
-    }
-
-    /**
      * 「正在修改」条：**注入到输入框内部、文本输入位置上方**（textarea 正前方）。
      * 组成：灰色分割线（上边线）+ 左上「正在修改」标签 + 右上圆形 ×。
      * 输入框随条自然向上扩展一点，文本位置不变；× = 取消撤回（恢复原草稿）。
@@ -677,7 +647,7 @@ window.__ModuleLoader__.load({
         bar.style.cssText = "display:flex;align-items:center;justify-content:space-between;margin:0;padding:2px 0 6px;";
         var label = document.createElement("span");
         // 标签药丸只包裹文字（内容宽度）；透明 spacer 撑开剩余空间把 × 推到最右
-        label.style.cssText = "font-size:15.4px;color:var(--dsw-alias-label-secondary);line-height:24.2px;background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,0.12));border-radius:999px;padding:1.1px 13.2px;";
+        label.style.cssText = "font-size:var(--dsh-chat-font-size,13px);color:var(--dsh-theme-ink-2,var(--dsw-alias-label-secondary));line-height:var(--dsh-chat-line-height,1.7);background:var(--dsh-theme-hover,var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,0.12)));border-radius:var(--dsh-theme-radius-xs,6px);padding:2px 10px;";
         var spacer = document.createElement("div");
         spacer.style.cssText = "flex:1;";
         label.textContent = L.modifying;
@@ -704,12 +674,12 @@ window.__ModuleLoader__.load({
         xCircleEl.setAttribute("cy", "13.2");
         xCircleEl.setAttribute("r", "13.2");
         xCircleEl.setAttribute("class", "dbe-recall-x-bg");
-        xCircleEl.setAttribute("fill", "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.14))");
+        xCircleEl.setAttribute("fill", "var(--dsh-theme-hover, var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.14)))");
         xSvg.appendChild(xCircleEl);
         // × 用两条对角线画（几何级居中，无字体基线/transform 补偿问题——字符方案实测偏左下）
         var xGlyph = document.createElementNS(NSX, "g");
         xGlyph.setAttribute("class", "dbe-recall-x-glyph");
-        xGlyph.setAttribute("stroke", "var(--dsw-alias-label-secondary)");
+        xGlyph.setAttribute("stroke", "var(--dsh-theme-ink-2, var(--dsw-alias-label-secondary))");
         xGlyph.setAttribute("stroke-width", "2.2");
         xGlyph.setAttribute("stroke-linecap", "round");
         var l1 = document.createElementNS(NSX, "line");
@@ -818,68 +788,6 @@ window.__ModuleLoader__.load({
         };
       }, [active, sessionId, pending]);
 
-      // ---- 异常退出恢复：本地无 pending（缓存丢了/跨浏览器）且存在文件备份时，恢复草稿 ----
-      // （正常路径：发送/× 时备份已删除，恢复永远不会覆盖用户当前状态）
-      var backupRecovered = React.useRef({});
-      React.useEffect(function () {
-        if (backupRecovered.current[sessionId]) return;
-        var local = readPending(sessionId);
-        if (local) return; // 有网页缓存（localStorage）→ 用缓存，不查文件
-        backupRecovered.current[sessionId] = true;
-        try {
-          fetch("/bubble/backup/read", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ sessionId: sessionId }),
-            keepalive: true
-          }).then(function (resp) { return resp.json(); }).then(function (data) {
-            if (data && data.ok && data.pending) {
-              // review M7：备份新鲜度校验——超过 24h 的备份视为陈旧（可能已被取消但删除未落地），不恢复
-              var age = Date.now() - (typeof data.pending.updatedAt === "number" ? data.pending.updatedAt : 0);
-              if (age > 24 * 3600 * 1000) {
-                log("warn", "backup", "备份陈旧（>24h），跳过恢复", { sessionId: sessionId, ageMs: age });
-                return;
-              }
-              writePending(sessionId, data.pending);
-              if (data.pending.type === "recall" && props.inputActions && typeof props.inputActions.setDraft === "function") {
-                props.inputActions.setDraft(data.pending.draftText); // 回填输入框
-              }
-              log("info", "backup", "异常退出恢复：从文件备份恢复草稿", { sessionId: sessionId, type: data.pending.type });
-            }
-          }).catch(function () { /* 静默 */ });
-        } catch (e) { /* 静默 */ }
-      }, [sessionId]);
-
-      // ---- 草稿自动备份（无感）：pending 存在且超过 10s 后，若有新改动则每 5s 覆盖备份一次 ----
-      var lastBackupMetaRef = React.useRef({});
-      React.useEffect(function () {
-        if (!active || !pending) return;
-        var meta = lastBackupMetaRef.current[sessionId] || (lastBackupMetaRef.current[sessionId] = { time: 0, updatedAt: 0 });
-        function backupNow() {
-          try {
-            var currentUpdatedAt = pending.updatedAt || 0;
-            meta.time = Date.now();
-            meta.updatedAt = currentUpdatedAt;
-            fetch("/bubble/backup", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ sessionId: sessionId, pending: pending }),
-              keepalive: true
-            }).catch(function (e) {
-              log("warn", "backup", "自动备份请求失败", { err: String(e && e.message ? e.message : e) });
-            });
-          } catch (e) { /* 静默 */ }
-        }
-        var timer = setInterval(function () {
-          var age = Date.now() - (pending.updatedAt || 0);
-          // 仅在满 10s，且距离上次备份已过 5s，且该版本草稿尚未备份过时才发起
-          if (age >= 10000 && Date.now() - meta.time >= 5000 && pending.updatedAt !== meta.updatedAt) {
-            backupNow();
-          }
-        }, 1000);
-        return function () { clearInterval(timer); };
-      }, [active, pending, sessionId]);
-
       // ---- 后续 context 隐藏（minimal/simple 模式）：DOM 层隐藏本行之后的所有内容行 ----
       var hiddenRows = React.useRef(new Set());
       function applyHideAfter(list, targetKey) {
@@ -928,38 +836,70 @@ window.__ModuleLoader__.load({
           setTimeout(function () { try { if (bar.parentNode) bar.parentNode.removeChild(bar); } catch (e) { /* ignore */ } }, 3500);
         } catch (e) { /* ignore */ }
       }
-      // review #7：client 直算撤回边界——倒序扫 targetSeq 之前最近的闭合 turn-tail，
-      // atSeq = closing.finalNode.seq（与官方 fork(atSeq) 的 find(turn/end && seq>=atSeq) 恰好对齐）。
-      // 判定树：命中 → {atSeq}；窗口内无且 hasMore=false → 真首条 {code:"no-boundary"}；
-      // 窗口内无但 hasMore=true → 快照窗口外，{code:"host-fallback"} 走保留的 host 路由。
+      /**
+       * 撤回边界：目标消息之前**最后一个已闭合回合**的 `turn/end` 事件 seq。
+       *
+       * 取 turn/end 而不是回合内某个节点的 seq，是因为 fork 的前缀是「闭区间 0..atSeq」：
+       * 含 turn/end 时 `openTurnClosers` 无事可做，子会话继承的是真实的回合结束；
+       * 少一格就会留下一个开放回合，由宿主补一条 forked 结束语。
+       *
+       * 这条边界同时**天然避开幽灵队列**：真实日志里入队 `agent/inbox/spliced` 恒在
+       * `turn/start` 前一格、出队恒在其后一格（实测 5 个回合无一例外），所以切在
+       * turn/end 上时两者都在前缀之外，子会话的 inbox 投影为空。这就是原先
+       * `/bubble/clean-ghost` 想修的问题，边界取对了它就不存在。
+       *
+       * @returns `{atSeq}` 命中；`{code:"no-boundary"}` 窗口内确实没有更早的闭合回合；
+       *          `{code:"host-fallback"}` 还有更早历史没加载，需要先 loadThrough 再算。
+       */
       function computeRecallBoundary(props, targetSeq) {
         try {
-          if (!hasChatSnapshot(props)) return null; // 无法本地判定 → host fallback
+          if (!hasChatSnapshot(props)) return null;
           var snapshot = getChatSnapshot(props);
-          if (!snapshot || !Array.isArray(snapshot.order) || !snapshot.nodes || typeof snapshot.nodes.get !== "function") return null;
-          var order = snapshot.order;
-          var tIdx = -1;
-          for (var i = 0; i < order.length; i++) {
-            var nd = snapshot.nodes.get(order[i]);
-            if (!nd || nd.kind !== "user") continue;
-            var sq = nd.data && typeof nd.data.seq === "number" ? nd.data.seq : (typeof nd.anchorSeq === "number" ? nd.anchorSeq : -1);
-            if (sq === targetSeq) { tIdx = i; break; }
-          }
-          if (tIdx === -1) return null; // 目标不在快照 → host fallback
-          for (var k = tIdx - 1; k >= 0; k--) {
-            var n2 = snapshot.nodes.get(order[k]);
-            if (!n2 || n2.kind !== "turn-tail") continue;
-            var cl = n2.data && n2.data.closing;
-            if (cl && cl.finalNode && typeof cl.finalNode.seq === "number") return { atSeq: cl.finalNode.seq };
-            // closing 缺失（纯工具/无文本回合）→ 回退尾节点自身 seq（官方槽位同款 closing?.finalNode.seq ?? data.seq），
-            // 跳过会把边界推得更早、整段误切
-            if (n2.data && typeof n2.data.seq === "number") return { atSeq: n2.data.seq };
-          }
-          var hasMore = snapshot.hasMore === true;
-          return hasMore ? { code: "host-fallback" } : { code: "no-boundary" };
+          var timeline = snapshot && snapshot.timeline;
+          if (!timeline || !timeline.turns || typeof timeline.turns.get !== "function") return null;
+          var best = -1;
+          timeline.turns.forEach(function (loc) {
+            if (!loc || !loc.end || typeof loc.end.seq !== "number") return;
+            if (loc.end.seq >= targetSeq) return;
+            if (loc.end.seq > best) best = loc.end.seq;
+          });
+          if (best >= 0) return { atSeq: best };
+          return { code: snapshotHasMore(props) ? "host-fallback" : "no-boundary" };
         } catch (e) {
           log("warn", "recall", "本地边界计算异常", { err: String(e && e.message ? e.message : e) });
           return null;
+        }
+      }
+
+      /** 快照窗口外是否还有更早历史（决定「没找到边界」是真空还是没加载）。 */
+      function snapshotHasMore(props) {
+        try {
+          var sid = props.sessionId;
+          var binding = (props.ctxSessions && typeof props.ctxSessions.binding === "function") ? props.ctxSessions.binding(sid) : null;
+          var sess = binding ? binding.session : null;
+          if (sess && typeof sess.getSnapshot === "function") return sess.getSnapshot().hasMore === true;
+        } catch (e) { /* ignore */ }
+        return false;
+      }
+
+      /**
+       * 把会话窗口翻到能覆盖 targetSeq（官方 jump loader，逐页向后加载）。
+       * 用途：目标回合还没加载进快照时，本地算不出边界；先把窗口翻过去再重算。
+       * @returns 是否成功翻到（失败由宿主软失败并落 snapshot.loadingOlder，这里只报布尔）。
+       */
+      function loadThroughTarget(props, targetSeq) {
+        try {
+          var sid = props.sessionId;
+          var binding = (props.ctxSessions && typeof props.ctxSessions.binding === "function") ? props.ctxSessions.binding(sid) : null;
+          var sess = binding ? binding.session : null;
+          if (!sess || typeof sess.loadThrough !== "function") return Promise.resolve(false);
+          return Promise.resolve(sess.loadThrough(targetSeq)).then(function () { return true; }, function (err) {
+            log("warn", "recall", "loadThrough 失败", { targetSeq: targetSeq, err: String(err && err.message ? err.message : err) });
+            return false;
+          });
+        } catch (e) {
+          log("warn", "recall", "loadThrough 异常", { err: String(e && e.message ? e.message : e) });
+          return Promise.resolve(false);
         }
       }
 
@@ -1054,7 +994,7 @@ window.__ModuleLoader__.load({
           // 读取输入框当前文本（用户可能已修改）：重置/重发都使用修改后的内容
           var sendText = readCurrentComposerText(p.draftText);
           // 极限场景判定（v2.4.0 改约）：窗口化快照上的 isFirstUserMessage 会误判（窗口起点=目标消息即误报首条），
-          // 首条/截断场景统一交给宿主判定树——/bubble/recall 返回 no-boundary/turn-open 时再走 resetConversation。
+          // 首条/截断场景由 computeRecallBoundary 判定：no-boundary 时走 resetConversation。
           // 本地只保留快照可判时的提前短路（no-boundary）。
           // v2.1.1：fork 前捕获当前模型/思考挡位（选择器真值），随 resume 标记带到新会话
           var msel = props.modelSel ? props.modelSel.capture(sid) : null;
@@ -1072,29 +1012,27 @@ window.__ModuleLoader__.load({
             showRecallError(L.resetNotice);
             resetConversation(sid, "edit", sendText, props, latestInputImageIds.slice());
             return;
-          } else {
-            // host fallback（localB=null 或 host-fallback）
-            log("info", "recall", "本地不可判定，走 host 路由", { mode: localB && localB.code });
-            var resp = await fetch("/bubble/recall", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ sessionId: sid, targetSeq: p.targetSeq })
-            });
-            var data = await resp.json();
-            if (!data || !data.ok) {
-              var errCode = (data && data.error) || "unknown";
-              log("warn", "recall", "撤回失败（发送中止）", { error: errCode });
-              if (errCode === "turn-open" || errCode === "no-boundary") {
-                showRecallError(L.resetNotice);
-                resetConversation(sid, "edit", sendText, props, latestInputImageIds.slice());
-              } else {
-                showRecallError(L.errGeneric);
-                setPrimaryButtonSendingState(false);
-                sendingRef.current = false;
-              }
+          } else if (localB && localB.code === "host-fallback") {
+            // 目标回合在快照窗口外：先用官方 jump loader 把窗口翻到目标，再本地重算。
+            // 旧实现走 /bubble/recall 让宿主读完整事件日志；loadThrough 是同一件事的官方入口，
+            // 而且它顺带把目标附近的回合真正加载进界面（撤回后用户看到的就是这段历史）。
+            log("info", "recall", "目标在窗口外，loadThrough 后重算边界", { targetSeq: p.targetSeq });
+            var loaded = await loadThroughTarget(props, p.targetSeq);
+            var afterLoad = loaded ? computeRecallBoundary(props, p.targetSeq) : null;
+            if (afterLoad && afterLoad.atSeq) {
+              boundary = afterLoad.atSeq;
+            } else {
+              log("warn", "recall", "loadThrough 后仍无边界（发送中止）", { mode: afterLoad && afterLoad.code });
+              showRecallError(L.resetNotice);
+              resetConversation(sid, "edit", sendText, props, latestInputImageIds.slice());
               return;
             }
-            boundary = data.boundary;
+          } else {
+            log("warn", "recall", "无法计算撤回边界（发送中止）", { mode: localB && localB.code });
+            showRecallError(L.errGeneric);
+            setPrimaryButtonSendingState(false);
+            sendingRef.current = false;
+            return;
           }
           // 0) 撤回前收集（review #2/#3）：读镜像——UserBubbleView 渲染时已从官方 useInput 快照同步，
           //    覆盖确认时重建的图 + 用户手动加的图 − 用户删除的图（即发送瞬间的真实选择）。
@@ -1121,8 +1059,8 @@ window.__ModuleLoader__.load({
             }
             return;
           }
-          // Issue #10 根治防御：fork 成功返回即请求 Host 端物理拔除继承的幽灵旧消息
-          await requestCleanGhostQueue(newId);
+          // 幽灵队列：边界取在 turn/end 上时入队/出队事件都在前缀之外，子会话 inbox 为空，
+          // 不需要再向宿主清理（见 computeRecallBoundary 的注释与实测记录）。
           // review M6：resume-send 带时间戳（30s TTL，防陈旧草稿幽灵自动发送）
           try { localStorage.setItem("dsh-easyrewrite:resume-send:" + newId, JSON.stringify({ draftText: sendText, t: Date.now(), imageIds: imgIds, sel: msel })); } catch (e) { /* ignore */ }
           // 2) 无痕替换：归档原会话 → 打开新会话
@@ -1235,92 +1173,34 @@ window.__ModuleLoader__.load({
             if (savedIds.length > 0 && typeof ia.addImages === "function") {
               try { ia.addImages(savedIds); } catch (e) { log("warn", "attach", "addImages 异常（忽略，文字照发）", { err: String(e && e.message ? e.message : e) }); }
             }
-            // Issue #10 深度防御：清空宿主 fork 继承而来的悬空 next-turn 幽灵队列
-            // DSH 的 sessions.fork 机制会贪婪复制 turn/end 到 turn/start 之间的非回合事件，
-            // 导致目标消息当初发送时的 agent/inbox/spliced 入队事件被复制到新会话，
-            // 而出队事件被截断丢弃，从而在宿主端留下幽灵消息。
-            // 在提交新消息前，向 Host 端发起物理清理，彻底拔除残留幽灵项，
-            // 并辅以客户端 snapshot 清理作为次级防御，确保新消息排在队首第一位被消费。
-            var cleanGhostQueue = function () {
-              return requestCleanGhostQueue(sessionId).then(function (hostRes) {
-                if (hostRes && hostRes.cleared > 0) {
-                  log("info", "recall", "resume 时 Host 幽灵队列已清空", { sessionId: sessionId, cleared: hostRes.cleared, ids: hostRes.removedIds });
-                }
-                try {
-                  var binding = (props.ctxSessions && typeof props.ctxSessions.binding === "function")
-                    ? props.ctxSessions.binding(sessionId)
-                    : null;
-                  var sessInst = binding ? binding.session : null;
-                  var qItems = (sessInst && typeof sessInst.getSnapshot === "function")
-                    ? sessInst.getSnapshot().queue
-                    : ((props.session && Array.isArray(props.session.queue)) ? props.session.queue : []);
-                  var ghostItems = Array.isArray(qItems) ? qItems.filter(function (it) { return it && it.id; }) : [];
-                  if (ghostItems.length > 0) {
-                    log("info", "recall", "检测到 snapshot 中存在幽灵队列项，开始客户端清理", {
-                      sessionId: sessionId,
-                      count: ghostItems.length,
-                      ids: ghostItems.map(function (it) { return it.id; })
-                    });
-                    var pList = [];
-                    for (var gi = 0; gi < ghostItems.length; gi++) {
-                      var gId = ghostItems[gi].id;
-                      if (sessInst && typeof sessInst.updateQueue === "function") {
-                        try {
-                          pList.push(sessInst.updateQueue(gId, { kind: "remove" }));
-                        } catch (eUp) {
-                          log("warn", "recall", "调用 updateQueue 异常", { id: gId, err: String(eUp && eUp.message ? eUp.message : eUp) });
-                        }
-                      } else if (typeof props.updateQueue === "function") {
-                        try {
-                          pList.push(props.updateQueue(gId, { kind: "remove" }));
-                        } catch (eUp2) {
-                          log("warn", "recall", "调用 props.updateQueue 异常", { id: gId, err: String(eUp2 && eUp2.message ? eUp2.message : eUp2) });
-                        }
-                      }
-                    }
-                    if (pList.length > 0) {
-                      return Promise.allSettled(pList).then(function () {
-                        log("info", "recall", "客户端 snapshot 幽灵队列项清理完成", { count: pList.length });
-                      });
-                    }
-                  }
-                } catch (eClean) {
-                  log("warn", "recall", "清理客户端幽灵队列异常（继续发送）", { err: String(eClean && eClean.message ? eClean.message : eClean) });
-                }
-                return Promise.resolve();
-              });
-            };
-
             var doSubmit = function () {
-              cleanGhostQueue().then(function () {
-                setTimeout(function () {
-                  try {
-                    ia.submit();
-                    log("info", "recall", "resume 已提交", { sessionId: sessionId });
-                    // Phase 2：底部暂存草稿及图片在新会话中回填保留（隔离发送，不混入气泡重发消息）
-                    if (r.stagedDraft && (r.stagedDraft.text || (Array.isArray(r.stagedDraft.imageIds) && r.stagedDraft.imageIds.length > 0))) {
-                      setTimeout(function () {
-                        try {
-                          var stg = r.stagedDraft;
-                          if (typeof stg.text === "string" && stg.text.length > 0 && typeof ia.setDraft === "function") {
-                            ia.setDraft(stg.text);
-                          }
-                          var stgImgs = Array.isArray(stg.imageIds) ? stg.imageIds : [];
-                          if (stgImgs.length > 0 && typeof ia.addImages === "function") {
-                            ia.addImages(stgImgs);
-                          }
-                          log("info", "recall", "resume 第二阶段：底部暂存草稿及图片已回填", {
-                            hasText: !!(stg.text && stg.text.length > 0),
-                            imgCount: stgImgs.length
-                          });
-                        } catch (eStg) {
-                          log("warn", "recall", "回填暂存草稿异常", { err: String(eStg && eStg.message ? eStg.message : eStg) });
+              setTimeout(function () {
+                try {
+                  ia.submit();
+                  log("info", "recall", "resume 已提交", { sessionId: sessionId });
+                  // Phase 2：底部暂存草稿及图片在新会话中回填保留（隔离发送，不混入气泡重发消息）
+                  if (r.stagedDraft && (r.stagedDraft.text || (Array.isArray(r.stagedDraft.imageIds) && r.stagedDraft.imageIds.length > 0))) {
+                    setTimeout(function () {
+                      try {
+                        var stg = r.stagedDraft;
+                        if (typeof stg.text === "string" && stg.text.length > 0 && typeof ia.setDraft === "function") {
+                          ia.setDraft(stg.text);
                         }
-                      }, 160);
-                    }
-                  } catch (e) { log("error", "recall", "自动发送失败（resume）", { err: String(e && e.message ? e.message : e) }); }
-                }, 60);
-              });
+                        var stgImgs = Array.isArray(stg.imageIds) ? stg.imageIds : [];
+                        if (stgImgs.length > 0 && typeof ia.addImages === "function") {
+                          ia.addImages(stgImgs);
+                        }
+                        log("info", "recall", "resume 第二阶段：底部暂存草稿及图片已回填", {
+                          hasText: !!(stg.text && stg.text.length > 0),
+                          imgCount: stgImgs.length
+                        });
+                      } catch (eStg) {
+                        log("warn", "recall", "回填暂存草稿异常", { err: String(eStg && eStg.message ? eStg.message : eStg) });
+                      }
+                    }, 160);
+                  }
+                } catch (e) { log("error", "recall", "自动发送失败（resume）", { err: String(e && e.message ? e.message : e) }); }
+              }, 60);
             };
             // v2.1.1：先把捕获的原模型/挡位写进新会话（官方 selectModel 持久化通道），再自动发送
             if (r.sel && props.modelSel) {
@@ -1377,19 +1257,43 @@ window.__ModuleLoader__.load({
       catch (e) { log("warn", "attach", "官方图片渲染抛错", { err: String(e && e.message ? e.message : e) }); return null; }
     }
 
-    function iconImg(src, alt, size) {
-      var s = size || 18;
-      return React.createElement("img", {
-        src: src,
-        alt: alt,
+    /** 操作区图标：内联 SVG，走 macOS 主题的描边图标语言。
+     *
+     * 原先用 assets/*.png（白底不透明黑线），靠 `filter:invert(1)` 在暗色下反色。
+     * 那套做法在主题下是错的：反色会把白底变成黑底，与任何面板底色都对不上，
+     * 而且 1080px 位图缩到 18px 再反色，边缘会糊。主题自己的图标是 16px 网格、
+     * 1.5 描边、currentColor 上色的内联 SVG（见 theme.css 的 mask-image 用法），
+     * 这里照同一套画，颜色随按钮继承，亮暗两套自动跟随。
+     */
+    // 每条是一串 path 的 d（单条 path 里用 M 分段，闭合子路径用 z），全部画在 16px 网格内、
+    // 四周留 ~2px 安全边距——描边 1.5 会被 linecap 外扩，贴边会视觉出血。
+    var ICON_PATHS = {
+      // 铅笔（编辑）：笔身 + 笔尖，另加一条笔杆分隔线
+      edit: "M11.4 2.6a1.9 1.9 0 012.7 2.7L5.1 14.3l-3.6.9.9-3.6z M10.1 3.9l2.7 2.7",
+      // 回旋箭头（撤回）：向左的箭头 + 折回下方的弧线
+      recall: "M3.2 6.6h6.6a3.7 3.7 0 010 7.4H6.6 M6 3.8L3.2 6.6 6 9.4"
+    };
+    function iconSvg(name, size) {
+      var s = size || 14;
+      return React.createElement("svg", {
         width: s,
         height: s,
-        className: "dbe-icon-img",
-        style: { display: "block" }
-      });
+        viewBox: "0 0 16 16",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: 1.4,
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+        "aria-hidden": "true",
+        focusable: "false",
+        className: "dbe-icon-svg",
+        style: { display: "block", flex: "none" }
+      }, React.createElement("path", { d: ICON_PATHS[name] }));
     }
 
     function actionButton(title, ariaLabel, onClick, children, dataAttr) {
+      // 34px 方形热区保持宿主消息尾行按钮的手感；圆角与 hover 底色取主题 role 变量，
+      // 图标走 currentColor 继承这里的 color，因此亮暗两套只需换 token，不用两套图。
       var bs = 34;
       return React.createElement("button", {
         type: "button",
@@ -1399,17 +1303,25 @@ window.__ModuleLoader__.load({
         style: {
           border: "none",
           background: "transparent",
+          color: "var(--dsh-theme-ink-2, var(--dsw-alias-label-secondary))",
           cursor: "pointer",
           width: bs,
           height: bs,
           padding: 0,
-          borderRadius: "8px",
+          borderRadius: "var(--dsh-theme-radius-sm, 8px)",
           display: "inline-flex",
           alignItems: "center",
-          justifyContent: "center"
+          justifyContent: "center",
+          transition: "background-color .12s ease, color .12s ease"
         },
-        onMouseEnter: function (e) { e.currentTarget.style.background = "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.1))"; },
-        onMouseLeave: function (e) { e.currentTarget.style.background = "transparent"; },
+        onMouseEnter: function (e) {
+          e.currentTarget.style.background = "var(--dsh-theme-hover, var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.1)))";
+          e.currentTarget.style.color = "var(--dsh-theme-ink, var(--dsw-alias-label-primary))";
+        },
+        onMouseLeave: function (e) {
+          e.currentTarget.style.background = "transparent";
+          e.currentTarget.style.color = "var(--dsh-theme-ink-2, var(--dsw-alias-label-secondary))";
+        },
         onClick: onClick
       }, children);
     }
@@ -1432,6 +1344,9 @@ window.__ModuleLoader__.load({
       // 扩展："100%" 撑满消息行（此前写死 748px 是旧窗口宽度遗物——内容列更宽时左侧够不到其他文字的左对齐线，2026-09-04 用户实测反馈）
       if (mode === "extended") return "100%";
       if (mode === "custom") return editWidthCustom();  // 自定义
+      // 上限跟普通气泡同一条规则（`min(80%, 内容宽)`），不再写死 360px：
+      // 360px 在 695px 的消息行里只占 52%，右侧空出 335px，比普通气泡窄一大截。
+      var cap = "min(80%, var(--dsh-chat-content-width, 748px))";
       var linesArr = String(text || "").split("\n");
       var contentW = 0;
       for (var i = 0; i < linesArr.length; i++) {
@@ -1440,12 +1355,15 @@ window.__ModuleLoader__.load({
         for (var c = 0; c < s.length; c++) w += s.charCodeAt(c) > 0x2e7f ? 14 : 8;
         if (w > contentW) contentW = w;
       }
-      contentW = Math.min(contentW, 360);               // 气泡上限 360px
       if (mode === "compact") {
         var base = Math.max(initW || 200, 44);          // 紧凑：严格气泡原宽起步（保底防 0）
-        return Math.max(base, contentW);                // 随打字慢慢扩大，绝不跳变
+        // 随打字慢慢扩大、绝不跳变：取「气泡原宽」与「内容宽」的较大值，再收在 80% 上限内。
+        // 不能写成 max(base, cap)——cap 是上限，取较大值会恒等于 cap，
+        // 等于把紧凑档变成恒满宽（实测短文本被撑到 556px / 80%）。
+        return "min(max(" + base + "px, " + contentW + "px), " + cap + ")";
       }
-      return Math.max(360, contentW);                   // 标准：不满一行自动扩成一行宽
+      // 标准：贴合内容宽度，超过 80% 时收在上限内（与普通气泡的 `max-width: min(80%, …)` 一致）
+      return "min(" + contentW + "px, " + cap + ")";
     }
     /** 编辑宽度档位：compact 紧凑 / standard 标准 / extended 扩展 / custom 自定义。兼容旧值（bubble/wrap/composer）。 */
     function editWidthMode() {
@@ -1501,8 +1419,11 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 行内确认胶囊（撤回确认）：长条形灰色胶囊，直接包裹文本 + 白底黑字「确定」「取消」小胶囊按钮。
-     * 位置：原用户气泡下方（撤回/复制键位置）；按钮与胶囊边框间距按 dsh 间距规范（gap 8px / padding 6px 10px）。
+     * 行内确认胶囊（撤回确认）：包裹原文本 + 「确定」「取消」两个小按钮。
+     * 位置：原用户气泡下方（撤回/复制键位置）。
+     * 颜色全部取 macOS 主题的 role 变量：原先写死 `#ffffff` 底 + `#000000` 字，
+     * 在暗色主题下是一块刺眼的白斑；圆角也从 999px 药丸改成主题的 radius 阶梯，
+     * 与编辑态那两个按钮保持同一套形状语言。
      */
     function ConfirmCapsule({ text, onConfirm, onCancel }) {
       var L = useUILocaleDict();
@@ -1510,23 +1431,25 @@ window.__ModuleLoader__.load({
         display: "inline-flex",
         alignItems: "center",
         gap: "8px",
-        background: "var(--dsw-alias-bg-l2, rgba(128,128,128,0.14))",
-        borderRadius: "999px",
-        padding: "6px 10px 6px 16px",
-        fontSize: "12px",
-        lineHeight: "20px",
-        color: "var(--dsw-alias-label-secondary)"
+        background: "var(--dsh-theme-surface-2, var(--dsw-alias-bg-l2, rgba(128,128,128,0.14)))",
+        border: "1px solid var(--dsh-theme-line, transparent)",
+        borderRadius: "var(--dsh-theme-radius-md, 10px)",
+        padding: "6px 10px 6px 14px",
+        fontSize: "var(--dsh-chat-font-size, 12px)",
+        lineHeight: "var(--dsh-chat-line-height, 1.6)",
+        color: "var(--dsh-theme-ink-2, var(--dsw-alias-label-secondary))"
       };
       var pillBtnStyle = {
-        border: "none",
-        background: "#ffffff",
-        color: "#000000",
-        borderRadius: "999px",
-        padding: "3px 9px",
-        fontSize: "12px",
-        lineHeight: "18px",
+        border: "1px solid var(--dsh-theme-line-strong, transparent)",
+        background: "var(--dsh-theme-surface-1, #ffffff)",
+        color: "var(--dsh-theme-ink, #000000)",
+        borderRadius: "var(--dsh-theme-radius-sm, 8px)",
+        padding: "3px 10px",
+        fontSize: "var(--dsh-chat-font-size, 12px)",
+        lineHeight: "var(--dsh-chat-line-height, 1.6)",
         cursor: "pointer",
-        whiteSpace: "nowrap"
+        whiteSpace: "nowrap",
+        transition: "background-color .12s ease"
       };
       return React.createElement(
         "div", { style: capsuleStyle, "data-dsh-easyrewrite": "confirm-capsule" },
@@ -2224,14 +2147,9 @@ window.__ModuleLoader__.load({
                         size: "sm",
                         onClick: function (ev) {
                           ev.stopPropagation();
-                          fetch("/bubble/unarchive", {
-                            method: "POST",
-                            headers: { "content-type": "application/json" },
-                            body: JSON.stringify({ sessionId: vid }),
-                            keepalive: true
-                          }).then(function () {
-                            if (typeof props.openSession === "function") props.openSession(vid);
-                          }).catch(function () { /* ignore */ });
+                          unarchiveSessionCompat(vid).then(function (ok) {
+                            if (ok && typeof props.openSession === "function") props.openSession(vid);
+                          });
                         }
                       }, L.versionRestoreOpen)
                     );
@@ -2851,14 +2769,9 @@ window.__ModuleLoader__.load({
       var sDzOver = React.useState(false);
       var dzOver = sDzOver[0];
       var setDzOver = sDzOver[1];
-      var sDzBottomOver = React.useState(false); // 底部输入框悬停高亮
-      var dzBottomOver = sDzBottomOver[0];
-      var setDzBottomOver = sDzBottomOver[1];
       var dzActiveRef = React.useRef(false); // 事件回调内读最新值（避免闭包旧态）
       var dzOverRef = React.useRef(false);
-      var dzBottomOverRef = React.useRef(false);
       var dzWatchdogRef = React.useRef(0);   // 拖拽事件流中断兜底（2.5s 无事件自动复位，防卡死）
-      var stagedBottomImageIdsRef = React.useRef([]); // 气泡编辑期间拖入底部输入框的暂存图片 ID 列表
       /** 把当前编辑图片集合同步进 pending（含 dataUrl 字节快照；超限降级只丢字节、引用仍在） */
       function syncEditImgsToPending(items) {
         try {
@@ -2921,221 +2834,53 @@ window.__ModuleLoader__.load({
         })();
       }, [isEditPending]);
 
-      // 辅助：获取底部输入组件的操作栏/工具栏容器（包含模型选择、发送键等）
-      function getComposerToolbar(card) {
-        try {
-          if (!card) return null;
-          var btn = card.querySelector("button[aria-label*='发送'], button[aria-label*='Send'], button[data-send-button]");
-          if (!btn) {
-            var btns = card.querySelectorAll("button");
-            if (btns.length > 0) btn = btns[btns.length - 1];
-          }
-          if (btn) {
-            var cur = btn;
-            while (cur && cur.parentNode && cur.parentNode !== card) {
-              cur = cur.parentNode;
-            }
-            if (cur && cur.parentNode === card) return cur;
-          }
-        } catch (e) { /* ignore */ }
-        return null;
-      }
-
-      // 辅助：光标坐标判定是否在底部虚线框的矩形区域内（支持高度扩大后超出卡片上边缘时的精准命中）
-      function isPointInBottomDz(e) {
-        try {
-          if (!e || typeof e.clientX !== "number" || typeof e.clientY !== "number") return false;
-          var ov = document.querySelector("[data-easyrewrite-bottom-dz]");
-          if (ov) {
-            var r = ov.getBoundingClientRect();
-            return (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom);
-          }
-        } catch (err) { /* ignore */ }
-        return false;
-      }
-
-      // 辅助：判定事件目标是否在输入框组件区域（排除底部的模型选择和发送键等 UI）
-      function isTargetInComposerInput(target) {
-        try {
-          if (!target) return false;
-          var card = target.closest("[data-composer-card='true']") || target.closest("[data-composer-card]");
-          if (!card) return false;
-          var toolbar = getComposerToolbar(card);
-          if (toolbar && (toolbar === target || toolbar.contains(target))) {
-            return false;
-          }
-          return true;
-        } catch (e) { return false; }
-      }
-
-      // 底部输入框 Dropzone 蒙层与输入框尺寸联动（气泡编辑拖拽时，输入框与虚线框同步按比例放大至 2.5x，严丝合缝贴合输入框组件内；不遮挡底部操作区）
-      React.useEffect(function () {
-        var card = document.querySelector("[data-composer-card='true']") || document.querySelector("[data-composer-card]");
-        var scrollEl = card ? card.querySelector("[data-input-scroll]") : document.querySelector("[data-input-scroll]");
-
-        function restoreInputBox() {
-          try {
-            var oldOv = document.querySelector("[data-easyrewrite-bottom-dz]");
-            if (oldOv && oldOv.parentNode) {
-              var pNode = oldOv.parentNode;
-              oldOv.remove();
-              if (pNode && pNode.dataset && pNode.dataset.easyrewriteOriginPos) {
-                pNode.style.position = pNode.dataset.easyrewriteOriginPos;
-                delete pNode.dataset.easyrewriteOriginPos;
-              }
-            }
-            if (scrollEl && scrollEl.dataset && scrollEl.dataset.easyrewriteOrigMinH !== undefined) {
-              scrollEl.style.minHeight = scrollEl.dataset.easyrewriteOrigMinH;
-              delete scrollEl.dataset.easyrewriteOrigMinH;
-              delete scrollEl.dataset.easyrewriteBaseH;
-            }
-          } catch (eR) { /* ignore */ }
-        }
-
-        if (!editing || !dzActive) {
-          restoreInputBox();
-          return;
-        }
-
-        if (!card) return;
-        var compStyle = window.getComputedStyle ? window.getComputedStyle(card) : null;
-        if (compStyle && compStyle.position === "static") {
-          card.dataset.easyrewriteOriginPos = card.style.position || "";
-          card.style.position = "relative";
-        }
-
-        // 1) 输入框组件本身协同平滑放大至 2.5x（严丝合缝扩展，杜绝悬浮超框）
-        if (scrollEl) {
-          if (!scrollEl.dataset.easyrewriteOrigMinH) {
-            scrollEl.dataset.easyrewriteOrigMinH = scrollEl.style.minHeight || "";
-            scrollEl.dataset.easyrewriteBaseH = String(Math.max(28, scrollEl.offsetHeight || 32));
-          }
-          var baseH = parseFloat(scrollEl.dataset.easyrewriteBaseH) || 32;
-          var targetH = Math.min(240, Math.max(80, Math.round(baseH * 2.5)));
-          scrollEl.style.transition = "min-height .15s ease";
-          scrollEl.style.minHeight = targetH + "px";
-        }
-
-        // 2) 测量底部工具栏（模型选择与发送键等）
-        var toolbar = getComposerToolbar(card);
-        var bottomGap = 44;
-        try {
-          if (toolbar) {
-            var cRect = card.getBoundingClientRect();
-            var tRect = toolbar.getBoundingClientRect();
-            if (tRect.top >= cRect.top && tRect.top < cRect.bottom) {
-              bottomGap = Math.max(36, Math.round(cRect.bottom - tRect.top));
-            }
-          }
-        } catch (eG) { /* ignore */ }
-
-        // 3) 虚线框严丝合缝贴合放大的输入框内部（从卡片顶部到工具栏上方，绝不超出输入框卡片）
-        var ov = card.querySelector("[data-easyrewrite-bottom-dz]");
-        if (!ov) {
-          ov = document.createElement("div");
-          ov.setAttribute("data-easyrewrite-bottom-dz", "1");
-          ov.style.position = "absolute";
-          ov.style.top = "6px";
-          ov.style.left = "8px";
-          ov.style.right = "8px";
-          ov.style.bottom = (bottomGap + 4) + "px";
-          ov.style.zIndex = "25";
-          ov.style.display = "flex";
-          ov.style.alignItems = "center";
-          ov.style.justifyContent = "center";
-          ov.style.borderRadius = "12px";
-          ov.style.boxSizing = "border-box";
-          ov.style.pointerEvents = "none";
-          ov.style.backdropFilter = "blur(14px)";
-          ov.style.webkitBackdropFilter = "blur(14px)";
-          ov.style.animation = "dshEasyRewriteDzFadeIn 0.16s ease-out";
-          ov.style.transition = "border-color .12s ease, background-color .12s ease, color .12s ease";
-          var txtSpan = document.createElement("span");
-          txtSpan.className = "dsh-easyrewrite-bottom-dz-text";
-          txtSpan.style.fontSize = "13.5px";
-          txtSpan.style.fontWeight = "500";
-          txtSpan.style.textAlign = "center";
-          txtSpan.style.padding = "0 14px";
-          txtSpan.style.maxWidth = "100%";
-          txtSpan.style.overflow = "hidden";
-          txtSpan.style.textOverflow = "ellipsis";
-          txtSpan.style.whiteSpace = "nowrap";
-          ov.appendChild(txtSpan);
-          card.appendChild(ov);
-        } else {
-          ov.style.top = "6px";
-          ov.style.bottom = (bottomGap + 4) + "px";
-        }
-        var dzBlue = "var(--dsw-static-deepseek-500, #4d6bfe)";
-        var dzGrey = "rgba(128,128,128,0.45)";
-        ov.style.border = "3px dashed " + (dzBottomOver ? dzBlue : dzGrey);
-        ov.style.background = dzBottomOver ? "rgba(77,107,254,0.10)" : "rgba(128,128,128,0.06)";
-        var spanEl = ov.querySelector(".dsh-easyrewrite-bottom-dz-text");
-        if (spanEl) {
-          spanEl.textContent = dzBottomOver ? "松开暂存至输入框（新对话中保留）" : "拖入此处暂存至输入框（新对话中保留）";
-          spanEl.style.color = dzBottomOver ? dzBlue : "rgba(128,128,128,0.85)";
-        }
-        return function () {
-          restoreInputBox();
-        };
-      }, [editing, dzActive, dzBottomOver]);
-
-      // 编辑态：document 捕获级接管文件拖拽（bug①）。官方全屏提示层由 dsh-client-ui-attachment
-      // 在 document 冒泡阶段以 dragenter/dragleave 计数驱动、drop 时才 reset——旧实现只拦 drop 且
-      // stopPropagation，官方收不到任何后续事件 → 提示层永久卡死。现在 dragenter/dragover 一并在
-      // 捕获阶段拦下：提示层根本不出现；drop 按目标分流至编辑气泡或底部输入框暂存区。随编辑态启停。
+      // 编辑态：只在拖到「气泡图片区」时接管文件拖拽，其余位置全部让给宿主。
+      // 宿主 dsh-client-ui-attachment 的 installDocumentDropEvents 已在 document 上装了完整的
+      // 拖放（遮罩 + canAcceptDrop + onAddFiles → 官方草稿附件），本插件不再自行实现底部暂存。
+      // 拦与不拦的判据只能是「落点是否在气泡 dropzone 内」：捕获阶段一律 stopPropagation 会让
+      // 宿主的计数式遮罩收不到 dragleave/drop 而卡死（旧 bug①），所以非气泡目标必须完全不碰事件。
       React.useEffect(function () {
         if (!editing) return;
         function looksLikeFileDrag(e) {
           try { var t = e.dataTransfer; return !!(t && t.types && Array.prototype.indexOf.call(t.types, "Files") !== -1); } catch (eT) { return false; }
         }
+        // 落点是否在气泡图片区（编辑态才会挂 [data-easyrewrite-dropzone]）
+        function overBubble(e) {
+          try { return !!(e.target && e.target.closest && e.target.closest("[data-easyrewrite-dropzone]")); } catch (eC) { return false; }
+        }
         function suppress(e) { e.preventDefault(); e.stopPropagation(); }
         function armWatchdog() {
           try { if (dzWatchdogRef.current) clearTimeout(dzWatchdogRef.current); } catch (eW) { /* ignore */ }
           dzWatchdogRef.current = setTimeout(function () {
-            dzActiveRef.current = false; dzOverRef.current = false; dzBottomOverRef.current = false;
-            setDzActive(false); setDzOver(false); setDzBottomOver(false);
+            dzActiveRef.current = false; dzOverRef.current = false;
+            setDzActive(false); setDzOver(false);
           }, 2500);
         }
         function onDragEnter(e) {
           if (!looksLikeFileDrag(e)) return;
+          if (!overBubble(e)) return; // 非气泡目标：完全不碰，交给宿主 document 监听
           suppress(e);
           armWatchdog();
           if (!dzActiveRef.current) { dzActiveRef.current = true; setDzActive(true); }
-          // 悬停判定：气泡图片容器
-          var over = false;
-          try { over = !!(e.target && e.target.closest && e.target.closest("[data-easyrewrite-dropzone]")); } catch (eC) { /* ignore */ }
-          if (over !== dzOverRef.current) { dzOverRef.current = over; setDzOver(over); }
-          // 悬停判定：底部输入框组件区域（坐标或 target，排除模型选择与发送键）
-          var bOver = false;
-          try { bOver = isPointInBottomDz(e) || isTargetInComposerInput(e.target); } catch (eBC) { /* ignore */ }
-          if (bOver !== dzBottomOverRef.current) { dzBottomOverRef.current = bOver; setDzBottomOver(bOver); }
+          if (!dzOverRef.current) { dzOverRef.current = true; setDzOver(true); }
         }
         function onDragOver(e) {
           if (!looksLikeFileDrag(e)) return;
+          if (!overBubble(e)) return;
           suppress(e);
           armWatchdog();
           if (!dzActiveRef.current) { dzActiveRef.current = true; setDzActive(true); }
-          var over2 = false;
-          try { over2 = !!(e.target && e.target.closest && e.target.closest("[data-easyrewrite-dropzone]")); } catch (eC2) { /* ignore */ }
-          if (over2 !== dzOverRef.current) { dzOverRef.current = over2; setDzOver(over2); }
-          var bOver2 = false;
-          try { bOver2 = isPointInBottomDz(e) || isTargetInComposerInput(e.target); } catch (eBC2) { /* ignore */ }
-          if (bOver2 !== dzBottomOverRef.current) { dzBottomOverRef.current = bOver2; setDzBottomOver(bOver2); }
+          if (!dzOverRef.current) { dzOverRef.current = true; setDzOver(true); }
         }
         function dzReset() {
           try { if (dzWatchdogRef.current) { clearTimeout(dzWatchdogRef.current); dzWatchdogRef.current = 0; } } catch (eW2) { /* ignore */ }
-          dzActiveRef.current = false; dzOverRef.current = false; dzBottomOverRef.current = false;
-          setDzActive(false); setDzOver(false); setDzBottomOver(false);
+          dzActiveRef.current = false; dzOverRef.current = false;
+          setDzActive(false); setDzOver(false);
         }
         function onDrop(e) {
+          // 只处理落在气泡图片区的 drop；其余 drop 由宿主 document 监听处理（含输入框与全屏遮罩）
+          if (!overBubble(e)) return;
           suppress(e);
-          var isBubble = false;
-          var isBottom = false;
-          try {
-            isBubble = !!(e.target && e.target.closest && e.target.closest("[data-easyrewrite-dropzone]"));
-            isBottom = isPointInBottomDz(e) || isTargetInComposerInput(e.target);
-          } catch (eCl) { /* ignore */ }
           dzReset();
           try {
             var imgFiles = [];
@@ -3148,23 +2893,7 @@ window.__ModuleLoader__.load({
             }
             if (imgFiles.length === 0 || !ctxConversationRef || typeof ctxConversationRef.createDraftImages !== "function") return;
 
-            if (isBottom) {
-              // 分流 A：释放到底部输入框暂存区
-              var bImgs = ctxConversationRef.createDraftImages(imgFiles);
-              if (bImgs && bImgs.length > 0) {
-                var bIds = bImgs.map(function (im) { return im.id; });
-                if (props.inputActions && typeof props.inputActions.addImages === "function") {
-                  props.inputActions.addImages(bIds);
-                }
-                stagedBottomImageIdsRef.current = stagedBottomImageIdsRef.current.concat(bIds);
-                log("info", "edit", "图片已添加到底部输入框暂存区", { count: bIds.length, ids: bIds });
-              }
-              return;
-            }
-
-            if (!isBubble) return;
-
-            // 分流 B：释放到气泡编辑区（修改当前消息）
+            // 释放到气泡编辑区（修改当前消息）
             var dImgs = ctxConversationRef.createDraftImages(imgFiles);
             var addedItems = dImgs.map(function (im) { return { id: im.id, url: im.previewUrl, dataUrl: null }; });
             // 异步补 dataUrl 字节快照（bug② 刷新后可重建）
@@ -3198,27 +2927,10 @@ window.__ModuleLoader__.load({
           document.removeEventListener("dragover", onDragOver, true);
           document.removeEventListener("drop", onDrop, true);
           document.removeEventListener("dragleave", onDragLeave, true);
-          // 编辑退出/组件卸载：清看门狗 + 复位虚线框状态（防下次进入编辑带残留）
+          // 编辑退出/组件卸载：清看门狗 + 复位拖拽高亮（防下次进入编辑带残留）
           try { if (dzWatchdogRef.current) { clearTimeout(dzWatchdogRef.current); dzWatchdogRef.current = 0; } } catch (eC3) { /* ignore */ }
-          dzActiveRef.current = false; dzOverRef.current = false; dzBottomOverRef.current = false;
-          setDzActive(false); setDzOver(false); setDzBottomOver(false);
-          try {
-            var ovOld = document.querySelector("[data-easyrewrite-bottom-dz]");
-            if (ovOld && ovOld.parentNode) {
-              var pNode2 = ovOld.parentNode;
-              ovOld.remove();
-              if (pNode2 && pNode2.dataset && pNode2.dataset.easyrewriteOriginPos) {
-                pNode2.style.position = pNode2.dataset.easyrewriteOriginPos;
-                delete pNode2.dataset.easyrewriteOriginPos;
-              }
-            }
-            var scOld = document.querySelector("[data-input-scroll]");
-            if (scOld && scOld.dataset && scOld.dataset.easyrewriteOrigMinH !== undefined) {
-              scOld.style.minHeight = scOld.dataset.easyrewriteOrigMinH;
-              delete scOld.dataset.easyrewriteOrigMinH;
-              delete scOld.dataset.easyrewriteBaseH;
-            }
-          } catch (eRem) { /* ignore */ }
+          dzActiveRef.current = false; dzOverRef.current = false;
+          setDzActive(false); setDzOver(false);
         };
       }, [editing]);
 
@@ -3281,8 +2993,10 @@ window.__ModuleLoader__.load({
         padding: "8px 14px",
         whiteSpace: "pre-wrap",
         wordBreak: "break-word",
-        fontSize: "var(--dsh-content-font-size, 14px)",
-        lineHeight: "calc(22px + var(--dsh-content-font-delta, 0px))",
+        // 与聊天正文/官方输入框同源（--dsh-chat-font-size = 13px / 行高 1.7）。
+        // 原先读 --dsh-content-font-size（主题下 17px），比正文大 4px。
+        fontSize: "var(--dsh-chat-font-size, 14px)",
+        lineHeight: "var(--dsh-chat-line-height, 1.6)",
         color: "var(--dsw-alias-label-primary, inherit)"
       };
       var actionsStyle = { display: "flex", gap: "2px", alignItems: "center" };
@@ -3299,17 +3013,10 @@ window.__ModuleLoader__.load({
           background: "var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.10))",
           borderRadius: "14px",
           padding: "8px 14px",
-          fontSize: "var(--dsh-content-font-size, 14px)",
-          lineHeight: "calc(22px + var(--dsh-content-font-delta, 0px))",
+          fontSize: "var(--dsh-chat-font-size, 14px)",
+          lineHeight: "var(--dsh-chat-line-height, 1.6)",
           cursor: "pointer",
           color: "var(--dsw-alias-label-tertiary)",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word"
-        };
-        var previewStyle = {
-          color: "var(--dsw-alias-label-tertiary)",
-          fontSize: "13px",
-          lineHeight: "22px",
           whiteSpace: "pre-wrap",
           wordBreak: "break-word"
         };
@@ -3366,7 +3073,6 @@ window.__ModuleLoader__.load({
         setEditText(text);
         setEditSel(null);
         setEditImages([]); // v2.4.0：每次进入编辑=干净起点（防反复进出叠加）
-        stagedBottomImageIdsRef.current = []; // 暂存列表重置
         log("info", "edit", "进入编辑态", { sessionId: sessionId, targetSeq: realSeq, initW: initWidth });
         // 带图编辑：把原消息图片桥接成 draft attachments（供编辑态预览和确认发送）
         try {
@@ -3434,9 +3140,6 @@ window.__ModuleLoader__.load({
               bImgIds = curInState.imageIds.slice();
             }
           } catch (eBImgs) { /* ignore */ }
-          if (bImgIds.length === 0 && stagedBottomImageIdsRef.current.length > 0) {
-            bImgIds = stagedBottomImageIdsRef.current.slice();
-          }
           var stagedDraftPayload = (bDraftText || (bImgIds && bImgIds.length > 0)) ? {
             text: bDraftText,
             imageIds: bImgIds
@@ -3444,18 +3147,19 @@ window.__ModuleLoader__.load({
 
           setEditing(false);
           log("info", "edit", "确定：编辑重发", { sessionId: sid, targetSeq: realSeq, len: newText.length, hasStaged: !!stagedDraftPayload });
-          var resp = await fetch("/bubble/recall", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ sessionId: sid, targetSeq: realSeq })
-          });
-          var data = await resp.json();
-          if (!data || !data.ok) {
-            var errCode2 = (data && data.error) || "unknown";
-            log("warn", "edit", "编辑重发失败（边界）", { error: errCode2 });
+          var editBoundary = computeRecallBoundary(props, realSeq);
+          if (!editBoundary || editBoundary.code === "host-fallback") {
+            if (editBoundary && editBoundary.code === "host-fallback") {
+              var editLoaded = await loadThroughTarget(props, realSeq);
+              editBoundary = editLoaded ? computeRecallBoundary(props, realSeq) : null;
+            }
+          }
+          if (!editBoundary || !editBoundary.atSeq) {
+            var editNoBoundary = !editBoundary || editBoundary.code === "no-boundary";
+            log("warn", "edit", "编辑重发失败（边界）", { mode: editBoundary && editBoundary.code });
             setPrimaryButtonSendingState(false);
-            if (errCode2 === "turn-open" || errCode2 === "no-boundary") {
-              // 极限场景（说一半截断 / 首条无边界）：重置对话，编辑文本带到新起点
+            if (editNoBoundary) {
+              // 极限场景（首条无边界）：重置对话，编辑文本带到新起点
               setEditing(false);
               setOpError(L.resetNotice);
               setTimeout(function () { setOpError(null); }, 5000);
@@ -3470,15 +3174,13 @@ window.__ModuleLoader__.load({
           }
           var newId = null;
           try {
-            newId = await props.ctxSessions.fork({ sessionId: sid, atSeq: data.boundary });
+            newId = await props.ctxSessions.fork({ sessionId: sid, atSeq: editBoundary.atSeq });
           } catch (e) {
             log("error", "edit", "fork 失败（编辑重发中止）", { err: String(e && e.message ? e.message : e) });
             setPrimaryButtonSendingState(false);
             setEditing(true); // 恢复编辑态
             return;
           }
-          // Issue #10 根治防御：fork 成功返回即请求 Host 端物理拔除继承的幽灵旧消息
-          await requestCleanGhostQueue(newId);
           // review M6：resume-send 带 TTL 时间戳；M4：图片附件引用随行（重发保留）；stagedDraft：新会话草稿隔离保留
           try {
             localStorage.setItem("dsh-easyrewrite:resume-send:" + newId, JSON.stringify({
@@ -3557,8 +3259,11 @@ window.__ModuleLoader__.load({
           background: "transparent",
           resize: "none",
           font: "inherit",
-          fontSize: "var(--dsh-content-font-size, 14px)",
-          lineHeight: "calc(22px + var(--dsh-content-font-delta, 0px))",
+          // 与聊天正文/官方输入框同一套 token：`--dsh-chat-font-size` = 13px、行高 1.7 = 22.1px。
+          // 原先读 `--dsh-content-font-size`（主题下 17px）+ `calc(22px + delta)` = 25px，
+          // 比同屏的正文大 4px，是编辑态字号不一致的根因（实测 17/25 vs 13/22.1）。
+          fontSize: "var(--dsh-chat-font-size, 14px)",
+          lineHeight: "var(--dsh-chat-line-height, 1.6)",
           color: "var(--dsw-alias-label-primary)",
           whiteSpace: "pre-wrap",
           wordBreak: "break-word",
@@ -3566,26 +3271,35 @@ window.__ModuleLoader__.load({
           maxHeight: "240px",
           overflowY: "auto"
         };
-        var btnRowStyle = { display: "flex", justifyContent: "flex-end", gap: "8px" };
+        var btnRowStyle = { display: "flex", justifyContent: "flex-end", gap: "8px", alignItems: "center" };
+        // 按钮取 macOS 主题的 role 变量（--dsh-theme-*，主题在 `html body *` 上声明，
+        // 亮暗两套都有值）；保留原值作 fallback，主题缺席时外观与改动前一致。
+        // 圆角走主题的 radius 阶梯（md=10px），不再用 999px 药丸——主题的按钮是圆角矩形。
         var primaryBtnStyle = {
           border: "none",
-          background: "var(--dsw-static-deepseek-500, #4d6bfe)",
-          color: "#ffffff",
-          borderRadius: "999px",
-          padding: "4px 16px",
-          fontSize: "13px",
+          background: "var(--dsh-theme-accent, var(--dsw-static-deepseek-500, #4d6bfe))",
+          color: "var(--dsh-theme-accent-ink, #ffffff)",
+          borderRadius: "var(--dsh-theme-radius-md, 10px)",
+          padding: "5px 14px",
+          fontSize: "var(--dsh-chat-font-size, 13px)",
+          lineHeight: "var(--dsh-chat-line-height, 1.7)",
+          fontWeight: 500,
           cursor: "pointer",
-          whiteSpace: "nowrap"
+          whiteSpace: "nowrap",
+          transition: "background-color .12s ease"
         };
         var ghostBtnStyle = {
-          border: "1px solid var(--dsw-alias-border-l2, rgba(128,128,128,0.3))",
+          border: "1px solid var(--dsh-theme-line-strong, var(--dsw-alias-border-l2, rgba(128,128,128,0.3)))",
           background: "transparent",
-          color: "var(--dsw-alias-label-secondary)",
-          borderRadius: "999px",
-          padding: "4px 16px",
-          fontSize: "13px",
+          color: "var(--dsh-theme-ink-2, var(--dsw-alias-label-secondary))",
+          borderRadius: "var(--dsh-theme-radius-md, 10px)",
+          padding: "5px 14px",
+          fontSize: "var(--dsh-chat-font-size, 13px)",
+          lineHeight: "var(--dsh-chat-line-height, 1.7)",
+          fontWeight: 400,
           cursor: "pointer",
-          whiteSpace: "nowrap"
+          whiteSpace: "nowrap",
+          transition: "background-color .12s ease"
         };
         // 编辑态：图片缩略图保持在编辑框上方（不因进入编辑而消失）
         var pcEd = contentParts(data.content);
@@ -3728,8 +3442,19 @@ window.__ModuleLoader__.load({
               props.modelDirectories ? React.createElement(EditModelPicker, { sessionId: sessionId, modelDirectories: props.modelDirectories, selection: editSel, onChange: setEditSel }) : null,
               React.createElement(
                 "div", { style: { display: "flex", gap: "8px", marginLeft: "auto" } },
-                React.createElement("button", { type: "button", style: ghostBtnStyle, onClick: function (e) { e.stopPropagation(); cancelEdit(); } }, L.cancel),
-                React.createElement("button", { type: "button", style: primaryBtnStyle, onClick: function (e) { e.stopPropagation(); confirmEdit(); } }, L.confirm)
+                React.createElement("button", {
+                  type: "button", style: ghostBtnStyle,
+                  // transition 已在样式里声明，必须有对应 hover 变化，否则是空声明
+                  onMouseEnter: function (e) { e.currentTarget.style.background = "var(--dsh-theme-hover, var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,0.1)))"; },
+                  onMouseLeave: function (e) { e.currentTarget.style.background = "transparent"; },
+                  onClick: function (e) { e.stopPropagation(); cancelEdit(); }
+                }, L.cancel),
+                React.createElement("button", {
+                  type: "button", style: primaryBtnStyle,
+                  onMouseEnter: function (e) { e.currentTarget.style.background = "var(--dsh-theme-accent-hover, var(--dsw-static-deepseek-600, #4457d8))"; },
+                  onMouseLeave: function (e) { e.currentTarget.style.background = "var(--dsh-theme-accent, var(--dsw-static-deepseek-500, #4d6bfe))"; },
+                  onClick: function (e) { e.stopPropagation(); confirmEdit(); }
+                }, L.confirm)
               )
             )
           ),
@@ -3741,7 +3466,7 @@ window.__ModuleLoader__.load({
               if (isEditPending) writePending(sessionId, null);
               setEditing(false);
               setConfirming(true);
-            }, iconImg(ICONS.recall, "撤回"), "recall-key")
+            }, iconSvg("recall"), "recall-key")
           )
         );
       }
@@ -3861,31 +3586,35 @@ window.__ModuleLoader__.load({
                       }
                       log("info", "recall", "pending set（确认关闭，直接待定）", { targetSeq: rSeq });
                     }
-                  }, iconImg(ICONS.recall, L.recall), "recall-key"),
+                  }, iconSvg("recall"), "recall-key"),
               // 编辑键：rewrite 关闭时显示（与撤回键同时）
               rewriteOnClick() ? null : actionButton(L.sectionEdit, L.sectionEdit, function (e) {
                 e.stopPropagation();
                 enterEdit(e.currentTarget ? e.currentTarget.offsetWidth : 0);
-              }, iconImg(ICONS.edit, "编辑")),
+              }, iconSvg("edit")),
               React.createElement(CopyButton, { text: text })
             )
       );
     }
 
-    /** 主题自适应样式：深色模式（body[data-ds-dark-theme]，rc.6 已确认标记）下图标反白。 */
+    /** 主题自适应样式：hover 态取 macOS 主题的 role 变量（亮暗两套由主题给值）。 */
     function injectThemeStyle() {
       var id = "dsh-easyrewrite-theme";
-      if (document.querySelector("style[data-plugin=\"" + id + "\"]") !== null) return null;
-      var tag = document.createElement("style");
-      tag.dataset.plugin = id;
-      tag.textContent =
-        "[data-dsh-easyrewrite] .dbe-icon-img{transition:filter .15s}" +
-        "body[data-ds-dark-theme] [data-dsh-easyrewrite] .dbe-icon-img{filter:invert(1)}" +
+      var css =
         "@media (hover:hover){[data-dsh-easyrewrite][data-time-hover-root] .dbe-time{opacity:0;transition:opacity 80ms}" +
         "[data-dsh-easyrewrite][data-time-hover-root]:hover .dbe-time,[data-dsh-easyrewrite][data-time-hover-root]:focus-within .dbe-time{opacity:1}}" +
-        "[data-dsh-easyrewrite=\"recall-bar\"] .dbe-recall-x:hover .dbe-recall-x-bg{fill:var(--dsw-alias-interactive-bg-active,rgba(128,128,128,0.28))}" +
-        "[data-dsh-easyrewrite=\"recall-bar\"] .dbe-recall-x:hover .dbe-recall-x-glyph{stroke:var(--dsw-alias-label-primary)}" +
-        "[data-dsh-easyrewrite=\"version-pager\"] .dbe-pager-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,0.14));color:var(--dsw-alias-label-primary)}";
+        "[data-dsh-easyrewrite=\"recall-bar\"] .dbe-recall-x:hover .dbe-recall-x-bg{fill:var(--dsh-theme-active,var(--dsw-alias-interactive-bg-active,rgba(128,128,128,0.28)))}" +
+        "[data-dsh-easyrewrite=\"recall-bar\"] .dbe-recall-x:hover .dbe-recall-x-glyph{stroke:var(--dsh-theme-ink,var(--dsw-alias-label-primary))}" +
+        "[data-dsh-easyrewrite=\"version-pager\"] .dbe-pager-btn:hover:not(:disabled){background:var(--dsh-theme-hover,var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,0.14)));color:var(--dsh-theme-ink,var(--dsw-alias-label-primary))}" +
+        "[data-dsh-easyrewrite=\"recall-key\"]:hover .dbe-icon-svg{opacity:1}";
+      // 已存在就**重写 textContent**，不能 return——客户端 HMR 只替换插件 fiber、不重跑启动逻辑，
+      // 「已存在就跳过」会让新 CSS 永远注不进页面（仓库 dsh-plugin-client-ui 硬规则）。
+      var tag = document.querySelector("style[data-plugin=\"" + id + "\"]");
+      if (tag !== null) { tag.textContent = css; return tag; }
+      tag = document.createElement("style");
+      tag.dataset.plugin = id;
+      tag.textContent = css;
+      // 图标随按钮继承 currentColor：hover 时按钮已把 color 换成主题主文字色，不再单独改 SVG
       document.head.appendChild(tag);
       return tag;
     }
@@ -3977,6 +3706,7 @@ window.__ModuleLoader__.load({
         // invokeOpenSession 的 try/catch）；此前把它放在 || 左侧，抛错被 catch 吞掉，导致
         // ctx.get("uiWorkspace") 永远不可达、ctxUiWorkspaceRef 恒为 null（空白新会话通道自 2.6.0 起失效）。
         try { ctxUiWorkspaceRef = (typeof ctx.get === "function") ? (ctx.get("uiWorkspace") || null) : null; } catch (eUiw) { ctxUiWorkspaceRef = null; }
+        try { ctxWorkspacesRef = ctx.workspaces || null; } catch (eWs) { ctxWorkspacesRef = null; }
         function invokeOpenSession(id) {
           try {
             if (ctx.uiWorkspace && typeof ctx.uiWorkspace.openSession === "function") {
@@ -4107,17 +3837,7 @@ window.__ModuleLoader__.load({
                 modelDirectories: ctx.modelDirectories,
                 inputActions: inputShell2 && inputShell2.actions ? inputShell2.actions : null,
                 inputState: inputShell2,
-                restoreSession: function (id) {
-                  return fetch("/bubble/unarchive", {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ sessionId: id }),
-                    keepalive: true
-                  }).then(function (r) { return r.json(); }).then(function (d) {
-                    log("debug", "reset", "恢复完成（unarchive）", { sessionId: id, ok: !!(d && d.ok) });
-                    return !!(d && d.ok);
-                  }).catch(function () { return false; });
-                },
+                restoreSession: unarchiveSessionCompat,
               };
             }
           }, UserBubbleView);
@@ -4163,17 +3883,7 @@ window.__ModuleLoader__.load({
                 modelSel: modelSel,
                 inputActions: inputShell && inputShell.actions ? inputShell.actions : null,
                 inputState: inputShell || null,
-                restoreSession: function (id) {
-                  return fetch("/bubble/unarchive", {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ sessionId: id }),
-                    keepalive: true
-                  }).then(function (r) { return r.json(); }).then(function (d) {
-                    log("debug", "reset", "恢复完成（unarchive）", { sessionId: id, ok: !!(d && d.ok) });
-                    return !!(d && d.ok);
-                  }).catch(function () { return false; });
-                },
+                restoreSession: unarchiveSessionCompat,
               };
             }
           }, RecallBanner);
@@ -4251,17 +3961,7 @@ window.__ModuleLoader__.load({
                     return null;
                   } catch (e) { return null; }
                 },
-                restoreSession: function (id) {
-                  return fetch("/bubble/unarchive", {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ sessionId: id }),
-                    keepalive: true
-                  }).then(function (r) { return r.json(); }).then(function (d) {
-                    if (d && d.ok && d.restored) log("info", "pager", "版本会话已恢复（unarchive）", { sessionId: id });
-                    return !!(d && d.ok);
-                  }).catch(function () { return false; });
-                }
+                restoreSession: unarchiveSessionCompat
               };
             }
           }, VersionPager);

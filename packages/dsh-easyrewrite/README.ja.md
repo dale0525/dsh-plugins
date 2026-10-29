@@ -199,10 +199,9 @@ JSON 行形式：`{ t, level, tag, message, data }`。
 
 ```
 dsh-easyrewrite/
-├── lib/index.js          # host half：境界解決 + /bubble/recall、/bubble/log
-├── src/client.src.js     # client テンプレート（アイコンはビルド時にインライン化）
-├── assets/               # 撤回/編集アイコン（PNG、ダークモードは CSS invert で自動対応）
-├── build.mjs             # assets → data-URL → lib/client.js
+├── lib/index.js          # host half：更新チェック + pnpm up（残るルートは 2 本のみ）
+├── src/client.src.js     # client 半分（アイコンはインライン SVG、currentColor で着色）
+├── build.mjs             # src → lib（単純コピー、ビットマップのインライン化は廃止）
 ├── DESIGN.md             # 完全なインタラクションデザイン（v1.0、20 の製品決定）
 ├── PROJECT_PLAN.md       # ロードマップ、アーキテクチャ、git ワークフロー
 └── docs/                 # api-facts、m0-verify

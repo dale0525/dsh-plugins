@@ -199,10 +199,9 @@ JSON 行格式：`{ t, level, tag, message, data }`。
 
 ```
 dsh-easyrewrite/
-├── lib/index.js          # host half：边界解析 + /bubble/recall、/bubble/log
-├── src/client.src.js     # client 模板（图标构建期内联）
-├── assets/               # 撤回/编辑图标（PNG，深色模式 CSS invert 自适应）
-├── build.mjs             # assets → data-URL → lib/client.js
+├── lib/index.js          # host half：更新检查 + pnpm up（仅剩两条路由）
+├── src/client.src.js     # client 半边（图标为内联 SVG，随主题 currentColor）
+├── build.mjs             # src → lib（纯拷贝，不再内联位图）
 ├── DESIGN.md             # 完整交互设计（v1.0，20 项产品决策）
 ├── PROJECT_PLAN.md       # 路线图、架构、git 工作流
 └── docs/                 # api-facts、m0-verify
