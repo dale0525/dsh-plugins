@@ -1362,6 +1362,18 @@ button.statCard:focus-visible {
   text-overflow: ellipsis;
 }
 
+/* 放弹出控件的格子（Select 之类）。面板是绝对定位、从触发器下缘往下溢出的，
+   所以这层不能有任何 overflow 裁切：用 .factValue 那种单行省略号容器包住时，
+   面板会被裁进 36px 高的盒子里——选项仍在 DOM 里、也仍被布局到触发器下方，
+   但 elementFromPoint 命中的是卡片背景，鼠标点不到。
+   字号/字重照抄 .factValue：Select 的触发器和选项文字没有自带这两项，是从这里继承的，
+   漏掉会把这个控件从 13px/600 变成 13px/400。 */
+.factControl {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* —— 分区构成卡：两列网格行（名称 | 条目数 | 体积） ——
    用 auto-fit，窄容器（弹窗内的分区构成）自动退化为单列，
    宽容器（总览 / 导出预览弹窗）仍是两列。 */

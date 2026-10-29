@@ -742,7 +742,7 @@ export function SyncSettingsView({ api, t }: SyncSettingsViewProps) {
                 这是本机私有设置（存 sync-config.json，不进任何同步分区），每台设备各自独立。 */}
             <div className={css.factCell} style={{ gridColumn: '1 / -1', marginTop: 8 }}>
               <span className={css.factLabel}>{t('syncRole.label')}</span>
-              <span className={css.factValue}>
+              <span className={css.factControl}>
                 <Select
                   value={state.statusInfo?.role ?? 'follower'}
                   onChange={(val) => { void handleRoleChange(val as SyncRole) }}
