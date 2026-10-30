@@ -485,7 +485,7 @@ win32 | darwin | linux | freebsd | openbsd | aix | sunos | android | cygwin | ha
 | 12 | `credentialsStatus` | JSON | `security/credentials.json` | `{version:1, credentials}` | 1 | true | deviceSpecific |
 | 13 | `secrets` | — | **无产物**（本实现不写任何文件；上游曾写 `security/secrets.enc`，见 §4） | — | — | 恒 false | — |
 | 14 | `sessions` | 文件 | `sessions/` | 递归真实文件 | 1（内存） | **false** | deviceSpecific |
-| 15 | `self` | 文件 | `self/` | 白名单配置文件 | 1（内存） | true | portable |
+| 15 | `self` | 文件 | `self/` | 白名单配置文件（`sync/sync-config.json` 导出时剥掉本机 `role`，见 §3.3.1-A） | 1（内存） | true | portable |
 
 > **计数说明（必须读，否则会数错）**：`SectionId` 共 **15** 个（`src/schema/types.ts:18-21`）。其中：
 > - `secrets` **没有 adapter**、没有 JSON 载荷、不参与 adapter 循环，其产物由 exporter 直接写（`src/core/exporter.ts:305-327`）。
@@ -531,7 +531,7 @@ win32 | darwin | linux | freebsd | openbsd | aix | sunos | android | cygwin | ha
 | `skills` / `agentPresets` / `sessions`（`FileCollectionAdapter` 子类） | `relativePath` = **homeDir 相对路径裁掉 `baseDir` 前缀**：`rel.replace(new RegExp('^' + escapeRegExp(baseDir) + '[\\/]'), '')`。注意正则只吃**一个**分隔符，且接受 `\` | `src/adapters/file-collection.ts:40` |
 | `agentInstructions` | `baseDir === ''` → `relativePath` = homeDir 相对路径**原样**（本实现恒为 `AGENTS.md`） | `src/adapters/agent-instructions.ts:30-35`、`src/adapters/file-collection.ts:40` |
 | `pluginFiles` | `relativePath` = **相对 `~/.dsh` 根的完整路径**（白名单文件如 `dsh-ssh.json`，或 `collectDir` 下的递归路径） | `src/adapters/plugin-files.ts:85-99` |
-| `self` | `relativePath` = **相对 baseDir（`dsh-config-manager`）的路径**，来自固定白名单（`sync/sync-config.json` 等），**不递归** | `src/adapters/self.ts:32-42`、`src/adapters/self.ts:59-77` |
+| `self` | `relativePath` = **相对 baseDir（`dsh-config-manager`）的路径**，来自固定白名单（`sync/sync-config.json` 等），**不递归**。其中 `sync/sync-config.json` 是**唯一被拆分处理**的文件：导出时剥掉本机 `role` 字段（通道配置 `transport`/`git`/`webdav` 原样带出），导入时用目标机现有的 `role` 覆盖快照值——角色按设备独立，不得随快照传播（否则一台设成 `source` 会让所有设备都变 `source`，多台同时 push 互相覆盖）。目标机无 `role` 时不写入，按缺省 `follower` 走 | `src/adapters/self.ts:31-42`（白名单）、`src/adapters/self.ts:54-99`（export/applyItem）、`src/adapters/self.ts:100-136`（`stripLocalRole` / `mergeLocalRole`）、`src/adapters/self.test.ts`（三条角色隔离用例） |
 | 归档条目名（全部分区统一） | `name = SECTION_FILE_PREFIXES[sectionId] + relativePath` —— **纯字符串拼接，无归一化、无 `path.join`、无去重** | `src/core/exporter.ts:288-295` |
 | CLI 离线备份路径 | 同一公式，但**先过 `isPathSafe(zipName)`**，不安全则跳过该条目并计入 `excludedCount`（写侧唯一做条目名校验的地方） | `src/core/backup-plan.ts:248-256`、`src/core/backup-plan.ts:282` |
 
