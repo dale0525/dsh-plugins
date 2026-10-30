@@ -428,10 +428,12 @@ function assistantChars(sections: readonly Section[]): number {
  * and the surrounding turns, a user's request cannot. The 800-character floor
  * exists so a tight budget thins every turn instead of erasing the last few.
  *
- * Neither tier runs in practice: over the eight measured sessions the largest
- * digest was 44542 tokens against a 196752 budget, and user prose totalled 2591
- * tokens against a 98376 cap. They are a guard against a pasted file, not the
- * normal path.
+ * Both tiers run on a long session, and that is by design, not a failure: the
+ * budget is half the shadowed span (`DIGEST_SHARE_OF_SHADOWED`), so a 122-turn
+ * history with 316k characters of assistant prose cannot fit verbatim. Measured
+ * on session `小鹏汽车 App 改造评估`: T1 fired 104 times, T1' did not fire (the
+ * user side alone brought it under), and the resulting digest was 175383
+ * characters against a 175464-character budget.
  *
  * @param events - the digest source in log order.
  * @param budgetTokens - hard ceiling in the meter's fixed 4-chars-per-token heuristic.
