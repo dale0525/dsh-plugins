@@ -41,7 +41,9 @@ function quoteFtsData(query) {
 
 > Full-text session search is opt-in (the base row's `openAt: never`). This restatement keeps the Web values on one ephemeral in-memory index; a deployment enabling content search overrides `openAt` to `first-search` in a later patch layer, which defers the node:sqlite import and in-memory handle to the first search so Node 22 startup stays quiet.
 
-`openAt: never` 让 `_assertSearchEnabled`（`lib/index.js:593-596`）在任何全文调用前直接抛 `SESSION_QUERY_SEARCH_DISABLED`。所以本机检索不可用是**宿主的默认设计**，不是故障；要开就得照它说的在更靠后的 patch 层覆盖——profile patch 正是这个扩展点。
+`openAt: never` 让 `_assertSearchEnabled`（`lib/index.js:593-596`）在任何全文调用前直接抛 `SESSION_QUERY_SEARCH_DISABLED`。所以本机检索不可用是**宿主的默认设计**，不是故障；要开就得照它说的在更靠后的 patch 层覆盖。
+
+**但打开索引还不够——检索工具本身也没挂。** Web profile 挂了 `session-query-sqlite` 后端，却从未挂载 `@deepseek-ai/dsh-tool-session-query`（`dsh --profile web --dump-config` 里搜不到该行），所以 `session_query` 工具根本不存在。只打开索引，模型手上仍然没有查询入口。实现时必须两件一起做（§9）。
 
 ### 1.3 OpenViking 召不回被压缩的原文：不是缺 source，是服务端没有索引
 
@@ -65,7 +67,7 @@ function quoteFtsData(query) {
 
 分三件。**T-3 的形态在评审后已改**（见 2.3）。
 
-### 2.1 T-1：把 `openAt` 与索引路径改成可用
+### 2.1 T-1：把 `openAt` 与索引路径改成可用（**已实现**，见 §9）
 
 ```yaml
 - id: session-query-sqlite
@@ -249,3 +251,45 @@ archive 的时间单调递增（`archive_001` 11:23Z → `archive_013` 次日 05
 **评审后补测（3 条，其中 1 条推翻方案本身）**：**T-1 一开索引，被压缩的 1852 条原文就自动可检索（抽样 50/50 命中），T-3 从「必需」降为「可选」**（§5.0）；`compaction/start` 载荷不含区间、区间在 `compaction/summary`（推翻原 2.3 的写入点）；seq → archive 可经 `created_at` 时间戳映射，已用 seq 700 的原文在 `archive_001` 第 90 行命中并毫秒对齐验证（§6）。
 
 **判为已知边界（1 条）**：R11 `trigram` 不支持前缀查询。`unicode61` 下 `MATCH '"番茄"*'` 命中 599（`LIKE` 真值 646，仍漏 47）；`trigram` 下 `"番茄"*` 命中 0、`"番茄小说"*` 命中 153。现有 `quoteFtsData` 本就不产生 `*`，不影响当前功能。
+
+## 9. 落地记录：T-1 已实现为 `@logictan/dsh-session-search`
+
+用户裁定走 §5.1 的第 3 条（只开索引，不碰宿主包），并加两项要求：新设备装插件后自动建库、把「只能搜 3 字以上」告知 agent。实现为独立包 `packages/dsh-session-search`，提交 `e451bbf0e`。
+
+### 9.1 与本文原设计的两处偏差
+
+1. **承载层从 profile patch 改成 bundle patch。** §2.1 原写「改动面：`~/.dsh/cordis.patch.yml` 一处（用户侧配置）」。实测 bundle 层（聚合包自己的 `cordis.patch.yml`）同样能覆盖该行——把 override 行加到**已安装**的 `~/.dsh/profiles/web/node_modules/@logictan/dsh-plugins-all/cordis.patch.yml` 尾部后，`--dump-config` 输出变为 `path: !!js dshHomePath('session-search/index.db')` + `openAt: first-search`，说明聚合包层在 `dsh-web-app` 之后应用。因此改为随包发布，**满足「新设备自动建库」且用户无需改任何配置**。
+
+2. **必须额外挂载检索工具。** 本文原先没发现 `@deepseek-ai/dsh-tool-session-query` 在 Web profile 里**根本没有挂载**（`--dump-config` 无此行）。只改后端配置，模型仍无 `session_query` 工具可用。实现在同一 patch 里 `insert` 一行补上。
+
+### 9.2 一个实测踩到的坑
+
+工具最初放进 `isolate: {sessionQuery: true}` 的组（照抄宿主 `dsh-experimental-session-search` 的形状），真实启动报：
+
+```
+dsh: warning: 1 entry did not activate
+session-search-tool-session-query (@deepseek-ai/dsh-tool-session-query): pending (waiting for service: sessionQuery)
+```
+
+隔离组有自己的空 `sessionQuery` 域，解析不到根域的实例。改为顶层普通行后警告消失。**这条写进 README 与测试**，避免后人照抄实验包的形状再踩一次。
+
+### 9.3 端到端验证
+
+用宿主的真实 `SqliteSessionQueryEngine` 加载本包配置（`{ path, openAt: 'first-search' }`）：
+
+| 检查 | 结果 |
+|---|---|
+| 挂载 `sessionQuery` 服务 | `true` |
+| 首次检索**前**索引文件 | `absent`（证明 `first-search` 真的延后了建库） |
+| 执行 `searchSessions({query:'压缩上下文'})` | 返回 `{items:[]}`，无异常 |
+| 首次检索**后**索引文件 | `4096 bytes` |
+
+### 9.4 「告知 agent」的做法
+
+监听 `system-prompt/assemble`，把限制追加到 `session_query` 的工具描述（`src/index.ts` 的 `CJK_LIMIT_NOTE`）。**不注入 `systemPrompt` 服务**——注入意味着「必需」，宿主缺该服务时整个插件会被禁用，连带丢掉这条说明；宿主自己的监听器也是只订阅不注入。
+
+### 9.5 仍然不做
+
+- T-2（改宿主 FTS5 tokenizer + `user_version` 判断）：需要改宿主包，用户已裁定不走。
+- T-3（压缩区间指针记忆）：§5.0 已证 T-1 覆盖，降为可选。
+- §2.1 的两个代价（约 3 分钟首建库、跨进程 `database is locked`）**依旧存在**，只能由宿主包解决，已在 README「已知边界」中写明。
