@@ -65,6 +65,15 @@ patchFrom:
   # Plugins page), so the row carries no config. Its port must differ from the
   # host's own listener port, or loopback traffic would bypass the plugin's gate.
   - ../dsh-lan-access
+  # dsh-session-search turns the host's full-text session search on. Two rows:
+  # one overrides the host's `session-query-sqlite` config (durable path,
+  # `openAt: first-search`), one mounts `@deepseek-ai/dsh-tool-session-query` —
+  # the Web profile mounts the backend but never the tool, so without the second
+  # row the index would exist with nothing able to query it. Both live in this
+  # package's own patch, so installing the aggregate is enough; no profile patch.
+  # It also annotates the `session_query` tool description with the one limit the
+  # tokenizer leaves: a CJK query shorter than three characters finds nothing.
+  - ../dsh-session-search
 deps:
   - ../dsh-config-manager
   - ../dsh-easyrewrite
@@ -130,3 +139,12 @@ deps:
   # Plugins page), so the row carries no config. Its port must differ from the
   # host's own listener port, or loopback traffic would bypass the plugin's gate.
   - ../dsh-lan-access
+  # dsh-session-search turns the host's full-text session search on. Two rows:
+  # one overrides the host's `session-query-sqlite` config (durable path,
+  # `openAt: first-search`), one mounts `@deepseek-ai/dsh-tool-session-query` —
+  # the Web profile mounts the backend but never the tool, so without the second
+  # row the index would exist with nothing able to query it. Both live in this
+  # package's own patch, so installing the aggregate is enough; no profile patch.
+  # It also annotates the `session_query` tool description with the one limit the
+  # tokenizer leaves: a CJK query shorter than three characters finds nothing.
+  - ../dsh-session-search

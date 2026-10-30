@@ -429,3 +429,51 @@
 - insert:
     - id: dsh-lan-access
       name: '@logictan/dsh-lan-access'
+
+# from ../dsh-session-search
+# dsh-session-search bundle patch layer.
+#
+# Two independent problems, two independent fixes. Both are needed: the first
+# makes the index exist, the second gives the model a way to ask.
+#
+# ── 1. The host's index is off by config ────────────────────────────────────
+#
+# This row REPLACES the host's own `session-query-sqlite` config rather than
+# inserting a new one: `applyEntryPatches` matches by `id` and merges `config`
+# into the existing entry, so the base row keeps its name and only these two
+# values change. That is the extension point the host documents in its own base
+# patch — "Deployments enabling content search override `openAt` to
+# `first-search` or `startup` in a later patch layer".
+#
+#  - `openAt: first-search` defers the `node:sqlite` import and the index handle
+#    to the first real search, so process startup does no I/O and a broken index
+#    file cannot take the session down with it. The base row ships
+#    `openAt: never`, which makes every full-text call throw
+#    SESSION_QUERY_SEARCH_DISABLED before any SQLite work.
+#
+#  - `path` moves the index off `:memory:` onto a durable file. `:memory:` would
+#    rebuild the whole corpus on every process start; a file survives restarts
+#    and is reconciled incrementally afterwards.
+#
+# ── 2. The search tool is not mounted at all ────────────────────────────────
+#
+# Opening the index alone changes nothing a user can reach: the Web profile
+# mounts `session-query-sqlite` but never mounts `@deepseek-ai/dsh-tool-session-query`,
+# so no `session_query` tool exists and the model has no way to search. The
+# host's own `@deepseek-ai/dsh-experimental-session-search` bundle is the
+# precedent — it inserts a group holding both the backend and the tool.
+#
+# The tool is inserted as a plain top-level row, NOT inside an isolated group.
+# Isolation was tried first and is wrong here: a group with
+# `isolate: {sessionQuery: true}` gets its own empty `sessionQuery` realm, so the
+# tool stayed `pending (waiting for service: sessionQuery)` and never activated.
+# The backend row above lives in the root realm, so the tool must too.
+
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('session-search/index.db')
+    openAt: first-search
+
+- insert:
+    - id: session-search-tool-session-query
+      name: '@deepseek-ai/dsh-tool-session-query'
