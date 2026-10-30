@@ -41,22 +41,23 @@ import type {} from '@deepseek-ai/dsh-token-meter'
 export const name = 'verbatim-compaction'
 
 /**
- * Largest share of the shadowed price one digest may occupy.
+ * Absolute ceiling for one digest, in the meter's fixed 4-chars-per-token
+ * heuristic.
  *
- * Satisfying the shrink guard is not convergence. The guard only requires the
- * framed digest to be *smaller* than what it replaces; a digest priced at 99.3%
- * of its span passes the guard and still leaves the surface where it started.
- * Measured on session `小鹏汽车 App 改造评估`: one compaction shadowed 87733
- * tokens and produced a digest priced at 87135 — 598 tokens (0.7%) reclaimed —
- * and the resulting surface measured 256704 tokens against a 256464 threshold,
- * so the very next step compacted again, this time shadowing exactly one seq
- * (the checkpoint it had just written) and reproducing the same 348k characters
- * until the third attempt was aborted.
+ * A share of the shadowed span is the wrong shape: it makes the digest grow
+ * with history. Measured on one real session, the share-based budget produced
+ * 2642 chars on an early span, 51019 on a later one, and 348539 on the span that
+ * triggered the compaction loop — because a bigger span licensed a bigger
+ * digest, and a digest near the threshold re-triggers immediately.
  *
- * At half, each compaction makes progress however much history has accumulated,
- * so one pass drops the surface well below the threshold.
+ * A fixed ceiling makes the digest size independent of how long the session has
+ * run, which is what the host's own summarizer does (its summaries measured
+ * 14009-22208 chars across spans of 108829-173514 tokens).
+ *
+ * 20000 tokens holds roughly 100 turns of user prose plus one extracted block
+ * per turn, and leaves the checkpoint far below any measured threshold.
  */
-const DIGEST_SHARE_OF_SHADOWED = 0.5
+export const DIGEST_TOKEN_CEILING = 20000
 
 /** Framing overhead `frameSummary` adds: preamble plus both tags, 341 chars = 86 tokens. */
 const FRAME_TOKENS = 86
@@ -67,8 +68,18 @@ const SHRINK_MARGIN_TOKENS = 512
 /** Per-turn floor when assistant prose has to be truncated, in characters. */
 const MIN_TURN_CHARS = 800
 
-/** Share of the budget user prose may occupy before oldest-first truncation. */
-const USER_BUDGET_SHARE = 0.5
+/**
+ * Share of the budget user prose may occupy before oldest-first truncation.
+ *
+ * Measured on a 122-turn session, every human message in the span totalled 3219
+ * characters — 4% of the 80000-character ceiling — because 99.5% of user-message
+ * characters are injected context, which the digest excludes. So user prose
+ * should never be truncated for room; the share exists only to stop one pasted
+ * file from consuming the whole digest. Reserving most of the budget for it
+ * costs almost nothing and is what keeps an early constraint like "请用pixi管理
+ * 开发环境" from being evicted by 131 extracted blocks.
+ */
+const USER_BUDGET_SHARE = 0.9
 
 /** Tool names whose call arguments name a written path. */
 const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit', 'apply_patch'])
@@ -169,15 +180,12 @@ export function isErrorResult(event: SessionEvent): boolean {
   return (message as { isError?: unknown } | null)?.isError === true
 }
 
-/** Heading that introduces the extracted section at the top of a digest. */
-const EXTRACTED_HEADING = '# Extracted from tool traces'
-
 /** Directive appended as the final user message of the extraction call. */
 const EXTRACT_INSTRUCTION = [
-  'You are summarizing ONE turn of a coding session for a compaction checkpoint.',
-  'The material below is the turn\'s user request, its assistant prose (may be empty), and a trace of the tool calls it made (descriptions only) plus any results the log marked as errors.',
+  'You are summarizing a batch of turns from a coding session for a compaction checkpoint.',
+  'Each turn is introduced by a line `=== TURN <n> ===` and contains the user request, the assistant prose (may be empty), and a trace of the tool calls it made (descriptions only) plus any results the log marked as errors.',
   '',
-  'Output EXACTLY these three Markdown headings, in order. Under each, at most two terse lines. If a section has no real information, write "(none)" — never invent.',
+  'For EVERY turn, emit exactly one block, introduced by the same `=== TURN <n> ===` line, containing these three Markdown headings in order. Under each, at most two terse lines. If a section has no real information, write "(none)" — never invent.',
   '',
   '## Did',
   '- what was actually done, concretely',
@@ -188,8 +196,14 @@ const EXTRACT_INSTRUCTION = [
   '## Overturned',
   '- earlier conclusions this turn disproved or replaced',
   '',
-  'Do not describe the tool calls themselves ("ran bash", "explored the repo"). State what came out of them. If the trace is too thin to support a claim, write "(none)".',
+  'Do not describe the tool calls themselves ("ran bash", "explored the repo"). State what came out of them. Do not repeat a conclusion the previous turn already stated. If the trace is too thin to support a claim, write "(none)".',
 ].join('\n')
+
+/** Turns handed to one extraction call. */
+const TURNS_PER_CALL = 8
+
+/** Output tokens allowed per turn in an extraction call. */
+const EXTRACT_TOKENS_PER_TURN = 220
 
 /** Most tool calls one turn may contribute to the hint block. */
 const MAX_HINTS_PER_TURN = 120
@@ -286,6 +300,14 @@ interface Turn {
   resultBytes: number
   errors: string[]
   writes: string[]
+  /**
+   * The extracted summary for this turn, when extraction succeeded.
+   *
+   * Set here rather than appended to a separate block so the extraction takes
+   * the assistant prose's place in the digest: keeping both duplicated the same
+   * content and pushed the prose out through the budget.
+   */
+  extracted?: string
 }
 
 /** One digest section: everything from one non-injected user message to the next. */
@@ -380,17 +402,58 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
   return sections
 }
 
-/** Render one section to digest text, truncating assistant prose to `capChars`. */
+/**
+ * Attach extracted blocks to the turns they belong to.
+ *
+ * Keyed by turn number, with `undefined` covering a log that carries no
+ * `turn/start` markers. A turn with no entry keeps its prose, which is the
+ * fallback path when extraction is unavailable.
+ *
+ * @param sections - sections built from the digest source.
+ * @param extracted - turn number to extracted block.
+ * @returns the same sections with `extracted` set where available.
+ */
+function withExtractions(
+  sections: readonly Section[],
+  extracted: ReadonlyMap<number | undefined, string>,
+): Section[] {
+  return sections.map((section) => ({
+    turns: section.turns.map((turn) => {
+      const block = extracted.get(turn.turn)
+      return block === undefined ? turn : { ...turn, extracted: block }
+    }),
+  }))
+}
+
+/**
+ * Render one section to digest text, truncating assistant prose to `capChars`.
+ *
+ * When the turn carries an extraction, that extraction *replaces* the assistant
+ * prose. Keeping both was the duplication this design removes: 58.2% of
+ * assistant characters are substantive conclusions that the extraction restates,
+ * and the doubled copy pushed real history out through the budget.
+ *
+ * The tool pointer line stays either way: it is one line, and it is the only
+ * record of what was actually run when the prose and extraction both say little.
+ */
 function renderSection(section: Section, capChars: number | undefined): string {
   const lines: string[] = []
   for (const turn of section.turns) {
     const label = turn.turn === undefined ? '?' : String(turn.turn)
     if (turn.user.length > 0) lines.push(`\n## user (turn ${label})\n${turn.user.join('\n')}`)
-    let body = turn.assistant.join('\n')
-    if (capChars !== undefined && body.length > capChars) {
-      body = `${body.slice(0, capChars)}\n…(+${body.length - capChars} chars)`
+    if (turn.extracted !== undefined) {
+      let block = turn.extracted
+      if (capChars !== undefined && block.length > capChars) {
+        block = `${block.slice(0, capChars)}\n…(+${block.length - capChars} chars)`
+      }
+      lines.push(`### assistant (turn ${label})\n${block}`)
+    } else {
+      let body = turn.assistant.join('\n')
+      if (capChars !== undefined && body.length > capChars) {
+        body = `${body.slice(0, capChars)}\n…(+${body.length - capChars} chars)`
+      }
+      if (body.length > 0) lines.push(`### assistant (turn ${label})\n${body}`)
     }
-    if (body.length > 0) lines.push(`### assistant (turn ${label})\n${body}`)
     if (turn.tools.size > 0) {
       const names = [...turn.tools.entries()]
         .sort((left, right) => right[1] - left[1])
@@ -406,10 +469,23 @@ function renderSection(section: Section, capChars: number | undefined): string {
   return lines.join('\n')
 }
 
-/** Total characters of assistant prose across every section. */
+/**
+ * Total characters of turn bodies across every section: the extraction where a
+ * turn has one, its prose otherwise.
+ *
+ * Both must count, because the cap applies to whichever body is rendered. When
+ * only prose counted, a digest made almost entirely of extractions reported a
+ * bound of zero, the bisection had nothing to shrink, and the renderer fell
+ * through to dropping the oldest turns outright — which deleted the earliest
+ * human messages, the standing constraints the digest exists to keep.
+ */
 function assistantChars(sections: readonly Section[]): number {
   let total = 0
-  for (const section of sections) for (const turn of section.turns) total += turn.assistant.join('\n').length
+  for (const section of sections) {
+    for (const turn of section.turns) {
+      total += turn.extracted !== undefined ? turn.extracted.length : turn.assistant.join('\n').length
+    }
+  }
   return total
 }
 
@@ -419,7 +495,10 @@ function assistantChars(sections: readonly Section[]): number {
  * The two truncation tiers are the plan's T1 and T1', in that order:
  *
  * - **T1** user prose is verbatim unless it alone exceeds `USER_BUDGET_SHARE` of
- *   the budget, then the oldest turns are cut first.
+ *   the budget, then the oldest turns are cut first. The share is 0.9 rather than
+ *   0.5 because real user prose is a few percent of the digest: at 0.5 the
+ *   extracted blocks crowded out the oldest human messages, which are exactly the
+ *   standing constraints (「请用pixi管理开发环境」) that must survive.
  * - **T1'** assistant prose is verbatim unless the whole digest overflows, then
  *   it is cut evenly per turn down to `MIN_TURN_CHARS`.
  *
@@ -428,23 +507,39 @@ function assistantChars(sections: readonly Section[]): number {
  * and the surrounding turns, a user's request cannot. The 800-character floor
  * exists so a tight budget thins every turn instead of erasing the last few.
  *
- * Both tiers run on a long session, and that is by design, not a failure: the
- * budget is half the shadowed span (`DIGEST_SHARE_OF_SHADOWED`), so a 122-turn
- * history with 316k characters of assistant prose cannot fit verbatim. Measured
- * on session `小鹏汽车 App 改造评估`: T1 fired 104 times, T1' did not fire (the
- * user side alone brought it under), and the resulting digest was 175383
- * characters against a 175464-character budget.
- *
- * @param events - the digest source in log order.
- * @param budgetTokens - hard ceiling in the meter's fixed 4-chars-per-token heuristic.
- * @returns the digest text, never longer than `budgetTokens * 4` characters.
+ * Both tiers run on a long session, and that is by design: the ceiling is
+ * absolute (`DIGEST_TOKEN_CEILING`), so a 122-turn history with 316k characters
+ * of assistant prose cannot fit verbatim. In the extractive design most turns
+ * carry an extraction instead of prose, which keeps the digest far below the
+ * ceiling; the tiers exist for the turns where extraction was unavailable and
+ * the prose is all that remains.
  */
-export function renderDigest(events: readonly SessionEvent[], budgetTokens: number): string {
-  const sections = buildSections(events)
+export function renderDigest(
+  events: readonly SessionEvent[],
+  budgetTokens: number,
+  extracted?: ReadonlyMap<number | undefined, string>,
+): string {
+  const sections = extracted === undefined ? buildSections(events) : withExtractions(buildSections(events), extracted)
   const budgetChars = Math.max(0, budgetTokens * 4)
 
   const render = (capChars: number | undefined, trimmed?: Section[]): string =>
     (trimmed ?? sections).map((section) => renderSection(section, capChars)).join('\n')
+
+  // User prose is reserved before anything else is placed.
+  //
+  // Measured on a 122-turn session: every human message in the span totalled 469
+  // characters (117 tokens), while one extracted block per turn totalled 55020
+  // characters. The extraction is 117x the size of the prose it sat next to, so
+  // any layout that lets them compete evicts the prose — and the prose is the
+  // standing constraints (「请用pixi管理开发环境」) that never expire, while the
+  // extraction describes work that is already finished.
+  const userReserve = Math.min(
+    Math.floor(budgetChars * USER_BUDGET_SHARE),
+    sections.reduce(
+      (total, section) => total + section.turns.reduce((sum, turn) => sum + turn.user.join('\n').length, 0),
+      0,
+    ),
+  )
 
   const verbatim = render(undefined)
   if (verbatim.length <= budgetChars) return verbatim
@@ -453,7 +548,7 @@ export function renderDigest(events: readonly SessionEvent[], budgetTokens: numb
   // assistant prose stays verbatim for now. The walk is backwards because the
   // newest request is the one the next turn depends on: cutting forwards would
   // keep the opening question and drop what the user just asked for.
-  const userCap = Math.floor(budgetChars * USER_BUDGET_SHARE)
+  const userCap = userReserve
   let seen = 0
   const t1 = sections.map((section) => ({ turns: section.turns.map((turn) => ({ ...turn, user: [...turn.user] })) }))
   for (let section = t1.length - 1; section >= 0; section -= 1) {
@@ -476,6 +571,10 @@ export function renderDigest(events: readonly SessionEvent[], budgetTokens: numb
   }
   const afterT1 = render(undefined, t1)
   if (afterT1.length <= budgetChars) return afterT1
+  // The user side fits inside its reserve; what overflows is the turn bodies
+  // (extraction or prose plus pointers). Thin those, and only drop whole turns
+  // once every body is already at zero — dropping a turn also drops the user
+  // prose in it, which is what the reserve exists to prevent.
 
   // T1': assistant prose, evenly per turn. Length is monotone non-decreasing in
   // the cap, so bisection finds the largest cap that fits exactly, in about
@@ -609,22 +708,32 @@ export function buildExtractionMaterial(turn: readonly SessionEvent[], prose: st
  * @param signal - cancellation forwarded to the adapter.
  * @returns the extracted block, or null when extraction is unavailable.
  */
-async function extractTurn(
+async function extractBatch(
   ctx: { llm?: { stream: (options: any) => AsyncIterable<any> } },
   agent: Agent,
-  turn: readonly SessionEvent[],
-  prose: string,
+  batch: readonly (readonly [number, readonly SessionEvent[]])[],
   signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
   const llm = ctx.llm
-  if (llm === undefined) return null
+  if (llm === undefined) return out
   const route = agent.session.requestHeader()?.config
   const provider = route?.provider ?? agent.options.provider
   const model = route?.model ?? agent.options.model
-  if (provider === undefined || model === undefined) return null
+  if (provider === undefined || model === undefined) return out
 
-  const material = buildExtractionMaterial(turn, prose)
-  if (material.length === 0) return null
+  const parts: string[] = []
+  for (const [turn, events] of batch) {
+    const prose = events
+      .filter((event) => event.type === 'assistant/message')
+      .map((event) => textOf(event))
+      .filter((text) => text.length > 0)
+      .join('\n')
+    const material = buildExtractionMaterial(events, prose)
+    if (material.length === 0) continue
+    parts.push(`=== TURN ${turn} ===\n${material}`)
+  }
+  if (parts.length === 0) return out
 
   const chunks: string[] = []
   try {
@@ -632,9 +741,11 @@ async function extractTurn(
       provider,
       model,
       messages: [
-        { role: 'user', content: [{ type: 'text', text: `${material}\n\n${EXTRACT_INSTRUCTION}` }] },
+        { role: 'user', content: [{ type: 'text', text: `${parts.join('\n\n')}\n\n${EXTRACT_INSTRUCTION}` }] },
       ],
-      maxTokens: 400,
+      // One block per turn, so the cap scales with the batch rather than being
+      // a per-turn 400 that a dozen turns would multiply past the digest ceiling.
+      maxTokens: EXTRACT_TOKENS_PER_TURN * parts.length,
       sessionId: agent.session.id,
       purpose: 'compaction',
       ...(signal === undefined ? {} : { signal }),
@@ -647,10 +758,20 @@ async function extractTurn(
       if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
     }
   } catch {
-    return null
+    return out
   }
-  const text = chunks.join('').trim()
-  return text.length > 0 ? text : null
+
+  // Split the answer back per turn. A turn the model skipped simply keeps its
+  // prose, so a partial answer degrades per turn instead of losing the batch.
+  const answer = chunks.join('').trim()
+  if (answer.length === 0) return out
+  const sections = answer.split(/^=== TURN (\d+) ===$/m)
+  for (let index = 1; index < sections.length; index += 2) {
+    const turn = Number(sections[index])
+    const body = (sections[index + 1] ?? '').trim()
+    if (Number.isFinite(turn) && body.length > 0) out.set(turn, body)
+  }
+  return out
 }
 
 /**
@@ -693,31 +814,16 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     for (const node of this.ctx.tokenMeter.measure(session).nodes) {
       if (shadowedSet.has(node.seq)) shadowedPrice += node.tokens
     }
+    // Absolute ceiling, floored by the shrink guard. The ceiling keeps the digest
+    // size independent of history length; the guard bound only exists for the
+    // degenerate case of a span smaller than the ceiling.
     const budget = Math.max(
       0,
-      Math.min(
-        // Half the span is the convergence contract, not the guard's own bound.
-        // See `DIGEST_SHARE_OF_SHADOWED` for the 87733→87135 measurement.
-        Math.floor(shadowedPrice * DIGEST_SHARE_OF_SHADOWED),
-        shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS,
-      ),
+      Math.min(DIGEST_TOKEN_CEILING, shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS),
     )
 
-    const verbatim = renderDigest(source, budget)
-
-    // Per-turn extraction, prepended rather than appended.
-    //
-    // Order matters under truncation: `slice` cuts the tail, so appending the
-    // extraction put the most reconstructible content first and the least
-    // reconstructible content last — a tight budget deleted exactly the "what
-    // did this turn conclude / what did it overturn" record and kept the prose
-    // it summarised. Leading with the extraction makes the digest degrade the
-    // way the plan intends: conclusions survive, prose thins.
     const extracted = await this.extractAll(source, agent, _signal)
-    const text =
-      extracted.length === 0
-        ? verbatim
-        : `${EXTRACTED_HEADING}\n${extracted}\n\n${verbatim}`.slice(0, Math.max(verbatim.length, budget * 4))
+    const text = renderDigest(source, budget, extracted)
 
     const route = session.requestHeader()?.config
     return {
@@ -737,16 +843,22 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
    * A turn that fails is simply absent from the output; one bad turn must not
    * drop the extraction for the rest.
    *
+   * Batched rather than one call per turn. One call per turn meant 131 calls on a
+   * 122-turn session, each with its own round trip: a measured extraction budget
+   * of 131 x 400 tokens could on its own exceed the whole digest ceiling. A
+   * batch of `TURNS_PER_CALL` turns costs one round trip and shares the prompt
+   * prefix, so the provider's KV cache is reused rather than rebuilt.
+   *
    * @param source - digest source events, in log order.
    * @param agent - owner of the session being compacted.
    * @param signal - cancellation forwarded to every call.
-   * @returns the extracted blocks joined by turn heading, or an empty string.
+   * @returns turn number to extracted block, omitting turns that yielded none.
    */
   private async extractAll(
     source: readonly SessionEvent[],
     agent: Agent,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<Map<number | undefined, string>> {
     const turns = new Map<number, SessionEvent[]>()
     let lastTurn: number | undefined
     for (const event of source) {
@@ -762,18 +874,14 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       else bucket.push(event)
     }
 
-    const blocks: string[] = []
-    for (const [turn, events] of [...turns.entries()].sort((left, right) => left[0] - right[0])) {
+    const ordered = [...turns.entries()].sort((left, right) => left[0] - right[0])
+    const extracted = new Map<number | undefined, string>()
+    for (let index = 0; index < ordered.length; index += TURNS_PER_CALL) {
       if (signal?.aborted === true) break
-      const prose = events
-        .filter((event) => event.type === 'assistant/message')
-        .map((event) => textOf(event))
-        .filter((text) => text.length > 0)
-        .join('\n')
-      const extracted = await extractTurn(this.ctx, agent, events, prose, signal)
-      if (extracted === null) continue
-      blocks.push(`\n## turn ${turn}\n${extracted}`)
+      const batch = ordered.slice(index, index + TURNS_PER_CALL)
+      const blocks = await extractBatch(this.ctx, agent, batch, signal)
+      for (const [turn, block] of blocks) extracted.set(turn, block)
     }
-    return blocks.join('\n')
+    return extracted
   }
 }

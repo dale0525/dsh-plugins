@@ -47,12 +47,18 @@ async function harness(options = {}) {
     c.provide('llm')
     c.set('llm', {
       resolveModelInfo: async () => ({ provider: 'fixture', id: 'fixture-model', contextWindow: 450000 }),
-      stream: async function* stream() {
+      stream: async function* stream(request) {
         if (options.extraction !== undefined) {
-          yield { type: 'text-delta', text: options.extraction }
+          const prompt = request.messages.at(-1).content.map((block) => block.text).join('')
+          const turns = [...prompt.matchAll(/^=== TURN (\d+) ===$/gm)].map((match) => Number(match[1]))
+          yield {
+            type: 'text-delta',
+            text: turns.map((turn) => `=== TURN ${turn} ===\n${options.extraction}`).join('\n\n'),
+          }
         }
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
+      imageRequestPricing: () => undefined,
     })
     c.provide('sessions')
     c.set('sessions', { flush: async () => true })
@@ -110,26 +116,32 @@ test('one compaction reclaims at least half of what it shadows', async () => {
   )
 })
 
-test('recompacting a lone checkpoint halves the digest instead of reproducing it', async () => {
-  // The production pathology, exactly: after the first compaction the surface
-  // held nothing but the checkpoint, so the next compaction shadowed one seq and
-  // reproduced the same 348k characters (346555 vs 348539). Halving per round is
-  // what turns that fixed point into geometric decay.
+test('recompacting a lone checkpoint never grows the digest', async () => {
+  // With a share-of-span budget the digest halved each round (279048 -> 139865
+  // chars), and that halving was what turned the fixed point into decay. An
+  // absolute ceiling reaches its floor instead: once the digest is at the
+  // ceiling it stops shrinking, so the property worth pinning is that
+  // recompaction never *grows* it — a digest that grows is the fixed point
+  // returning.
+  //
+  // The fixture digest is far below the ceiling, so this asserts the weaker but
+  // still meaningful invariant on this log; the ceiling itself is pinned in
+  // extractive.spec.mjs.
   const { engine } = await harness()
   const session = buildSession()
   const agent = agentFor(session)
 
-  const nodes = session.surface.nodes
-  await engine.compactRegion(nodes[1], nodes.at(-1), agent)
-  const first = digestLength(checkpointOf(session))
+  const first = session.surface.nodes
+  await engine.compactRegion(first[1], first.at(-1), agent)
+  const firstLength = digestLength(checkpointOf(session))
 
   const lone = checkpointOf(session).seq
   await engine.compactRegion(lone, lone, agent)
-  const second = digestLength(checkpointOf(session))
+  const secondLength = digestLength(checkpointOf(session))
 
   assert.ok(
-    second <= first * 0.6,
-    `lone-checkpoint recompaction kept ${second} of ${first} characters`,
+    secondLength <= firstLength,
+    `lone-checkpoint recompaction grew the digest: ${firstLength} -> ${secondLength}`,
   )
 })
 
@@ -152,20 +164,21 @@ test('the digest never carries the checkpoint it replaces as history', async () 
   assert.ok(!secondText.includes(firstText), 'second digest embedded the first checkpoint wholesale')
 })
 
-test('extraction leads the digest so truncation cannot delete it', async () => {
-  // The first version appended the extraction and then sliced the tail. Under a
-  // tight budget that deleted the "what did this turn conclude" record first and
-  // kept the prose it summarised — the exact inversion of the design's intent.
-  const { engine } = await harness({ extraction: '## Did\n- EXTRACTED-MARKER' })
+test('the extraction occupies its own turn, not a block at the head', async () => {
+  // The earlier design hoisted one extracted block to the top of the digest and
+  // then sliced the tail, which deleted history to make room. Inlining the block
+  // into the turn it describes removes that competition entirely: the extraction
+  // and its turn are the same unit, so truncation can only drop whole turns.
+  const { engine } = await harness({ extraction: '## Did\n- INLINE-MARKER' })
   const session = buildSession()
   const nodes = session.surface.nodes
-
   await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
-  const text = checkpointOf(session).data.content.map((block) => block.text).join('\n')
 
-  assert.ok(text.includes('EXTRACTED-MARKER'), 'extraction must survive truncation')
-  assert.ok(
-    text.indexOf('EXTRACTED-MARKER') < text.indexOf('## user (turn 1)'),
-    'extraction must precede the verbatim history',
-  )
+  const text = checkpointOf(session).data.content.map((block) => block.text).join('\n')
+  const marker = text.indexOf('INLINE-MARKER')
+  assert.ok(marker >= 0, 'extraction must appear')
+  // It sits under the assistant heading of its own turn, not above the history.
+  const before = text.slice(0, marker)
+  assert.ok(before.includes('### assistant (turn'), 'extraction must be inside a turn section')
+  assert.ok(before.includes('## user (turn'), 'and that section must already have started')
 })

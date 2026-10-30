@@ -1,0 +1,195 @@
+/**
+ * The extractive design: user prose verbatim, assistant prose replaced by one
+ * extracted block per turn.
+ *
+ * Why this replaced the fully-verbatim digest: measured over 8 real sessions and
+ * 4400 assistant text messages, 58.2% of the characters were substantive
+ * conclusions, 35.8% were short findings carrying data, and the rest was
+ * procedural narration that the tool trace already implies. Keeping all of it
+ * verbatim made the digest grow linearly with history (51019 chars at one span,
+ * 348539 at another), which is the growth that produced the compaction loop.
+ *
+ * What must NOT change: the user's own words stay verbatim. An assistant reply
+ * can be reconstructed from its tool calls; a user's correction, warning, or
+ * constraint cannot. The host's own summarizer paraphrases those, and that
+ * paraphrase is the loss this plugin exists to prevent.
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { Context } from '@deepseek-ai/cordis'
+import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
+import { SESSION_FORMAT_VERSION, Session } from '@deepseek-ai/dsh-session'
+import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING } from '../lib/index.js'
+
+const here = dirname(fileURLToPath(import.meta.url))
+
+function events() {
+  return readFileSync(join(here, 'fixtures', 'session.jsonl'), 'utf8')
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line))
+}
+
+function buildSession() {
+  const header = { version: SESSION_FORMAT_VERSION, id: 'fixture', createdAt: 1, isSeeded: false }
+  return Session.create('fixture', events(), header, 0)
+}
+
+async function harness(options = {}) {
+  const ctx = new Context()
+  await ctx.plugin((c) => {
+    c.provide('sessionProjections')
+    c.set('sessionProjections', { register: () => () => {} })
+    c.provide('llm')
+    c.set('llm', {
+      resolveModelInfo: async () => ({ provider: 'fixture', id: 'fixture-model', contextWindow: 450000 }),
+      stream: async function* stream(request) {
+        options.onCall?.(request)
+        if (options.extraction !== undefined) {
+          // Answer in the batch protocol: one `=== TURN n ===` block per turn
+          // named in the request. A model that answers in the old per-turn shape
+          // yields no blocks and the digest silently keeps prose, so the protocol
+          // is worth asserting rather than assuming.
+          const prompt = request.messages.at(-1).content.map((block) => block.text).join('')
+          const turns = [...prompt.matchAll(/^=== TURN (\d+) ===$/gm)].map((match) => Number(match[1]))
+          const answer = turns
+            .map((turn) => `=== TURN ${turn} ===\n${options.extraction}`)
+            .join('\n\n')
+          yield { type: 'text-delta', text: answer }
+        }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+      imageRequestPricing: () => undefined,
+    })
+    c.provide('sessions')
+    c.set('sessions', { flush: async () => true })
+  })
+  await ctx.plugin(TokenMeter)
+  const fork = ctx.plugin(VerbatimCompactionEngine, options.config ?? {})
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(fork.error, undefined, `plugin mount failed: ${fork.error?.message}`)
+  const engine = ctx.get('compaction')
+  assert.ok(engine, 'backend must register the compaction service')
+  return { engine, ctx }
+}
+
+function agentFor(session) {
+  return {
+    id: 'fixture',
+    session,
+    options: { provider: 'fixture', model: 'fixture-model' },
+    runMaintenance: (run) => run(new AbortController().signal),
+  }
+}
+
+function checkpointOf(session) {
+  return session
+    .snapshotEvents()
+    .filter((event) => event.type === 'user/message' && event.data.source?.kind === 'compact-checkpoint')
+    .at(-1)
+}
+
+function digestOf(checkpoint) {
+  return checkpoint.data.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n')
+}
+
+test('user prose stays verbatim when extraction succeeds', async () => {
+  const { engine } = await harness({ extraction: '## Did\n- EXTRACTED-BODY' })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  for (const event of events()) {
+    if (event.type !== 'user/message') continue
+    const prose = event.data.content.find((block) => block.type === 'text').text
+    assert.ok(text.includes(prose), `user prose missing: ${prose.slice(0, 40)}`)
+  }
+})
+
+test('assistant prose is replaced by the extraction, not kept alongside it', async () => {
+  const { engine } = await harness({ extraction: '## Did\n- EXTRACTED-BODY' })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  assert.ok(text.includes('EXTRACTED-BODY'), 'extraction must be present')
+  assert.ok(
+    !text.includes('ASSISTANT-1.1'),
+    'assistant prose must not also be kept verbatim: that is the duplication this design removes',
+  )
+})
+
+test('assistant prose is kept verbatim when extraction fails', async () => {
+  // The fallback matters more than the feature: a provider outage must not turn
+  // a compaction into a checkpoint that lost the assistant's work as well.
+  const { engine } = await harness()
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  assert.ok(text.includes('ASSISTANT-'), 'without extraction the prose is the only record left')
+  assert.ok(!text.includes('REASONING-SHOULD-NEVER-APPEAR'))
+})
+
+test('the digest is capped by an absolute ceiling, not by the span it replaces', async () => {
+  // The share-of-shadowed budget made the digest grow with history: 51019 chars
+  // on one span and 348539 on another, which is the growth that re-triggered
+  // compaction. A fixed ceiling is what makes the size independent of history.
+  const { engine } = await harness({ extraction: `## Did\n- ${'x'.repeat(4000)}` })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  assert.ok(
+    text.length <= DIGEST_TOKEN_CEILING * 4,
+    `digest ${text.length} exceeds ceiling ${DIGEST_TOKEN_CEILING * 4} chars`,
+  )
+})
+
+test('extraction is requested once per turn, in one batched call per compaction', async () => {
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- X', onCall: (request) => calls.push(request) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const turns = new Set(
+    events().filter((event) => event.type === 'turn/start').map((event) => event.data.turn),
+  )
+  assert.ok(calls.length > 0, 'extraction must run')
+  assert.ok(
+    calls.length <= Math.max(1, Math.ceil(turns.size / 4)),
+    `${calls.length} calls for ${turns.size} turns is not batched`,
+  )
+})
+
+test('a digest full of extractions still keeps every user message', async () => {
+  // The regression this pins: `assistantChars` skipped turns that had an
+  // extraction, so a digest made almost entirely of extractions reported a
+  // bisection bound of zero. The cap had nothing to shrink, the renderer fell
+  // through to dropping the oldest turns, and the first two human messages went
+  // with them — including 「请用pixi管理开发环境」, a standing constraint.
+  //
+  // Real numbers from the session that exposed it: human prose in the span was
+  // 469 characters, one 420-character extraction per turn was 55020. The
+  // extraction is 117x the prose, so it always wins any competition for room.
+  const { engine } = await harness({ extraction: `## Did\n- ${'y'.repeat(3000)}` })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  assert.ok(!text.includes('earlier turn(s) dropped'), 'turns must be thinned, not dropped')
+  for (const event of events()) {
+    if (event.type !== 'user/message') continue
+    const prose = event.data.content.find((block) => block.type === 'text').text
+    assert.ok(text.includes(prose), `user prose evicted by extraction: ${prose.slice(0, 40)}`)
+  }
+})
