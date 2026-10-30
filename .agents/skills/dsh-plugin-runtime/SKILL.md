@@ -36,4 +36,6 @@ description: 改完插件代码要确认是否生效：判断该重启还是走 
 | 宿主提示词（工具清单、指令） | 会话日志里**最后一条** `request/header` 的 `data.header.tools` |
 | 服务是否健康 | `dsh-web status`；报 NOT LISTENING 或 SPLIT 时先复核再决定重启 |
 
+**刷新不等于拿到新代码**：`/plugins/??…` 的响应头是 `cache-control: public, max-age=31536000, immutable`（2026-10-30 实测），`rev` 是唯一的缓存失效手段。上面的 HMR 只覆盖「页面开着时产物被重建」这一条路径；页面是在重建**之前**加载好的、或 HMR 没跑起来时，普通刷新仍可能从磁盘缓存取回旧 bundle。所以遇到「用户说某控件点了没反应、而磁盘产物里明明已有修复」，先让他 **⌘⇧R 强刷**再判断，别急着怀疑构建或代码。
+
 每条判据的具体命令、以及 `lsof` 在 `/usr/sbin`、同端口两个监听者、监听地址推导、`.err` 跨启动追加、启动期护栏、`apply` 返回 Promise 等陷阱，见 `references/verify.md`——只在核对生效时读。
