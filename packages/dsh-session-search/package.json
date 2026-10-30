@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-session-search",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Turns on the host's full-text session search with a durable index, and tells the model the one limit that remains: a CJK query shorter than three characters finds nothing.",
   "type": "module",
   "main": "lib/index.js",
