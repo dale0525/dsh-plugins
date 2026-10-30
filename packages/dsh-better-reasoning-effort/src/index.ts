@@ -181,13 +181,16 @@ export interface Config {
  * different cosmokit versions, and `Volatile<T>` — what `volatile()` returns —
  * is defined in cosmokit. Two cosmokit copies make two `Volatile<T>` symbols, so
  * a `Schema<Config>` typed against one copy is not assignable to the other
- * (`meta.default` is where it surfaces). That is why this error appears and
- * disappears with no change to this file: anything that reshuffles the
- * workspace's cosmokit graph — raising another package's devDependencies to a
- * new host generation, for instance — can move this package onto the other
- * copy. If you hit `Type 'Schema<ObjectS<...>>' is not assignable to type
- * 'Schema<Config>'` after an unrelated dependency bump, compare the cosmokit
- * each schemastery copy binds before touching anything here.
+ * (`meta.default` is where it surfaces).
+ *
+ * The concrete split, measured: `dependencies` said `^3.18.3`, which resolved to
+ * schemastery 3.18.4 → cosmokit ~1.8.5, while `cordis` (devDependencies) binds
+ * cosmokit ~1.8.6. One package, two `Volatile<T>`. Fixed by aligning
+ * `dependencies` to `^3.18.5`, the same range every other package in this
+ * repository already declares — the older range was the outlier, not a
+ * requirement. If this error returns after a dependency bump, run
+ * `node -p "require('./node_modules/@deepseek-ai/schemastery/package.json').version"`
+ * and compare the cosmokit it binds against `cordis`'s; do not add casts here.
  *
  * `.volatile()` needs schemastery ≥ 3.18.3, and the marker survives the copy
  * boundary because the reference protocol is `Symbol.for('cosmokit.volatile.write')`
