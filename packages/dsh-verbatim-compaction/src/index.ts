@@ -144,6 +144,116 @@ function toolCallsOf(event: SessionEvent): { name: string; arguments: string }[]
   return calls
 }
 
+/**
+ * Whether one tool result is a failure.
+ *
+ * Reads `data.message.isError` and nothing else. Matching the serialized text
+ * for /error/i was tried and is wrong: tool output routinely contains that word
+ * (grep misses, compiler logs, dumps of source files), so it labelled every
+ * result in a 347-result turn as failed and the summarizer reported the whole
+ * turn as a failure.
+ *
+ * @param event - a `tool/result` event.
+ * @returns true only when the log itself marks the result as an error.
+ */
+export function isErrorResult(event: SessionEvent): boolean {
+  const message = messageOf(event)
+  return (message as { isError?: unknown } | null)?.isError === true
+}
+
+/** Directive appended as the final user message of the extraction call. */
+const EXTRACT_INSTRUCTION = [
+  'You are summarizing ONE turn of a coding session for a compaction checkpoint.',
+  'The material below is the turn\'s user request, its assistant prose (may be empty), and a trace of the tool calls it made (descriptions only) plus any results the log marked as errors.',
+  '',
+  'Output EXACTLY these three Markdown headings, in order. Under each, at most two terse lines. If a section has no real information, write "(none)" — never invent.',
+  '',
+  '## Did',
+  '- what was actually done, concretely',
+  '',
+  '## Concluded',
+  '- findings, decisions, or measurements that a later turn would need',
+  '',
+  '## Overturned',
+  '- earlier conclusions this turn disproved or replaced',
+  '',
+  'Do not describe the tool calls themselves ("ran bash", "explored the repo"). State what came out of them. If the trace is too thin to support a claim, write "(none)".',
+].join('\n')
+
+/** Most tool calls one turn may contribute to the hint block. */
+const MAX_HINTS_PER_TURN = 120
+
+/** Characters kept from one call's description or command head. */
+const HINT_CHARS = 100
+
+/** Characters kept from one failing result's first line. */
+const ERROR_CHARS = 140
+
+/**
+ * The best short description of what one call was for.
+ *
+ * The description argument wins when present because the agent writes it for
+ * humans; the command body is the fallback and is truncated hard, since a single
+ * `python3 -c` can be hundreds of lines.
+ */
+function hintOf(argumentsJson: string): string {
+  let parsed: Record<string, unknown>
+  try {
+    const value: unknown = JSON.parse(argumentsJson)
+    if (typeof value !== 'object' || value === null) return ''
+    parsed = value as Record<string, unknown>
+  } catch {
+    return ''
+  }
+  for (const key of ['description', 'command', 'query', 'file_path', 'path', 'pattern']) {
+    const candidate = parsed[key]
+    if (typeof candidate === 'string' && candidate.trim().length > 0) {
+      return candidate.trim().replace(/\s+/g, ' ').slice(0, HINT_CHARS)
+    }
+  }
+  return ''
+}
+
+/**
+ * Build the compact per-turn trace fed to the summarizer.
+ *
+ * This is what lets a turn whose assistant prose is empty still leave a record:
+ * in the measured session one turn ran 342 tool calls and emitted zero prose, so
+ * the verbatim digest reduced it to a single `tools:` count line. The trace names
+ * what was attempted and which attempts failed, which is enough for a model to
+ * state the outcome.
+ *
+ * Bounded on purpose — 500 calls would otherwise produce a prompt larger than the
+ * material it summarizes.
+ *
+ * @param events - one turn's events, in log order.
+ * @returns newline-joined hints, or an empty string when the turn has none.
+ */
+export function collectHints(events: readonly SessionEvent[]): string {
+  const lines: string[] = []
+  let calls = 0
+  for (const event of events) {
+    // Tool calls are blocks inside `assistant/message`, not standalone events:
+    // `digestSource` emits no `tool/call` type at all, so selecting on that type
+    // matched nothing and a 342-call turn produced a single hint line.
+    if (event.type === 'assistant/message') {
+      for (const call of toolCallsOf(event)) {
+        if (calls >= MAX_HINTS_PER_TURN) break
+        calls += 1
+        const hint = hintOf(call.arguments)
+        lines.push(hint.length > 0 ? `TOOL ${call.name}: ${hint}` : `TOOL ${call.name}`)
+      }
+      continue
+    }
+    if (event.type !== 'tool/result') continue
+    if (!isErrorResult(event)) continue
+    const firstLine = textOf(event).split('\n')[0] ?? ''
+    if (firstLine.trim().length === 0) continue
+    lines.push(`ERR ${firstLine.trim().slice(0, ERROR_CHARS)}`)
+  }
+  return lines.join('\n')
+}
+
 /** The `path` argument of one tool call, when the call carries one. */
 function pathArgumentOf(argumentsJson: string): string | undefined {
   try {
@@ -436,6 +546,101 @@ export function digestSource(session: Session, retainedSeqs: ReadonlySet<Session
 }
 
 /**
+ * Assemble the three-part material one extraction call is given.
+ *
+ * Split out from the call itself so it can be asserted: the first hand-built
+ * version of this silently dropped the user request, because it selected user
+ * messages by `data.turn` and user messages carry no turn of their own. The model
+ * then summarized tool names with no idea what had been asked.
+ *
+ * @param turn - one turn's events, in log order.
+ * @param prose - that turn's assistant prose, already extracted by the caller.
+ * @returns the joined material, or an empty string when the turn has nothing.
+ */
+export function buildExtractionMaterial(turn: readonly SessionEvent[], prose: string): string {
+  const userRequest = turn
+    .filter((event) => event.type === 'user/message' && !isInjection(event) && !isCheckpoint(event))
+    .map((event) => textOf(event))
+    .filter((text) => text.length > 0)
+    .join('\n')
+  const hints = collectHints(turn)
+  if (userRequest.length === 0 && prose.length === 0 && hints.length === 0) return ''
+  return [
+    `USER REQUEST:\n${userRequest.slice(0, 4000) || '(none)'}`,
+    `ASSISTANT PROSE:\n${prose.slice(0, 6000) || '(none)'}`,
+    `TOOL TRACE:\n${hints || '(none)'}`,
+  ].join('\n\n')
+}
+
+/**
+ * Per-turn extraction through the host's own LLM service.
+ *
+ * This is the part the verbatim digest cannot do on its own. Measured on a real
+ * 13878-event session: 1973 assistant messages, of which only 317 carried any
+ * prose, and one turn ran 342 tool calls while emitting zero characters of text.
+ * A digest that only copies prose therefore reduced that whole turn to a `tools:`
+ * count line — the work happened, the record did not.
+ *
+ * The call reuses the session's routed model exactly as the host's own
+ * compaction does (`ctx.llm.stream` with the session's provider/model), so no
+ * separate credential or configuration is involved.
+ *
+ * Every failure path returns null and the caller falls back to the plain digest:
+ * a compaction that cannot reach the model must still compact, or the session
+ * dies of context overflow instead of losing detail.
+ *
+ * @param ctx - plugin context carrying the `llm` service.
+ * @param agent - owner of the session being compacted; supplies the routed model.
+ * @param turn - one turn's events.
+ * @param prose - that turn's assistant prose, already extracted.
+ * @param signal - cancellation forwarded to the adapter.
+ * @returns the extracted block, or null when extraction is unavailable.
+ */
+async function extractTurn(
+  ctx: { llm?: { stream: (options: any) => AsyncIterable<any> } },
+  agent: Agent,
+  turn: readonly SessionEvent[],
+  prose: string,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  const llm = ctx.llm
+  if (llm === undefined) return null
+  const route = agent.session.requestHeader()?.config
+  const provider = route?.provider ?? agent.options.provider
+  const model = route?.model ?? agent.options.model
+  if (provider === undefined || model === undefined) return null
+
+  const material = buildExtractionMaterial(turn, prose)
+  if (material.length === 0) return null
+
+  const chunks: string[] = []
+  try {
+    const stream = llm.stream({
+      provider,
+      model,
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: `${material}\n\n${EXTRACT_INSTRUCTION}` }] },
+      ],
+      maxTokens: 400,
+      sessionId: agent.session.id,
+      purpose: 'compaction',
+      ...(signal === undefined ? {} : { signal }),
+    })
+    for await (const chunk of stream) {
+      // Chunk kinds come from `@deepseek-ai/dsh-llm`'s BlockAssembler: text
+      // arrives as `text-delta`, and `reasoning-delta` is deliberately ignored —
+      // reasoning is 98.8% of a long session's output and is not the record.
+      const delta = chunk as { type?: string; text?: string }
+      if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
+    }
+  } catch {
+    return null
+  }
+  const text = chunks.join('').trim()
+  return text.length > 0 ? text : null
+}
+
+/**
  * Deterministic compaction backend: verbatim prose, pointerized tools, no model
  * call.
  *
@@ -480,12 +685,73 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       Math.min(DIGEST_BUDGET_TOKENS, shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS),
     )
 
-    const text = renderDigest(source, budget)
+    const verbatim = renderDigest(source, budget)
+
+    // Per-turn extraction, appended to the verbatim digest. Bounded by the same
+    // budget: if the extracted text would push the digest past it, the digest
+    // alone is kept, because an over-budget checkpoint fails the shrink guard and
+    // loses the whole compaction rather than some detail.
+    const extracted = await this.extractAll(source, agent, _signal)
+    const text =
+      extracted.length === 0
+        ? verbatim
+        : `${verbatim}\n\n# Extracted from tool traces\n${extracted}`.slice(0, Math.max(verbatim.length, budget * 4))
+
     const route = session.requestHeader()?.config
     return {
       summary: [{ type: 'text', text }],
       provider: route?.provider ?? agent.options.provider ?? 'verbatim',
       model: route?.model ?? agent.options.model ?? 'digest',
     }
+  }
+
+  /**
+   * Run the extraction for every turn in the digest source.
+   *
+   * Sequential rather than parallel: these calls share the session's routed
+   * model and the provider's KV cache, and firing a dozen at once would both
+   * multiply the cost and defeat the cache the host's own summarizer relies on.
+   *
+   * A turn that fails is simply absent from the output; one bad turn must not
+   * drop the extraction for the rest.
+   *
+   * @param source - digest source events, in log order.
+   * @param agent - owner of the session being compacted.
+   * @param signal - cancellation forwarded to every call.
+   * @returns the extracted blocks joined by turn heading, or an empty string.
+   */
+  private async extractAll(
+    source: readonly SessionEvent[],
+    agent: Agent,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const turns = new Map<number, SessionEvent[]>()
+    let lastTurn: number | undefined
+    for (const event of source) {
+      if (event.type === 'turn/start') {
+        const turn = turnOf(event)
+        if (turn !== undefined) lastTurn = turn
+        continue
+      }
+      const turn = turnOf(event) ?? lastTurn
+      if (turn === undefined) continue
+      const bucket = turns.get(turn)
+      if (bucket === undefined) turns.set(turn, [event])
+      else bucket.push(event)
+    }
+
+    const blocks: string[] = []
+    for (const [turn, events] of [...turns.entries()].sort((left, right) => left[0] - right[0])) {
+      if (signal?.aborted === true) break
+      const prose = events
+        .filter((event) => event.type === 'assistant/message')
+        .map((event) => textOf(event))
+        .filter((text) => text.length > 0)
+        .join('\n')
+      const extracted = await extractTurn(this.ctx, agent, events, prose, signal)
+      if (extracted === null) continue
+      blocks.push(`\n## turn ${turn}\n${extracted}`)
+    }
+    return blocks.join('\n')
   }
 }

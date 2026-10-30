@@ -90,7 +90,10 @@ test('the plugin name matches the patch row id', () => {
   assert.equal(name, 'verbatim-compaction')
 })
 
-test('compactRegion replaces the span without any model call', async () => {
+test('compactRegion still compacts when the model returns nothing', async () => {
+  // The verbatim digest is the floor: extraction is an enrichment, and a model
+  // that yields no text must not stop the compaction or lose the prose. The
+  // fixture's `stream` yields only `finish`, so every extraction returns null.
   const { engine, calls } = await harness()
   const session = buildSession()
   const nodes = session.surface.nodes
@@ -98,7 +101,7 @@ test('compactRegion replaces the span without any model call', async () => {
 
   const result = await engine.compactRegion(nodes[1], nodes.at(-1), agent)
 
-  assert.equal(calls.stream, 0, 'the deterministic backend must never call the model')
+  assert.ok(calls.stream > 0, 'extraction is attempted per turn now')
   assert.ok(result.summary.length > 0)
   const checkpoint = checkpointOf(session)
   assert.ok(checkpoint, 'a compaction checkpoint must be written')
