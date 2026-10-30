@@ -81,7 +81,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-todo-goal
       '@logictan/dsh-verbatim-compaction':
-        specifier: ^0.2.0
+        specifier: ^0.2.1
         version: link:../dsh-verbatim-compaction
       '@logictan/dsh-worktree-session':
         specifier: ^0.1.11
