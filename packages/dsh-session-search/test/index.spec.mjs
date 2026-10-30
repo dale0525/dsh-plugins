@@ -45,8 +45,27 @@ test('the tool is a plain top-level row, not an isolated group', () => {
     'an isolated group gets its own empty sessionQuery realm and the tool stays pending')
 })
 
-test('the plugin name matches the patch row id', () => {
-  assert.equal(name, 'session-search')
+test('the plugin mounts its own host half', () => {
+  // The bug this guards: the patch opened the index and mounted the host's tool,
+  // but never mounted THIS package, so `apply()` never ran and the annotation was
+  // silently dead. A patch-only test cannot see that; this one can.
+  assert.match(body, /- id: session-search\n\s+name: '@logictan\/dsh-session-search'/,
+    'without this row apply() never runs: no index preparation, no annotation')
+})
+
+test('the plugin row id equals the host half name', () => {
+  assert.equal(name, 'session-search',
+    'the loader keys mounted rows by id and hard-crashes on a duplicate')
+  assert.match(body, /- id: session-search\n\s+name: '@logictan\/dsh-session-search'/,
+    'the row id and export const name must be the same string')
+})
+
+test('the index path in the patch matches indexPath()', () => {
+  // The patch cannot import from src, so the two literals are kept in step here.
+  const literal = body.match(/path: !!js dshHomePath\('([^']+)'\)/)
+  assert.ok(literal, 'the patch must set a durable path')
+  assert.equal(literal[1], 'session-search/index.db',
+    'indexPath() prepares this exact file; a mismatch would prepare nothing the host uses')
 })
 
 test('the note states the limit and what to do instead', () => {

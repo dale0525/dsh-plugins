@@ -474,6 +474,19 @@
     path: !!js dshHomePath('session-search/index.db')
     openAt: first-search
 
+# ── 3. This plugin's own host half ──────────────────────────────────────────
+#
+# Without this row `src/index.ts` never runs: the patch alone would open the
+# index but nothing would prepare the file or annotate the tools. The row id must
+# equal the host half's `export const name` — the loader keys mounted rows by id
+# and hard-crashes on a duplicate across the profile.
+#
+# Order matters within this file: this row is mounted after the two above, and
+# the index row uses `openAt: first-search`, so the file is prepared here before
+# anything opens it. That is the only moment `auto_vacuum` can still be chosen.
+
 - insert:
+    - id: session-search
+      name: '@logictan/dsh-session-search'
     - id: session-search-tool-session-query
       name: '@deepseek-ai/dsh-tool-session-query'

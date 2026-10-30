@@ -48,6 +48,25 @@ DSH 的会话全文检索是**默认关闭**的，而且不是故障——`@deep
 
 这条说明通过 `system-prompt/assemble` 事件追加到 `session_search` 与 `session_event_search` 的工具描述上（只读的 `session_trace` / `session_event_trace` / `session_event_read` 不做全文检索，不加），不注入 `systemPrompt` 服务（注入意味着「必需」，宿主缺该服务时整个插件会被禁用，连带丢掉这条说明）。
 
+## 索引会自动缩容
+
+宿主的库是懒建的（第一次检索才建），而且**从不设 `auto_vacuum`**，所以文件生来是 `auto_vacuum = 0`——只增不减。行删了，页还占着。
+
+本插件在挂载时（早于宿主的 `openAt: first-search` 打开任何东西）先把空库建好并设 `auto_vacuum = FULL`。宿主随后打开这个文件、建自己的表，设置会保留。实测：
+
+```
+pre-created, auto_vacuum = {"auto_vacuum":1}
+host sees auto_vacuum = {"auto_vacuum":1}
+host built schema, size = 19.61 MB
+after host deletes all rows, size = 0.01 MB  <-- auto-shrunk
+```
+
+所以删会话时索引**自动跟着缩小**，不需要额外触发，也不需要本插件去动宿主正在用的连接。
+
+为什么选 `FULL` 而不是 `INCREMENTAL`：`FULL` 在宿主自己的 `DELETE` 里就完成回收，无需收尾。`INCREMENTAL` 实测也能回收（39.21 MB → 0.21 MB），但要再执行一次 `PRAGMA incremental_vacuum`，那意味着本插件要往宿主的连接里跑 SQL。而全量 `VACUUM` 在另一个进程持写锁时**直接失败**（`ERR_SQLITE_ERROR`，宿主 `busy_timeout` 为 0）。
+
+**一个既成事实的边界**：`auto_vacuum` 只能在建表前选定。**已经存在的旧库改不了**——要让旧库开始缩容，得删掉 `index.db` 让它按新方式重建一次（约 3 分钟）。
+
 ## 已知边界
 
 - **两字中文查询查不到。** 见上表。修它要改宿主的 FTS5 tokenizer 与 `user_version` 判断，属于宿主包改动。
