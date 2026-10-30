@@ -100,16 +100,17 @@ test('the digest never exceeds its budget, however small', () => {
   }
 })
 
-test('a log with no turn/start markers still renders, labelling turns "?"', () => {
+test('a log with no turn/start markers still renders every user message', () => {
+  // Headings no longer carry a turn number, so a missing marker no longer has a
+  // degraded branch to show. What must still hold is that nothing is lost.
   const { events } = fixture()
   const stripped = events.filter((event) => event.type !== 'turn/start')
   const digest = renderDigest(stripped, 196752)
   assert.ok(digest.length > 0)
-  assert.ok(digest.includes('(turn ?)'), 'the degraded branch must be visible, not silently wrong')
   for (const event of stripped) {
     if (event.type !== 'user/message') continue
     const text = event.data.content.find((block) => block.type === 'text').text
-    assert.ok(digest.includes(text), 'degraded labelling must not lose prose')
+    assert.ok(digest.includes(text), 'a missing marker must not lose prose')
   }
 })
 

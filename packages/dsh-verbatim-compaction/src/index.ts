@@ -180,12 +180,66 @@ export function isErrorResult(event: SessionEvent): boolean {
   return (message as { isError?: unknown } | null)?.isError === true
 }
 
+/**
+ * Drop headings whose body says nothing.
+ *
+ * The instruction asks the model to omit empty sections, but a model that writes
+ * `## Overturned\n- (none)` anyway must not cost tokens on every turn: 130 turns
+ * of that placeholder is ~900 tokens recording that nothing was overturned. So
+ * the shape is enforced here as well, not only requested in the prompt.
+ *
+ * A heading is dropped when every non-blank line under it, once its bullet is
+ * stripped, is a placeholder — `(none)`, `none`, `n/a`, `-`, `无`. A heading with
+ * any real content is kept verbatim.
+ *
+ * @param body - one slot's extracted text.
+ * @returns the same text with empty sections removed, or an empty string when
+ * nothing substantive remains.
+ */
+export function pruneEmptySections(body: string): string {
+  const lines = body.split('\n')
+  const kept: string[] = []
+  let pendingHeading: string | undefined
+  let pendingBody: string[] = []
+
+  const flush = (): void => {
+    if (pendingHeading === undefined) {
+      kept.push(...pendingBody)
+      pendingBody = []
+      return
+    }
+    const substantive = pendingBody.some((line) => {
+      const text = line.replace(/^\s*(?:[-*]|\d+\.)\s*/, '').trim()
+      if (text.length === 0) return false
+      return !/^(?:\(?none\)?|n\/a|na|-{1,2}|无|沒有|没有)$/i.test(text)
+    })
+    if (substantive) kept.push(pendingHeading, ...pendingBody)
+    pendingHeading = undefined
+    pendingBody = []
+  }
+
+  for (const line of lines) {
+    if (/^#{1,6}\s/.test(line)) {
+      flush()
+      pendingHeading = line
+      continue
+    }
+    pendingBody.push(line)
+  }
+  flush()
+
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 /** Directive appended as the final user message of the extraction call. */
 const EXTRACT_INSTRUCTION = [
   'You are summarizing a batch of turns from a coding session for a compaction checkpoint.',
   'Each item is introduced by a line `=== SLOT <key> (turn <n>) ===` and contains the user request, the assistant prose (may be empty), and a trace of the tool calls it made (descriptions only) plus any results the log marked as errors.',
   '',
-  'For EVERY item, emit exactly one block, introduced by `=== SLOT <key> ===` using that same key, containing these three Markdown headings in order. Under each, at most two terse lines. If a section has no real information, write "(none)" — never invent.',
+  'For EVERY item, emit exactly one block, introduced by `=== SLOT <key> ===` using that same key. Under each heading write at most two terse lines. OMIT a heading entirely when it has no real information — do not write "(none)" and do not invent. An item where nothing substantive happened may be omitted altogether.',
+  '',
+  '## Asked',
+  '- the question(s) this turn put to the user, and the options it offered — the next user message is usually the answer',
   '',
   '## Did',
   '- what was actually done, concretely',
@@ -453,20 +507,19 @@ function turnKey(sectionIndex: number, turnIndex: number): string {
 function renderSection(section: Section, capChars: number | undefined): string {
   const lines: string[] = []
   for (const turn of section.turns) {
-    const label = turn.turn === undefined ? '?' : String(turn.turn)
-    if (turn.user.length > 0) lines.push(`\n## user (turn ${label})\n${turn.user.join('\n')}`)
+    if (turn.user.length > 0) lines.push(`\n## user\n${turn.user.join('\n')}`)
     if (turn.extracted !== undefined) {
       let block = turn.extracted
       if (capChars !== undefined && block.length > capChars) {
         block = `${block.slice(0, capChars)}\n…(+${block.length - capChars} chars)`
       }
-      lines.push(`### assistant (turn ${label})\n${block}`)
+      lines.push(`### assistant\n${block}`)
     } else {
       let body = turn.assistant.join('\n')
       if (capChars !== undefined && body.length > capChars) {
         body = `${body.slice(0, capChars)}\n…(+${body.length - capChars} chars)`
       }
-      if (body.length > 0) lines.push(`### assistant (turn ${label})\n${body}`)
+      if (body.length > 0) lines.push(`### assistant\n${body}`)
     }
     if (turn.tools.size > 0) {
       const names = [...turn.tools.entries()]
@@ -778,7 +831,7 @@ async function extractBatch(
   const blocks = answer.split(/^=== SLOT ([^\s(]+)[^=]*===$/m)
   for (let index = 1; index < blocks.length; index += 2) {
     const key = blocks[index]
-    const body = (blocks[index + 1] ?? '').trim()
+    const body = pruneEmptySections((blocks[index + 1] ?? '').trim())
     if (key !== undefined && body.length > 0) out.set(key, body)
   }
   return out

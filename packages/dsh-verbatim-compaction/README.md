@@ -17,20 +17,24 @@
 ## 摘要长什么样
 
 ```
-## user (turn 37)
+## user
 （用户原话，逐字，永不改写）
 
-### assistant (turn 37)
+### assistant
+## Asked
+- 是否要用 FULL 而不是 INCREMENTAL
 ## Did
 - 实测 `auto_vacuum=FULL` 删除后自动缩容：19.61 MB → 0.01 MB
 ## Concluded
-- 选 FULL 而非 INCREMENTAL：回收发生在宿主自己的 DELETE 里，不受 busy_timeout=0 影响
+- 选 FULL：回收发生在宿主自己的 DELETE 里，不受 busy_timeout=0 影响
 ## Overturned
 - 先前认为必须显式执行 VACUUM 才能回收空间
   tools: bash×280 ssh_exec×44 web_search×6 (408830 bytes)
   errors: 1: Error: 命令超过 600 秒未结束，已断开连接
   wrote: /Volumes/LogicExt/Git/BookReader/src/video.js
 ```
+
+标题不带轮次号：日志里的 `turn` 号既不唯一也不是一轮一个（一个真实会话把两条请求都编号成 1），印出来就是会撒谎的标题。
 
 - **用户原话逐字**，不重写、不改写、不摘要。
 - **助手正文由提取块替代**，不并列保留——并列就是同一份内容写两遍。
@@ -51,7 +55,11 @@
 
 只抄正文救不了「正文为空」的轮次。实测一个 13878 事件的会话：1973 条 assistant 消息里只有 317 条带正文，其中一轮跑了 342 次工具调用却一个字没写，纯逐字摘要把它压成一行 `tools: bash×281`——活干了，记录没了。
 
-所以提取的材料是三段：用户请求（逐字）、助手正文（逐字）、工具轨迹（每条调用的 `description`，失败的调用另记一行首行错误）。模型输出固定的三节：`## Did` / `## Concluded` / `## Overturned`。
+所以提取的材料是三段：用户请求（逐字）、助手正文（逐字）、工具轨迹（每条调用的 `description`，失败的调用另记一行首行错误）。模型输出固定的四节：`## Asked` / `## Did` / `## Concluded` / `## Overturned`。
+
+空节直接删掉，不留 `(none)` 占位。实测一份真实提取块里 `## Asked` 和 `## Overturned` 都是 `(none)`，删掉后 312 → 271 字符；按 130 轮算，这些占位合计约 900 token 只是在记录「什么都没发生」。清理在代码里做（`pruneEmptySections`），不只依赖提示词——模型仍写了 `(none)` 也不会白花 token。判据是整节每一行去掉项目符号后都只是 `(none)` / `none` / `n/a` / `无` 之类的占位；`none of the tests passed`、`无法连接，改用代理` 这类真内容照原样保留。
+
+`## Asked` 记的是「这一轮向用户提了什么、给了哪些选项」。实测 123 条真人消息里 43 条（35%）不超过 12 个字符——`3`、`1`、`同意`、`做`、`继续`——而 46% 是在回答上一轮助手的提问。只逐字保留「3」而不保留它在回答什么问题，等于记下一个决定却没记下决定的是什么。
 
 模型用的是会话自己的路由（`session.requestHeader()?.config`），和宿主原生压缩同一个取法，不需要单独配置凭据。
 

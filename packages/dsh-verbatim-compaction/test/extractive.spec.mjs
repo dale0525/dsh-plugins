@@ -213,7 +213,7 @@ test('two requests sharing one turn number get their own extractions', async () 
   const blocks = text.match(/## Did\n- PER-SLOT/g) ?? []
   // One block per slot (a section may hold more than one turn), so the count to
   // compare against is the assistant headings the renderer emitted.
-  const assistantSlots = text.match(/^### assistant \(turn /gm) ?? []
+  const assistantSlots = text.match(/^### assistant$/gm) ?? []
   assert.equal(
     blocks.length,
     assistantSlots.length,
@@ -236,4 +236,79 @@ test('a duplicate turn number does not collapse two blocks into one', () => {
   assert.ok(rendered.includes('BLOCK-FIRST'), 'first slot must keep its own block')
   assert.ok(rendered.includes('BLOCK-SECOND'), 'second slot must keep its own block')
   assert.ok(!/BLOCK-FIRST[\s\S]*BLOCK-FIRST/.test(rendered), 'the same block must not appear twice')
+})
+
+test('the extraction block carries what the turn asked the user', async () => {
+  // 35% of real user messages are 12 characters or fewer ("3", "1", "同意", "做",
+  // "继续"), and 46% answer a question the previous turn asked. A digest that
+  // keeps 「3」 verbatim but drops the question it answers records a decision with
+  // no record of what was decided.
+  const { engine } = await harness({ extraction: '## Asked\n- ASKED-BODY' })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  assert.ok(digestOf(checkpointOf(session)).includes('ASKED-BODY'))
+})
+
+test('the extraction instruction asks for all four sections in order', async () => {
+  const calls = []
+  const { engine } = await harness({ extraction: '## Asked\n- x', onCall: (r) => calls.push(r) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
+  const order = ['## Asked', '## Did', '## Concluded', '## Overturned'].map((h) => prompt.indexOf(h))
+  assert.ok(order.every((index) => index >= 0), 'every section must be requested')
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'sections must be requested in order')
+})
+
+test('headings keep the user/assistant marker but drop the turn number', async () => {
+  // Turn numbers are not unique — a real session carried two requests under one
+  // `turn/start` — so a heading that prints one is a heading that can lie.
+  const { engine } = await harness({ extraction: '## Asked\n- x' })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  assert.ok(text.includes('## user\n'), 'user heading must remain')
+  assert.ok(text.includes('### assistant\n'), 'assistant heading must remain')
+  assert.ok(!/^## user \(turn /m.test(text), 'turn number must be gone from the user heading')
+  assert.ok(!/^### assistant \(turn /m.test(text), 'turn number must be gone from the assistant heading')
+})
+
+test('sections whose body is only "(none)" are dropped', async () => {
+  // A real block carried `## Overturned\n- (none)` on most turns. The heading
+  // costs ~4 tokens and the placeholder another ~3, so 130 turns of nothing
+  // spend ~900 tokens recording that nothing happened.
+  const { engine } = await harness({
+    extraction: '## Asked\n- (none)\n## Did\n- REAL-WORK\n## Concluded\n- (none)\n## Overturned\n- (none)',
+  })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  assert.ok(text.includes('REAL-WORK'), 'the non-empty section must survive')
+  assert.ok(!text.includes('## Asked'), 'an empty Asked must be dropped')
+  assert.ok(!text.includes('## Concluded'), 'an empty Concluded must be dropped')
+  assert.ok(!text.includes('## Overturned'), 'an empty Overturned must be dropped')
+  assert.ok(!text.includes('(none)'), 'the placeholder must not survive anywhere')
+})
+
+test('an extraction with nothing at all leaves no empty assistant block', async () => {
+  const { engine } = await harness({
+    extraction: '## Asked\n- (none)\n## Did\n- (none)\n## Concluded\n- (none)\n## Overturned\n- (none)',
+  })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  assert.ok(!text.includes('(none)'), 'placeholders must be gone')
+  // The turn keeps its pointer line, so the assistant heading may remain — what
+  // must not remain is a heading followed by nothing.
+  assert.ok(!/### assistant\n\s*\n\s*\n/.test(text), 'no assistant heading with an empty body')
 })

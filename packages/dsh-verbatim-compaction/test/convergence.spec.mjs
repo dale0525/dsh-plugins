@@ -179,6 +179,6 @@ test('the extraction occupies its own turn, not a block at the head', async () =
   assert.ok(marker >= 0, 'extraction must appear')
   // It sits under the assistant heading of its own turn, not above the history.
   const before = text.slice(0, marker)
-  assert.ok(before.includes('### assistant (turn'), 'extraction must be inside a turn section')
-  assert.ok(before.includes('## user (turn'), 'and that section must already have started')
+  assert.ok(before.includes('### assistant'), 'extraction must be inside a turn section')
+  assert.ok(before.includes('## user'), 'and that section must already have started')
 })
