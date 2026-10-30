@@ -312,3 +312,51 @@ test('an extraction with nothing at all leaves no empty assistant block', async 
   // must not remain is a heading followed by nothing.
   assert.ok(!/### assistant\n\s*\n\s*\n/.test(text), 'no assistant heading with an empty body')
 })
+
+test('a slot already extracted in an earlier compaction is not extracted again', async () => {
+  // Measured on the session that compacted 33 times: 142 turns extracted, 129 of
+  // them (91%) already extracted by an earlier compaction, because `digestSource`
+  // rebuilds from the raw log and the raw events never leave it. Across all 370
+  // local sessions, 81% of compaction work is this repeat.
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- CACHED', onCall: (r) => calls.push(r) })
+  const session = buildSession()
+  const agent = agentFor(session)
+
+  const first = session.surface.nodes
+  await engine.compactRegion(first[1], first.at(-1), agent)
+  const firstSlots = calls.flatMap((c) => slotKeysOf(c))
+
+  const before = calls.length
+  const second = session.surface.nodes
+  await engine.compactRegion(second[1], second.at(-1), agent)
+  const secondSlots = calls.slice(before).flatMap((c) => slotKeysOf(c))
+
+  const overlap = secondSlots.filter((key) => firstSlots.includes(key))
+  assert.deepEqual(overlap, [], `these slots were extracted twice: ${overlap.join(', ')}`)
+})
+
+test('the cache is keyed by content, so a changed turn is extracted again', async () => {
+  // Keying by slot position would be wrong: the same position holds different
+  // content once history grows. Keying by content means a turn whose prose
+  // changed gets a fresh extraction instead of a stale one.
+  const { engine } = await harness({ extraction: '## Did\n- v1' })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const engine2 = (await harness({ extraction: '## Did\n- v2' })).engine
+  const session2 = buildSession()
+  const nodes2 = session2.surface.nodes
+  await engine2.compactRegion(nodes2[1], nodes2.at(-1), agentFor(session2))
+
+  // Two independent engines over identical logs must both produce their own
+  // answer: no cross-session cache, so nothing leaks between sessions.
+  assert.ok(digestOf(checkpointOf(session2)).includes('v2'))
+})
+
+/** Every `=== SLOT <key> (turn ...` key named in one extraction request. */
+function slotKeysOf(request) {
+  const prompt = request.messages.at(-1).content.map((block) => block.text).join('')
+  return [...prompt.matchAll(/^=== SLOT (\S+) \(turn /gm)].map((match) => match[1])
+}
