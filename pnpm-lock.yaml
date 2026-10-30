@@ -72,7 +72,7 @@ importers:
         specifier: ^0.1.1
         version: link:../dsh-reasoning-strip
       '@logictan/dsh-session-search':
-        specifier: ^0.1.0
+        specifier: ^0.1.1
         version: link:../dsh-session-search
       '@logictan/dsh-ssh':
         specifier: ^0.1.3
