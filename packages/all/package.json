@@ -36,7 +36,6 @@
     "@logictan/dsh-openviking": "^0.4.12",
     "@logictan/dsh-plugins-shared-client": "^0.1.0",
     "@logictan/dsh-reasoning-strip": "^0.1.1",
-    "@logictan/dsh-session-search": "^0.1.1",
     "@logictan/dsh-ssh": "^0.1.3",
     "@logictan/dsh-stitch-designer": "^2.0.3",
     "@logictan/dsh-todo-goal": "^0.1.0",
