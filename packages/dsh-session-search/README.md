@@ -48,6 +48,16 @@ DSH 的会话全文检索是**默认关闭**的，而且不是故障——`@deep
 
 这条说明通过 `system-prompt/assemble` 事件追加到 `session_search` 与 `session_event_search` 的工具描述上（只读的 `session_trace` / `session_event_trace` / `session_event_read` 不做全文检索，不加），不注入 `systemPrompt` 服务（注入意味着「必需」，宿主缺该服务时整个插件会被禁用，连带丢掉这条说明）。
 
+## 索引在启动时建，不在第一次检索时
+
+宿主只在 `searchSessions` / `searchEvents` 里调用 `_reconcile`——挂载时不做。配 `openAt: first-search` 的后果是**第一次真检索要同步付掉整次冷建库**。本机实测：206 个会话，建库需数分钟，而工具调用 30 秒就被掐断，中止会丢掉已做的工作——两次尝试后索引仍是 **0 条**，永远建不完。
+
+`openAt: startup` 解决不了：`[Service.init]` 只调 `_ensureReady`，那一步打开文件建表，不灌数据。
+
+所以本插件在挂载后**自己**调一次 `searchSessions`，不受工具调用时限约束。`sessionQuery` 来自兄弟行，可能还没起来，因此用 `ctx.inject({ sessionQuery: true }, …)` 等它出现再跑。
+
+预热不阻塞启动（不 await），失败也不影响宿主——坏索引只会退化成「搜不到」，不会把会话带崩。
+
 ## 索引会自动缩容
 
 宿主的库是懒建的（第一次检索才建），而且**从不设 `auto_vacuum`**，所以文件生来是 `auto_vacuum = 0`——只增不减。行删了，页还占着。

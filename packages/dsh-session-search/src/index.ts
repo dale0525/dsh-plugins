@@ -12,7 +12,19 @@
  *    builds its own schema, keeps `auto_vacuum = 1`, and a full row delete
  *    shrinks 19.61 MB to 0.01 MB with no further help.
  *
- * 2. **Tell the model the one limit the tokenizer leaves.** A tool description
+ * 2. **Build the index at startup, not on the user's first query.** The host
+ *    builds its index inside `_reconcile`, which it calls only from
+ *    `searchSessions` / `searchEvents` — never at mount. With `openAt:
+ *    first-search` that means the FIRST real query pays the entire cold build,
+ *    synchronously, inside the tool call. Measured on this machine: 206 sessions,
+ *    the build needs minutes, the tool call is cut at 30 s, and the abort
+ *    discards the work — so the index stayed at 0 documents across two attempts
+ *    and would never finish. `openAt: startup` does not help: `[Service.init]`
+ *    only calls `_ensureReady`, which opens the file and creates the tables but
+ *    does not reconcile anything. So this plugin calls `searchSessions` once,
+ *    itself, after mount, with no tool-call deadline over it.
+ *
+ * 3. **Tell the model the one limit the tokenizer leaves.** A tool description
  *    that promises more than the backend delivers is worse than no description.
  *
  * `FULL` rather than `INCREMENTAL` because it needs no follow-up: the file
@@ -133,7 +145,42 @@ export function annotate(description: string): string {
 }
 
 /**
- * Prepare the index file and subscribe the annotation to prompt assembly.
+ * A query that cannot match anything, used only to make the host reconcile.
+ *
+ * Any string works — `_reconcile` runs before the query is applied, so the
+ * warm-up does not depend on what is searched. This one is chosen to be
+ * obviously non-content if it ever shows up in a log.
+ */
+const WARMUP_QUERY = 'session-search warm-up'
+
+/**
+ * Build the index in the background, after mount.
+ *
+ * Deliberately not awaited by `apply`: mounting must stay instant, and a
+ * minutes-long build must never block host startup. The promise is kept only so
+ * tests can await it; production ignores the return value.
+ *
+ * Failure is swallowed on purpose. A broken index must degrade to "search
+ * returns nothing", never to "the plugin took the session down" — the host's own
+ * tool already surfaces real search errors when the user asks.
+ *
+ * @param engine - the mounted `sessionQuery` service.
+ * @returns a promise that settles when the build finishes or fails.
+ */
+export async function warmUp(engine: {
+  searchSessions: (request: { query: string; limit?: number }) => Promise<unknown>
+}): Promise<'built' | 'failed'> {
+  try {
+    // `limit: 1` keeps the page small; the cost is the reconcile, not the page.
+    await engine.searchSessions({ query: WARMUP_QUERY, limit: 1 })
+    return 'built'
+  } catch {
+    return 'failed'
+  }
+}
+
+/**
+ * Prepare the index file, warm the index, and subscribe the annotation.
  *
  * The file is prepared at mount, which runs before the host's own index row
  * opens anything (`openAt: first-search` defers that to the first query), so
@@ -143,6 +190,8 @@ export function annotate(description: string): string {
  */
 export function apply(ctx: {
   on(event: string, listener: (...args: any[]) => unknown): unknown
+  get?(name: string): unknown
+  inject?(deps: Record<string, unknown>, callback: (scoped: any) => void): unknown
 }): void {
   // Never let a filesystem problem here disable the annotation: a read-only
   // home would otherwise take the tool descriptions down with it.
@@ -150,6 +199,21 @@ export function apply(ctx: {
     prepareIndex()
   } catch {
     // The host will create the file itself, just without auto_vacuum.
+  }
+
+  // The service may not be up yet when this row mounts: `sessionQuery` comes
+  // from a sibling row. Wait for it instead of assuming order, then build.
+  // `get` is absent on a bare test context, which is why it is optional.
+  const warm = (engine: unknown) => {
+    void warmUp(engine as { searchSessions: (r: { query: string; limit?: number }) => Promise<unknown> })
+  }
+  const engine = typeof ctx.get === 'function' ? ctx.get('sessionQuery') : undefined
+  if (engine !== undefined) warm(engine)
+  else if (typeof ctx.inject === 'function') {
+    // The service comes from a sibling row, so it may not be up when this row
+    // mounts. `ctx.inject` runs the callback once it exists, which is the
+    // documented way to depend on a service without hard-requiring it.
+    ctx.inject({ sessionQuery: true } as any, (scoped: any) => warm(scoped.get('sessionQuery')))
   }
 
   ctx.on('system-prompt/assemble', async (assembly: any, _context: unknown, next: () => Promise<any>) => {
