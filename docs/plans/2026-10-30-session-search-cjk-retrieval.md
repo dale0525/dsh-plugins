@@ -109,11 +109,12 @@ function quoteFtsData(query) {
 
 原方案「把 `sessions/` 加进 `SOURCES`」经评审推翻——服务端没有 sessions 索引，加了也返回空（§1.3）。改为：
 
-在每次压缩发生时，往 `viking://user/dsh/memories/` 写一条**指针记忆**，内容是「seq A–B 的原文在 `<archive URI>`」，让语义召回能命中这条指针，再由 agent 用 `read` 取原文。
+在每次压缩发生时，往 `viking://user/dsh/memories/` 写一条**指针记忆**，内容是「seq A–B 的原文在 `<archive 区间>`」，让语义召回能命中这条指针，再由 agent 用 `read` 取原文。
 
-- 写入点：`compaction/start` 事件。
+- 写入点：**`compaction/summary` 之后**（不是 `compaction/start`——后者载荷只有 `{compactionId, turn}`，拿不到区间；见 §6.1）。
+- 区间来源：`compaction/summary` 的 `data.shadowedRange {start, end}`。
 - 改动面：本仓库的 `packages/dsh-verbatim-compaction`（已存在，见 `docs/plans/2026-10-30-verbatim-history-compaction-backend.md`），不是 `dsh-openviking`。
-- 前置条件（**未验证**）：需要确认压缩发生时能否拿到本次阴影区间的 seq 范围，以及 OpenViking 归档的 archive 编号与 seq 区间是否有稳定映射。见 §6。
+- 两个前置已实测通过，算法见 §6.2：seq → `time` → archive 目录（归档记录的 `created_at` 与事件 `time` 精确到毫秒一致，且 archive 时间单调）。
 
 **注意 `packages/dsh-openviking/shared/recall-core.mjs` 不能直接改**：该文件首行是 `// GENERATED FROM packages/dsh-openviking-shared/lib. DO NOT EDIT.`，真源在 `packages/dsh-openviking-shared/lib/recall-core.mjs`，且两个包都是 `volcengine/OpenViking` 的 fork（各有 `upstream.json`）。改它会被 `sync.mjs` 无警告覆盖，并破坏上游同步基线。
 
@@ -149,25 +150,80 @@ function quoteFtsData(query) {
 
 **这一条不定，T-2 不动手。**
 
-## 6. 未验证项
+## 6. T-3 的两个前置：已实测
 
-- T-3 的前置：压缩时能否拿到阴影区间的 seq 范围、OpenViking `archive_NNN` 编号与 seq 区间是否有稳定映射。未读 `compaction/start` 的载荷与 OpenViking 的归档切分逻辑。
+原先列为未验证的两条前提，现已测完，结论是**可行但必须用时间戳做桥**。
+
+### 6.1 seq 范围从哪来：`compaction/summary`，不是 `compaction/start`
+
+`compaction/start` 的载荷只有 `{compactionId, turn}`，**没有区间**：
+
+```json
+{"type":"compaction/start","data":{"compactionId":"c86a6406-…","turn":3}}
+```
+
+区间在 `compaction/summary` 里：
+
+```json
+{"type":"compaction/summary","data":{
+  "compactionId":"c86a6406-…",
+  "shadowedRange":{"start":9,"end":934},
+  "shadowedSeqs":[9,10,…],
+  "shadowedTokenCount":…, "provider":…, "model":…}}
+```
+
+所以 T-3 的写入点必须是 `compaction/summary`（`compaction/start` 太早，拿不到区间）。原方案写「写入点：`compaction/start`」是错的。
+
+### 6.2 seq 区间 → archive 的映射：靠 `created_at` 时间戳
+
+归档记录**没有 seq 字段**，只有 `created_at`：
+
+```json
+{"id":"msg_31a10a8620da492a9706cebf8efcce8c","role":"assistant","parts":[…],
+ "created_at":"2026-10-20T11:44:46.123Z","peer_id":"…"}
+```
+
+但 DSH 日志里每个事件都有 `time`（毫秒），归档记录的 `created_at` 与它**精确到毫秒一致**。实测闭环（会话 `2d0811a6`，第一次压缩的阴影区间 seq 9–934）：
+
+| 验证 | 结果 |
+|---|---|
+| 区间起点 seq 9 的时间 | `2026-10-20T19:23:11.118+08:00` |
+| `archive_001` 首条 `created_at` | `2026-10-20T11:23:11.118Z` = 同一时刻 |
+| 区间内 seq 700 的助手正文（`A1、A2、A3、B1、B2、C1、C2`） | `grep` 在 `archive_001` 第 90 行命中，`created_at` 同为 `11:44:46.123Z` |
+
+archive 的时间单调递增（`archive_001` 11:23Z → `archive_013` 次日 05:52Z → `archive_025` 12:45Z），因此「取 `shadowedRange.start` 的时间 → 二分 archive 目录 → 在该 archive 内按 `created_at` 过滤」是可行的定位算法。
+
+**代价与限制（必须写进实现）：**
+
+- 归档由 OpenViking 自己的批量策略切分，**与压缩边界无关**，所以区间与 archive 不是一一对应。实测 33 次压缩的 archive 跨度：`(1,1)` 17 次、`(3,3)` 8 次、`(13,13)` 5 次，**只有 3 次跨多个 archive**（`(1,2)`、`(2,3)`、`(3,13)` 各一次）。所以指针要按「起止两个 archive」表达，不能假定单文件。
+- 归档记录是消息级的（`role` + `parts`），DSH 事件是事件级的（含 `tool/result`、`compaction/prune` 等）。归档里 `tool/result` 被折进 `parts[].type == "tool"`，所以**不是逐事件可还原**——指针能找到「那段时间说过什么」，不能保证还原每个事件。
+- 归档目录名是 `dsh-session-<uuid>`，DSH 会话目录名是 `session-<uuid>`，两者只差前缀，可稳定对应。
+
+### 6.3 因此 T-3 的形态
+
+指针记忆的内容固定为三样：`sessionId`、`shadowedRange {start, end}`、以及由两端时间推出的 archive 区间（多数情况是同一个 archive）。写入点是 `compaction/summary` 之后。
+
+## 7. 未验证项
+
 - `/api/v1/search/find` 对 `target_uri` 的桶名约定（`result.<bucket>` 数组）。当前 OpenViking 未在 `127.0.0.1:1933` 监听，只能经 MCP 工具间接观察。
 - `trigram` 对日文/韩文的召回行为未测，只测了中文与拉丁。
+- 指针记忆写进 memories 后，**语义召回能否命中它**（而不是只被 `grep` 找到）未验证——这依赖 OpenViking 对 memories 的索引，与 §1.3 的 sessions 索引问题不同源。
 
 已排除（读源码或实测确认，原先列为未验证）：
 
 - **`openAt: first-search` 的单进程并发建库**：不存在竞争。`searchSessions` / `searchEvents` 都在 `_serialized(signal, …)` 里调 `_ensureReady`（`:541-542`、`:562-563`），`_serialized` 用 `this._tail` 链串行化（`:621-640`）。**但跨进程仍会撞锁，见 2.1。**
 - **`path: ':memory:'` 的来源**：来自 `dsh-web-app/cordis.patch.yml:28-31`，profile patch 在其之后应用，覆盖会生效。
 
-## 7. 评审记录
+## 8. 评审记录
 
 盲审对象为本文件的前一版（sha256 `1ad3c11029fcf1c438bbc3a5e89725a287073e401cccb645f743e44277042979`，143 行）。第一席 Root 自审 12 条，第二席独立盲审 8 条，合并后 3 条共指、9 条 Root 独有、5 条子代理独有，1 轮辩论。
 
-**采纳（17 条）**：`user_version` 判断与赋值必须同改（R1）；`LIKE` 回退下 `match_count` 归零、snippet 失定位（R2 + D1 后半）；`unicode61` 列混淆成因需重列（R4）；缺迁移验收判据（R5）；替代 backend 工作量被低估（R6）；§1.3 的 grep 证据与 §6 的「无法区分」自相矛盾（R7）；缺「只做 T-1 有无净收益」的判断（R8）；sessions 源的噪声控制缺失（R9）；§4/§2.1/§5 对「改不改宿主包」措辞不一致（R10 + D8）；2.5× 体积判据是自证式（R12 + D7 前半）；`recall-core.mjs` 是生成物且属 upstream fork（D3）；sessions 无服务端索引、加 source 无效（D4）；跨进程 `database is locked`（D5）；首次建库代价（D6）；验收判据无法在本仓库 CI 闭环（D7 后半）。
+**采纳（17 条）**：`user_version` 判断与赋值必须同改（R1）；`LIKE` 回退下 `match_count` 归零、snippet 失定位（R2 + D1 后半）；`unicode61` 列混淆成因需重列（R4）；缺迁移验收判据（R5）；替代 backend 工作量被低估（R6）；§1.3 的 grep 证据与「无法区分」自相矛盾（R7）；缺「只做 T-1 有无净收益」的判断（R8）；sessions 源的噪声控制缺失（R9）；§4/§2.1/§5 对「改不改宿主包」措辞不一致（R10 + D8）；2.5× 体积判据是自证式（R12 + D7 前半）；`recall-core.mjs` 是生成物且属 upstream fork（D3）；sessions 无服务端索引、加 source 无效（D4）；跨进程 `database is locked`（D5）；首次建库代价（D6）；验收判据无法在本仓库 CI 闭环（D7 后半）。
 
 **让步（2 条）**：D1 前半「`highlight()` 在 `LIKE` 下抛 `SQLITE_ERROR`」——实测不抛错，退化为无标记原文；D2「trigram 对 <3 字符查询抛异常」——实测静默返回 0 行，撤回。
 
 **Root 自我撤回（1 条）**：R3 初判「trigram 下 `highlight()` 重叠标记导致 `match_count` 高估」。实测用 `<<`/`>>` 作标记时确实看到一条文档标出 21 处，但那是**标记串与文档里的 JS 位运算 `<<`/`>>` 撞车**造成的假象；换不撞车的分隔符后 `上下文` 25/25、`搜索接口` 14/14、`滑块验证` 3/3、`番茄小说` 297/297 四条全部相等。FTS5 会把相邻重叠的 trigram 合并成一个标记，不高估。
+
+**评审后补测（2 条，把原 §6 的未验证项结清）**：`compaction/start` 载荷不含区间、区间在 `compaction/summary`（推翻原 2.3 的写入点）；seq → archive 可经 `created_at` 时间戳映射，已用 seq 700 的原文在 `archive_001` 第 90 行命中并毫秒对齐验证（§6）。
 
 **判为已知边界（1 条）**：R11 `trigram` 不支持前缀查询。`unicode61` 下 `MATCH '"番茄"*'` 命中 599（`LIKE` 真值 646，仍漏 47）；`trigram` 下 `"番茄"*` 命中 0、`"番茄小说"*` 命中 153。现有 `quoteFtsData` 本就不产生 `*`，不影响当前功能。
