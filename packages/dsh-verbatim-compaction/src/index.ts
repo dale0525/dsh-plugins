@@ -41,14 +41,22 @@ import type {} from '@deepseek-ai/dsh-token-meter'
 export const name = 'verbatim-compaction'
 
 /**
- * Ceiling for one digest, in the meter's fixed 4-chars-per-token heuristic.
+ * Largest share of the shadowed price one digest may occupy.
  *
- * The base class's own summary budget is `thresholdTokens - retainTokens -
- * 8192`, which is 196752 for the route this was measured on. The digest is also
- * bounded by the shrink guard itself, which is tighter in practice; see
- * `summarize`.
+ * Satisfying the shrink guard is not convergence. The guard only requires the
+ * framed digest to be *smaller* than what it replaces; a digest priced at 99.3%
+ * of its span passes the guard and still leaves the surface where it started.
+ * Measured on session `小鹏汽车 App 改造评估`: one compaction shadowed 87733
+ * tokens and produced a digest priced at 87135 — 598 tokens (0.7%) reclaimed —
+ * and the resulting surface measured 256704 tokens against a 256464 threshold,
+ * so the very next step compacted again, this time shadowing exactly one seq
+ * (the checkpoint it had just written) and reproducing the same 348k characters
+ * until the third attempt was aborted.
+ *
+ * At half, each compaction makes progress however much history has accumulated,
+ * so one pass drops the surface well below the threshold.
  */
-const DIGEST_BUDGET_TOKENS = 196752
+const DIGEST_SHARE_OF_SHADOWED = 0.5
 
 /** Framing overhead `frameSummary` adds: preamble plus both tags, 341 chars = 86 tokens. */
 const FRAME_TOKENS = 86
@@ -160,6 +168,9 @@ export function isErrorResult(event: SessionEvent): boolean {
   const message = messageOf(event)
   return (message as { isError?: unknown } | null)?.isError === true
 }
+
+/** Heading that introduces the extracted section at the top of a digest. */
+const EXTRACTED_HEADING = '# Extracted from tool traces'
 
 /** Directive appended as the final user message of the extraction call. */
 const EXTRACT_INSTRUCTION = [
@@ -682,20 +693,29 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     }
     const budget = Math.max(
       0,
-      Math.min(DIGEST_BUDGET_TOKENS, shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS),
+      Math.min(
+        // Half the span is the convergence contract, not the guard's own bound.
+        // See `DIGEST_SHARE_OF_SHADOWED` for the 87733→87135 measurement.
+        Math.floor(shadowedPrice * DIGEST_SHARE_OF_SHADOWED),
+        shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS,
+      ),
     )
 
     const verbatim = renderDigest(source, budget)
 
-    // Per-turn extraction, appended to the verbatim digest. Bounded by the same
-    // budget: if the extracted text would push the digest past it, the digest
-    // alone is kept, because an over-budget checkpoint fails the shrink guard and
-    // loses the whole compaction rather than some detail.
+    // Per-turn extraction, prepended rather than appended.
+    //
+    // Order matters under truncation: `slice` cuts the tail, so appending the
+    // extraction put the most reconstructible content first and the least
+    // reconstructible content last — a tight budget deleted exactly the "what
+    // did this turn conclude / what did it overturn" record and kept the prose
+    // it summarised. Leading with the extraction makes the digest degrade the
+    // way the plan intends: conclusions survive, prose thins.
     const extracted = await this.extractAll(source, agent, _signal)
     const text =
       extracted.length === 0
         ? verbatim
-        : `${verbatim}\n\n# Extracted from tool traces\n${extracted}`.slice(0, Math.max(verbatim.length, budget * 4))
+        : `${EXTRACTED_HEADING}\n${extracted}\n\n${verbatim}`.slice(0, Math.max(verbatim.length, budget * 4))
 
     const route = session.requestHeader()?.config
     return {
