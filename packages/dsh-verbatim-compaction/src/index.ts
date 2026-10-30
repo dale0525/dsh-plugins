@@ -183,9 +183,9 @@ export function isErrorResult(event: SessionEvent): boolean {
 /** Directive appended as the final user message of the extraction call. */
 const EXTRACT_INSTRUCTION = [
   'You are summarizing a batch of turns from a coding session for a compaction checkpoint.',
-  'Each turn is introduced by a line `=== TURN <n> ===` and contains the user request, the assistant prose (may be empty), and a trace of the tool calls it made (descriptions only) plus any results the log marked as errors.',
+  'Each item is introduced by a line `=== SLOT <key> (turn <n>) ===` and contains the user request, the assistant prose (may be empty), and a trace of the tool calls it made (descriptions only) plus any results the log marked as errors.',
   '',
-  'For EVERY turn, emit exactly one block, introduced by the same `=== TURN <n> ===` line, containing these three Markdown headings in order. Under each, at most two terse lines. If a section has no real information, write "(none)" — never invent.',
+  'For EVERY item, emit exactly one block, introduced by `=== SLOT <key> ===` using that same key, containing these three Markdown headings in order. Under each, at most two terse lines. If a section has no real information, write "(none)" — never invent.',
   '',
   '## Did',
   '- what was actually done, concretely',
@@ -415,14 +415,28 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
  */
 function withExtractions(
   sections: readonly Section[],
-  extracted: ReadonlyMap<number | undefined, string>,
+  extracted: ReadonlyMap<string, string>,
 ): Section[] {
-  return sections.map((section) => ({
-    turns: section.turns.map((turn) => {
-      const block = extracted.get(turn.turn)
+  return sections.map((section, sectionIndex) => ({
+    turns: section.turns.map((turn, turnIndex) => {
+      const block = extracted.get(turnKey(sectionIndex, turnIndex))
       return block === undefined ? turn : { ...turn, extracted: block }
     }),
   }))
+}
+
+/**
+ * Position-based key for one turn: `<section index>:<turn index>`.
+ *
+ * Not the turn number. `turn/start` is emitted per step in some sessions and only
+ * once in others, so the number in the log is neither unique nor one-per-request.
+ * A real session carried 2 user requests under a single `turn/start` (turn 1), so
+ * both sections were keyed `1`; the second extraction overwrote the first, and
+ * the digest printed the same block twice — once under a request about source
+ * refresh, once under 「模拟器使用硬件加速！」.
+ */
+function turnKey(sectionIndex: number, turnIndex: number): string {
+  return `${sectionIndex}:${turnIndex}`
 }
 
 /**
@@ -517,7 +531,7 @@ function assistantChars(sections: readonly Section[]): number {
 export function renderDigest(
   events: readonly SessionEvent[],
   budgetTokens: number,
-  extracted?: ReadonlyMap<number | undefined, string>,
+  extracted?: ReadonlyMap<string, string>,
 ): string {
   const sections = extracted === undefined ? buildSections(events) : withExtractions(buildSections(events), extracted)
   const budgetChars = Math.max(0, budgetTokens * 4)
@@ -711,10 +725,10 @@ export function buildExtractionMaterial(turn: readonly SessionEvent[], prose: st
 async function extractBatch(
   ctx: { llm?: { stream: (options: any) => AsyncIterable<any> } },
   agent: Agent,
-  batch: readonly (readonly [number, readonly SessionEvent[]])[],
+  batch: readonly { key: string; turn: number | undefined; events: readonly SessionEvent[] }[],
   signal?: AbortSignal,
-): Promise<Map<number, string>> {
-  const out = new Map<number, string>()
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
   const llm = ctx.llm
   if (llm === undefined) return out
   const route = agent.session.requestHeader()?.config
@@ -722,16 +736,19 @@ async function extractBatch(
   const model = route?.model ?? agent.options.model
   if (provider === undefined || model === undefined) return out
 
+  // The label the model echoes back is the slot key, not the turn number: two
+  // requests can share a number, and a duplicate label would collapse two blocks
+  // into one entry.
   const parts: string[] = []
-  for (const [turn, events] of batch) {
-    const prose = events
+  for (const slot of batch) {
+    const prose = slot.events
       .filter((event) => event.type === 'assistant/message')
       .map((event) => textOf(event))
       .filter((text) => text.length > 0)
       .join('\n')
-    const material = buildExtractionMaterial(events, prose)
+    const material = buildExtractionMaterial(slot.events, prose)
     if (material.length === 0) continue
-    parts.push(`=== TURN ${turn} ===\n${material}`)
+    parts.push(`=== SLOT ${slot.key} (turn ${slot.turn ?? '?'}) ===\n${material}`)
   }
   if (parts.length === 0) return out
 
@@ -743,17 +760,12 @@ async function extractBatch(
       messages: [
         { role: 'user', content: [{ type: 'text', text: `${parts.join('\n\n')}\n\n${EXTRACT_INSTRUCTION}` }] },
       ],
-      // One block per turn, so the cap scales with the batch rather than being
-      // a per-turn 400 that a dozen turns would multiply past the digest ceiling.
       maxTokens: EXTRACT_TOKENS_PER_TURN * parts.length,
       sessionId: agent.session.id,
       purpose: 'compaction',
       ...(signal === undefined ? {} : { signal }),
     })
     for await (const chunk of stream) {
-      // Chunk kinds come from `@deepseek-ai/dsh-llm`'s BlockAssembler: text
-      // arrives as `text-delta`, and `reasoning-delta` is deliberately ignored —
-      // reasoning is 98.8% of a long session's output and is not the record.
       const delta = chunk as { type?: string; text?: string }
       if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
     }
@@ -761,18 +773,17 @@ async function extractBatch(
     return out
   }
 
-  // Split the answer back per turn. A turn the model skipped simply keeps its
-  // prose, so a partial answer degrades per turn instead of losing the batch.
   const answer = chunks.join('').trim()
   if (answer.length === 0) return out
-  const sections = answer.split(/^=== TURN (\d+) ===$/m)
-  for (let index = 1; index < sections.length; index += 2) {
-    const turn = Number(sections[index])
-    const body = (sections[index + 1] ?? '').trim()
-    if (Number.isFinite(turn) && body.length > 0) out.set(turn, body)
+  const blocks = answer.split(/^=== SLOT ([^\s(]+)[^=]*===$/m)
+  for (let index = 1; index < blocks.length; index += 2) {
+    const key = blocks[index]
+    const body = (blocks[index + 1] ?? '').trim()
+    if (key !== undefined && body.length > 0) out.set(key, body)
   }
   return out
 }
+
 
 /**
  * Deterministic compaction backend: verbatim prose, pointerized tools, no model
@@ -858,29 +869,44 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     source: readonly SessionEvent[],
     agent: Agent,
     signal?: AbortSignal,
-  ): Promise<Map<number | undefined, string>> {
-    const turns = new Map<number, SessionEvent[]>()
+  ): Promise<Map<string, string>> {
+    // Walk the same sections the renderer will use, so a key addresses the exact
+    // slot the block will be written into. Grouping by turn number instead lost
+    // blocks whenever the log reused a number.
+    const sections = buildSections(source)
+    const slots: { key: string; turn: number | undefined; events: SessionEvent[] }[] = []
     let lastTurn: number | undefined
-    for (const event of source) {
-      if (event.type === 'turn/start') {
-        const turn = turnOf(event)
-        if (turn !== undefined) lastTurn = turn
-        continue
+    let cursor = 0
+    for (const [sectionIndex, section] of sections.entries()) {
+      for (const [turnIndex, turn] of section.turns.entries()) {
+        // Collect this turn's events by walking the source in order; the sections
+        // were built from the same array, so the cursor never rewinds.
+        const collected: SessionEvent[] = []
+        while (cursor < source.length) {
+          const event = source[cursor]
+          cursor += 1
+          if (event === undefined) break
+          if (event.type === 'turn/start') {
+            const turnNumber = turnOf(event)
+            if (turnNumber !== undefined) lastTurn = turnNumber
+            collected.push(event)
+            continue
+          }
+          collected.push(event)
+          if (event.type === 'user/message' || event.type === 'assistant/message') {
+            if (!isInjection(event) && !isCheckpoint(event)) break
+          }
+        }
+        slots.push({ key: turnKey(sectionIndex, turnIndex), turn: turn.turn, events: collected })
       }
-      const turn = turnOf(event) ?? lastTurn
-      if (turn === undefined) continue
-      const bucket = turns.get(turn)
-      if (bucket === undefined) turns.set(turn, [event])
-      else bucket.push(event)
     }
 
-    const ordered = [...turns.entries()].sort((left, right) => left[0] - right[0])
-    const extracted = new Map<number | undefined, string>()
-    for (let index = 0; index < ordered.length; index += TURNS_PER_CALL) {
+    const extracted = new Map<string, string>()
+    for (let index = 0; index < slots.length; index += TURNS_PER_CALL) {
       if (signal?.aborted === true) break
-      const batch = ordered.slice(index, index + TURNS_PER_CALL)
+      const batch = slots.slice(index, index + TURNS_PER_CALL)
       const blocks = await extractBatch(this.ctx, agent, batch, signal)
-      for (const [turn, block] of blocks) extracted.set(turn, block)
+      for (const [key, block] of blocks) extracted.set(key, block)
     }
     return extracted
   }

@@ -50,10 +50,10 @@ async function harness(options = {}) {
       stream: async function* stream(request) {
         if (options.extraction !== undefined) {
           const prompt = request.messages.at(-1).content.map((block) => block.text).join('')
-          const turns = [...prompt.matchAll(/^=== TURN (\d+) ===$/gm)].map((match) => Number(match[1]))
+          const slots = [...prompt.matchAll(/^=== SLOT (\S+) \(turn /gm)].map((match) => match[1])
           yield {
             type: 'text-delta',
-            text: turns.map((turn) => `=== TURN ${turn} ===\n${options.extraction}`).join('\n\n'),
+            text: slots.map((slot) => `=== SLOT ${slot} ===\n${options.extraction}`).join('\n\n'),
           }
         }
         yield { type: 'finish', reason: { kind: 'stop' } }

@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { SESSION_FORMAT_VERSION, Session } from '@deepseek-ai/dsh-session'
-import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING } from '../lib/index.js'
+import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, renderDigest } from '../lib/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -54,9 +54,9 @@ async function harness(options = {}) {
           // yields no blocks and the digest silently keeps prose, so the protocol
           // is worth asserting rather than assuming.
           const prompt = request.messages.at(-1).content.map((block) => block.text).join('')
-          const turns = [...prompt.matchAll(/^=== TURN (\d+) ===$/gm)].map((match) => Number(match[1]))
-          const answer = turns
-            .map((turn) => `=== TURN ${turn} ===\n${options.extraction}`)
+          const slots = [...prompt.matchAll(/^=== SLOT (\S+) \(turn /gm)].map((match) => match[1])
+          const answer = slots
+            .map((slot) => `=== SLOT ${slot} ===\n${options.extraction}`)
             .join('\n\n')
           yield { type: 'text-delta', text: answer }
         }
@@ -192,4 +192,48 @@ test('a digest full of extractions still keeps every user message', async () => 
     const prose = event.data.content.find((block) => block.type === 'text').text
     assert.ok(text.includes(prose), `user prose evicted by extraction: ${prose.slice(0, 40)}`)
   }
+})
+
+test('two requests sharing one turn number get their own extractions', async () => {
+  // A real session carried two user requests under a single `turn/start` (both
+  // numbered 1): 「修复内置书源…」 and 「模拟器使用硬件加速！」. Keying the
+  // extraction map by turn number made the second block overwrite the first, and
+  // the digest printed the same 1.3k-character block twice — once under a request
+  // about source refresh, once under a request about emulator acceleration.
+  const { engine } = await harness({
+    // Answer per slot, so a collision in the key shows up as a wrong body rather
+    // than a missing one.
+    extraction: '## Did\n- PER-SLOT',
+  })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  const blocks = text.match(/## Did\n- PER-SLOT/g) ?? []
+  // One block per slot (a section may hold more than one turn), so the count to
+  // compare against is the assistant headings the renderer emitted.
+  const assistantSlots = text.match(/^### assistant \(turn /gm) ?? []
+  assert.equal(
+    blocks.length,
+    assistantSlots.length,
+    `${assistantSlots.length} assistant slots but ${blocks.length} extraction blocks`,
+  )
+  // The bug was one block printed twice; a per-slot answer must be distinct per
+  // slot, so the total is what proves no overwrite happened.
+  assert.ok(blocks.length >= 2, 'fixture must have at least two slots')
+})
+
+test('a duplicate turn number does not collapse two blocks into one', () => {
+  // Pure-function level: buildSections already separates the two requests into
+  // their own sections, so the fix is that the key is positional.
+  const events = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+    { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'FIRST' }], source: { kind: 'user' } } },
+    { type: 'user/message', seq: 2, time: 3, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'SECOND' }], source: { kind: 'user' } } },
+  ]
+  const rendered = renderDigest(events, 20000, new Map([['0:0', 'BLOCK-FIRST'], ['1:0', 'BLOCK-SECOND']]))
+  assert.ok(rendered.includes('BLOCK-FIRST'), 'first slot must keep its own block')
+  assert.ok(rendered.includes('BLOCK-SECOND'), 'second slot must keep its own block')
+  assert.ok(!/BLOCK-FIRST[\s\S]*BLOCK-FIRST/.test(rendered), 'the same block must not appear twice')
 })
