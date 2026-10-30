@@ -60,3 +60,16 @@
   ② `useSyncExternalStore` 的 `getSnapshot()` 每次返回新对象、或 handle 在渲染体内新建，
   抛 React error #185（最大更新深度）——**引用不稳定即无限重渲染**。
   这两个都不是「没渲染出内容」，而是渲染失败，加字段或改样式永远修不好。
+
+- **`useChat` / `useSession` 这类槽位注入的 hook 只能在渲染期调用，事件处理器里调会抛 React #321**：
+  槽位把宿主能力以 `use<Name>` 形式注入到组件 props（`props.useChat`、`props.useSession`…），
+  它们本质是 React hook。把「读快照」写进点击/提交处理器里（`onClick` 里直接
+  `props.useChat(s => s)`）会抛 `Invalid hook call`（minified #321）。危险之处是**它被
+  `try/catch` 吞掉后表现为业务逻辑静默降级**，而不是报错：实测 2026-10-29 `dsh-easyrewrite`
+  编辑历史消息，边界计算恒为 `null` → 每次都判成「首条无边界」→ 重置整个对话，控制台里
+  只有一条被 catch 掉的告警。正确做法是渲染期取一次存进 ref（`useChatSnapshotRef(props, ref)`
+  内部调 hook、写 `holder.current`），处理器只读 `ref.current`。
+  判据：在处理器函数体里 grep `props.use[A-Z]` / `props.useChat(` / `props.useSession(`。
+  同类陷阱还有**作用域**：跨组件共用的辅助函数若定义在某个组件体内，另一个组件调用会报
+  `X is not defined`——这类函数必须提到模块作用域，且用静态测试钉住（见 easyrewrite 的
+  `tests/test-edit-confirm-scope.mjs`）。

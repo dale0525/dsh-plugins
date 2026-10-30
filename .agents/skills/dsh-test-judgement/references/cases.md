@@ -30,6 +30,23 @@
 > 改动前后各 12 次/20 次，失败次数分别为 3/3、1/1）。次数不同才可能是回归，再去查机制。
 > 直接读代码猜「我是不是引入了竞态」不可靠：这两处的写盘本来就是 fire-and-forget，
 > 竞态在改动前就存在，只看代码会误判成自己刚写坏。
+>
+> **两个根因已定位并修掉（2026-10-29）**，修法本身就是判据：①`dsh-ssh` 的测试助手用
+> `utils.parseKey(hostKey).getPublicSSH()` 取公钥，而 `ssh2` 的 `generateKeyPairSync('ed25519')`
+> 偶发产出**自己 `parseKey` 都拒绝**的密钥对（3000 次中 4 次，公私两半同时坏、同一密钥稳定失败），
+> 且 `parseKey` 是**返回** `Error` 对象而非抛出，于是报成 `getPublicSSH is not a function`；
+> 修法是循环重新生成直到 `parseKey` 成功。②`recordHostKey` 的写盘是 `void writeKnownHosts(...)`
+> （刻意 fire-and-forget：内存里的信任决定要同步生效，连接不能等磁盘往返），测试在 `exec()` 返回后
+> 立刻读文件必然偶发 `ENOENT`；修法是轮询等文件出现，**不能**把生产代码改成 `await`。
+> 通用规律：**`parseKey` 这类「返回 Error 而非抛出」的 API，调用点必须显式判 `instanceof Error`**；
+> **测试读一个刻意异步落盘的产物时必须轮询**。
+
+> **`waitFor` 的墙钟预算要和并发配对一起算**：`dsh-better-reasoning-effort` 的 jsdom 用例
+> 用 `waitFor(cond, 2000)` 轮询 DOM，而 `pnpm test` 的 `--workspace-concurrency=2` 会让它和
+> 一个跑 30s 的包配对。CPU 被抢时轮询拿不到调度，2s 墙钟先到点，条件其实已成立 → 假红。
+> 实测那条「`Test timed out in 5000ms`」的用例在人为负载下只需 **1565ms**。
+> 修法是把预算按争用后的耗时定（`waitFor` → 30s、vitest `testTimeout`/`hookTimeout` → 30s），
+> 不是删断言、也不是把并发调大。
 
 > **时钟取样的断言必须注入 `now`，否则它按机器速度决定红绿**：`saveConfigSnapshot` 的
 > `createdAt` 取自真实时钟（`opts.now ?? () => new Date()`），而
