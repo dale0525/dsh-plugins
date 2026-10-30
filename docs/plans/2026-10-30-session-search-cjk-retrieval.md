@@ -284,9 +284,23 @@ session-search-tool-session-query (@deepseek-ai/dsh-tool-session-query): pending
 | 执行 `searchSessions({query:'压缩上下文'})` | 返回 `{items:[]}`，无异常 |
 | 首次检索**后**索引文件 | `4096 bytes` |
 
-### 9.4 「告知 agent」的做法
+### 9.4 「告知 agent」的做法（含一处写错的修正）
 
-监听 `system-prompt/assemble`，把限制追加到 `session_query` 的工具描述（`src/index.ts` 的 `CJK_LIMIT_NOTE`）。**不注入 `systemPrompt` 服务**——注入意味着「必需」，宿主缺该服务时整个插件会被禁用，连带丢掉这条说明；宿主自己的监听器也是只订阅不注入。
+监听 `system-prompt/assemble`，把限制追加到全文检索工具的描述（`src/index.ts` 的 `CJK_LIMIT_NOTE`）。**不注入 `systemPrompt` 服务**——注入意味着「必需」，宿主缺该服务时整个插件会被禁用，连带丢掉这条说明；宿主自己的监听器也是只订阅不注入。
+
+**这里曾写错一次，值得记下来。** 第一版按 `session_query` 匹配工具名，但 `@deepseek-ai/dsh-tool-session-query` 实际注册的是五个工具：
+
+| 工具 | 是否全文检索 | 是否加说明 |
+|---|---|---|
+| `session_search` | 是 | 是 |
+| `session_event_search` | 是 | 是 |
+| `session_trace` | 否（按 id 读谱系） | 否 |
+| `session_event_trace` | 否（按 seq 读关系） | 否 |
+| `session_event_read` | 否（按 seq 读原文） | 否 |
+
+`session_query` 这个名字**根本不存在**，所以第一版的注释一条都匹配不上，而且**不会报任何错**——静默失效。修正为匹配前两个（提交 `19a3b9624`）。
+
+防复发：新增 `test/upstream-names.spec.mjs`，挂载真实的宿主工具包并断言匹配集恰为这两个。上游改名时这条会红，而不是静默失效。为了让这条真的执行（而不是被 skip），把 `@deepseek-ai/dsh-tool-session-query` 加进了 devDependencies。
 
 ### 9.5 仍然不做
 
