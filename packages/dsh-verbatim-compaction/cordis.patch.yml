@@ -1,0 +1,13 @@
+# dsh-verbatim-compaction bundle patch layer.
+#
+# This row is NOT inserted into the top-level composition: the compaction
+# backend lives inside each agent preset's `compaction` group, behind
+# `isolate: {compaction: true}`, so a top-level row could not serve it.
+# The profile patch overrides each preset row instead — see the README.
+#
+# The id must stay equal to the host half's `export const name`, because
+# cordis-plugin-loader keys mounted rows by id.
+- insert:
+    - id: verbatim-compaction
+      name: '@logictan/dsh-verbatim-compaction'
+      disabled: true

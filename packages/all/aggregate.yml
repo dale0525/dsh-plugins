@@ -21,6 +21,14 @@ patchFrom:
   - ../dsh-goal-resume
   - ../dsh-force-rules
   - ../dsh-reasoning-strip
+  # dsh-verbatim-compaction replaces the summarizer half of compaction-basic with
+  # a deterministic digest: prose verbatim, tool results as one-line pointers,
+  # reasoning never read, no model call. Its own row ships `disabled: true` and
+  # is NOT what activates it — the compaction backend lives inside each agent
+  # preset's isolated `compaction` group, which a top-level row cannot serve.
+  # Activation is a profile patch overriding each `preset-*` row; see the
+  # package README.
+  - ../dsh-verbatim-compaction
   - ../dsh-stitch-designer
   - ../dsh-worktree-session
   # dsh-modal-h3 registers the six `mcp__modal_h3__*` tools itself and needs no
@@ -78,6 +86,7 @@ deps:
   - ../dsh-goal-resume
   - ../dsh-force-rules
   - ../dsh-reasoning-strip
+  - ../dsh-verbatim-compaction
   # dsh-stitch-designer registers the 15 `mcp__stitch__*` tool names itself, so it
   # REPLACES the global `mcp-stitch` patch row rather than coexisting with it.
   # Two registrations of one tool name throw (`NamedEntries`: `tool "<name>" is
