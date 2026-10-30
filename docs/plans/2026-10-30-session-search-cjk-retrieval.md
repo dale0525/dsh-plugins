@@ -307,3 +307,53 @@ session-search-tool-session-query (@deepseek-ai/dsh-tool-session-query): pending
 - T-2（改宿主 FTS5 tokenizer + `user_version` 判断）：需要改宿主包，用户已裁定不走。
 - T-3（压缩区间指针记忆）：§5.0 已证 T-1 覆盖，降为可选。
 - §2.1 的两个代价（约 3 分钟首建库、跨进程 `database is locked`）**依旧存在**，只能由宿主包解决，已在 README「已知边界」中写明。
+
+## 10. 后续：索引自动缩容与一处挂载缺陷（提交 `75a8264ef`）
+
+### 10.1 挂载缺陷：`apply()` 从未运行
+
+§9 实现完成后，聚合 patch 里**从来没有 `@logictan/dsh-session-search` 这一行**——只有它 insert 的宿主工具行。也就是说 `src/index.ts` 的 `apply()` 从未被调用，§9.4 那条「告知 agent 限制」的功能一直是死的，且不报任何错。
+
+§9.4 新增的 `upstream-names` 测试也没抓到它：那条只验 `isSessionSearchTool` 这个纯函数对，没有任何测试断言「插件自己被挂载」。
+
+修法：在 `cordis.patch.yml` 的 insert 块里补上插件自己的行。补两条测试：一条断言该行存在，一条断言行 id 与 `export const name` 同值。
+
+### 10.2 索引自动缩容
+
+宿主懒建库（`openAt: first-search`）且**从不设 `auto_vacuum`**，文件生来 `auto_vacuum = 0`——行删了页还占着。实测：
+
+```
+after 20000 rows: 39.41 MB
+after DELETE all rows: 39.41 MB     ← 现状
+after VACUUM: 0.02 MB               ← 能缩，但需独占锁
+```
+
+`auto_vacuum` 只能在**建表前**选定，建表后要改必须跑一次 `VACUUM`。三条实测对比：
+
+| 方式 | 删空后 | 代价 |
+|---|---|---|
+| `auto_vacuum = FULL` | 19.61 MB → **0.01 MB** | 无，宿主自己的 `DELETE` 就完成 |
+| `auto_vacuum = INCREMENTAL` | 39.21 MB → 0.21 MB | 需再执行 `PRAGMA incremental_vacuum` |
+| 事后全量 `VACUUM` | 39.41 MB → 0.02 MB | 需独占锁；别进程持锁时 `ERR_SQLITE_ERROR` |
+
+选 `FULL`：回收发生在宿主自己的 `DELETE` 里，本插件不必往宿主的连接里塞 SQL，也不受 `busy_timeout = 0` 影响。
+
+实现：挂载时（早于宿主打开任何东西）先建空库并设 `PRAGMA auto_vacuum = FULL` + `journal_mode = WAL`。宿主随后打开这个文件、建自己的表，设置保留——实测 `host sees auto_vacuum = 1`，删空后 `19.61 MB → 0.01 MB`。
+
+**不设 `application_id`**：宿主对带自己 id 但无表、或带外来 id 的文件都会拒绝，空文件且 id 为 0 才是它接受的形态（`lib/index.js:55-60`）。
+
+### 10.3 一个改不了的边界
+
+`auto_vacuum` 只能建表前设定。**已存在的旧库改不了**，要让它开始缩容只能删掉 `index.db` 重建一次（约 3 分钟）。本机目前还没建过库，所以不受影响。
+
+### 10.4 端到端验证
+
+真实宿主启动（`DSH_HOME` 指向临时目录，插件行指向源码 `lib/index.js`）：
+
+```
+boot: 无激活警告
+index: -rw-r--r-- 4096 index.db   ← 启动时已建好
+auto_vacuum:     {"auto_vacuum":1}
+journal_mode:    {"journal_mode":"wal"}
+application_id:  {"application_id":0}
+```
