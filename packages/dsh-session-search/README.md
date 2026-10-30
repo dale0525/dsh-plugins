@@ -7,7 +7,7 @@
 DSH 的会话全文检索是**默认关闭**的，而且不是故障——`@deepseek-ai/dsh-web-app` 的 bundle patch 明确写着这是 opt-in。本机实测有两个独立的问题：
 
 1. **索引根本没建。** 宿主基础层配的是 `path: ':memory:'` + `openAt: never`，后者让每一次全文调用在碰 SQLite 之前就抛 `SESSION_QUERY_SEARCH_DISABLED`。
-2. **检索工具根本没挂。** Web profile 挂了 `session-query-sqlite` 后端，但**从未挂载** `@deepseek-ai/dsh-tool-session-query`，所以模型手上没有 `session_query` 这个工具。只打开索引，用户仍然搜不了。
+2. **检索工具根本没挂。** Web profile 挂了 `session-query-sqlite` 后端，但**从未挂载** `@deepseek-ai/dsh-tool-session-query`，所以模型手上没有 `session_search` / `session_event_search` 这两个检索工具。只打开索引，用户仍然搜不了。
 
 本插件两件都做。
 
@@ -16,7 +16,7 @@ DSH 的会话全文检索是**默认关闭**的，而且不是故障——`@deep
 `cordis.patch.yml` 做两件事，都在 bundle 层完成：
 
 - 按 `id: session-query-sqlite` **覆盖**宿主那一行（`applyEntryPatches` 按 id 匹配并合并 `config`，所以只改配置、不改包名），把索引指到 `$DSH_HOME/session-search/index.db`、`openAt` 改成 `first-search`。
-- `insert` 一行 `@deepseek-ai/dsh-tool-session-query`，让 `session_query` 工具存在。
+- `insert` 一行 `@deepseek-ai/dsh-tool-session-query`，让这两个检索工具存在。
 
 因为改的是 bundle 层而不是 profile 层，**新设备装上聚合包就自动生效**，不需要用户手写 patch。索引在第一次真正检索时才建，所以启动不做 I/O；建好之后跨进程复用。
 
@@ -46,7 +46,7 @@ DSH 的会话全文检索是**默认关闭**的，而且不是故障——`@deep
 
 `unicode61` 那一列**没有一条是真实命中**——它们全部来自中文里夹拉丁文或标点造成的偶然分段。`滑块验证` 0/2 才是它的真实水平。三个字以上的查询在换成 `trigram` 后与真值逐条相等，但那需要改宿主包，本插件不做。
 
-这条说明通过 `system-prompt/assemble` 事件追加到 `session_query` 的工具描述上，不注入 `systemPrompt` 服务（注入意味着「必需」，宿主缺该服务时整个插件会被禁用，连带丢掉这条说明）。
+这条说明通过 `system-prompt/assemble` 事件追加到 `session_search` 与 `session_event_search` 的工具描述上（只读的 `session_trace` / `session_event_trace` / `session_event_read` 不做全文检索，不加），不注入 `systemPrompt` 服务（注入意味着「必需」，宿主缺该服务时整个插件会被禁用，连带丢掉这条说明）。
 
 ## 已知边界
 

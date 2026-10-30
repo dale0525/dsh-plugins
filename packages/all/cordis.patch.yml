@@ -459,7 +459,7 @@
 #
 # Opening the index alone changes nothing a user can reach: the Web profile
 # mounts `session-query-sqlite` but never mounts `@deepseek-ai/dsh-tool-session-query`,
-# so no `session_query` tool exists and the model has no way to search. The
+# so no `session_search` / `session_event_search` tool exists and the model has no way to search. The
 # host's own `@deepseek-ai/dsh-experimental-session-search` bundle is the
 # precedent — it inserts a group holding both the backend and the tool.
 #

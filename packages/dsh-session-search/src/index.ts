@@ -3,9 +3,10 @@
  *
  * The patch row in `cordis.patch.yml` turns the index on; this half exists only
  * because a tool description that promises more than the backend delivers is
- * worse than no description. The host's `session_query` tool advertises a
- * "literal full-text query", which is true for Latin text and for CJK text of
- * three or more characters, and false below that: the FTS5 `unicode61`
+ * worse than no description. The host's `session_search` and
+ * `session_event_search` tools advertise a full-text query, which is true for
+ * Latin text and for CJK text of three or more characters, and false below
+ * that: the FTS5 `unicode61`
  * tokenizer treats a whole run of CJK as one token, so a two-character query
  * like `压缩` matches only documents where that run happens to be split by
  * punctuation or Latin text. Measured on a real 4.8M-character corpus, the
@@ -14,7 +15,7 @@
  * `LIKE` finds.
  *
  * The annotation is applied at `system-prompt/assemble` rather than by shipping
- * a skill: the constraint belongs to one tool, and a skill would put it in the
+ * a skill: the constraint belongs to two tools, and a skill would put it in the
  * catalog where it competes with every other skill for the model's attention.
  *
  * `systemPrompt` is deliberately NOT injected. Injection means "required", so a
@@ -28,8 +29,8 @@
 /** Plugin row id; must equal the `id` in `cordis.patch.yml`. */
 export const name = 'session-search'
 
-/** The tool whose description understates its own limit. */
-const SEARCH_TOOL = 'session_query'
+/** The two tools that run a full-text query, and therefore hit the tokenizer limit. */
+const SEARCH_TOOLS = new Set(['session_search', 'session_event_search'])
 
 /**
  * Appended to the search tool's description.
@@ -49,8 +50,14 @@ export const CJK_LIMIT_NOTE =
  * Whether a tool entry is the session search tool.
  *
  * Matched on the trailing segment of the tool name so a namespaced registration
- * (`mcp__x__session_query`) is recognised too, without matching an unrelated
- * tool whose name merely contains the substring.
+ * is recognised too, without matching an unrelated tool whose name merely
+ * contains the substring.
+ *
+ * The names come from `@deepseek-ai/dsh-tool-session-query`, which registers five
+ * tools: `session_search` and `session_event_search` run full-text queries (and
+ * therefore hit the tokenizer limit); `session_trace`, `session_event_trace` and
+ * `session_event_read` read by id or seq and never tokenize, so annotating them
+ * would be noise. The read-only ones are deliberately excluded.
  *
  * @param tool - one entry of an assembled tool list.
  * @returns true when this entry is the session search tool.
@@ -58,7 +65,7 @@ export const CJK_LIMIT_NOTE =
 export function isSessionSearchTool(tool: { name?: unknown }): boolean {
   if (typeof tool.name !== 'string') return false
   const segments = tool.name.split('__')
-  return segments[segments.length - 1] === SEARCH_TOOL
+  return SEARCH_TOOLS.has(segments[segments.length - 1] ?? '')
 }
 
 /**

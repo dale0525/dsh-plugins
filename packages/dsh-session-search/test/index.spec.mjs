@@ -37,7 +37,7 @@ test('the index row keeps the host package name', () => {
 
 test('the search tool is mounted, since the web profile does not mount it', () => {
   assert.match(body, /name: '@deepseek-ai\/dsh-tool-session-query'/,
-    'without this row no session_query tool exists and the index is unreachable')
+    'without this row no session_search tool exists and the index is unreachable')
 })
 
 test('the tool is a plain top-level row, not an isolated group', () => {
@@ -62,10 +62,16 @@ test('the note is appended, and appending twice changes nothing', () => {
   assert.equal(annotate(once), once, 'annotation must be idempotent')
 })
 
-test('the search tool is recognised by its trailing segment', () => {
-  assert.ok(isSessionSearchTool({ name: 'session_query' }))
-  assert.ok(isSessionSearchTool({ name: 'mcp__x__session_query' }))
-  assert.ok(!isSessionSearchTool({ name: 'session_query_extra' }))
+test('both full-text tools are recognised, and only those', () => {
+  // Names taken from @deepseek-ai/dsh-tool-session-query, which registers five.
+  assert.ok(isSessionSearchTool({ name: 'session_search' }))
+  assert.ok(isSessionSearchTool({ name: 'session_event_search' }))
+  assert.ok(isSessionSearchTool({ name: 'mcp__x__session_search' }))
+  // These read by id or seq and never tokenize, so they must stay untouched.
+  assert.ok(!isSessionSearchTool({ name: 'session_trace' }))
+  assert.ok(!isSessionSearchTool({ name: 'session_event_trace' }))
+  assert.ok(!isSessionSearchTool({ name: 'session_event_read' }))
+  assert.ok(!isSessionSearchTool({ name: 'session_search_extra' }))
   assert.ok(!isSessionSearchTool({ name: 'web_search' }))
   assert.ok(!isSessionSearchTool({}))
 })
@@ -76,13 +82,13 @@ test('assembly annotates only the search tool', async () => {
   assert.ok(listener, 'the plugin must subscribe to prompt assembly')
   const assembly = {
     tools: [
-      { name: 'session_query', description: 'Literal full-text query over prior session history.' },
+      { name: 'session_search', description: 'Search prior sessions in the caller workspace.' },
       { name: 'web_search', description: 'Search the web.' },
     ],
   }
   const resolved = await listener(assembly, {}, async () => assembly)
   const byName = Object.fromEntries(resolved.tools.map((tool) => [tool.name, tool.description]))
-  assert.ok(byName.session_query.includes(CJK_LIMIT_NOTE), 'the search tool carries the note')
+  assert.ok(byName.session_search.includes(CJK_LIMIT_NOTE), 'the search tool carries the note')
   assert.equal(byName.web_search, 'Search the web.', 'other tools are untouched')
 })
 
