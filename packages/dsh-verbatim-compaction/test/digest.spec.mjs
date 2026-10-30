@@ -72,21 +72,25 @@ test('the digest is deterministic', () => {
   assert.equal(renderDigest(events, 196752), renderDigest(events, 196752))
 })
 
-test('a tight budget truncates assistant prose before user prose', () => {
+test('truncation always keeps the newest user request and drops the oldest', () => {
   const { events } = fixture()
-  const full = renderDigest(events, 196752)
-  // Enough for every user message plus headings, far too little for the assistant prose.
-  const userChars = events
+  const userTexts = events
     .filter((event) => event.type === 'user/message')
-    .reduce((total, event) => total + event.data.content[0].text.length, 0)
-  const tight = renderDigest(events, Math.ceil((userChars + 1500) / 4))
-  assert.ok(tight.length < full.length)
-  assert.ok(/…\(\+\d+ chars\)/.test(tight), 'assistant prose should be the first thing cut')
-  for (const event of events) {
-    if (event.type !== 'user/message') continue
-    const text = event.data.content.find((block) => block.type === 'text').text
-    assert.ok(tight.includes(text), `user prose must survive assistant truncation: ${text.slice(0, 40)}`)
+    .map((event) => event.data.content[0].text)
+
+  // The newest request is what the next turn depends on, so every budget must
+  // keep it, and every budget below the whole digest must have dropped something
+  // older than it.
+  // Budgets far below the user text, so T1 must actually cut.
+  for (const budget of [100, 200, 300]) {
+    const digest = renderDigest(events, budget)
+    assert.ok(digest.includes(userTexts.at(-1)), `newest user request lost at budget ${budget}`)
+    assert.ok(!digest.includes(userTexts[0]), `oldest user request kept at budget ${budget}`)
   }
+
+  // The default budget is far above the digest, so nothing is touched at all.
+  const full = renderDigest(events, 196752)
+  assert.deepEqual(userTexts.filter((text) => !full.includes(text)), [])
 })
 
 test('the digest never exceeds its budget, however small', () => {

@@ -56,6 +56,9 @@ const FRAME_TOKENS = 86
 /** Safety margin below the shrink guard, in tokens. */
 const SHRINK_MARGIN_TOKENS = 512
 
+/** Per-turn floor when assistant prose has to be truncated, in characters. */
+const MIN_TURN_CHARS = 800
+
 /** Share of the budget user prose may occupy before oldest-first truncation. */
 const USER_BUDGET_SHARE = 0.5
 
@@ -292,19 +295,22 @@ function assistantChars(sections: readonly Section[]): number {
 /**
  * Render the digest under a hard character budget.
  *
- * Assistant prose is cut first and user prose only if assistant prose is
- * already gone, because the budget is not advisory: the base class's shrink
- * guard rejects a summary that is not smaller than the content it replaces, and
- * that rejection fails the whole compaction. In the eight measured sessions
- * neither branch ever ran -- the largest digest was 44542 tokens against a
- * budget of 196752 -- so this is a guard, not the normal path.
+ * The two truncation tiers are the plan's T1 and T1', in that order:
  *
- * The assistant cap is found by bisection rather than computed once, because
- * the rendered length is monotone in it and the closed form ignores the
- * per-turn truncation markers. A hard slice is the final guard, for a budget
- * too small to hold the headings themselves; it is the only path that can drop
- * content without saying so, and it can only trigger below a few hundred
- * characters.
+ * - **T1** user prose is verbatim unless it alone exceeds `USER_BUDGET_SHARE` of
+ *   the budget, then the oldest turns are cut first.
+ * - **T1'** assistant prose is verbatim unless the whole digest overflows, then
+ *   it is cut evenly per turn down to `MIN_TURN_CHARS`.
+ *
+ * T1' runs *after* T1 because a user's own words are the least reconstructible
+ * thing in the log: an assistant's reply can be inferred from its tool calls
+ * and the surrounding turns, a user's request cannot. The 800-character floor
+ * exists so a tight budget thins every turn instead of erasing the last few.
+ *
+ * Neither tier runs in practice: over the eight measured sessions the largest
+ * digest was 44542 tokens against a 196752 budget, and user prose totalled 2591
+ * tokens against a 98376 cap. They are a guard against a pasted file, not the
+ * normal path.
  *
  * @param events - the digest source in log order.
  * @param budgetTokens - hard ceiling in the meter's fixed 4-chars-per-token heuristic.
@@ -314,46 +320,67 @@ export function renderDigest(events: readonly SessionEvent[], budgetTokens: numb
   const sections = buildSections(events)
   const budgetChars = Math.max(0, budgetTokens * 4)
 
-  const render = (capChars: number | undefined): string =>
-    sections.map((section) => renderSection(section, capChars)).join('\n')
+  const render = (capChars: number | undefined, trimmed?: Section[]): string =>
+    (trimmed ?? sections).map((section) => renderSection(section, capChars)).join('\n')
 
   const verbatim = render(undefined)
   if (verbatim.length <= budgetChars) return verbatim
 
-  // Largest cap whose rendering still fits. Length is monotone non-decreasing in
-  // the cap, so bisection is exact and needs about eight renders.
-  let low = 0
-  let high = assistantChars(sections)
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2)
-    if (render(mid).length <= budgetChars) low = mid
-    else high = mid - 1
-  }
-  const capped = render(low)
-  if (capped.length <= budgetChars) return capped
-
-  // Assistant prose is already at its floor, so user prose goes next: oldest
-  // first, since the newest request is what the next turn actually needs.
+  // T1: user prose over its share, oldest first. Only the user side changes, so
+  // assistant prose stays verbatim for now. The walk is backwards because the
+  // newest request is the one the next turn depends on: cutting forwards would
+  // keep the opening question and drop what the user just asked for.
   const userCap = Math.floor(budgetChars * USER_BUDGET_SHARE)
   let seen = 0
-  const trimmed = sections.map((section) => {
-    const turns = section.turns.map((turn) => {
-      const kept = turn.user.map((text) => {
-        if (seen >= userCap) return `…(+${text.length} chars, oldest user prose truncated)`
+  const t1 = sections.map((section) => ({ turns: section.turns.map((turn) => ({ ...turn, user: [...turn.user] })) }))
+  for (let section = t1.length - 1; section >= 0; section -= 1) {
+    const turns = t1[section]?.turns ?? []
+    for (let turn = turns.length - 1; turn >= 0; turn -= 1) {
+      const texts = turns[turn]?.user ?? []
+      for (let index = texts.length - 1; index >= 0; index -= 1) {
+        const text = texts[index] ?? ''
         const room = userCap - seen
         if (text.length <= room) {
           seen += text.length
-          return text
+          continue
         }
+        texts[index] = room <= 0
+          ? `…(+${text.length} chars, older user prose truncated)`
+          : `${text.slice(0, room)}\n…(+${text.length - room} chars)`
         seen = userCap
-        return `${text.slice(0, room)}\n…(+${text.length - room} chars)`
-      })
-      return { ...turn, user: kept }
-    })
-    return renderSection({ turns }, low)
-  })
-  const result = trimmed.join('\n')
-  return result.length <= budgetChars ? result : result.slice(0, budgetChars)
+      }
+    }
+  }
+  const afterT1 = render(undefined, t1)
+  if (afterT1.length <= budgetChars) return afterT1
+
+  // T1': assistant prose, evenly per turn. Length is monotone non-decreasing in
+  // the cap, so bisection finds the largest cap that fits exactly, in about
+  // eight renders. The floor is honoured only while it fits; below that the cap
+  // follows the budget down and the final slice guarantees the ceiling.
+  let low = 0
+  let high = assistantChars(t1)
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2)
+    if (render(mid, t1).length <= budgetChars) low = mid
+    else high = mid - 1
+  }
+  const capped = render(low, t1)
+  if (capped.length <= budgetChars) return capped
+
+  // Even cap 0 overflows, so the headings and pointers alone exceed the budget.
+  // Drop the oldest sections instead of slicing the head: a truncated tail would
+  // cut the newest turns, which are exactly the ones the next request needs.
+  let first = 0
+  let dropped = 0
+  while (first < t1.length - 1) {
+    dropped += 1
+    first += 1
+    const rest = render(0, t1.slice(first))
+    const text = `…(${dropped} earlier turn(s) dropped: over budget)\n${rest}`
+    if (text.length <= budgetChars) return text
+  }
+  return render(0, t1.slice(-1)).slice(0, budgetChars)
 }
 
 /**
