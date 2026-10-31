@@ -245,8 +245,13 @@ export function pruneEmptySections(body: string): string {
     pendingBody = []
   }
 
+  // A heading is either `## Name` or the bare name on its own line. Models
+  // sometimes answer without the `##`; a real run returned bare `Asked` / `Did` /
+  // `Concluded` lines, so a `^#{1,6}`-only test left `Concluded\n- (none)` in the
+  // digest as body text and the placeholder reached the reader.
+  const known = /^(Asked|Did|Concluded|Overturned)$/i
   for (const line of lines) {
-    if (/^#{1,6}\s/.test(line)) {
+    if (/^#{1,6}\s/.test(line) || known.test(line.trim())) {
       flush()
       pendingHeading = line
       continue
@@ -1022,31 +1027,44 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     // Walk the same sections the renderer will use, so a key addresses the exact
     // slot the block will be written into. Grouping by turn number instead lost
     // blocks whenever the log reused a number.
+    // Partition the source into the same sections `buildSections` produced, then
+    // hand each section to its slot. A slot is a section, not a single message:
+    // the earlier version stopped at the first message, so a turn with 69
+    // assistant messages and 112 tool calls contributed 2 events out of 164 and
+    // the extractor reported "no work observed" for a turn that did plenty.
     const sections = buildSections(source)
-    const slots: { key: string; turn: number | undefined; events: SessionEvent[] }[] = []
-    let lastTurn: number | undefined
-    let cursor = 0
-    for (const [sectionIndex, section] of sections.entries()) {
-      for (const [turnIndex, turn] of section.turns.entries()) {
-        // Collect this turn's events by walking the source in order; the sections
-        // were built from the same array, so the cursor never rewinds.
-        const collected: SessionEvent[] = []
-        while (cursor < source.length) {
-          const event = source[cursor]
-          cursor += 1
-          if (event === undefined) break
-          if (event.type === 'turn/start') {
-            const turnNumber = turnOf(event)
-            if (turnNumber !== undefined) lastTurn = turnNumber
-            collected.push(event)
-            continue
-          }
-          collected.push(event)
-          if (event.type === 'user/message' || event.type === 'assistant/message') {
-            if (!isInjection(event) && !isCheckpoint(event)) break
-          }
+    // Attribute events to sections by replaying the same walk `buildSections`
+    // does, so the two can never disagree about where a section starts. An
+    // independent scan drifted by one section on the fixture: `buildSections`
+    // opens a new section for an unclosed turn without consuming a user message.
+    const grouped: SessionEvent[][] = []
+    let sectionIndex = -1
+    const openedObjectives = new Set<string>()
+    for (const event of source) {
+      const objective = goalObjective(event)
+      let startsSection = false
+      if (objective !== undefined) {
+        if (!openedObjectives.has(objective)) {
+          openedObjectives.add(objective)
+          startsSection = true
         }
-        slots.push({ key: turnKey(sectionIndex, turnIndex), turn: turn.turn, events: collected })
+      } else if (event.type === 'user/message' && !isInjection(event) && !isCheckpoint(event)) {
+        startsSection = true
+      }
+      if (startsSection) {
+        sectionIndex += 1
+        grouped[sectionIndex] = []
+      }
+      if (sectionIndex >= 0) grouped[sectionIndex]?.push(event)
+    }
+
+    const slots: { key: string; turn: number | undefined; events: SessionEvent[] }[] = []
+    for (const [sectionIndex, section] of sections.entries()) {
+      // A section may hold more than one turn; all of them see the section's
+      // events, because the material is about what the section did as a whole.
+      const events = grouped[sectionIndex] ?? []
+      for (const [turnIndex, turn] of section.turns.entries()) {
+        slots.push({ key: turnKey(sectionIndex, turnIndex), turn: turn.turn, events })
       }
     }
 

@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { SESSION_FORMAT_VERSION, Session } from '@deepseek-ai/dsh-session'
-import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, renderDigest } from '../lib/index.js'
+import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, pruneEmptySections, renderDigest } from '../lib/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -482,4 +482,39 @@ test('a goal objective with escaped newlines renders as lines, not literal \\n',
   const text = renderDigest(events, 20000)
   assert.ok(!text.includes('\\n'), 'the escape must become a real newline')
   assert.ok(text.includes('1. FIRST\n2. SECOND'), 'the list must break across lines')
+})
+
+test('a slot carries the whole section, not just its first message', async () => {
+  // A real turn had 69 assistant messages and 112 tool calls but only 2 of its
+  // 164 source events reached the extractor, because the slot walk stopped at the
+  // first user message. The model answered "未观察到任何操作 — no substantive work
+  // appeared" for a turn that had done plenty, and repeated that answer across all
+  // four compactions of the session.
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- x', onCall: (r) => calls.push(r) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
+  const firstSlot = prompt.split('=== SLOT ')[1] ?? ''
+  // The fixture's first section has many assistant messages and tool calls; the
+  // material must show the tool trace, not only the opening request.
+  assert.ok(firstSlot.includes('TOOL TRACE:'), 'the slot must carry its tool trace')
+  assert.ok(
+    (firstSlot.match(/^TOOL /gm) ?? []).length > 1,
+    'the slot must carry every call in the section, not one',
+  )
+})
+
+test('headings the model wrote without ## are still recognised and pruned', () => {
+  // A real run answered with bare `Asked` / `Did` / `Concluded` lines, no `##`.
+  // `pruneEmptySections` only recognised `^#{1,6}\s`, so `Concluded\n- (none)`
+  // survived as body text and the placeholder reached the digest.
+  const raw = 'Asked\n- (none)\nDid\n- REAL-WORK\nConcluded\n- (none)'
+  const out = pruneEmptySections(raw)
+  assert.ok(out.includes('REAL-WORK'), 'the non-empty section must survive')
+  assert.ok(!out.includes('Asked'), 'a bare empty heading must be dropped')
+  assert.ok(!out.includes('Concluded'), 'a bare empty heading must be dropped')
+  assert.ok(!out.includes('(none)'), 'the placeholder must not survive')
 })
