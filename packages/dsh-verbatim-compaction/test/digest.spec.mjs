@@ -20,11 +20,20 @@ function fixture() {
   return { events, session }
 }
 
-test('buildSections starts one section per non-injected user message', () => {
+test('buildSections starts one section per request, user or goal', () => {
+  // A goal round opens a section too: it carries the objective the turn serves,
+  // and a goal-triggered turn has no user message of its own. Duplicate
+  // objectives collapse, because the host re-injects the same one every round.
   const { events } = fixture()
   const sections = buildSections(events)
-  const userMessages = events.filter((event) => event.type === 'user/message')
-  assert.equal(sections.length, userMessages.length)
+  const requests = new Set()
+  for (const event of events) {
+    if (event.type !== 'user/message') continue
+    const kind = event.data.source?.kind
+    if (kind === 'user') requests.add(event.data.content[0].text)
+    else if (kind === 'goal') requests.add(/Objective:\s*"([\s\S]*?)"/.exec(event.data.content[0].text)?.[1] ?? '')
+  }
+  assert.equal(sections.length, requests.size)
   assert.ok(sections.length > 1)
 })
 
@@ -47,16 +56,20 @@ test('user and assistant prose appear verbatim', () => {
   const digest = renderDigest(events, 196752)
   for (const event of events) {
     if (event.type !== 'user/message') continue
+    if (event.data.source?.kind === 'goal') continue
     const text = event.data.content.find((block) => block.type === 'text').text
     assert.ok(digest.includes(text), `user prose missing: ${text.slice(0, 40)}`)
   }
 })
 
-test('tool results collapse to one pointer line, not their content', () => {
+test('tool results contribute no content and no pointer line', () => {
+  // The pointer line was removed: it restated `## Did` at 1202 tokens per
+  // 122-turn session, and the extraction already receives every call's
+  // description, so the line added only counts and byte totals.
   const { events } = fixture()
   const digest = renderDigest(events, 196752)
-  assert.ok(/ {2}tools: .+\(\d+ bytes\)/.test(digest))
-  assert.ok(!digest.includes('TOOL-OUTPUT'))
+  assert.ok(!/ {2}tools: /.test(digest), 'the pointer line must be gone')
+  assert.ok(!digest.includes('TOOL-OUTPUT'), 'tool output content must never appear')
 })
 
 test('tool errors surface as a first-line pointer', () => {
@@ -74,8 +87,11 @@ test('the digest is deterministic', () => {
 
 test('truncation always keeps the newest user request and drops the oldest', () => {
   const { events } = fixture()
+  // Goal messages are recorded as their objective, so the "newest request" here
+  // is the last human message; goal rounds sit after it in the fixture and are
+  // not part of this budget walk.
   const userTexts = events
-    .filter((event) => event.type === 'user/message')
+    .filter((event) => event.type === 'user/message' && event.data.source?.kind === 'user')
     .map((event) => event.data.content[0].text)
 
   // The newest request is what the next turn depends on, so every budget must
@@ -109,6 +125,7 @@ test('a log with no turn/start markers still renders every user message', () => 
   assert.ok(digest.length > 0)
   for (const event of stripped) {
     if (event.type !== 'user/message') continue
+    if (event.data.source?.kind === 'goal') continue
     const text = event.data.content.find((block) => block.type === 'text').text
     assert.ok(digest.includes(text), 'a missing marker must not lose prose')
   }

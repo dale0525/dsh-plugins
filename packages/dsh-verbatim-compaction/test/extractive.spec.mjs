@@ -26,7 +26,7 @@ import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, renderDigest } from '..
 
 const here = dirname(fileURLToPath(import.meta.url))
 
-function events() {
+function events2() {
   return readFileSync(join(here, 'fixtures', 'session.jsonl'), 'utf8')
     .split('\n')
     .filter((line) => line.length > 0)
@@ -35,7 +35,7 @@ function events() {
 
 function buildSession() {
   const header = { version: SESSION_FORMAT_VERSION, id: 'fixture', createdAt: 1, isSeeded: false }
-  return Session.create('fixture', events(), header, 0)
+  return Session.create('fixture', events2(), header, 0)
 }
 
 async function harness(options = {}) {
@@ -103,8 +103,9 @@ test('user prose stays verbatim when extraction succeeds', async () => {
   await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
 
   const text = digestOf(checkpointOf(session))
-  for (const event of events()) {
+  for (const event of events2()) {
     if (event.type !== 'user/message') continue
+    if (event.data.source?.kind === 'goal') continue
     const prose = event.data.content.find((block) => block.type === 'text').text
     assert.ok(text.includes(prose), `user prose missing: ${prose.slice(0, 40)}`)
   }
@@ -161,7 +162,7 @@ test('extraction is requested once per turn, in one batched call per compaction'
   await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
 
   const turns = new Set(
-    events().filter((event) => event.type === 'turn/start').map((event) => event.data.turn),
+    events2().filter((event) => event.type === 'turn/start').map((event) => event.data.turn),
   )
   assert.ok(calls.length > 0, 'extraction must run')
   assert.ok(
@@ -187,8 +188,9 @@ test('a digest full of extractions still keeps every user message', async () => 
 
   const text = digestOf(checkpointOf(session))
   assert.ok(!text.includes('earlier turn(s) dropped'), 'turns must be thinned, not dropped')
-  for (const event of events()) {
+  for (const event of events2()) {
     if (event.type !== 'user/message') continue
+    if (event.data.source?.kind === 'goal') continue
     const prose = event.data.content.find((block) => block.type === 'text').text
     assert.ok(text.includes(prose), `user prose evicted by extraction: ${prose.slice(0, 40)}`)
   }
@@ -397,4 +399,87 @@ test('the material labels the user text so it cannot be mistaken for a question'
   const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
   assert.ok(!prompt.includes('USER REQUEST:'), 'the ambiguous label must be gone')
   assert.ok(/USER INSTRUCTION/i.test(prompt), 'the new label must say whose instruction it is')
+})
+
+test('a goal objective survives compaction, its round counter does not', async () => {
+  // `isInjection` drops everything whose source kind is not `user`, so a
+  // goal-triggered turn with no human message lost its whole task objective: a
+  // real 909-character, 7-item objective appeared nowhere in the digest.
+  //
+  // The objective is the "why" of the turn — as unreconstructible as a user's own
+  // words. `Round: 3/256` is a counter, and the objective repeats unchanged on
+  // every round, so keeping each copy would repeat it dozens of times.
+  const { engine } = await harness({ extraction: '## Did\n- x' })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  assert.ok(text.includes('GOAL-OBJECTIVE-TEXT'), 'the objective must survive')
+  assert.ok(!/Round:\s*\d+\/\d+/.test(text), 'the round counter must not')
+  assert.equal(
+    (text.match(/GOAL-OBJECTIVE-TEXT/g) ?? []).length,
+    1,
+    'the objective repeats every round, so it must be recorded once',
+  )
+})
+
+test('a goal-only turn still shows the objective above its work', async () => {
+  const { engine } = await harness({ extraction: '## Did\n- WORK' })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const text = digestOf(checkpointOf(session))
+  const at = text.indexOf('GOAL-OBJECTIVE-TEXT')
+  assert.ok(at >= 0)
+  assert.ok(text.includes('## user'), 'the objective is placed as the turn\'s user text')
+})
+
+test('the tools pointer is gone and nothing else was removed with it', () => {
+  // Measured on a 122-turn session: the pointer line cost 1202 tokens (6% of the
+  // digest) and added only "how many calls, how many bytes" — the extraction
+  // already receives every call's description, so the line was a low-information
+  // restatement of `## Did`. The one turn with no assistant prose still had 15
+  // described calls, so it needed no pointer either.
+  //
+  // The fixture happens to contain no failing tool result, so one is added here:
+  // otherwise this test could not show that the error line survived the removal.
+  const events = [
+    ...events2(),
+    { type: 'tool/result', seq: 900, time: 9, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', isError: true, content: [{ type: 'text', text: 'Error: boom' }] } } },
+  ]
+  const text = renderDigest(events, 20000)
+  assert.ok(!/^ {2}tools: /m.test(text), 'the tools pointer must be gone')
+  assert.ok(/^ {2}errors: /m.test(text), 'the error line must stay: the model cannot see failures')
+})
+
+test('the wrote line still records exact paths', () => {
+  const events = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+    { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'FIX IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'write', arguments: JSON.stringify({ path: '/repo/src/a.ts' }) }] } } },
+  ]
+  const text = renderDigest(events, 20000)
+  assert.ok(text.includes('wrote: /repo/src/a.ts'), 'the wrote line is an exact path index')
+})
+
+test('a goal objective with escaped newlines renders as lines, not literal \\n', () => {
+  // The host's objective arrives with `\n` already escaped inside the JSON
+  // string, so it reaches the digest as the two characters `\` `n` and prints the
+  // seven-item list on one unreadable line.
+  const events = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+    {
+      type: 'user/message', seq: 1, time: 2, surfaceOp: 'append',
+      data: {
+        role: 'user',
+        content: [{ type: 'text', text: '<goal_round>\nObjective: "1. FIRST\\n2. SECOND"\nRound: 1/256' }],
+        source: { kind: 'goal' },
+      },
+    },
+  ]
+  const text = renderDigest(events, 20000)
+  assert.ok(!text.includes('\\n'), 'the escape must become a real newline')
+  assert.ok(text.includes('1. FIRST\n2. SECOND'), 'the list must break across lines')
 })

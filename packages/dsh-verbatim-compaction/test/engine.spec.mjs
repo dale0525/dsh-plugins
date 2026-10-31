@@ -118,6 +118,7 @@ test('the checkpoint carries user and assistant prose verbatim and no reasoning'
   const source = events()
   for (const event of source) {
     if (event.type !== 'user/message') continue
+    if (event.data.source?.kind === 'goal') continue
     const prose = event.data.content.find((block) => block.type === 'text').text
     assert.ok(text.includes(prose), `user prose missing: ${prose.slice(0, 40)}`)
   }
@@ -144,6 +145,7 @@ test('a second compaction keeps the first compaction\'s content', async () => {
 
   for (const event of events()) {
     if (event.type !== 'user/message') continue
+    if (event.data.source?.kind === 'goal') continue
     const prose = event.data.content.find((block) => block.type === 'text').text
     assert.ok(afterSecond.includes(prose), `user prose lost on the second compaction: ${prose.slice(0, 40)}`)
   }

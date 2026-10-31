@@ -133,7 +133,34 @@ function sourceKind(event: SessionEvent): string | undefined {
  */
 function isInjection(event: SessionEvent): boolean {
   const kind = sourceKind(event)
-  return kind !== undefined && kind !== 'user'
+  if (kind === undefined) return false
+  if (kind === 'goal') return false
+  return kind !== 'user'
+}
+
+/**
+ * The objective carried by a goal round, or undefined for any other message.
+ *
+ * A goal-triggered turn has no user message at all: the host injects a
+ * `<goal_round>` carrying the objective it is working toward. Treating that as
+ * ordinary injection dropped the only statement of why the turn existed — a real
+ * 909-character, 7-item objective appeared nowhere in the digest, leaving an
+ * assistant block with no task above it.
+ *
+ * Only the objective is kept. `Round: 3/256` is a counter, and the objective
+ * repeats unchanged on every round, so the caller records it once.
+ *
+ * @param event - any event; non-goal events yield undefined.
+ * @returns the objective text, or undefined.
+ */
+function goalObjective(event: SessionEvent): string | undefined {
+  if (sourceKind(event) !== 'goal') return undefined
+  const text = textOf(event)
+  const match = /Objective:\s*"([\s\S]*?)"/.exec(text)
+  // The objective arrives with its newlines already escaped inside the JSON
+  // string, so a seven-item list reaches the digest as one unreadable line.
+  const objective = (match?.[1] ?? '').replace(/\\n/g, '\n').trim()
+  return objective.length > 0 ? objective : undefined
 }
 
 /** Whether this user message is a compaction checkpoint written by a backend. */
@@ -411,10 +438,31 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
     return next
   }
 
+  // One objective per section, and never twice: the host re-injects the same
+  // objective on every round, so recording each copy would repeat it dozens of
+  // times across a long autonomous run.
+  const recordedObjectives = new Set<string>()
+
   for (const event of events) {
     if (event.type === 'turn/start') {
       const turn = turnOf(event)
       if (turn !== undefined) lastTurn = turn
+      continue
+    }
+    const objective = goalObjective(event)
+    if (objective !== undefined) {
+      if (current === undefined) {
+        current = { turns: [] }
+        sections.push(current)
+      }
+      if (recordedObjectives.has(objective)) continue
+      recordedObjectives.add(objective)
+      // A goal round opens a section like a user request does, and its objective
+      // takes the user slot: it is the request this turn serves.
+      current = { turns: [] }
+      sections.push(current)
+      currentTurn = openTurn(turnOf(event) ?? lastTurn)
+      currentTurn.user.push(objective)
       continue
     }
     if (event.type === 'tool/result') {
@@ -557,13 +605,7 @@ function renderSection(section: Section, capChars: number | undefined): string {
       }
       if (body.length > 0) lines.push(`### assistant\n${body}`)
     }
-    if (turn.tools.size > 0) {
-      const names = [...turn.tools.entries()]
-        .sort((left, right) => right[1] - left[1])
-        .map(([tool, count]) => `${tool}×${count}`)
-        .join(' ')
-      lines.push(`  tools: ${names} (${turn.resultBytes} bytes)`)
-    }
+
     if (turn.errors.length > 0) {
       lines.push(`  errors: ${turn.errors.length}: ${turn.errors.slice(0, 3).join(' | ')}`)
     }
