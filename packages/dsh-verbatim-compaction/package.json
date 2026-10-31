@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-verbatim-compaction",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Deterministic compaction backend that keeps conversation prose verbatim in the checkpoint instead of re-summarizing it: user and assistant text survive word for word, tool results collapse to one-line pointers, reasoning is never read, and no model call is made.",
   "type": "module",
   "main": "lib/index.js",
