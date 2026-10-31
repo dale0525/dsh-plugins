@@ -398,26 +398,3 @@ test('the material labels the user text so it cannot be mistaken for a question'
   assert.ok(!prompt.includes('USER REQUEST:'), 'the ambiguous label must be gone')
   assert.ok(/USER INSTRUCTION/i.test(prompt), 'the new label must say whose instruction it is')
 })
-
-test('a turn whose assistant prose is empty cannot produce an Asked section', async () => {
-  // The XPeng turn that exposed this had 96 assistant messages, 150 tool calls,
-  // and 156 characters of prose. With no question to quote, the model restated
-  // the user's request as Asked. When a turn has no assistant prose at all there
-  // is nothing to ask, so the section must not be requested for it.
-  const calls = []
-  const { engine } = await harness({ extraction: '## Did\n- x', onCall: (r) => calls.push(r) })
-  const session = buildSession()
-  const nodes = session.surface.nodes
-  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
-
-  const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
-  // Every slot with `ASSISTANT PROSE:\n(none)` must be marked as having nothing
-  // to ask, so the model is told to omit Asked rather than invent one.
-  for (const part of prompt.split('=== SLOT ').slice(1)) {
-    if (!part.includes('ASSISTANT PROSE:\n(none)')) continue
-    assert.ok(
-      /ASKED: omit/.test(part),
-      'a slot with no prose must explicitly say Asked has nothing to record',
-    )
-  }
-})

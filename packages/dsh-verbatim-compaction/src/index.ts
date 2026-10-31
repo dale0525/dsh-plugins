@@ -780,16 +780,9 @@ export function buildExtractionMaterial(turn: readonly SessionEvent[], prose: st
     .join('\n')
   const hints = collectHints(turn)
   if (userRequest.length === 0 && prose.length === 0 && hints.length === 0) return ''
-  // Say it explicitly when there is no prose. A turn with 150 tool calls and 156
-  // characters of prose gives the model nothing to quote, and a real run filled
-  // Asked with a translation of the user request instead of omitting it.
-  const asked = prose.length === 0
-    ? 'ASKED: omit — this turn produced no assistant prose, so it asked the user nothing'
-    : 'ASKED: record only what the assistant asked the user'
   return [
     `USER INSTRUCTION (already in the digest verbatim; never copy it into Asked):\n${userRequest.slice(0, 4000) || '(none)'}`,
     `ASSISTANT PROSE:\n${prose.slice(0, 6000) || '(none)'}`,
-    asked,
     `TOOL TRACE:\n${hints || '(none)'}`,
   ].join('\n\n')
 }
