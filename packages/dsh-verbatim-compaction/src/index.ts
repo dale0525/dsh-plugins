@@ -180,14 +180,59 @@ function textOf(event: SessionEvent): string {
 }
 
 /** Every tool-call block of one message, in order. */
-function toolCallsOf(event: SessionEvent): { name: string; arguments: string }[] {
+function toolCallsOf(event: SessionEvent): { id: string; name: string; arguments: string }[] {
   const message = messageOf(event)
   if (message === null) return []
-  const calls: { name: string; arguments: string }[] = []
+  const calls: { id: string; name: string; arguments: string }[] = []
   for (const block of message.content) {
-    if (block.type === 'tool-call') calls.push({ name: block.name, arguments: block.arguments })
+    if (block.type === 'tool-call') calls.push({ id: block.id, name: block.name, arguments: block.arguments })
   }
   return calls
+}
+
+/**
+ * The answer the user gave to one `ask_user_question` call, or undefined.
+ *
+ * The answer is the tool's own result — `{"answers":[{"id":"…","selected":[…]}]}`
+ * — not an error, so without this the result was skipped and the only record of
+ * what the user chose never reached the extractor. The user's next message is
+ * often just "1" or "继续", which is unreadable without the question beside it.
+ *
+ * @param event - any event; non-results and unrelated results yield undefined.
+ * @param askedIds - tool-call ids of this turn's questions.
+ * @returns the chosen labels, or undefined when this result answers no question.
+ */
+function answerOf(event: SessionEvent, askedIds: ReadonlySet<string>): string | undefined {
+  if (askedIds.size === 0) return undefined
+  const message = messageOf(event)
+  if (message === null) return undefined
+  const callId = (message as { toolCallId?: string }).toolCallId
+  if (callId === undefined || !askedIds.has(callId)) return undefined
+  const text = textOf(event)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const answers = (parsed as Record<string, unknown>)['answers']
+  if (!Array.isArray(answers)) return undefined
+  const chosen = answers
+    .flatMap((answer) => {
+      if (typeof answer !== 'object' || answer === null) return []
+      const record = answer as Record<string, unknown>
+      const selected = record['selected']
+      const picked = Array.isArray(selected) ? selected.map((value) => String(value)) : []
+      // A typed answer arrives with `selected: []` and the text in `custom`. Ten
+      // of 31 real questions were answered this way, and those carried the user's
+      // actual observations rather than a menu label.
+      const typed = typeof record['custom'] === 'string' ? [record['custom']] : []
+      return [...picked, ...typed]
+    })
+    .filter((value) => value.length > 0)
+  if (chosen.length === 0) return undefined
+  return chosen.join(' / ').replace(/\s+/g, ' ').slice(0, HINT_CHARS * 2)
 }
 
 /**
@@ -285,6 +330,11 @@ const EXTRACT_INSTRUCTION = [
   '- earlier conclusions this turn disproved or replaced',
   '',
   'Do not describe the tool calls themselves ("ran bash", "explored the repo"). State what came out of them. Do not repeat a conclusion the previous turn already stated. If the trace is too thin to support a claim, write "(none)".',
+  '',
+  // Measured on a real 32-slot session: whole batches came back in English while
+  // the material was Chinese, so the digest mixed two languages for one
+  // conversation.
+  'Write in the same language as the material. A session whose requests are Chinese gets Chinese blocks; do not switch to English.',
 ].join('\n')
 
 /** Turns handed to one extraction call. */
@@ -318,6 +368,32 @@ function hintOf(argumentsJson: string): string {
   } catch {
     return ''
   }
+  // `ask_user_question` carries `questions[]`, not a `description`. Without this
+  // branch the hint was the bare tool name, so the extractor never saw what was
+  // asked and `## Asked` came out empty or wrong on every turn that used it.
+  const questions = parsed['questions']
+  if (Array.isArray(questions)) {
+    const asked = questions
+      .map((question) => {
+        if (typeof question !== 'object' || question === null) return ''
+        const record = question as Record<string, unknown>
+        const text = typeof record['question'] === 'string'
+          ? record['question']
+          : typeof record['header'] === 'string' ? record['header'] : ''
+        const options = Array.isArray(record['options'])
+          ? record['options']
+            .map((option) => (typeof option === 'object' && option !== null
+              ? String((option as Record<string, unknown>)['label'] ?? '')
+              : ''))
+            .filter((label) => label.length > 0)
+          : []
+        if (text.length === 0) return ''
+        return options.length === 0 ? text : `${text} [options: ${options.join(' / ')}]`
+      })
+      .filter((text) => text.length > 0)
+      .join(' | ')
+    if (asked.length > 0) return asked.replace(/\s+/g, ' ').slice(0, HINT_CHARS * 2)
+  }
   for (const key of ['description', 'command', 'query', 'file_path', 'path', 'pattern']) {
     const candidate = parsed[key]
     if (typeof candidate === 'string' && candidate.trim().length > 0) {
@@ -345,6 +421,9 @@ function hintOf(argumentsJson: string): string {
 export function collectHints(events: readonly SessionEvent[]): string {
   const lines: string[] = []
   let calls = 0
+  // Tool-call ids of this turn's questions, so the matching result can be read as
+  // an answer rather than being skipped as a non-error result.
+  const askedIds = new Set<string>()
   for (const event of events) {
     // Tool calls are blocks inside `assistant/message`, not standalone events:
     // `digestSource` emits no `tool/call` type at all, so selecting on that type
@@ -355,10 +434,19 @@ export function collectHints(events: readonly SessionEvent[]): string {
         calls += 1
         const hint = hintOf(call.arguments)
         lines.push(hint.length > 0 ? `TOOL ${call.name}: ${hint}` : `TOOL ${call.name}`)
+        if (call.name === 'ask_user_question') askedIds.add(call.id)
       }
       continue
     }
     if (event.type !== 'tool/result') continue
+    // The answer to a question is the tool's own result, not an error. It is the
+    // only record of what the user chose, and the next user message is often just
+    // "1" — so it has to travel with the question.
+    const answered = answerOf(event, askedIds)
+    if (answered !== undefined) {
+      lines.push(`ANSWER: ${answered}`)
+      continue
+    }
     if (!isErrorResult(event)) continue
     const firstLine = textOf(event).split('\n')[0] ?? ''
     if (firstLine.trim().length === 0) continue
@@ -496,9 +584,18 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
       if (text.length > 0) currentTurn.user.push(text)
       continue
     }
-    if (currentTurn === undefined || (eventTurn !== undefined && currentTurn.turn !== eventTurn)) {
-      currentTurn = openTurn(eventTurn)
-    }
+    // A user message carries no `turn` field while the reply carries one, so a
+    // plain turn-number comparison opened a second turn for the same request: every
+    // real section ended up with an empty request turn plus a reply turn holding no
+    // user text, and the digest printed `## user` and `### assistant` twice.
+    //
+    // The turn number only separates work when the current turn already holds some,
+    // i.e. when the log really moved on to a later turn.
+    // A section is one request, so it is one turn. The log keeps advancing the turn
+    // number inside a single request (7 assistant messages as turn 2, then 9 more as
+    // turn 3), and splitting on the number gave every section a second turn whose
+    // block was the tail of the same request's prose.
+    if (currentTurn === undefined) currentTurn = openTurn(eventTurn ?? lastTurn)
     const text = textOf(event)
     if (text.length > 0) currentTurn.assistant.push(text)
     for (const call of toolCallsOf(event)) {
@@ -593,6 +690,44 @@ function materialKey(events: readonly SessionEvent[]): string {
  * The tool pointer line stays either way: it is one line, and it is the only
  * record of what was actually run when the prose and extraction both say little.
  */
+/**
+ * Move the `## Asked` section to the end of one extraction block.
+ *
+ * The digest reads as a conversation, and the user's next message is often just
+ * "8399" or "继续". That reply only makes sense beside the question it answers, so
+ * Asked belongs at the bottom of the block. The model puts it first about as often
+ * as last, so the order is fixed here rather than requested in the prompt.
+ *
+ * @param block - one extraction block, possibly malformed.
+ * @returns the same block with Asked last; unchanged when Asked is absent or already last.
+ */
+export function moveAskedLast(block: string): string {
+  const lines = block.split('\n')
+  // Three heading forms observed from the same model: `## Asked`, `**Asked**：` and
+  // `- Asked:`. Recognising only the first left Asked at the top whenever the model
+  // changed style.
+  const isAsked = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?Asked(?:\*\*)?\s*[:：]?\s*$/i.test(line)
+  const isAskedInline = (line: string): boolean => /^\s*(?:[-*]\s+)?(?:\*\*)?Asked(?:\*\*)?\s*[:：]/i.test(line)
+  const isOther = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?(Did|Concluded|Overturned)(?:\*\*)?\s*[:：]?/i.test(line)
+
+  const start = lines.findIndex((line) => isAsked(line) || isAskedInline(line))
+  if (start < 0) return block
+
+  // A heading form owns the lines until the next heading; an inline `- Asked: x`
+  // form owns only its own line.
+  const inline = isAskedInline(lines[start] ?? '') && !isAsked(lines[start] ?? '')
+  let end = start + 1
+  if (!inline) {
+    while (end < lines.length && !isOther(lines[end] ?? '')) end += 1
+  }
+
+  const asked = lines.slice(start, end)
+  while (asked.length > 0 && (asked.at(-1) ?? '').trim().length === 0) asked.pop()
+  const rest = [...lines.slice(0, start), ...lines.slice(end)]
+  while (rest.length > 0 && (rest.at(-1) ?? '').trim().length === 0) rest.pop()
+  return [...rest, '', ...asked].join('\n')
+}
+
 function renderSection(section: Section, capChars: number | undefined): string {
   const lines: string[] = []
   for (const turn of section.turns) {
@@ -602,19 +737,28 @@ function renderSection(section: Section, capChars: number | undefined): string {
       if (capChars !== undefined && block.length > capChars) {
         block = `${block.slice(0, capChars)}\n…(+${block.length - capChars} chars)`
       }
-      lines.push(`### assistant\n${block}`)
+      // Errors and writes sit after the block: Asked has to be the last thing in the
+      // turn, and the errors line directly under `## user` read as if the user had
+      // said it. Asked is inside the block, so the trailer goes before Asked instead
+      // — see moveAskedLast being applied after the trailer is joined.
+      const trailer: string[] = []
+      if (turn.errors.length > 0) {
+        trailer.push(`  errors: ${turn.errors.length}: ${turn.errors.slice(0, 3).join(' | ')}`)
+      }
+      if (turn.writes.length > 0) trailer.push(`  wrote: ${turn.writes.join(', ')}`)
+      const body = trailer.length > 0 ? `${block}\n${trailer.join('\n')}` : block
+      lines.push(`### assistant\n${moveAskedLast(body)}`)
     } else {
       let body = turn.assistant.join('\n')
       if (capChars !== undefined && body.length > capChars) {
         body = `${body.slice(0, capChars)}\n…(+${body.length - capChars} chars)`
       }
       if (body.length > 0) lines.push(`### assistant\n${body}`)
+      if (turn.errors.length > 0) {
+        lines.push(`  errors: ${turn.errors.length}: ${turn.errors.slice(0, 3).join(' | ')}`)
+      }
+      if (turn.writes.length > 0) lines.push(`  wrote: ${turn.writes.join(', ')}`)
     }
-
-    if (turn.errors.length > 0) {
-      lines.push(`  errors: ${turn.errors.length}: ${turn.errors.slice(0, 3).join(' | ')}`)
-    }
-    if (turn.writes.length > 0) lines.push(`  wrote: ${turn.writes.join(', ')}`)
   }
   return lines.join('\n')
 }
@@ -1058,14 +1202,19 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       if (sectionIndex >= 0) grouped[sectionIndex]?.push(event)
     }
 
+    // One slot per section, addressed to the section's first turn.
+    //
+    // The material is about what the section did as a whole, so handing it to
+    // every turn in the section made the model answer twice with the same block:
+    // a real section holding two turns produced two identical `## Concluded`
+    // bodies plus `(duplicate of SLOT 4:0)` placeholders in the digest. The extra
+    // turns keep their prose and their own headings; only the first carries the
+    // section's extraction.
     const slots: { key: string; turn: number | undefined; events: SessionEvent[] }[] = []
     for (const [sectionIndex, section] of sections.entries()) {
-      // A section may hold more than one turn; all of them see the section's
-      // events, because the material is about what the section did as a whole.
-      const events = grouped[sectionIndex] ?? []
-      for (const [turnIndex, turn] of section.turns.entries()) {
-        slots.push({ key: turnKey(sectionIndex, turnIndex), turn: turn.turn, events })
-      }
+      const first = section.turns[0]
+      if (first === undefined) continue
+      slots.push({ key: turnKey(sectionIndex, 0), turn: first.turn, events: grouped[sectionIndex] ?? [] })
     }
 
     const extracted = new Map<string, string>()

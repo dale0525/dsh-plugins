@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { SESSION_FORMAT_VERSION, Session } from '@deepseek-ai/dsh-session'
-import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, pruneEmptySections, renderDigest } from '../lib/index.js'
+import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, buildSections, collectHints, moveAskedLast, pruneEmptySections, renderDigest } from '../lib/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -213,17 +213,28 @@ test('two requests sharing one turn number get their own extractions', async () 
 
   const text = digestOf(checkpointOf(session))
   const blocks = text.match(/## Did\n- PER-SLOT/g) ?? []
-  // One block per slot (a section may hold more than one turn), so the count to
-  // compare against is the assistant headings the renderer emitted.
-  const assistantSlots = text.match(/^### assistant$/gm) ?? []
-  assert.equal(
-    blocks.length,
-    assistantSlots.length,
-    `${assistantSlots.length} assistant slots but ${blocks.length} extraction blocks`,
-  )
-  // The bug was one block printed twice; a per-slot answer must be distinct per
-  // slot, so the total is what proves no overwrite happened.
-  assert.ok(blocks.length >= 2, 'fixture must have at least two slots')
+  // One extraction per section, not per turn: a section's material covers the
+  // whole section, so giving it to every turn in that section made the model
+  // answer twice with the same body.
+  const sections = text.match(/^## user$/gm) ?? []
+  assert.equal(blocks.length, sections.length, `${sections.length} sections but ${blocks.length} blocks`)
+  assert.ok(blocks.length >= 2, 'fixture must have at least two sections')
+})
+
+test('a section with two turns gets one extraction, not two copies', () => {
+  // The real failure: a section held two turns, both slots received the same
+  // events, and the model wrote the same `## Concluded` twice, adding
+  // `(duplicate of SLOT 4:0)` placeholders to the digest.
+  const events = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+    { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'ONE REQUEST' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'FIRST STEP' }] } } },
+    { type: 'assistant/message', seq: 3, time: 4, surfaceOp: 'append', data: { turn: 2, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'SECOND STEP' }] } } },
+  ]
+  // buildSections puts both turns in one section; the extraction addresses 0:0.
+  const text = renderDigest(events, 20000, new Map([['0:0', 'BLOCK']]))
+  assert.equal((text.match(/BLOCK/g) ?? []).length, 1, 'the block must appear once')
+  assert.ok(!text.includes('duplicate'), 'no duplicate placeholder may be produced')
 })
 
 test('a duplicate turn number does not collapse two blocks into one', () => {
@@ -517,4 +528,176 @@ test('headings the model wrote without ## are still recognised and pruned', () =
   assert.ok(!out.includes('Asked'), 'a bare empty heading must be dropped')
   assert.ok(!out.includes('Concluded'), 'a bare empty heading must be dropped')
   assert.ok(!out.includes('(none)'), 'the placeholder must not survive')
+})
+
+test('an ask_user_question hint carries the question and the chosen answer', () => {
+  // `ask_user_question` has no `description` argument — its payload is
+  // `questions[]` — so `hintOf` returned '' and the extractor saw only
+  // `TOOL ask_user_question`. The question and the user's selection were both
+  // lost, which is why `## Asked` kept coming out empty or wrong.
+  const events = [
+    {
+      type: 'assistant/message', seq: 1, time: 1, surfaceOp: 'append',
+      data: {
+        turn: 1, step: 1,
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool-call', id: 'call_1', name: 'ask_user_question',
+            arguments: JSON.stringify({
+              questions: [{
+                id: 'sms_code_test',
+                header: '是否现在验证',
+                question: '验证码已发出，请输入你手机上收到的验证码',
+                options: [
+                  { label: '现在试（推荐）', description: '我发码，你划滑块' },
+                  { label: '先不验证', description: '把结论写进文档' },
+                ],
+              }],
+            }),
+          }],
+        },
+      },
+    },
+    {
+      type: 'tool/result', seq: 2, time: 2, surfaceOp: 'append',
+      data: {
+        turn: 1, step: 1,
+        message: {
+          role: 'tool', toolCallId: 'call_1',
+          content: [{ type: 'text', text: '{"answers":[{"id":"sms_code_test","selected":["现在试（推荐）"]}]}' }],
+        },
+      },
+    },
+  ]
+  const hints = collectHints(events)
+  assert.ok(hints.includes('ask_user_question'), 'the tool must be named')
+  assert.ok(hints.includes('验证码已发出'), 'the question text must survive')
+  assert.ok(hints.includes('现在试'), 'the chosen answer must survive')
+})
+
+test('a free-text answer is kept even when nothing was selected', () => {
+  // The picker allows typing instead of choosing an option: the result then has
+  // `selected: []` and the answer sits in `custom`. Ten of the 31 real questions
+  // in one session were answered that way, and they carried the user's actual
+  // observations ("拖动了，但是提示 发码失败").
+  const events = [
+    {
+      type: 'assistant/message', seq: 1, time: 1, surfaceOp: 'append',
+      data: {
+        turn: 1, step: 1,
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool-call', id: 'call_9', name: 'ask_user_question',
+            arguments: JSON.stringify({ questions: [{ id: 'drag_slider', question: '请拖动滑块' }] }),
+          }],
+        },
+      },
+    },
+    {
+      type: 'tool/result', seq: 2, time: 2, surfaceOp: 'append',
+      data: {
+        turn: 1, step: 1,
+        message: {
+          role: 'tool', toolCallId: 'call_9',
+          content: [{ type: 'text', text: '{"answers":[{"id":"drag_slider","selected":[],"custom":"拖动了，但是提示发码失败"}]}' }],
+        },
+      },
+    },
+  ]
+  const hints = collectHints(events)
+  assert.ok(hints.includes('拖动了，但是提示发码失败'), 'the typed answer must survive')
+})
+
+test('the extraction instruction tells the model to answer in the material\'s language', async () => {
+  // Measured on a real 32-slot session: the batches that got the last slots came
+  // back entirely in English (`slot 24:0` had 0 CJK characters, 264 Latin) while
+  // the material was Chinese. The digest then mixed two languages for the same
+  // conversation.
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- x', onCall: (r) => calls.push(r) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
+  assert.match(prompt, /same language|language of/i, 'the instruction must pin the output language')
+})
+
+test('the Asked section is rendered last, right before the user reply', () => {
+  // The digest reads as a conversation: the user's short reply ("8399", "继续")
+  // only makes sense next to the question it answers, so Asked belongs at the
+  // bottom of the assistant block, not at the top where the model tends to put it.
+  const events = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+    { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
+  ]
+  const block = '## Asked\n- ASKED-TEXT\n## Did\n- DID-TEXT\n## Concluded\n- CONCLUDED-TEXT'
+  const text = renderDigest(events, 20000, new Map([['0:0', block]]))
+  const askedAt = text.indexOf('ASKED-TEXT')
+  assert.ok(askedAt > text.indexOf('DID-TEXT'), 'Asked must come after Did')
+  assert.ok(askedAt > text.indexOf('CONCLUDED-TEXT'), 'Asked must come after Concluded')
+})
+
+test('the Asked section stays last even when the turn has an errors line', () => {
+  const events = [
+    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+    { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
+    { type: 'tool/result', seq: 3, time: 4, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', isError: true, content: [{ type: 'text', text: 'Error: boom' }] } } },
+  ]
+  const block = '## Asked\n- ASKED-TEXT\n## Did\n- DID-TEXT'
+  const text = renderDigest(events, 20000, new Map([['0:0', block]]))
+  assert.ok(
+    text.indexOf('ASKED-TEXT') > text.indexOf('errors:'),
+    'Asked must be the last thing before the next user message',
+  )
+})
+
+test('a user message and the work it triggers stay in one turn', () => {
+  // The user message carries no `turn` field and the assistant messages that
+  // follow carry `turn: 1`, so the turn-number check opened a second turn. Every
+  // real section then held two turns: an empty request turn plus a reply turn with
+  // no user text, and the digest rendered `## user` and `### assistant` twice for
+  // one request.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
+  ]
+  const sections = buildSections(events)
+  assert.equal(sections.length, 1)
+  assert.equal(sections[0].turns.length, 1, 'one request must not become two turns')
+  assert.equal(sections[0].turns[0].user.length, 1)
+  assert.equal(sections[0].turns[0].assistant.length, 1)
+})
+
+test('a section stays one turn when the log numbers its steps across turns', () => {
+  // Real sessions advance the turn number inside one user request: a request
+  // carried 7 assistant messages as turn 2 and 9 more as turn 3. Splitting on the
+  // number gave the section two turns, so the digest rendered a second
+  // `### assistant` holding the tail of the same request's prose.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 2, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'FIRST' }] } } },
+    { type: 'assistant/message', seq: 3, time: 3, surfaceOp: 'append', data: { turn: 3, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'SECOND' }] } } },
+  ]
+  const sections = buildSections(events)
+  assert.equal(sections.length, 1)
+  assert.equal(sections[0].turns.length, 1, 'one request is one turn regardless of numbering')
+  assert.deepEqual(sections[0].turns[0].assistant, ['FIRST', 'SECOND'])
+})
+
+test('Asked is moved last whatever heading form the model used', () => {
+  // Three forms observed from the same model across runs: `## Asked`, `**Asked**：`
+  // and `- Asked:`. Recognising only the first left Asked at the top of the block
+  // whenever the model changed style, so the user's one-word reply sat far from the
+  // question it answered.
+  for (const asked of ['## Asked\n- Q-TEXT', '**Asked**：Q-TEXT', '- Asked: Q-TEXT']) {
+    const block = `${asked}\n- Did: DID-TEXT\n- Concluded: CONCLUDED-TEXT`
+    const out = moveAskedLast(block)
+    assert.ok(out.indexOf('Q-TEXT') > out.indexOf('DID-TEXT'), `Asked must follow Did for ${asked}`)
+    assert.ok(out.indexOf('Q-TEXT') > out.indexOf('CONCLUDED-TEXT'), `Asked must follow Concluded for ${asked}`)
+  }
 })
