@@ -239,7 +239,9 @@ const EXTRACT_INSTRUCTION = [
   'For EVERY item, emit exactly one block, introduced by `=== SLOT <key> ===` using that same key. Under each heading write at most two terse lines. OMIT a heading entirely when it has no real information — do not write "(none)" and do not invent. An item where nothing substantive happened may be omitted altogether.',
   '',
   '## Asked',
-  '- the question(s) this turn put to the user, and the options it offered — the next user message is usually the answer',
+  '- what the ASSISTANT asked the USER in this turn: the question it put, and the options it offered',
+  '- the next user message is usually the answer, so record the question, never the answer',
+  '- NEVER restate or translate the user request here. It is already in the digest verbatim, directly above this block; copying it is the single most common way this section goes wrong.',
   '',
   '## Did',
   '- what was actually done, concretely',
@@ -778,9 +780,16 @@ export function buildExtractionMaterial(turn: readonly SessionEvent[], prose: st
     .join('\n')
   const hints = collectHints(turn)
   if (userRequest.length === 0 && prose.length === 0 && hints.length === 0) return ''
+  // Say it explicitly when there is no prose. A turn with 150 tool calls and 156
+  // characters of prose gives the model nothing to quote, and a real run filled
+  // Asked with a translation of the user request instead of omitting it.
+  const asked = prose.length === 0
+    ? 'ASKED: omit — this turn produced no assistant prose, so it asked the user nothing'
+    : 'ASKED: record only what the assistant asked the user'
   return [
-    `USER REQUEST:\n${userRequest.slice(0, 4000) || '(none)'}`,
+    `USER INSTRUCTION (already in the digest verbatim; never copy it into Asked):\n${userRequest.slice(0, 4000) || '(none)'}`,
     `ASSISTANT PROSE:\n${prose.slice(0, 6000) || '(none)'}`,
+    asked,
     `TOOL TRACE:\n${hints || '(none)'}`,
   ].join('\n\n')
 }

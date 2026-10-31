@@ -360,3 +360,64 @@ function slotKeysOf(request) {
   const prompt = request.messages.at(-1).content.map((block) => block.text).join('')
   return [...prompt.matchAll(/^=== SLOT (\S+) \(turn /gm)].map((match) => match[1])
 }
+
+test('Asked never restates the user request, and says so in the instruction', async () => {
+  // A real block printed the user's own request back as `## Asked`, in English,
+  // directly under the same request quoted verbatim: the same content twice, and
+  // the section answering the wrong question. `## Asked` records what the
+  // ASSISTANT asked the USER; the user's request is already in the digest.
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- x', onCall: (r) => calls.push(r) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
+  const asked = prompt.slice(prompt.indexOf('## Asked'), prompt.indexOf('## Did'))
+  assert.ok(
+    /assistant/i.test(asked) && /user/i.test(asked),
+    'the Asked instruction must name who asks and who answers',
+  )
+  assert.ok(
+    /never|do not/i.test(asked) && /request/i.test(asked),
+    'the Asked instruction must forbid restating the user request',
+  )
+})
+
+test('the material labels the user text so it cannot be mistaken for a question', async () => {
+  // The old label was `USER REQUEST:`, which a model reasonably read as "what
+  // this turn asked". The label now says the text is the user's instruction and
+  // must not be copied into Asked.
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- x', onCall: (r) => calls.push(r) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
+  assert.ok(!prompt.includes('USER REQUEST:'), 'the ambiguous label must be gone')
+  assert.ok(/USER INSTRUCTION/i.test(prompt), 'the new label must say whose instruction it is')
+})
+
+test('a turn whose assistant prose is empty cannot produce an Asked section', async () => {
+  // The XPeng turn that exposed this had 96 assistant messages, 150 tool calls,
+  // and 156 characters of prose. With no question to quote, the model restated
+  // the user's request as Asked. When a turn has no assistant prose at all there
+  // is nothing to ask, so the section must not be requested for it.
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- x', onCall: (r) => calls.push(r) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
+  // Every slot with `ASSISTANT PROSE:\n(none)` must be marked as having nothing
+  // to ask, so the model is told to omit Asked rather than invent one.
+  for (const part of prompt.split('=== SLOT ').slice(1)) {
+    if (!part.includes('ASSISTANT PROSE:\n(none)')) continue
+    assert.ok(
+      /ASKED: omit/.test(part),
+      'a slot with no prose must explicitly say Asked has nothing to record',
+    )
+  }
+})
