@@ -277,10 +277,10 @@ export function pruneEmptySections(block: string): string {
   // `**Asked**：…`). Both forms occur in real output, sometimes in the same block.
   const headingOf = (line: string): { own: string } | undefined => {
     if (/^#{1,6}\s/.test(line)) return { own: '' }
-    if (/^\s*(?:[-*]\s+)?(?:\*\*)?(Asked|Did|Concluded|Overturned)(?:\*\*)?\s*[:：]?\s*$/i.test(line)) {
+    if (/^\s*(?:[-*]\s+)?(?:\*\*)?(Asked|Did|Concluded|Overturned|问|做|结论|推翻)(?:\*\*)?\s*[:：]?\s*$/i.test(line)) {
       return { own: '' }
     }
-    const inline = /^\s*(?:[-*]\s+)?(?:\*\*)?(Asked|Did|Concluded|Overturned)(?:\*\*)?\s*[:：]\s*(.*)$/i.exec(line)
+    const inline = /^\s*(?:[-*]\s+)?(?:\*\*)?(Asked|Did|Concluded|Overturned|问|做|结论|推翻)(?:\*\*)?\s*[:：]\s*(.*)$/i.exec(line)
     if (inline !== null) return { own: inline[2] ?? '' }
     return undefined
   }
@@ -446,11 +446,19 @@ export function collectHints(events: readonly SessionEvent[]): string {
     // matched nothing and a 342-call turn produced a single hint line.
     if (event.type === 'assistant/message') {
       for (const call of toolCallsOf(event)) {
-        if (calls >= MAX_HINTS_PER_TURN) break
-        calls += 1
+        // A question is never dropped by the cap. It is the only record of what was
+        // asked, and its answer is matched by call id rather than by the cap, so
+        // dropping the question left an orphan ANSWER line with nothing beside it —
+        // a real turn made 292 calls, the question came late, and the user's choice
+        // never reached the digest.
+        const isQuestion = call.name === 'ask_user_question'
+        if (!isQuestion) {
+          if (calls >= MAX_HINTS_PER_TURN) break
+          calls += 1
+        }
         const hint = hintOf(call.arguments)
         lines.push(hint.length > 0 ? `TOOL ${call.name}: ${hint}` : `TOOL ${call.name}`)
-        if (call.name === 'ask_user_question') askedIds.add(call.id)
+        if (isQuestion) askedIds.add(call.id)
       }
       continue
     }
@@ -722,9 +730,9 @@ export function moveAskedLast(block: string): string {
   // Three heading forms observed from the same model: `## Asked`, `**Asked**：` and
   // `- Asked:`. Recognising only the first left Asked at the top whenever the model
   // changed style.
-  const isAsked = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?Asked(?:\*\*)?\s*[:：]?\s*$/i.test(line)
-  const isAskedInline = (line: string): boolean => /^\s*(?:[-*]\s+)?(?:\*\*)?Asked(?:\*\*)?\s*[:：]/i.test(line)
-  const isOther = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?(Did|Concluded|Overturned)(?:\*\*)?\s*[:：]?/i.test(line)
+  const isAsked = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?(?:Asked|问)(?:\*\*)?\s*[:：]?\s*$/i.test(line)
+  const isAskedInline = (line: string): boolean => /^\s*(?:[-*]\s+)?(?:\*\*)?(?:Asked|问)(?:\*\*)?\s*[:：]/i.test(line)
+  const isOther = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?(Did|Concluded|Overturned|做|结论|推翻)(?:\*\*)?\s*[:：]?/i.test(line)
 
   const start = lines.findIndex((line) => isAsked(line) || isAskedInline(line))
   if (start < 0) return block

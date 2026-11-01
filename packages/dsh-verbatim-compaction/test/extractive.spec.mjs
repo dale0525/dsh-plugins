@@ -741,3 +741,42 @@ test('an inline heading is not repeated as its own body', () => {
   const out = pruneEmptySections('- Did: REAL-WORK\n- Concluded: REAL-FINDING')
   assert.equal(out, '- Did: REAL-WORK\n- Concluded: REAL-FINDING')
 })
+
+test('a question survives the tool-call cap, so its answer is never orphaned', () => {
+  // Turn 6 of a real session made 292 tool calls against a cap of 120. The
+  // `ask_user_question` came late, so it was dropped — but its ANSWER line was
+  // emitted anyway, because answers are matched by call id, not by the cap. The
+  // extractor saw "ANSWER: 删掉拿不到的，其余按原样保留" with no question beside it,
+  // and that choice never reached the digest.
+  const events = []
+  for (let i = 0; i < 130; i += 1) {
+    events.push({
+      type: 'assistant/message', seq: i + 1, time: i, surfaceOp: 'append',
+      data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: `c${i}`, name: 'bash', arguments: JSON.stringify({ description: `call ${i}` }) }] } },
+    })
+  }
+  events.push({
+    type: 'assistant/message', seq: 500, time: 500, surfaceOp: 'append',
+    data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'LATE-QUESTION' }] }) }] } },
+  })
+  events.push({
+    type: 'tool/result', seq: 501, time: 501, surfaceOp: 'append',
+    data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["CHOSEN"]}]}' }] } },
+  })
+  const hints = collectHints(events)
+  assert.ok(hints.includes('LATE-QUESTION'), 'the question must survive the cap')
+  assert.ok(hints.includes('CHOSEN'), 'and so must its answer')
+})
+
+test('Chinese section labels are recognised, not treated as body text', () => {
+  // The model answered a Chinese session in Chinese labels — `问：` / `做：` / `结论：`
+  // — instead of Asked/Did/Concluded. Nothing recognised them, so Asked was never
+  // moved last and empty sections were never pruned.
+  const block = '问：Q-TEXT → 答「A-TEXT」\n做：DID-TEXT\n结论：CONCLUDED-TEXT'
+  const moved = moveAskedLast(block)
+  assert.ok(moved.indexOf('Q-TEXT') > moved.indexOf('DID-TEXT'), 'Asked must be moved last')
+
+  const pruned = pruneEmptySections('问：未提问。\n做：DID-TEXT')
+  assert.ok(!pruned.includes('未提问'), 'the Chinese placeholder must be pruned')
+  assert.ok(pruned.includes('DID-TEXT'), 'the real work must survive')
+})
