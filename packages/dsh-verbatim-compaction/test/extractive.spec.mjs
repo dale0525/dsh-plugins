@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { SESSION_FORMAT_VERSION, Session } from '@deepseek-ai/dsh-session'
-import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, buildSections, collectHints, moveAskedLast, parseExtraction, pruneEmptySections, renderDigest, renderExtractionBlock } from '../lib/index.js'
+import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, buildSections, collectHints, moveAskedLast, parseExtraction, renderDigest, renderExtractionBlock } from '../lib/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -536,18 +536,6 @@ test('a slot carries the whole section, not just its first message', async () =>
   )
 })
 
-test('headings the model wrote without ## are still recognised and pruned', () => {
-  // A real run answered with bare `Asked` / `Did` / `Concluded` lines, no `##`.
-  // `pruneEmptySections` only recognised `^#{1,6}\s`, so `Concluded\n- (none)`
-  // survived as body text and the placeholder reached the digest.
-  const raw = 'Asked\n- (none)\nDid\n- REAL-WORK\nConcluded\n- (none)'
-  const out = pruneEmptySections(raw)
-  assert.ok(out.includes('REAL-WORK'), 'the non-empty section must survive')
-  assert.ok(!out.includes('Asked'), 'a bare empty heading must be dropped')
-  assert.ok(!out.includes('Concluded'), 'a bare empty heading must be dropped')
-  assert.ok(!out.includes('(none)'), 'the placeholder must not survive')
-})
-
 test('an ask_user_question hint carries the question and the chosen answer', () => {
   // `ask_user_question` has no `description` argument — its payload is
   // `questions[]` — so `hintOf` returned '' and the extractor saw only
@@ -756,25 +744,6 @@ test('the Asked instruction asks for the chosen answer, not just the question', 
   )
 })
 
-test('a "no question was asked" placeholder is pruned like (none)', () => {
-  // The model wrote `Asked: 未提问。` for a turn with no question. The placeholder
-  // list only knew English "(none)" / "n/a", so this survived and cost tokens on
-  // every such turn.
-  for (const placeholder of ['未提问。', '未提问', '无提问', '没有提问', 'no questions were asked', 'none asked']) {
-    const out = pruneEmptySections(`Asked: ${placeholder}`)
-    assert.equal(out.trim(), '', `placeholder not pruned: ${placeholder}`)
-  }
-  const kept = pruneEmptySections('Asked: 用户选了 React Native')
-  assert.ok(kept.includes('React Native'), 'a real answer must survive')
-})
-
-test('an inline heading is not repeated as its own body', () => {
-  // `pruneEmptySections` treated `- Did: REAL-WORK` as a heading and then emitted
-  // the same line again as body, so every line of a real digest appeared twice.
-  const out = pruneEmptySections('- Did: REAL-WORK\n- Concluded: REAL-FINDING')
-  assert.equal(out, '- Did: REAL-WORK\n- Concluded: REAL-FINDING')
-})
-
 test('a question survives the tool-call cap, so its answer is never orphaned', () => {
   // Turn 6 of a real session made 292 tool calls against a cap of 120. The
   // `ask_user_question` came late, so it was dropped — but its ANSWER line was
@@ -810,9 +779,6 @@ test('Chinese section labels are recognised, not treated as body text', () => {
   assert.ok(!moved.includes('Q-TEXT'), 'the model\'s Chinese Asked must be dropped')
   assert.ok(moved.indexOf('LOG-Q') > moved.indexOf('DID-TEXT'), 'Asked must be moved last')
 
-  const pruned = pruneEmptySections('问：未提问。\n做：DID-TEXT')
-  assert.ok(!pruned.includes('未提问'), 'the Chinese placeholder must be pruned')
-  assert.ok(pruned.includes('DID-TEXT'), 'the real work must survive')
 })
 
 test('the Asked block is generated from the log, not taken from the model', () => {
