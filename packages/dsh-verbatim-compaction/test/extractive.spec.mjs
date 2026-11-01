@@ -261,7 +261,9 @@ test('the extraction block carries what the turn asked the user', async () => {
   const nodes = session.surface.nodes
   await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
 
-  assert.ok(digestOf(checkpointOf(session)).includes('ASKED-BODY'))
+  // The model's Asked wording is discarded; the block is regenerated from the log,
+  // so what survives is the question it actually put, not the prose it wrote.
+  assert.ok(!digestOf(checkpointOf(session)).includes('ASKED-BODY'), 'model Asked must be dropped')
 })
 
 test('the extraction instruction asks for all four sections in order', async () => {
@@ -634,7 +636,12 @@ test('the Asked section is rendered last, right before the user reply', () => {
     { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
     { type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
   ]
-  const block = '## Asked\n- ASKED-TEXT\n## Did\n- DID-TEXT\n## Concluded\n- CONCLUDED-TEXT'
+  const block = '## Did\n- DID-TEXT\n## Concluded\n- CONCLUDED-TEXT'
+  // The question comes from a real ask_user_question in the log, not from the model.
+  events.push(
+    { type: 'assistant/message', seq: 4, time: 5, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'ASKED-TEXT' }] }) }] } } },
+    { type: 'tool/result', seq: 5, time: 6, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["YES"]}]}' }] } } },
+  )
   const text = renderDigest(events, 20000, new Map([['0:0', block]]))
   const askedAt = text.indexOf('ASKED-TEXT')
   assert.ok(askedAt > text.indexOf('DID-TEXT'), 'Asked must come after Did')
@@ -648,7 +655,11 @@ test('the Asked section stays last even when the turn has an errors line', () =>
     { type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
     { type: 'tool/result', seq: 3, time: 4, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', isError: true, content: [{ type: 'text', text: 'Error: boom' }] } } },
   ]
-  const block = '## Asked\n- ASKED-TEXT\n## Did\n- DID-TEXT'
+  const block = '## Did\n- DID-TEXT'
+  events.push(
+    { type: 'assistant/message', seq: 4, time: 5, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'ASKED-TEXT' }] }) }] } } },
+    { type: 'tool/result', seq: 5, time: 6, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["YES"]}]}' }] } } },
+  )
   const text = renderDigest(events, 20000, new Map([['0:0', block]]))
   assert.ok(
     text.indexOf('ASKED-TEXT') > text.indexOf('errors:'),
@@ -694,11 +705,13 @@ test('Asked is moved last whatever heading form the model used', () => {
   // and `- Asked:`. Recognising only the first left Asked at the top of the block
   // whenever the model changed style, so the user's one-word reply sat far from the
   // question it answered.
-  for (const asked of ['## Asked\n- Q-TEXT', '**Asked**：Q-TEXT', '- Asked: Q-TEXT']) {
+  for (const asked of ['## Asked\n- Q-TEXT', '**Asked**：Q-TEXT', '- Asked: Q-TEXT', '问：Q-TEXT']) {
     const block = `${asked}\n- Did: DID-TEXT\n- Concluded: CONCLUDED-TEXT`
-    const out = moveAskedLast(block)
-    assert.ok(out.indexOf('Q-TEXT') > out.indexOf('DID-TEXT'), `Asked must follow Did for ${asked}`)
-    assert.ok(out.indexOf('Q-TEXT') > out.indexOf('CONCLUDED-TEXT'), `Asked must follow Concluded for ${asked}`)
+    const out = moveAskedLast(block, [{ question: 'FROM-LOG', answer: 'CHOSEN' }])
+    assert.ok(!out.includes('Q-TEXT'), `the model's Asked must be dropped for ${asked}`)
+    assert.ok(out.includes('FROM-LOG'), 'the log question must be present')
+    assert.ok(out.indexOf('FROM-LOG') > out.indexOf('DID-TEXT'), `Asked must follow Did for ${asked}`)
+    assert.ok(out.indexOf('FROM-LOG') > out.indexOf('CONCLUDED-TEXT'), `Asked must follow Concluded for ${asked}`)
   }
 })
 
@@ -773,10 +786,31 @@ test('Chinese section labels are recognised, not treated as body text', () => {
   // — instead of Asked/Did/Concluded. Nothing recognised them, so Asked was never
   // moved last and empty sections were never pruned.
   const block = '问：Q-TEXT → 答「A-TEXT」\n做：DID-TEXT\n结论：CONCLUDED-TEXT'
-  const moved = moveAskedLast(block)
-  assert.ok(moved.indexOf('Q-TEXT') > moved.indexOf('DID-TEXT'), 'Asked must be moved last')
+  const moved = moveAskedLast(block, [{ question: 'LOG-Q', answer: 'LOG-A' }])
+  assert.ok(!moved.includes('Q-TEXT'), 'the model\'s Chinese Asked must be dropped')
+  assert.ok(moved.indexOf('LOG-Q') > moved.indexOf('DID-TEXT'), 'Asked must be moved last')
 
   const pruned = pruneEmptySections('问：未提问。\n做：DID-TEXT')
   assert.ok(!pruned.includes('未提问'), 'the Chinese placeholder must be pruned')
   assert.ok(pruned.includes('DID-TEXT'), 'the real work must survive')
+})
+
+test('the Asked block is generated from the log, not taken from the model', () => {
+  // The model changed its Asked format four times across runs (`## Asked`,
+  // `**Asked**：`, `- Asked:`, and Chinese `问：`), and each change silently broke
+  // either the position or the content. The question and the chosen answer are
+  // both in the log, so the block is now rendered from them directly: whatever the
+  // model writes for Asked is discarded.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'PICK ONE', options: [{ label: 'OPT-A' }, { label: 'OPT-B' }] }] }) }] } } },
+    { type: 'tool/result', seq: 3, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["OPT-B"]}]}' }] } } },
+  ]
+  // The model's own Asked is wrong on purpose: it must not reach the digest.
+  const modelBlock = '## Did\n- REAL\n## Asked\n- MODEL-INVENTED-ASKED'
+  const text = renderDigest(events, 20000, new Map([['0:0', modelBlock]]))
+  assert.ok(!text.includes('MODEL-INVENTED-ASKED'), 'the model\'s Asked must be dropped')
+  assert.ok(text.includes('PICK ONE'), 'the question must come from the log')
+  assert.ok(text.includes('OPT-B'), 'the chosen answer must come from the log')
+  assert.ok(text.includes('REAL'), 'the rest of the extraction must survive')
 })

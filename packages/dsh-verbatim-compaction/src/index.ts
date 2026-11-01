@@ -501,6 +501,14 @@ interface Turn {
   errors: string[]
   writes: string[]
   /**
+   * Question/answer pairs the assistant put to the user in this turn.
+   *
+   * Rendered by code rather than by the model: the model changed its Asked format
+   * four times across runs, and each change silently broke the position or the
+   * content. Both halves are in the log, so there is nothing to summarise.
+   */
+  asked: { question: string; answer: string }[]
+  /**
    * The extracted summary for this turn, when extraction succeeded.
    *
    * Set here rather than appended to a separate block so the extraction takes
@@ -515,6 +523,74 @@ interface Section {
   turns: Turn[]
 }
 
+/**
+ * The question an `ask_user_question` call put, with its options, or undefined.
+ *
+ * @param argumentsJson - the call's raw arguments.
+ * @returns one line per question, options appended in brackets.
+ */
+function questionTextOf(argumentsJson: string): string | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(argumentsJson)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const questions = (parsed as Record<string, unknown>)['questions']
+  if (!Array.isArray(questions)) return undefined
+  const lines = questions
+    .map((question) => {
+      if (typeof question !== 'object' || question === null) return ''
+      const record = question as Record<string, unknown>
+      const text = typeof record['question'] === 'string'
+        ? record['question']
+        : typeof record['header'] === 'string' ? record['header'] : ''
+      if (text.trim().length === 0) return ''
+      const options = Array.isArray(record['options'])
+        ? record['options']
+          .map((option) => (typeof option === 'object' && option !== null
+            ? String((option as Record<string, unknown>)['label'] ?? '')
+            : ''))
+          .filter((label) => label.length > 0)
+        : []
+      return options.length === 0 ? text.trim() : `${text.trim()} [${options.join(' / ')}]`
+    })
+    .filter((line) => line.length > 0)
+  return lines.length > 0 ? lines.join('\n') : undefined
+}
+
+/**
+ * The answer carried by an `ask_user_question` result, or undefined.
+ *
+ * @param text - the result body.
+ * @returns the chosen labels, or the typed reply when nothing was chosen.
+ */
+function answerTextOf(text: string): string | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const answers = (parsed as Record<string, unknown>)['answers']
+  if (!Array.isArray(answers)) return undefined
+  const chosen = answers
+    .flatMap((answer) => {
+      if (typeof answer !== 'object' || answer === null) return []
+      const record = answer as Record<string, unknown>
+      const selected = record['selected']
+      const picked = Array.isArray(selected) ? selected.map((value) => String(value)) : []
+      // A typed answer arrives with `selected: []` and the text in `custom`.
+      const typed = typeof record['custom'] === 'string' && record['custom'].trim().length > 0
+        ? [record['custom'].trim()] : []
+      return [...picked, ...typed]
+    })
+    .filter((value) => value.length > 0)
+  return chosen.length > 0 ? chosen.join(' / ') : undefined
+}
+
 /** The turn number an event belongs to, when the log records one. */
 function turnOf(event: SessionEvent): number | undefined {
   const turn = (event.data as { turn?: unknown }).turn
@@ -523,7 +599,7 @@ function turnOf(event: SessionEvent): number | undefined {
 
 /** A fresh, empty turn accumulator. */
 function emptyTurn(turn: number | undefined): Turn {
-  return { turn, user: [], assistant: [], tools: new Map(), resultBytes: 0, errors: [], writes: [] }
+  return { turn, user: [], assistant: [], tools: new Map(), resultBytes: 0, errors: [], writes: [], asked: [] }
 }
 
 /**
@@ -560,6 +636,9 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
   // times across a long autonomous run.
   const recordedObjectives = new Set<string>()
 
+  // Question text by tool-call id, so the matching result can be read as its answer.
+  const pendingQuestions = new Map<string, string>()
+
   for (const event of events) {
     if (event.type === 'turn/start') {
       const turn = turnOf(event)
@@ -587,6 +666,16 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
       const text = textOf(event)
       currentTurn.resultBytes += text.length
       const message = messageOf(event)
+      // A question's own result is its answer. Recorded here rather than left to the
+      // model, which dropped or reworded it depending on its heading style.
+      const callId = (message as { toolCallId?: string } | null)?.toolCallId
+      if (callId !== undefined) {
+        const question = pendingQuestions.get(callId)
+        if (question !== undefined) {
+          pendingQuestions.delete(callId)
+          currentTurn.asked.push({ question, answer: answerTextOf(text) ?? '(no answer recorded)' })
+        }
+      }
       if ((message as { isError?: boolean } | null)?.isError === true) {
         const firstLine = text.split('\n')[0] ?? ''
         currentTurn.errors.push(firstLine.slice(0, 100))
@@ -623,6 +712,10 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
     const text = textOf(event)
     if (text.length > 0) currentTurn.assistant.push(text)
     for (const call of toolCallsOf(event)) {
+      if (call.name === 'ask_user_question') {
+        const question = questionTextOf(call.arguments)
+        if (question !== undefined) pendingQuestions.set(call.id, question)
+      }
       currentTurn.tools.set(call.name, (currentTurn.tools.get(call.name) ?? 0) + 1)
       if (!WRITE_TOOLS.has(call.name)) continue
       const path = pathArgumentOf(call.arguments)
@@ -725,31 +818,34 @@ function materialKey(events: readonly SessionEvent[]): string {
  * @param block - one extraction block, possibly malformed.
  * @returns the same block with Asked last; unchanged when Asked is absent or already last.
  */
-export function moveAskedLast(block: string): string {
+export function moveAskedLast(block: string, asked: readonly { question: string; answer: string }[] = []): string {
   const lines = block.split('\n')
-  // Three heading forms observed from the same model: `## Asked`, `**Asked**：` and
-  // `- Asked:`. Recognising only the first left Asked at the top whenever the model
-  // changed style.
+  // Recognise every form the model has used for this section, in both languages, so
+  // it can be dropped. The content is regenerated from the log instead: four format
+  // changes across runs each broke either the position or the wording, and the log
+  // already holds both halves verbatim.
   const isAsked = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?(?:Asked|问)(?:\*\*)?\s*[:：]?\s*$/i.test(line)
   const isAskedInline = (line: string): boolean => /^\s*(?:[-*]\s+)?(?:\*\*)?(?:Asked|问)(?:\*\*)?\s*[:：]/i.test(line)
-  const isOther = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?(Did|Concluded|Overturned|做|结论|推翻)(?:\*\*)?\s*[:：]?/i.test(line)
+  const isOther = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?(?:Did|Concluded|Overturned|做|结论|推翻)(?:\*\*)?\s*[:：]?/i.test(line)
 
   const start = lines.findIndex((line) => isAsked(line) || isAskedInline(line))
-  if (start < 0) return block
-
-  // A heading form owns the lines until the next heading; an inline `- Asked: x`
-  // form owns only its own line.
-  const inline = isAskedInline(lines[start] ?? '') && !isAsked(lines[start] ?? '')
-  let end = start + 1
-  if (!inline) {
-    while (end < lines.length && !isOther(lines[end] ?? '')) end += 1
+  const kept = [...lines]
+  if (start >= 0) {
+    const inline = isAskedInline(kept[start] ?? '') && !isAsked(kept[start] ?? '')
+    let end = start + 1
+    if (!inline) {
+      while (end < kept.length && !isOther(kept[end] ?? '')) end += 1
+    }
+    kept.splice(start, end - start)
   }
+  while (kept.length > 0 && (kept.at(-1) ?? '').trim().length === 0) kept.pop()
 
-  const asked = lines.slice(start, end)
-  while (asked.length > 0 && (asked.at(-1) ?? '').trim().length === 0) asked.pop()
-  const rest = [...lines.slice(0, start), ...lines.slice(end)]
-  while (rest.length > 0 && (rest.at(-1) ?? '').trim().length === 0) rest.pop()
-  return [...rest, '', ...asked].join('\n')
+  if (asked.length === 0) return kept.join('\n')
+  const block_lines = asked.map(({ question, answer }) => {
+    const q = question.split('\n').join(' ')
+    return `- ${q} → ${answer}`
+  })
+  return [...kept, '', '## Asked', ...block_lines].join('\n')
 }
 
 function renderSection(section: Section, capChars: number | undefined): string {
@@ -771,7 +867,7 @@ function renderSection(section: Section, capChars: number | undefined): string {
       }
       if (turn.writes.length > 0) trailer.push(`  wrote: ${turn.writes.join(', ')}`)
       const body = trailer.length > 0 ? `${block}\n${trailer.join('\n')}` : block
-      lines.push(`### assistant\n${moveAskedLast(body)}`)
+      lines.push(`### assistant\n${moveAskedLast(body, turn.asked)}`)
     } else {
       let body = turn.assistant.join('\n')
       if (capChars !== undefined && body.length > capChars) {
