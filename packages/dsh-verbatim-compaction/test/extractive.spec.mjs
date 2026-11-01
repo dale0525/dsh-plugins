@@ -701,3 +701,43 @@ test('Asked is moved last whatever heading form the model used', () => {
     assert.ok(out.indexOf('Q-TEXT') > out.indexOf('CONCLUDED-TEXT'), `Asked must follow Concluded for ${asked}`)
   }
 })
+
+test('the Asked instruction asks for the chosen answer, not just the question', async () => {
+  // The instruction said "record the question, never the answer", which was aimed
+  // at the model copying the user's *request* into Asked. It was read literally: on
+  // a real session the material carried both ANSWER lines, including one that
+  // redirected the whole design ("当做游戏界面来设计…提取 3D 模型"), and the model
+  // wrote only the questions. The answer is the part a later turn cannot rebuild.
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- x', onCall: (r) => calls.push(r) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
+  const askedSection = prompt.slice(prompt.indexOf('## Asked'), prompt.indexOf('## Did'))
+  assert.ok(
+    !/never the answer/i.test(askedSection),
+    'the instruction must not forbid recording the answer',
+  )
+  assert.match(askedSection, /ANSWER/, 'the instruction must point at the ANSWER line')
+})
+
+test('a "no question was asked" placeholder is pruned like (none)', () => {
+  // The model wrote `Asked: 未提问。` for a turn with no question. The placeholder
+  // list only knew English "(none)" / "n/a", so this survived and cost tokens on
+  // every such turn.
+  for (const placeholder of ['未提问。', '未提问', '无提问', '没有提问', 'no questions were asked', 'none asked']) {
+    const out = pruneEmptySections(`Asked: ${placeholder}`)
+    assert.equal(out.trim(), '', `placeholder not pruned: ${placeholder}`)
+  }
+  const kept = pruneEmptySections('Asked: 用户选了 React Native')
+  assert.ok(kept.includes('React Native'), 'a real answer must survive')
+})
+
+test('an inline heading is not repeated as its own body', () => {
+  // `pruneEmptySections` treated `- Did: REAL-WORK` as a heading and then emitted
+  // the same line again as body, so every line of a real digest appeared twice.
+  const out = pruneEmptySections('- Did: REAL-WORK\n- Concluded: REAL-FINDING')
+  assert.equal(out, '- Did: REAL-WORK\n- Concluded: REAL-FINDING')
+})

@@ -268,40 +268,55 @@ export function isErrorResult(event: SessionEvent): boolean {
  * @returns the same text with empty sections removed, or an empty string when
  * nothing substantive remains.
  */
-export function pruneEmptySections(body: string): string {
-  const lines = body.split('\n')
+export function pruneEmptySections(block: string): string {
+  const lines = block.split('\n')
   const kept: string[] = []
-  let pendingHeading: string | undefined
-  let pendingBody: string[] = []
 
-  const flush = (): void => {
-    if (pendingHeading === undefined) {
-      kept.push(...pendingBody)
-      pendingBody = []
-      return
+  // A section is one heading plus the lines under it. The heading may be a line of
+  // its own (`## Asked`, bare `Asked`) or carry its body inline (`- Did: …`,
+  // `**Asked**：…`). Both forms occur in real output, sometimes in the same block.
+  const headingOf = (line: string): { own: string } | undefined => {
+    if (/^#{1,6}\s/.test(line)) return { own: '' }
+    if (/^\s*(?:[-*]\s+)?(?:\*\*)?(Asked|Did|Concluded|Overturned)(?:\*\*)?\s*[:：]?\s*$/i.test(line)) {
+      return { own: '' }
     }
-    const substantive = pendingBody.some((line) => {
-      const text = line.replace(/^\s*(?:[-*]|\d+\.)\s*/, '').trim()
-      if (text.length === 0) return false
-      return !/^(?:\(?none\)?|n\/a|na|-{1,2}|无|沒有|没有)$/i.test(text)
-    })
-    if (substantive) kept.push(pendingHeading, ...pendingBody)
-    pendingHeading = undefined
-    pendingBody = []
+    const inline = /^\s*(?:[-*]\s+)?(?:\*\*)?(Asked|Did|Concluded|Overturned)(?:\*\*)?\s*[:：]\s*(.*)$/i.exec(line)
+    if (inline !== null) return { own: inline[2] ?? '' }
+    return undefined
   }
 
-  // A heading is either `## Name` or the bare name on its own line. Models
-  // sometimes answer without the `##`; a real run returned bare `Asked` / `Did` /
-  // `Concluded` lines, so a `^#{1,6}`-only test left `Concluded\n- (none)` in the
-  // digest as body text and the placeholder reached the reader.
-  const known = /^(Asked|Did|Concluded|Overturned)$/i
+  // Placeholders for "nothing here" that models actually write. `未提问` came from a
+  // real run and cost a line on every turn that asked no question.
+  const placeholder = (text: string): boolean => {
+    const trimmed = text.trim()
+    if (trimmed.length === 0) return true
+    if (/^(?:\(?none\)?|n\/a|na|-{1,2}|无|沒有|没有)$/i.test(trimmed)) return true
+    return /^(?:未提问|无提问|没有提问|未提出|no questions? (?:were |was )?asked|none asked|no question)[。.！!]*$/i.test(trimmed)
+  }
+
+  let heading: string | undefined
+  let under: string[] = []
+
+  const flush = (): void => {
+    if (heading !== undefined) {
+      const own = headingOf(heading)?.own ?? ''
+      const substantive = (own.length > 0 && !placeholder(own))
+        || under.some((line) => !placeholder(line.replace(/^\s*(?:[-*]|\d+\.)\s*/, '')))
+      if (substantive) kept.push(heading, ...under)
+    } else {
+      kept.push(...under)
+    }
+    heading = undefined
+    under = []
+  }
+
   for (const line of lines) {
-    if (/^#{1,6}\s/.test(line) || known.test(line.trim())) {
+    if (headingOf(line) !== undefined) {
       flush()
-      pendingHeading = line
+      heading = line
       continue
     }
-    pendingBody.push(line)
+    under.push(line)
   }
   flush()
 
@@ -316,9 +331,10 @@ const EXTRACT_INSTRUCTION = [
   'For EVERY item, emit exactly one block, introduced by `=== SLOT <key> ===` using that same key. Under each heading write at most two terse lines. OMIT a heading entirely when it has no real information — do not write "(none)" and do not invent. An item where nothing substantive happened may be omitted altogether.',
   '',
   '## Asked',
-  '- what the ASSISTANT asked the USER in this turn: the question it put, and the options it offered',
-  '- the next user message is usually the answer, so record the question, never the answer',
-  '- NEVER restate or translate the user request here. It is already in the digest verbatim, directly above this block; copying it is the single most common way this section goes wrong.',
+  '- what the ASSISTANT asked the USER in this turn, and what the user chose',
+  '- the trace shows an `ANSWER:` line for a question the user answered, including answers they typed instead of picking an option. Record it: a later turn cannot rebuild which option was chosen, and a typed answer often redirects the whole task',
+  '- the user may also answer in their next message, which appears in the digest as plain text. Prefer the `ANSWER:` line when both exist',
+  '- NEVER restate or translate the user request here. It is already in the digest verbatim, directly above this block; copying it is the single most common way this section goes wrong. Recording the answer is not copying the request — the answer is the user replying to your question.',
   '',
   '## Did',
   '- what was actually done, concretely',
