@@ -1,7 +1,7 @@
 /**
- * dsh-force-rules — deterministic enforcement of five prose rules.
+ * dsh-force-rules — deterministic enforcement of six prose rules.
  *
- * Five prose rules in the operating instructions are mechanized here, because
+ * Six prose rules in the operating instructions are mechanized here, because
  * prose is advisory and each of these has already failed in practice:
  *
  *  1. A subagent seat is never one-shot. On dsh 0.2.0 `run_in_background: false`
@@ -33,6 +33,16 @@
  * checkpoint on each delegating session for exactly as long as that session has
  * a live seat. A seat that reports normally removes it; a seat that dies
  * silently leaves it to fire.
+ *
+ *  6. Decompose before acting, and say who does each line. A session that never
+ *     writes a list never has a line to hand to a seat, so the whole task runs
+ *     single-threaded -- measured: a 25-minute session spent 846 of 1507 seconds
+ *     in the model, its reasoning growing from ~220 to ~9000 characters per step
+ *     re-deriving the same unresolved questions, while 44% of its tool calls sat
+ *     on lanes that could have run in parallel. The same session settled the
+ *     moment a runtime line told it how long it had been going, so cost is
+ *     reported on an interval here: a number with no decision attached is a
+ *     number the model reads and ignores.
  *
  * How an answer is *written* is deliberately not enforced here. That belongs to
  * the prose rules in the operating instructions, which reach the model through
@@ -69,6 +79,18 @@ const CHECKPOINT_SECONDS = 600;
 
 /** Durable title identifying this plugin's checkpoint among a session's reminders. */
 const CHECKPOINT_TITLE = 'subagent checkpoint';
+
+/**
+ * Steps allowed between two cost readings of the same turn.
+ *
+ * A reading is a durable message, so emitting one per step would grow the very
+ * history it measures. Four steps is the point where a step that has stopped
+ * converging is visible without the meter itself becoming the cost.
+ */
+const COST_INTERVAL_STEPS = 4;
+
+/** Tool results above this many characters are called out by name in a reading. */
+const LARGE_RESULT_CHARS = 10_000;
 
 /** What the woken delegating session is told to do. */
 const CHECKPOINT_PROMPT = [
@@ -586,6 +608,69 @@ const ROUTE_REQUIREMENT = [
 ].join(' ');
 
 /**
+ * The decomposition requirement appended to `todo_write`'s own description.
+ *
+ * The rule — decompose first, name who does each line — lives in AGENTS.md and
+ * in the `delivery-discipline` skill, and a 25-minute session still skipped it:
+ * it never wrote a list, so it never had a line to hand to a seat, and the whole
+ * task ran single-threaded while its reasoning grew from ~220 to ~9000
+ * characters per step re-deriving the same unresolved questions. Writing the
+ * list is the moment the decision exists, so the requirement is stated there.
+ */
+const DECOMPOSITION_REQUIREMENT = [
+  'Every todo names who does it, as a prefix: `[root]` for a line this session does',
+  'itself, `[seat: <label>]` for a line handed to a subagent. Two lines with no',
+  'dependency between them are written as two todos and started together — a list',
+  'whose every entry is `[root]` is a statement that the whole task is one thread,',
+  'which is the shape to look at twice before starting. Keep a delegated line',
+  '`in_progress` until its seat reports, and give one line to one executor rather',
+  'than splitting it across several.',
+].join(' ');
+
+/**
+ * Format a character count as the shortest unit a model can weigh at a glance.
+ *
+ * @param count - characters returned by tools so far.
+ * @returns the compact form, e.g. `5K` or `1.2M`.
+ */
+function compactChars(count) {
+  if (count < 1000) return String(count);
+  if (count < 1_000_000) return `${Math.round(count / 1000)}K`;
+  return `${(count / 1_000_000).toFixed(1)}M`;
+}
+
+/**
+ * Render one cost reading.
+ *
+ * Stated as facts about this turn plus one instruction, because a number with no
+ * decision attached is a number the model reads and ignores: the reading exists
+ * to make "keep exploring" cost something visible at the moment it is chosen.
+ *
+ * @param spent - the turn's counters: calls, characters, largest single result.
+ * @param openTodos - todos not yet completed, or `undefined` when the session has no list.
+ * @returns the model-facing text.
+ */
+function renderCost(spent, openTodos) {
+  const parts = [
+    `Cost of this turn so far: ${spent.calls} tool call${spent.calls === 1 ? '' : 's'}, ` +
+      `${compactChars(spent.chars)} characters returned`,
+  ];
+  const oversized = spent.largest >= LARGE_RESULT_CHARS;
+  if (oversized) parts.push(`largest single result ${compactChars(spent.largest)}`);
+  if (openTodos !== undefined) parts.push(`${openTodos} todo${openTodos === 1 ? '' : 's'} still open`);
+  return (
+    `${parts.join(', ')}. ` +
+    (oversized
+      ? 'That large result now sits in your context for every later step; when a source is that big, ' +
+        'have a seat read it and return only the conclusion. '
+      : '') +
+    'Before spending more on exploration, check whether the answer you need is already in hand — ' +
+    'if it is, decide now with what you already have rather than confirming it again. ' +
+    'If the remaining work is several independent lines, hand them out instead of doing them in sequence.'
+  );
+}
+
+/**
  * Remove every checkpoint this plugin owns on one session.
  *
  * Looked up by title rather than remembered in memory so that "at most one live
@@ -624,6 +709,14 @@ export function apply(ctx) {
   const reconciles = new Map();
   /** Seat session id -> the profile its delegating instruction declared. */
   const profiles = new Map();
+  /**
+   * Session id -> the current turn's spending and the step its last reading was emitted at.
+   *
+   * Reset when the turn changes, because the question a reading answers is "how
+   * much has THIS turn cost" — a cumulative figure would grow without bound and
+   * stop being actionable.
+   */
+  const spentBySession = new Map();
 
   /**
    * Drive one session's checkpoint to match its current live seats.
@@ -731,6 +824,10 @@ export function apply(ctx) {
     const scope = context?.scope;
     let touched = false;
     const tools = assembly.tools.map((tool) => {
+      if (tool.name === 'todo_write') {
+        touched = true;
+        return { ...tool, description: tool.description + ' ' + DECOMPOSITION_REQUIREMENT };
+      }
       if (!isDelegation(ctx, tool, scope)) return tool;
       touched = true;
       const requirement = advertisesRoute(ctx, tool, scope)
@@ -739,6 +836,64 @@ export function apply(ctx) {
       return { ...tool, description: tool.description + ' ' + requirement };
     });
     return touched ? { ...assembly, tools } : assembly;
+  });
+
+  // The cost meter, half one: accumulate what this turn spends. Counted from
+  // `tools/result` rather than from the model's own narration, because a session
+  // that believes it has "only checked a few things" is exactly the session this
+  // reading is for.
+  ctx.on('tools/result', (exec, result) => {
+    const sessionId = exec.agent?.session?.id;
+    if (sessionId === undefined) return;
+    const chars = result.content.reduce(
+      (total, block) => total + (block.type === 'text' ? block.text.length : 0),
+      0,
+    );
+    const spent = spentBySession.get(sessionId) ?? { calls: 0, chars: 0, largest: 0, turn: undefined, at: undefined };
+    spent.calls += 1;
+    spent.chars += chars;
+    spent.largest = Math.max(spent.largest, chars);
+    spentBySession.set(sessionId, spent);
+  });
+
+  // The cost meter, half two: report it, but not on every step. A reading is a
+  // durable message, so a per-step reading would grow the history it measures.
+  ctx.on('agent/pre-step', async ({ agent, turn, step, signal }, next) => {
+    const decision = await next();
+    if (decision.kind === 'reject' || signal.aborted) return decision;
+    const sessionId = agent?.session?.id;
+    if (sessionId === undefined) return decision;
+    const spent = spentBySession.get(sessionId);
+    if (spent === undefined || spent.calls === 0) return decision;
+    if (spent.turn === undefined) {
+      // Counters are created by `tools/result`, which does not know the turn.
+      // The first pre-step that sees them is what stamps them.
+      spent.turn = turn;
+    } else if (spent.turn !== turn) {
+      // The previous turn's spending is not this turn's cost, and no tool has run
+      // in the new turn yet — so every counter here belongs to the old one.
+      spentBySession.delete(sessionId);
+      return decision;
+    }
+    if (spent.at !== undefined && step - spent.at < COST_INTERVAL_STEPS) return decision;
+    spent.at = step;
+    const todos = ctx.get('sessionProjections')?.stateOf(agent.session, 'todos');
+    const openTodos = todos === undefined || todos === null
+      ? undefined
+      : todos.filter((todo) => todo.status !== 'completed').length;
+    const text = renderCost(spent, openTodos);
+    return {
+      ...decision,
+      messages: [
+        ...decision.messages,
+        {
+          id: `force-rules-cost-${sessionId}-${turn}-${step}`,
+          role: 'user',
+          content: [{ type: 'text', text }],
+          source: { kind: 'force-rules', form: 'notice', summary: text.slice(0, 120) },
+        },
+      ],
+    };
   });
 
   // Rules 2 and 3: a seat that starts arms the wait bound; a seat that reports
@@ -764,5 +919,12 @@ export function apply(ctx) {
     seats.delete(info.id);
     if (seats.size === 0) liveSeats.delete(parentSessionId);
     return reconcile(parentSessionId);
+  });
+
+  // The meter's counters are per session and the session is what outlives them:
+  // without this, every session a long-running host ever opened would keep its
+  // counters alive for the life of the process.
+  ctx.on('agent/disposed', ({ agent }) => {
+    spentBySession.delete(agent.session.id);
   });
 }

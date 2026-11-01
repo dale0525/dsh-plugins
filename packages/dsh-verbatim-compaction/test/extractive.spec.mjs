@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { SESSION_FORMAT_VERSION, Session } from '@deepseek-ai/dsh-session'
-import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, buildSections, collectHints, moveAskedLast, pruneEmptySections, renderDigest } from '../lib/index.js'
+import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, buildSections, collectHints, moveAskedLast, parseExtraction, pruneEmptySections, renderDigest, renderExtractionBlock } from '../lib/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -55,9 +55,18 @@ async function harness(options = {}) {
           // is worth asserting rather than assuming.
           const prompt = request.messages.at(-1).content.map((block) => block.text).join('')
           const slots = [...prompt.matchAll(/^=== SLOT (\S+) \(turn /gm)].map((match) => match[1])
-          const answer = slots
-            .map((slot) => `=== SLOT ${slot} ===\n${options.extraction}`)
-            .join('\n\n')
+          // The contract is JSON with fields, so a fixture written as markdown is
+          // converted here. Tests keep expressing intent in the readable form; the
+          // wire format lives in one place.
+          const fields = { did: [], concluded: [], overturned: [] }
+          let current
+          for (const line of String(options.extraction).split('\n')) {
+            const heading = /^#{1,6}\s*(Asked|Did|Concluded|Overturned)\s*$/i.exec(line.trim())
+            if (heading) { current = heading[1].toLowerCase(); continue }
+            const item = /^\s*[-*]\s+(.*)$/.exec(line)
+            if (item && current !== undefined && current in fields) fields[current].push(item[1])
+          }
+          const answer = JSON.stringify({ slots: slots.map((key) => ({ key, ...fields })) })
           yield { type: 'text-delta', text: answer }
         }
         yield { type: 'finish', reason: { kind: 'stop' } }
@@ -232,7 +241,7 @@ test('a section with two turns gets one extraction, not two copies', () => {
     { type: 'assistant/message', seq: 3, time: 4, surfaceOp: 'append', data: { turn: 2, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'SECOND STEP' }] } } },
   ]
   // buildSections puts both turns in one section; the extraction addresses 0:0.
-  const text = renderDigest(events, 20000, new Map([['0:0', 'BLOCK']]))
+  const text = renderDigest(events, 20000, new Map([['0:0', { did: ['BLOCK'], concluded: [], overturned: [] }]]))
   assert.equal((text.match(/BLOCK/g) ?? []).length, 1, 'the block must appear once')
   assert.ok(!text.includes('duplicate'), 'no duplicate placeholder may be produced')
 })
@@ -245,7 +254,7 @@ test('a duplicate turn number does not collapse two blocks into one', () => {
     { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'FIRST' }], source: { kind: 'user' } } },
     { type: 'user/message', seq: 2, time: 3, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'SECOND' }], source: { kind: 'user' } } },
   ]
-  const rendered = renderDigest(events, 20000, new Map([['0:0', 'BLOCK-FIRST'], ['1:0', 'BLOCK-SECOND']]))
+  const rendered = renderDigest(events, 20000, new Map([['0:0', { did: ['BLOCK-FIRST'], concluded: [], overturned: [] }], ['1:0', { did: ['BLOCK-SECOND'], concluded: [], overturned: [] }]]))
   assert.ok(rendered.includes('BLOCK-FIRST'), 'first slot must keep its own block')
   assert.ok(rendered.includes('BLOCK-SECOND'), 'second slot must keep its own block')
   assert.ok(!/BLOCK-FIRST[\s\S]*BLOCK-FIRST/.test(rendered), 'the same block must not appear twice')
@@ -274,9 +283,13 @@ test('the extraction instruction asks for all four sections in order', async () 
   await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
 
   const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
-  const order = ['## Asked', '## Did', '## Concluded', '## Overturned'].map((h) => prompt.indexOf(h))
-  assert.ok(order.every((index) => index >= 0), 'every section must be requested')
-  assert.deepEqual([...order].sort((a, b) => a - b), order, 'sections must be requested in order')
+  // The reply is JSON now, so the instruction names the fields rather than the
+  // headings: the renderer owns every heading, which is what stopped a heading from
+  // sharing a line with its body.
+  for (const field of ['"key"', '"did"', '"concluded"', '"overturned"']) {
+    assert.ok(prompt.includes(field), `the contract must name ${field}`)
+  }
+  assert.ok(/one json object/i.test(prompt), 'the reply must be pinned to JSON')
 })
 
 test('headings keep the user/assistant marker but drop the turn number', async () => {
@@ -299,7 +312,7 @@ test('sections whose body is only "(none)" are dropped', async () => {
   // costs ~4 tokens and the placeholder another ~3, so 130 turns of nothing
   // spend ~900 tokens recording that nothing happened.
   const { engine } = await harness({
-    extraction: '## Asked\n- (none)\n## Did\n- REAL-WORK\n## Concluded\n- (none)\n## Overturned\n- (none)',
+    extraction: '## Did\n- REAL-WORK',
   })
   const session = buildSession()
   const nodes = session.surface.nodes
@@ -307,7 +320,6 @@ test('sections whose body is only "(none)" are dropped', async () => {
 
   const text = digestOf(checkpointOf(session))
   assert.ok(text.includes('REAL-WORK'), 'the non-empty section must survive')
-  assert.ok(!text.includes('## Asked'), 'an empty Asked must be dropped')
   assert.ok(!text.includes('## Concluded'), 'an empty Concluded must be dropped')
   assert.ok(!text.includes('## Overturned'), 'an empty Overturned must be dropped')
   assert.ok(!text.includes('(none)'), 'the placeholder must not survive anywhere')
@@ -315,7 +327,7 @@ test('sections whose body is only "(none)" are dropped', async () => {
 
 test('an extraction with nothing at all leaves no empty assistant block', async () => {
   const { engine } = await harness({
-    extraction: '## Asked\n- (none)\n## Did\n- (none)\n## Concluded\n- (none)\n## Overturned\n- (none)',
+    extraction: '## Did\n- (none)',
   })
   const session = buildSession()
   const nodes = session.surface.nodes
@@ -323,9 +335,13 @@ test('an extraction with nothing at all leaves no empty assistant block', async 
 
   const text = digestOf(checkpointOf(session))
   assert.ok(!text.includes('(none)'), 'placeholders must be gone')
-  // The turn keeps its pointer line, so the assistant heading may remain — what
-  // must not remain is a heading followed by nothing.
-  assert.ok(!/### assistant\n\s*\n\s*\n/.test(text), 'no assistant heading with an empty body')
+  // A field list is the answer to "what is there", so "nothing" is an empty list.
+  // The turn then renders no assistant block at all — unless it has prose, which
+  // the fixture's other turns do, so the assertion is about this turn's own body.
+  assert.ok(
+    !/### assistant\n## /.test(text),
+    'no assistant heading may be followed directly by another heading',
+  )
 })
 
 test('a slot already extracted in an earlier compaction is not extracted again', async () => {
@@ -388,14 +404,14 @@ test('Asked never restates the user request, and says so in the instruction', as
   await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
 
   const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
-  const asked = prompt.slice(prompt.indexOf('## Asked'), prompt.indexOf('## Did'))
+  // Asked is no longer requested from the model at all; the instruction says so.
   assert.ok(
-    /assistant/i.test(asked) && /user/i.test(asked),
-    'the Asked instruction must name who asks and who answers',
+    /do not report questions and answers/i.test(prompt),
+    'the instruction must tell the model to leave questions alone',
   )
   assert.ok(
-    /never|do not/i.test(asked) && /request/i.test(asked),
-    'the Asked instruction must forbid restating the user request',
+    /do not report questions and answers/i.test(prompt),
+    'the Asked instruction must hand the section over to the code',
   )
 })
 
@@ -642,7 +658,7 @@ test('the Asked section is rendered last, right before the user reply', () => {
     { type: 'assistant/message', seq: 4, time: 5, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'ASKED-TEXT' }] }) }] } } },
     { type: 'tool/result', seq: 5, time: 6, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["YES"]}]}' }] } } },
   )
-  const text = renderDigest(events, 20000, new Map([['0:0', block]]))
+  const text = renderDigest(events, 20000, new Map([['0:0', { did: ['DID-TEXT'], concluded: ['CONCLUDED-TEXT'], overturned: [] }]]))
   const askedAt = text.indexOf('ASKED-TEXT')
   assert.ok(askedAt > text.indexOf('DID-TEXT'), 'Asked must come after Did')
   assert.ok(askedAt > text.indexOf('CONCLUDED-TEXT'), 'Asked must come after Concluded')
@@ -660,7 +676,7 @@ test('the Asked section stays last even when the turn has an errors line', () =>
     { type: 'assistant/message', seq: 4, time: 5, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'ASKED-TEXT' }] }) }] } } },
     { type: 'tool/result', seq: 5, time: 6, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["YES"]}]}' }] } } },
   )
-  const text = renderDigest(events, 20000, new Map([['0:0', block]]))
+  const text = renderDigest(events, 20000, new Map([['0:0', { did: ['DID-TEXT'], concluded: ['CONCLUDED-TEXT'], overturned: [] }]]))
   assert.ok(
     text.indexOf('ASKED-TEXT') > text.indexOf('errors:'),
     'Asked must be the last thing before the next user message',
@@ -728,12 +744,16 @@ test('the Asked instruction asks for the chosen answer, not just the question', 
   await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
 
   const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
-  const askedSection = prompt.slice(prompt.indexOf('## Asked'), prompt.indexOf('## Did'))
+  // Asked is code-generated, so the old "record the question, never the answer"
+  // wording is gone entirely rather than reworded.
   assert.ok(
-    !/never the answer/i.test(askedSection),
+    !/never the answer/i.test(prompt),
     'the instruction must not forbid recording the answer',
   )
-  assert.match(askedSection, /ANSWER/, 'the instruction must point at the ANSWER line')
+  assert.ok(
+    /do not report questions and answers/i.test(prompt),
+    'the instruction must hand questions over to the code',
+  )
 })
 
 test('a "no question was asked" placeholder is pruned like (none)', () => {
@@ -808,9 +828,46 @@ test('the Asked block is generated from the log, not taken from the model', () =
   ]
   // The model's own Asked is wrong on purpose: it must not reach the digest.
   const modelBlock = '## Did\n- REAL\n## Asked\n- MODEL-INVENTED-ASKED'
-  const text = renderDigest(events, 20000, new Map([['0:0', modelBlock]]))
+  const text = renderDigest(events, 20000, new Map([['0:0', { did: ['REAL'], concluded: [], overturned: [] }]]))
   assert.ok(!text.includes('MODEL-INVENTED-ASKED'), 'the model\'s Asked must be dropped')
   assert.ok(text.includes('PICK ONE'), 'the question must come from the log')
   assert.ok(text.includes('OPT-B'), 'the chosen answer must come from the log')
   assert.ok(text.includes('REAL'), 'the rest of the extraction must survive')
+})
+
+test('extraction is parsed from JSON and assembled by code', () => {
+  // Free-form markdown let the model put a heading inline with its body —
+  // "… 重出 4 屏 Concluded Stitch 会回填真实车牌" — and no post-hoc regex can tell
+  // where the body ends and the next heading begins. The model now returns fields,
+  // and the renderer owns every heading, bullet and blank line.
+  const answer = JSON.stringify({
+    slots: [
+      { key: '0:0', did: ['FOUND-SYSTEMS'], concluded: ['PLACEHOLDER-IDENTITY'], overturned: ['OLD-BELIEF'] },
+      { key: '1:0', did: ['SECOND-TURN'] },
+    ],
+  })
+  const parsed = parseExtraction(answer)
+  assert.deepEqual(parsed.get('0:0'), { did: ['FOUND-SYSTEMS'], concluded: ['PLACEHOLDER-IDENTITY'], overturned: ['OLD-BELIEF'] })
+  assert.deepEqual(parsed.get('1:0'), { did: ['SECOND-TURN'], concluded: [], overturned: [] })
+
+  const block = renderExtractionBlock(parsed.get('0:0'))
+  assert.equal(block, '## Did\n- FOUND-SYSTEMS\n## Concluded\n- PLACEHOLDER-IDENTITY\n## Overturned\n- OLD-BELIEF')
+})
+
+test('a heading-like word inside a field stays inside that field', () => {
+  // The real failure: `Concluded` appeared as a word in the middle of a sentence
+  // and was read as a heading, so the sentence was cut and the rest became body.
+  const answer = JSON.stringify({
+    slots: [{ key: '0:0', did: ['重出 4 屏 Concluded 会回填真实车牌'], concluded: ['真结论'] }],
+  })
+  const block = renderExtractionBlock(parseExtraction(answer).get('0:0'))
+  assert.equal(block, '## Did\n- 重出 4 屏 Concluded 会回填真实车牌\n## Concluded\n- 真结论')
+})
+
+test('malformed extraction yields nothing rather than a mangled block', () => {
+  assert.equal(parseExtraction('not json at all').size, 0)
+  assert.equal(parseExtraction('{"slots":').size, 0)
+  // A fenced block is still JSON; models like to wrap it.
+  const fenced = '```json\n{"slots":[{"key":"0:0","did":["X"]}]}\n```'
+  assert.deepEqual(parseExtraction(fenced).get('0:0'), { did: ['X'], concluded: [], overturned: [] })
 })

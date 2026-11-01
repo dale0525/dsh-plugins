@@ -328,30 +328,103 @@ const EXTRACT_INSTRUCTION = [
   'You are summarizing a batch of turns from a coding session for a compaction checkpoint.',
   'Each item is introduced by a line `=== SLOT <key> (turn <n>) ===` and contains the user request, the assistant prose (may be empty), and a trace of the tool calls it made (descriptions only) plus any results the log marked as errors.',
   '',
-  'For EVERY item, emit exactly one block, introduced by `=== SLOT <key> ===` using that same key. Under each heading write at most two terse lines. OMIT a heading entirely when it has no real information — do not write "(none)" and do not invent. An item where nothing substantive happened may be omitted altogether.',
+  'Reply with ONE JSON object and nothing else. No prose, no code fence, no markdown.',
+  'Shape: {"slots":[{"key":"<the slot key>","did":["…"],"concluded":["…"],"overturned":["…"]}]}',
   '',
-  '## Asked',
-  '- what the ASSISTANT asked the USER in this turn, and what the user chose',
-  '- the trace shows an `ANSWER:` line for a question the user answered, including answers they typed instead of picking an option. Record it: a later turn cannot rebuild which option was chosen, and a typed answer often redirects the whole task',
-  '- the user may also answer in their next message, which appears in the digest as plain text. Prefer the `ANSWER:` line when both exist',
-  '- NEVER restate or translate the user request here. It is already in the digest verbatim, directly above this block; copying it is the single most common way this section goes wrong. Recording the answer is not copying the request — the answer is the user replying to your question.',
+  'Rules for the fields:',
+  '- `key` must be copied exactly from the `=== SLOT <key> ===` line. One entry per slot.',
+  '- `did`: what was actually done, concretely. `concluded`: findings, decisions or measurements a later turn would need. `overturned`: earlier conclusions this turn disproved.',
+  '- Each field is an array of short strings, at most two per field. Use `[]` for a field with nothing to say. Omit the whole entry when nothing substantive happened.',
+  '- Write only the content of a line. Never write a heading, a bullet, or a field name inside a string.',
+  '- Do not describe the tool calls themselves ("ran bash", "explored the repo"). State what came out of them.',
+  '- Do not repeat a conclusion an earlier turn already stated.',
+  '- Never invent. If the material does not support a claim, leave the field empty.',
   '',
-  '## Did',
-  '- what was actually done, concretely',
-  '',
-  '## Concluded',
-  '- findings, decisions, or measurements that a later turn would need',
-  '',
-  '## Overturned',
-  '- earlier conclusions this turn disproved or replaced',
-  '',
-  'Do not describe the tool calls themselves ("ran bash", "explored the repo"). State what came out of them. Do not repeat a conclusion the previous turn already stated. If the trace is too thin to support a claim, write "(none)".',
+  'Do not report questions and answers: those are read from the session log directly and need no summary.',
   '',
   // Measured on a real 32-slot session: whole batches came back in English while
   // the material was Chinese, so the digest mixed two languages for one
   // conversation.
-  'Write in the same language as the material. A session whose requests are Chinese gets Chinese blocks; do not switch to English.',
+  'Write the strings in the same language as the material. A session whose requests are Chinese gets Chinese text; do not switch to English.',
 ].join('\n')
+
+/** One slot's extraction, as the model returns it. */
+export interface Extraction {
+  did: string[]
+  concluded: string[]
+  overturned: string[]
+}
+
+/**
+ * Parse the model's JSON reply into per-slot extractions.
+ *
+ * The reply used to be free-form markdown, which let a heading share a line with
+ * its body — a real block read `… 重出 4 屏 Concluded Stitch 会回填真实车牌`, and no
+ * post-hoc regex can decide where that sentence ends and the next heading begins.
+ * Fields remove the ambiguity: the renderer owns every heading and bullet.
+ *
+ * @param answer - the model's raw reply.
+ * @returns extractions by slot key; empty when the reply is not usable JSON.
+ */
+export function parseExtraction(answer: string): Map<string, Extraction> {
+  const out = new Map<string, Extraction>()
+  // Models wrap JSON in a fence often enough that stripping it is not defensive
+  // programming but the common case.
+  const body = answer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  const start = body.indexOf('{')
+  const end = body.lastIndexOf('}')
+  if (start < 0 || end <= start) return out
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body.slice(start, end + 1))
+  } catch {
+    return out
+  }
+  if (typeof parsed !== 'object' || parsed === null) return out
+  const slots = (parsed as Record<string, unknown>)['slots']
+  if (!Array.isArray(slots)) return out
+  const strings = (value: unknown): string[] => (Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+      .map((item) => item.replace(/\s+/g, ' ').trim())
+      .filter((item) => item.length > 0)
+      // A field is a list, so "nothing here" is an empty list. Models still write a
+      // placeholder often enough that dropping it is worth one test.
+      .filter((item) => !/^(?:\(?none\)?|n\/a|na|-{1,2}|无|沒有|没有)$/i.test(item))
+      .filter((item) => !/^(?:未提问|无提问|没有提问|no questions? (?:were |was )?asked|none asked)[。.！!]*$/i.test(item))
+    : [])
+  for (const slot of slots) {
+    if (typeof slot !== 'object' || slot === null) continue
+    const record = slot as Record<string, unknown>
+    const key = record['key']
+    if (typeof key !== 'string' || key.length === 0) continue
+    out.set(key, {
+      did: strings(record['did']),
+      concluded: strings(record['concluded']),
+      overturned: strings(record['overturned']),
+    })
+  }
+  return out
+}
+
+/**
+ * Render one extraction as the digest block, headings included.
+ *
+ * @param extraction - the fields for one slot.
+ * @returns markdown with a heading per non-empty field; empty string when every
+ * field is empty.
+ */
+export function renderExtractionBlock(extraction: Extraction | undefined): string {
+  if (extraction === undefined) return ''
+  const lines: string[] = []
+  const section = (heading: string, items: readonly string[] | undefined): void => {
+    if (items === undefined || items.length === 0) return
+    lines.push(`## ${heading}`, ...items.map((item) => `- ${item}`))
+  }
+  section('Did', extraction.did)
+  section('Concluded', extraction.concluded)
+  section('Overturned', extraction.overturned)
+  return lines.join('\n')
+}
 
 /** Turns handed to one extraction call. */
 const TURNS_PER_CALL = 8
@@ -515,7 +588,7 @@ interface Turn {
    * the assistant prose's place in the digest: keeping both duplicated the same
    * content and pushed the prose out through the budget.
    */
-  extracted?: string
+  extracted?: Extraction
 }
 
 /** One digest section: everything from one non-injected user message to the next. */
@@ -738,7 +811,7 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
  */
 function withExtractions(
   sections: readonly Section[],
-  extracted: ReadonlyMap<string, string>,
+  extracted: ReadonlyMap<string, Extraction>,
 ): Section[] {
   return sections.map((section, sectionIndex) => ({
     turns: section.turns.map((turn, turnIndex) => {
@@ -852,8 +925,10 @@ function renderSection(section: Section, capChars: number | undefined): string {
   const lines: string[] = []
   for (const turn of section.turns) {
     if (turn.user.length > 0) lines.push(`\n## user\n${turn.user.join('\n')}`)
-    if (turn.extracted !== undefined) {
-      let block = turn.extracted
+    // An extraction whose every field is empty renders nothing: a heading followed by
+    // no body reads as a turn that did something but says nothing.
+    if (turn.extracted !== undefined && renderExtractionBlock(turn.extracted).length > 0) {
+      let block = renderExtractionBlock(turn.extracted)
       if (capChars !== undefined && block.length > capChars) {
         block = `${block.slice(0, capChars)}\n…(+${block.length - capChars} chars)`
       }
@@ -897,7 +972,9 @@ function assistantChars(sections: readonly Section[]): number {
   let total = 0
   for (const section of sections) {
     for (const turn of section.turns) {
-      total += turn.extracted !== undefined ? turn.extracted.length : turn.assistant.join('\n').length
+      total += turn.extracted !== undefined
+        ? renderExtractionBlock(turn.extracted).length
+        : turn.assistant.join('\n').length
     }
   }
   return total
@@ -931,7 +1008,7 @@ function assistantChars(sections: readonly Section[]): number {
 export function renderDigest(
   events: readonly SessionEvent[],
   budgetTokens: number,
-  extracted?: ReadonlyMap<string, string>,
+  extracted?: ReadonlyMap<string, Extraction>,
 ): string {
   const sections = extracted === undefined ? buildSections(events) : withExtractions(buildSections(events), extracted)
   const budgetChars = Math.max(0, budgetTokens * 4)
@@ -1127,8 +1204,8 @@ async function extractBatch(
   agent: Agent,
   batch: readonly { key: string; turn: number | undefined; events: readonly SessionEvent[] }[],
   signal?: AbortSignal,
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>()
+): Promise<Map<string, Extraction>> {
+  const out = new Map<string, Extraction>()
   const llm = ctx.llm
   if (llm === undefined) return out
   const route = agent.session.requestHeader()?.config
@@ -1175,13 +1252,7 @@ async function extractBatch(
 
   const answer = chunks.join('').trim()
   if (answer.length === 0) return out
-  const blocks = answer.split(/^=== SLOT ([^\s(]+)[^=]*===$/m)
-  for (let index = 1; index < blocks.length; index += 2) {
-    const key = blocks[index]
-    const body = pruneEmptySections((blocks[index + 1] ?? '').trim())
-    if (key !== undefined && body.length > 0) out.set(key, body)
-  }
-  return out
+  return parseExtraction(answer)
 }
 
 
@@ -1212,7 +1283,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
    * Process-local and bounded. A restart loses it, costing one re-extraction —
    * the same behaviour as before this cache existed.
    */
-  private readonly extractionCache = new Map<string, string>()
+  private readonly extractionCache = new Map<string, Extraction>()
   /**
    * Build the replacement checkpoint content from the session log.
    *
@@ -1287,7 +1358,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     source: readonly SessionEvent[],
     agent: Agent,
     signal?: AbortSignal,
-  ): Promise<Map<string, string>> {
+  ): Promise<Map<string, Extraction>> {
     // Walk the same sections the renderer will use, so a key addresses the exact
     // slot the block will be written into. Grouping by turn number instead lost
     // blocks whenever the log reused a number.
@@ -1337,7 +1408,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       slots.push({ key: turnKey(sectionIndex, 0), turn: first.turn, events: grouped[sectionIndex] ?? [] })
     }
 
-    const extracted = new Map<string, string>()
+    const extracted = new Map<string, Extraction>()
     const missing: typeof slots = []
     for (const slot of slots) {
       const cached = this.extractionCache.get(materialKey(slot.events))

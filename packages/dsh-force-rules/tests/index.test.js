@@ -121,6 +121,11 @@ const PLAIN_TOOL = {
   },
 };
 
+/** A projection registry stub exposing the host's `todos` unit and nothing else. */
+function fakeProjections(todos) {
+  return { stateOf: (_session, key) => (key === 'todos' ? todos : undefined) };
+}
+
 /** A reminder service that records what the plugin did to it. */
 function fakeSchedule() {
   const created = [];
@@ -157,7 +162,7 @@ function fakeSchedule() {
  * the delegation tools, and it is what makes the difference between querying the
  * registry with a scope and querying it without one observable here.
  */
-function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = [] } = {}) {
+function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = [], projections } = {}) {
   const listeners = new Map();
   const registered = [];
   const hiddenGlobally = new Set(agentScoped);
@@ -185,6 +190,7 @@ function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = 
     get: (service) => {
       if (service === 'schedule') return schedule;
       if (service === 'llm') return llm;
+      if (service === 'sessionProjections') return projections;
       return undefined;
     },
     on: (event, handler) => {
@@ -209,6 +215,7 @@ function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = 
 async function fire(listeners, event, ...args) {
   const handlers = listeners.get(event);
   assert.ok(handlers, `no listener registered for ${event}`);
+  if (args.length === 1 && typeof args[0] === 'function') return args[0]();
   const [payload, terminal] = args;
   if (terminal === undefined) {
     let last;
@@ -218,6 +225,20 @@ async function fire(listeners, event, ...args) {
   const dispatch = (index) =>
     index >= handlers.length ? terminal() : handlers[index](payload, () => dispatch(index + 1));
   return dispatch(0);
+}
+
+/**
+ * Fire a plain notification that carries more than one argument.
+ *
+ * `tools/result` publishes `(exec, result)` with no continuation, which the
+ * waterfall-shaped `fire` above cannot express.
+ */
+async function fireNotification(listeners, event, ...payload) {
+  const handlers = listeners.get(event);
+  assert.ok(handlers, `no listener registered for ${event}`);
+  let last;
+  for (const handler of handlers) last = await handler(...payload);
+  return last;
 }
 
 /** The downstream decision a waterfall listener forwards to. */
@@ -896,3 +917,166 @@ test('an assembly with no scope falls back to the calling agent rather than cras
   assert.match(assembled.tools[0].description, /\[只读\]/, 'a scope-less assembly still annotates a globally registered tool');
 });
 
+// ---------------------------------------------------------------------------
+// The decomposition requirement on `todo_write`.
+//
+// The rule "decompose before acting, and say who does each line" lives in
+// AGENTS.md and in `delivery-discipline`, and was still skipped in practice: a
+// 25-minute session never wrote a list, so it never had a line to hand to a
+// seat, and the whole task ran single-threaded. The tool description is the one
+// place in front of the model at the moment it decides to write the list.
+// ---------------------------------------------------------------------------
+
+test('the todo tool description carries the ownership requirement', async () => {
+  const { listeners } = harness();
+  const assembly = {
+    tools: [
+      { name: 'todo_write', description: 'Record and update a task list.', parameters: {} },
+      { name: 'bash', description: 'Run a command.', parameters: {} },
+    ],
+  };
+  const assembled = await fireAssembly(listeners, assembly, { agent: undefined }, async () => assembly);
+  const byName = new Map(assembled.tools.map((tool) => [tool.name, tool]));
+  assert.match(byName.get('todo_write').description, /\[root\]/, 'the owner is named where the list is written');
+  assert.match(byName.get('todo_write').description, /\[seat: <label>\]/);
+  assert.equal(byName.get('bash').description, 'Run a command.', 'an unrelated tool is untouched');
+});
+
+test('the todo requirement lands exactly once across repeated assemblies', async () => {
+  const { listeners } = harness();
+  const source = () => ({ tools: [{ name: 'todo_write', description: 'Record a list.', parameters: {} }] });
+  const first = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
+  const second = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
+  assert.deepEqual(second, first, 'a stable description keeps the request header from churning');
+  assert.equal(first.tools[0].description.split('[seat: <label>]').length - 1, 1);
+});
+
+// ---------------------------------------------------------------------------
+// The cost meter.
+//
+// Observed on a real session: reasoning grew from ~220 characters per step to
+// ~9000 while the same unresolved questions were re-derived, and the one input
+// that ended it was a runtime line reporting elapsed time — the model settled in
+// the very next step. Cost is that same lever for a different quantity. It is
+// injected on an interval rather than every step because each reading is a
+// durable message; per-step readings would grow the very history they measure.
+// ---------------------------------------------------------------------------
+
+/** One settled tool result whose only content is `text`. */
+function settled(agent, text) {
+  return [{ agent }, { isError: false, value: {}, content: [{ type: 'text', text }] }];
+}
+
+/** A pre-step payload for one step of one turn. */
+function stepOf(agent, turn = 1) {
+  return { agent, turn, step: 1, messages: [], signal: { aborted: false } };
+}
+
+/** The downstream decision a pre-step listener forwards to. */
+const ENTER = async () => ({ kind: 'enter', messages: [] });
+
+/** Fire one pre-step and return the reading it appended, or undefined. */
+async function readingAfter(listeners, agent, turn = 1) {
+  const decision = await fire(listeners, 'agent/pre-step', stepOf(agent, turn), ENTER);
+  return decision.messages?.length > 0 ? decision.messages.at(-1).content[0].text : undefined;
+}
+
+test('a session that has spent nothing is told nothing', async () => {
+  const { listeners } = harness();
+  assert.equal(await readingAfter(listeners, rootAgent()), undefined);
+});
+
+test('the first spending of a turn produces a reading', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(4000)));
+  assert.match(await readingAfter(listeners, agent), /Cost of this turn so far/);
+});
+
+test('a second reading inside the interval is withheld', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(4000)));
+  assert.ok(await readingAfter(listeners, agent), 'the first reading is due');
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(4000)));
+  assert.equal(await readingAfter(listeners, agent), undefined, 'the interval is what keeps the meter out of the history');
+});
+
+test('the reading names calls, volume, and the open todo count', async () => {
+  const { listeners } = harness({
+    projections: fakeProjections([
+      { content: 'a', status: 'completed' },
+      { content: 'b', status: 'in_progress' },
+      { content: 'c', status: 'pending' },
+    ]),
+  });
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(5000)));
+  const text = await readingAfter(listeners, agent);
+  assert.match(text, /1 tool call/, 'the call count is stated');
+  assert.match(text, /5K characters returned/, 'the volume is stated in a unit the model can weigh');
+  assert.match(text, /2 todos still open/, 'finished work is not counted as open');
+});
+
+test('a session with no todo projection omits the todo clause rather than inventing one', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(5000)));
+  const text = await readingAfter(listeners, agent);
+  assert.doesNotMatch(text, /todos still open/);
+  assert.match(text, /1 tool call/);
+});
+
+test('an oversized single result is named in the reading', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(30_000)));
+  assert.match(await readingAfter(listeners, agent), /largest single result 30K/);
+});
+
+test('the reading tells the model what to do with the number', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(5000)));
+  assert.match(await readingAfter(listeners, agent), /decide now with what you already have/);
+});
+
+test('a rejected step is not given a reading', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(5000)));
+  const rejected = await fire(listeners, 'agent/pre-step', stepOf(agent), async () => ({ kind: 'reject' }));
+  assert.deepEqual(rejected, { kind: 'reject' });
+});
+
+test('a new turn starts its own meter', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(5000)));
+  assert.ok(await readingAfter(listeners, agent, 1), 'turn one is metered');
+  assert.equal(await readingAfter(listeners, agent, 2), undefined, 'the next turn has spent nothing yet');
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(5000)));
+  assert.match(await readingAfter(listeners, agent, 2), /1 tool call/, 'and it counts from zero');
+});
+
+test('a disposed session stops being metered', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(5000)));
+  await fire(listeners, 'agent/disposed', { agent });
+  assert.equal(await readingAfter(listeners, agent), undefined, 'a dead session keeps no counters');
+});
+
+test('an oversized result tells the model what to do about it next time', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(30_000)));
+  assert.match(await readingAfter(listeners, agent), /have a seat read it and return only the conclusion/);
+});
+
+test('a reading without an oversized result does not suggest a seat', async () => {
+  const { listeners } = harness();
+  const agent = rootAgent();
+  await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(5000)));
+  assert.doesNotMatch(await readingAfter(listeners, agent), /have a seat read it/);
+});

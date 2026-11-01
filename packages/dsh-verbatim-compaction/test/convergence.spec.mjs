@@ -51,9 +51,19 @@ async function harness(options = {}) {
         if (options.extraction !== undefined) {
           const prompt = request.messages.at(-1).content.map((block) => block.text).join('')
           const slots = [...prompt.matchAll(/^=== SLOT (\S+) \(turn /gm)].map((match) => match[1])
+          // The reply is JSON with fields now; a fixture written as markdown is
+          // converted here so the tests keep expressing intent readably.
+          const fields = { did: [], concluded: [], overturned: [] }
+          let current
+          for (const line of String(options.extraction).split('\n')) {
+            const heading = /^#{1,6}\s*(Asked|Did|Concluded|Overturned)\s*$/i.exec(line.trim())
+            if (heading) { current = heading[1].toLowerCase(); continue }
+            const item = /^\s*[-*]\s+(.*)$/.exec(line)
+            if (item && current !== undefined && current in fields) fields[current].push(item[1])
+          }
           yield {
             type: 'text-delta',
-            text: slots.map((slot) => `=== SLOT ${slot} ===\n${options.extraction}`).join('\n\n'),
+            text: JSON.stringify({ slots: slots.map((key) => ({ key, ...fields })) }),
           }
         }
         yield { type: 'finish', reason: { kind: 'stop' } }
