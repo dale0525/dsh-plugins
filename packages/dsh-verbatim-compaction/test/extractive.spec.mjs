@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { SESSION_FORMAT_VERSION, Session } from '@deepseek-ai/dsh-session'
-import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, buildSections, collectHints, moveAskedLast, parseExtraction, renderDigest, renderExtractionBlock } from '../lib/index.js'
+import VerbatimCompactionEngine, { DIGEST_TOKEN_CEILING, buildSections, collectHints, parseExtraction, renderDigest, renderExtractionBlock } from '../lib/index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -68,7 +68,7 @@ async function harness(options = {}) {
           // The contract is JSON with fields, so a fixture written as markdown is
           // converted here. Tests keep expressing intent in the readable form; the
           // wire format lives in one place.
-          const fields = { did: [], concluded: [], overturned: [] }
+          const fields = { did: [], concluded: [], overturned: [], asked: [] }
           let current
           for (const line of String(options.extraction).split('\n')) {
             const heading = /^#{1,6}\s*(Asked|Did|Concluded|Overturned)\s*$/i.exec(line.trim())
@@ -251,7 +251,7 @@ test('a section with two turns gets one extraction, not two copies', () => {
     { type: 'assistant/message', seq: 3, time: 4, surfaceOp: 'append', data: { turn: 2, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'SECOND STEP' }] } } },
   ]
   // buildSections puts both turns in one section; the extraction addresses 0:0.
-  const text = renderDigest(events, 20000, new Map([['0:0', { did: ['BLOCK'], concluded: [], overturned: [] }]]))
+  const text = renderDigest(events, 20000, new Map([['0:0', { did: ['BLOCK'], concluded: [], overturned: [], asked: [] }]]))
   assert.equal((text.match(/BLOCK/g) ?? []).length, 1, 'the block must appear once')
   assert.ok(!text.includes('duplicate'), 'no duplicate placeholder may be produced')
 })
@@ -264,7 +264,7 @@ test('a duplicate turn number does not collapse two blocks into one', () => {
     { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'FIRST' }], source: { kind: 'user' } } },
     { type: 'user/message', seq: 2, time: 3, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'SECOND' }], source: { kind: 'user' } } },
   ]
-  const rendered = renderDigest(events, 20000, new Map([['0:0', { did: ['BLOCK-FIRST'], concluded: [], overturned: [] }], ['1:0', { did: ['BLOCK-SECOND'], concluded: [], overturned: [] }]]))
+  const rendered = renderDigest(events, 20000, new Map([['0:0', { did: ['BLOCK-FIRST'], concluded: [], overturned: [], asked: [] }], ['1:0', { did: ['BLOCK-SECOND'], concluded: [], overturned: [], asked: [] }]]))
   assert.ok(rendered.includes('BLOCK-FIRST'), 'first slot must keep its own block')
   assert.ok(rendered.includes('BLOCK-SECOND'), 'second slot must keep its own block')
   assert.ok(!/BLOCK-FIRST[\s\S]*BLOCK-FIRST/.test(rendered), 'the same block must not appear twice')
@@ -402,11 +402,12 @@ function slotKeysOf(request) {
   return [...prompt.matchAll(/^=== SLOT (\S+) \(turn /gm)].map((match) => match[1])
 }
 
-test('Asked never restates the user request, and says so in the instruction', async () => {
-  // A real block printed the user's own request back as `## Asked`, in English,
-  // directly under the same request quoted verbatim: the same content twice, and
-  // the section answering the wrong question. `## Asked` records what the
-  // ASSISTANT asked the USER; the user's request is already in the digest.
+test('the instruction asks for the question with its options, and forbids repeating the reply', async () => {
+  // Two things the model must be told, both learned from real digests:
+  //   - the options, because a bare `1` selects nothing without its list, and the
+  //     list usually sits a paragraph or two above the question;
+  //   - not the reply, because the reply is the next turn's `## user` line and is
+  //     already in the digest verbatim. Asking for it printed the same sentence twice.
   const calls = []
   const { engine } = await harness({ extraction: '## Did\n- x', onCall: (r) => calls.push(r) })
   const session = buildSession()
@@ -414,15 +415,17 @@ test('Asked never restates the user request, and says so in the instruction', as
   await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
 
   const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
-  // Asked is no longer requested from the model at all; the instruction says so.
+  assert.ok(/"asked"/.test(prompt), 'the reply shape must name the asked field')
+  assert.ok(/"options"/.test(prompt), 'the reply shape must carry the options')
   assert.ok(
-    /do not report questions and answers/i.test(prompt),
-    'the instruction must tell the model to leave questions alone',
+    /not only the last paragraph/i.test(prompt),
+    'the instruction must say the question can be anywhere in the prose',
   )
   assert.ok(
-    /do not report questions and answers/i.test(prompt),
-    'the Asked instruction must hand the section over to the code',
+    /Do not report the user's reply/i.test(prompt),
+    'the instruction must forbid repeating the reply',
   )
+  assert.ok(!/"answer"/.test(prompt), 'the reply shape must not ask for an answer field')
 })
 
 test('the material labels the user text so it cannot be mistaken for a question', async () => {
@@ -644,37 +647,36 @@ test('the extraction instruction tells the model to answer in the material\'s la
 test('the Asked section is rendered last, right before the user reply', () => {
   // The digest reads as a conversation: the user's short reply ("8399", "继续")
   // only makes sense next to the question it answers, so Asked belongs at the
-  // bottom of the assistant block, not at the top where the model tends to put it.
+  // bottom of the assistant block. The renderer owns the order, so the model's
+  // field order cannot move it.
   const events = [
-    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
     { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
     { type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
+    { type: 'user/message', seq: 3, time: 4, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: '1' }], source: { kind: 'user' } } },
   ]
-  const block = '## Did\n- DID-TEXT\n## Concluded\n- CONCLUDED-TEXT'
-  // The question comes from a real ask_user_question in the log, not from the model.
-  events.push(
-    { type: 'assistant/message', seq: 4, time: 5, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'ASKED-TEXT' }] }) }] } } },
-    { type: 'tool/result', seq: 5, time: 6, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["YES"]}]}' }] } } },
-  )
-  const text = renderDigest(events, 20000, new Map([['0:0', { did: ['DID-TEXT'], concluded: ['CONCLUDED-TEXT'], overturned: [] }]]))
+  const extracted = new Map([['0:0', {
+    did: ['DID-TEXT'], concluded: ['CONCLUDED-TEXT'], overturned: [],
+    asked: [{ question: 'ASKED-TEXT', options: ['OPT-A'] }],
+  }]])
+  const text = renderDigest(events, 20000, extracted)
   const askedAt = text.indexOf('ASKED-TEXT')
   assert.ok(askedAt > text.indexOf('DID-TEXT'), 'Asked must come after Did')
   assert.ok(askedAt > text.indexOf('CONCLUDED-TEXT'), 'Asked must come after Concluded')
+  assert.ok(text.indexOf('OPT-A') > askedAt, 'the options sit under their question')
+  assert.ok(text.indexOf('\n## user\n1') > text.indexOf('OPT-A'), 'the reply follows the options')
 })
 
 test('the Asked section stays last even when the turn has an errors line', () => {
   const events = [
-    { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
     { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
     { type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
     { type: 'tool/result', seq: 3, time: 4, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', isError: true, content: [{ type: 'text', text: 'Error: boom' }] } } },
   ]
-  const block = '## Did\n- DID-TEXT'
-  events.push(
-    { type: 'assistant/message', seq: 4, time: 5, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'ASKED-TEXT' }] }) }] } } },
-    { type: 'tool/result', seq: 5, time: 6, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["YES"]}]}' }] } } },
-  )
-  const text = renderDigest(events, 20000, new Map([['0:0', { did: ['DID-TEXT'], concluded: ['CONCLUDED-TEXT'], overturned: [] }]]))
+  const extracted = new Map([['0:0', {
+    did: ['DID-TEXT'], concluded: [], overturned: [],
+    asked: [{ question: 'ASKED-TEXT', options: [] }],
+  }]])
+  const text = renderDigest(events, 20000, extracted)
   assert.ok(
     text.indexOf('ASKED-TEXT') > text.indexOf('errors:'),
     'Asked must be the last thing before the next user message',
@@ -714,101 +716,64 @@ test('a section stays one turn when the log numbers its steps across turns', () 
   assert.deepEqual(sections[0].turns[0].assistant, ['FIRST', 'SECOND'])
 })
 
-test('Asked is moved last whatever heading form the model used', () => {
-  // Three forms observed from the same model across runs: `## Asked`, `**Asked**：`
-  // and `- Asked:`. Recognising only the first left Asked at the top of the block
-  // whenever the model changed style, so the user's one-word reply sat far from the
-  // question it answered.
-  for (const asked of ['## Asked\n- Q-TEXT', '**Asked**：Q-TEXT', '- Asked: Q-TEXT', '问：Q-TEXT']) {
-    const block = `${asked}\n- Did: DID-TEXT\n- Concluded: CONCLUDED-TEXT`
-    const out = moveAskedLast(block, [{ question: 'FROM-LOG', answer: 'CHOSEN' }])
-    assert.ok(!out.includes('Q-TEXT'), `the model's Asked must be dropped for ${asked}`)
-    assert.ok(out.includes('FROM-LOG'), 'the log question must be present')
-    assert.ok(out.indexOf('FROM-LOG') > out.indexOf('DID-TEXT'), `Asked must follow Did for ${asked}`)
-    assert.ok(out.indexOf('FROM-LOG') > out.indexOf('CONCLUDED-TEXT'), `Asked must follow Concluded for ${asked}`)
-  }
-})
-
-test('the Asked instruction asks for the chosen answer, not just the question', async () => {
-  // The instruction said "record the question, never the answer", which was aimed
-  // at the model copying the user's *request* into Asked. It was read literally: on
-  // a real session the material carried both ANSWER lines, including one that
-  // redirected the whole design ("当做游戏界面来设计…提取 3D 模型"), and the model
-  // wrote only the questions. The answer is the part a later turn cannot rebuild.
-  const calls = []
-  const { engine } = await harness({ extraction: '## Did\n- x', onCall: (r) => calls.push(r) })
-  const session = buildSession()
-  const nodes = session.surface.nodes
-  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
-
-  const prompt = calls[0].messages.at(-1).content.map((block) => block.text).join('')
-  // Asked is code-generated, so the old "record the question, never the answer"
-  // wording is gone entirely rather than reworded.
-  assert.ok(
-    !/never the answer/i.test(prompt),
-    'the instruction must not forbid recording the answer',
-  )
-  assert.ok(
-    /do not report questions and answers/i.test(prompt),
-    'the instruction must hand questions over to the code',
-  )
-})
-
-test('a question survives the tool-call cap, so its answer is never orphaned', () => {
-  // Turn 6 of a real session made 292 tool calls against a cap of 120. The
-  // `ask_user_question` came late, so it was dropped — but its ANSWER line was
-  // emitted anyway, because answers are matched by call id, not by the cap. The
-  // extractor saw "ANSWER: 删掉拿不到的，其余按原样保留" with no question beside it,
-  // and that choice never reached the digest.
-  const events = []
-  for (let i = 0; i < 130; i += 1) {
-    events.push({
-      type: 'assistant/message', seq: i + 1, time: i, surfaceOp: 'append',
-      data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: `c${i}`, name: 'bash', arguments: JSON.stringify({ description: `call ${i}` }) }] } },
-    })
-  }
-  events.push({
-    type: 'assistant/message', seq: 500, time: 500, surfaceOp: 'append',
-    data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'LATE-QUESTION' }] }) }] } },
+test('Asked comes from the model, with its options, and is rendered last', () => {
+  // A bare `1` is worthless without the list it selects from, and that list is
+  // usually a paragraph or two above the question, under its own heading. Finding
+  // it needs judgement about which list the question refers to, so the model reads
+  // it out of the same prose it already reads for `did`/`concluded`.
+  const answer = JSON.stringify({
+    slots: [{
+      key: '0:0',
+      did: ['DID-TEXT'],
+      asked: [{ question: '你要选哪个？', options: ['先验证前提', '直接动手'] }],
+    }],
   })
-  events.push({
-    type: 'tool/result', seq: 501, time: 501, surfaceOp: 'append',
-    data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["CHOSEN"]}]}' }] } },
+  const block = renderExtractionBlock(parseExtraction(answer).get('0:0'))
+  assert.equal(
+    block,
+    '## Did\n- DID-TEXT\n## Asked\n- 你要选哪个？\n  1. 先验证前提\n  2. 直接动手',
+  )
+  assert.ok(block.indexOf('## Asked') > block.indexOf('DID-TEXT'), 'Asked must be the last section')
+})
+
+test('a question that offered no options renders without a list', () => {
+  const answer = JSON.stringify({
+    slots: [{ key: '0:0', asked: [{ question: '要我接着试吗？', options: [] }] }],
   })
-  const hints = collectHints(events)
-  assert.ok(hints.includes('LATE-QUESTION'), 'the question must survive the cap')
-  assert.ok(hints.includes('CHOSEN'), 'and so must its answer')
+  assert.equal(renderExtractionBlock(parseExtraction(answer).get('0:0')), '## Asked\n- 要我接着试吗？')
 })
 
-test('Chinese section labels are recognised, not treated as body text', () => {
-  // The model answered a Chinese session in Chinese labels — `问：` / `做：` / `结论：`
-  // — instead of Asked/Did/Concluded. Nothing recognised them, so Asked was never
-  // moved last and empty sections were never pruned.
-  const block = '问：Q-TEXT → 答「A-TEXT」\n做：DID-TEXT\n结论：CONCLUDED-TEXT'
-  const moved = moveAskedLast(block, [{ question: 'LOG-Q', answer: 'LOG-A' }])
-  assert.ok(!moved.includes('Q-TEXT'), 'the model\'s Chinese Asked must be dropped')
-  assert.ok(moved.indexOf('LOG-Q') > moved.indexOf('DID-TEXT'), 'Asked must be moved last')
-
+test('an asked entry without a question is dropped, and a missing asked field is empty', () => {
+  const answer = JSON.stringify({
+    slots: [
+      { key: '0:0', did: ['X'], asked: [{ options: ['ORPHAN-OPTION'] }] },
+      { key: '1:0', did: ['Y'] },
+    ],
+  })
+  const parsed = parseExtraction(answer)
+  assert.deepEqual(parsed.get('0:0').asked, [], 'options with no question select nothing')
+  assert.deepEqual(parsed.get('1:0').asked, [], 'an absent field is an empty list')
 })
 
-test('the Asked block is generated from the log, not taken from the model', () => {
-  // The model changed its Asked format four times across runs (`## Asked`,
-  // `**Asked**：`, `- Asked:`, and Chinese `问：`), and each change silently broke
-  // either the position or the content. The question and the chosen answer are
-  // both in the log, so the block is now rendered from them directly: whatever the
-  // model writes for Asked is discarded.
+test('the digest never repeats the user reply inside Asked', () => {
+  // The reply is the next section's `## user` line, already verbatim. Carrying it
+  // in `asked.answer` as well printed the same sentence twice.
   const events = [
     { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
-    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'q1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'x', question: 'PICK ONE', options: [{ label: 'OPT-A' }, { label: 'OPT-B' }] }] }) }] } } },
-    { type: 'tool/result', seq: 3, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'q1', content: [{ type: 'text', text: '{"answers":[{"id":"x","selected":["OPT-B"]}]}' }] } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
+    { type: 'user/message', seq: 3, time: 3, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'UNIQUE-REPLY-TOKEN' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 4, time: 4, surfaceOp: 'append', data: { turn: 2, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'AFTER' }] } } },
   ]
-  // The model's own Asked is wrong on purpose: it must not reach the digest.
-  const modelBlock = '## Did\n- REAL\n## Asked\n- MODEL-INVENTED-ASKED'
-  const text = renderDigest(events, 20000, new Map([['0:0', { did: ['REAL'], concluded: [], overturned: [] }]]))
-  assert.ok(!text.includes('MODEL-INVENTED-ASKED'), 'the model\'s Asked must be dropped')
-  assert.ok(text.includes('PICK ONE'), 'the question must come from the log')
-  assert.ok(text.includes('OPT-B'), 'the chosen answer must come from the log')
-  assert.ok(text.includes('REAL'), 'the rest of the extraction must survive')
+  const extracted = new Map([
+    ['0:0', { did: ['X'], concluded: [], overturned: [], asked: [{ question: 'Q?', options: ['A', 'B'] }] }],
+  ])
+  const text = renderDigest(events, 20000, extracted)
+  assert.equal(
+    text.split('UNIQUE-REPLY-TOKEN').length - 1,
+    1,
+    'the reply appears once, as the next user message',
+  )
+  assert.ok(text.includes('## Asked\n- Q?\n  1. A\n  2. B'), 'the question and its options render')
 })
 
 test('extraction is parsed from JSON and assembled by code', () => {
@@ -823,8 +788,8 @@ test('extraction is parsed from JSON and assembled by code', () => {
     ],
   })
   const parsed = parseExtraction(answer)
-  assert.deepEqual(parsed.get('0:0'), { did: ['FOUND-SYSTEMS'], concluded: ['PLACEHOLDER-IDENTITY'], overturned: ['OLD-BELIEF'] })
-  assert.deepEqual(parsed.get('1:0'), { did: ['SECOND-TURN'], concluded: [], overturned: [] })
+  assert.deepEqual(parsed.get('0:0'), { did: ['FOUND-SYSTEMS'], concluded: ['PLACEHOLDER-IDENTITY'], overturned: ['OLD-BELIEF'], asked: [] })
+  assert.deepEqual(parsed.get('1:0'), { did: ['SECOND-TURN'], concluded: [], overturned: [], asked: [] })
 
   const block = renderExtractionBlock(parsed.get('0:0'))
   assert.equal(block, '## Did\n- FOUND-SYSTEMS\n## Concluded\n- PLACEHOLDER-IDENTITY\n## Overturned\n- OLD-BELIEF')
@@ -845,16 +810,19 @@ test('malformed extraction yields nothing rather than a mangled block', () => {
   assert.equal(parseExtraction('{"slots":').size, 0)
   // A fenced block is still JSON; models like to wrap it.
   const fenced = '```json\n{"slots":[{"key":"0:0","did":["X"]}]}\n```'
-  assert.deepEqual(parseExtraction(fenced).get('0:0'), { did: ['X'], concluded: [], overturned: [] })
+  assert.deepEqual(parseExtraction(fenced).get('0:0'), { did: ['X'], concluded: [], overturned: [], asked: [] })
 })
 
 test('the extraction cap carries a thinking reserve on top of the per-slot budget', async () => {
   // maxTokens covers thinking and the answer together, and thinking is a per-call
   // cost that does not shrink with the batch. Measured on the live route with
-  // real-length material: one slot at `220 x 1` with no reserve returned zero
-  // parseable slots in 4 of 4 runs (the thinking block took the whole cap), while
-  // `220 x 1 + 1000` parsed in 4 of 4. Without the reserve a split-down batch —
-  // the very retry path below — is guaranteed to fail.
+  // real-length material: one slot with no reserve returned zero parseable slots
+  // in 4 of 4 runs (the thinking block took the whole cap). Without the reserve a
+  // split-down batch — the very retry path below — is guaranteed to fail.
+  //
+  // The per-slot figure rose from 220 to 900 when `asked` was added: on real
+  // 8-slot batches thinking alone ran 1057-4086 tokens, and `220 x 8 + 1000` cut
+  // one run off mid-JSON, which parsed to zero slots and lost the whole batch.
   const calls = []
   const { engine } = await harness({ extraction: '## Did\n- X', onCall: (request) => calls.push(request) })
   const session = buildSession()
@@ -868,7 +836,7 @@ test('the extraction cap carries a thinking reserve on top of the per-slot budge
     assert.ok(slots > 0, 'a call must name its slots')
     assert.equal(
       call.maxTokens,
-      220 * slots + 1000,
+      900 * slots + 1000,
       `cap must leave thinking room beyond the ${slots}-slot output budget`,
     )
   }

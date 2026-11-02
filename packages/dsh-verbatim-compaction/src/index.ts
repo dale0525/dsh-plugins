@@ -254,27 +254,25 @@ export function isErrorResult(event: SessionEvent): boolean {
 
 /** Directive appended as the final user message of the extraction call. */
 const EXTRACT_INSTRUCTION = [
-  'You are summarizing a batch of turns from a coding session for a compaction checkpoint.',
-  'Each item is introduced by a line `=== SLOT <key> (turn <n>) ===` and contains the user request, the assistant prose (may be empty), and a trace of the tool calls it made (descriptions only) plus any results the log marked as errors.',
-  '',
   'Reply with ONE JSON object and nothing else. No prose, no code fence, no markdown.',
-  'Shape: {"slots":[{"key":"<the slot key>","did":["…"],"concluded":["…"],"overturned":["…"]}]}',
-  '',
-  'Rules for the fields:',
-  '- `key` must be copied exactly from the `=== SLOT <key> ===` line. One entry per slot.',
-  '- `did`: what was actually done, concretely. `concluded`: findings, decisions or measurements a later turn would need. `overturned`: earlier conclusions this turn disproved.',
-  '- Each field is an array of short strings, at most two per field. Use `[]` for a field with nothing to say. Omit the whole entry when nothing substantive happened.',
-  '- Write only the content of a line. Never write a heading, a bullet, or a field name inside a string.',
-  '- Do not describe the tool calls themselves ("ran bash", "explored the repo"). State what came out of them.',
-  '- Do not repeat a conclusion an earlier turn already stated.',
+  'Shape: {"slots":[{"key":"<the slot key>","did":["…"],"concluded":["…"],"overturned":["…"],"asked":[{"question":"…","options":["…"]}]}]}',
+  'Rules:',
+  '- `key` must be copied exactly from the `=== SLOT <key> ===` line. One entry per slot, in the order given. Never skip a slot.',
+  '- `did`: what was done, at most two short strings. `concluded`: findings a later turn needs, at most two. `overturned`: earlier conclusions this turn disproved.',
+  '- Each field is an array of short strings. Use [] for a field with nothing to say.',
+  '- Never write a heading, a bullet, or a field name inside a string.',
   '- Never invent. If the material does not support a claim, leave the field empty.',
+  // A question is not reliably the last paragraph: measured over 231 real turns
+  // that drew a short reply, 34% had prose after it (p90 = 7 paragraphs, max 24).
+  '- `asked`: one entry per question this turn put to the user and was still waiting on when it ended. A question is anywhere in the prose, not only the last paragraph.',
+  // And the options are usually further up: in 26 of 231 turns was the list in the
+  // question's own paragraph or the one before it.
+  '- `options`: what the user could pick from, in order, one short line each, with their own numbering stripped. The list is often a paragraph or two above the question. Use [] when the question offered none.',
+  // The reply is the next turn's `## user` line, already verbatim in the digest.
+  // Asking for it here printed the same sentence twice.
+  "- Use [] for `asked` when the turn asked nothing. Do not report the user's reply.",
   '',
-  'Do not report questions and answers: those are read from the session log directly and need no summary.',
-  '',
-  // Measured on a real 32-slot session: whole batches came back in English while
-  // the material was Chinese, so the digest mixed two languages for one
-  // conversation.
-  'Write the strings in the same language as the material. A session whose requests are Chinese gets Chinese text; do not switch to English.',
+  'Write strings in the same language as the material. A session whose requests are Chinese gets Chinese text; do not switch to English.',
 ].join('\n')
 
 /** One slot's extraction, as the model returns it. */
@@ -282,6 +280,37 @@ export interface Extraction {
   did: string[]
   concluded: string[]
   overturned: string[]
+  /**
+   * What this turn asked the user and what came back, when it asked anything.
+   *
+   * Written by the model rather than read off the log. The two cases the log
+   * cannot cover are the reason:
+   *
+   *   - A question is often not in the last line. Over 231 real turns that drew a
+   *     short reply, 34% had prose after the question (p90 = 7 paragraphs, max
+   *     24) — a `## 需要你决定` block followed by `## 还没验证的`. The log records
+   *     text, not which paragraph was the question.
+   *   - A bare `1` is meaningless without the list it selects from, and that list
+   *     is usually a paragraph or more above the question, under its own heading.
+   *     Reading it out needs judgement about which list the question refers to.
+   *
+   * The model already reads the same prose to fill `did`/`concluded`, so this
+   * costs one more field rather than another pass.
+   */
+  asked: AskedPair[]
+}
+
+/**
+ * One question the assistant put to the user, with the options it offered.
+ *
+ * No `answer` field: the reply is the next section's `## user` line, already in the
+ * digest verbatim. Carrying it here as well printed the same sentence twice.
+ */
+export interface AskedPair {
+  /** The question, one line. */
+  question: string
+  /** The options as offered, each one line; empty when the question offered none. */
+  options: string[]
 }
 
 /**
@@ -321,6 +350,29 @@ export function parseExtraction(answer: string): Map<string, Extraction> {
       .filter((item) => !/^(?:\(?none\)?|n\/a|na|-{1,2}|无|沒有|没有)$/i.test(item))
       .filter((item) => !/^(?:未提问|无提问|没有提问|no questions? (?:were |was )?asked|none asked)[。.！!]*$/i.test(item))
     : [])
+  // Asked is a list of objects, not of strings: a question without its options
+  // turns the user's `1` into a number that selects nothing.
+  const pairs = (value: unknown): AskedPair[] => (Array.isArray(value)
+    ? value
+      .flatMap((item): AskedPair[] => {
+        if (typeof item !== 'object' || item === null) return []
+        const record = item as Record<string, unknown>
+        const question = typeof record['question'] === 'string'
+          ? record['question'].replace(/\s+/g, ' ').trim()
+          : ''
+        if (question.length === 0) return []
+        const options = Array.isArray(record['options'])
+          ? record['options']
+            .filter((option): option is string => typeof option === 'string')
+            // The renderer supplies the numbering, so a model that echoes the source
+            // list's own `1.` would print `1. 1. …`. Stripped here rather than asked
+            // for in the prompt alone: three of five real runs kept it.
+            .map((option) => option.replace(/\s+/g, ' ').replace(/^\s*\d{1,2}\s*[.、)]\s*/, '').trim())
+            .filter((option) => option.length > 0)
+          : []
+        return [{ question, options }]
+      })
+    : [])
   for (const slot of slots) {
     if (typeof slot !== 'object' || slot === null) continue
     const record = slot as Record<string, unknown>
@@ -330,6 +382,7 @@ export function parseExtraction(answer: string): Map<string, Extraction> {
       did: strings(record['did']),
       concluded: strings(record['concluded']),
       overturned: strings(record['overturned']),
+      asked: pairs(record['asked']),
     })
   }
   return out
@@ -352,14 +405,37 @@ export function renderExtractionBlock(extraction: Extraction | undefined): strin
   section('Did', extraction.did)
   section('Concluded', extraction.concluded)
   section('Overturned', extraction.overturned)
+  // Asked goes last and its options are listed under it, so the user's reply — the
+  // next `## user` line — lands directly under the list it chose from.
+  if (extraction.asked.length > 0) {
+    lines.push('## Asked')
+    for (const pair of extraction.asked) {
+      lines.push(`- ${pair.question}`)
+      // Indented under the question so a reader cannot mistake an option for a
+      // separate question, and numbered so the reply's digit has something to
+      // point at.
+      for (const [index, option] of pair.options.entries()) {
+        lines.push(`  ${index + 1}. ${option}`)
+      }
+    }
+  }
   return lines.join('\n')
 }
 
 /** Turns handed to one extraction call. */
 const TURNS_PER_CALL = 8
 
-/** Output tokens allowed per turn in an extraction call. */
-const EXTRACT_TOKENS_PER_TURN = 220
+/**
+ * Output tokens allowed per turn in an extraction call.
+ *
+ * Raised from 220 when `asked` was added. The model thinks before it answers and
+ * thinking is charged to the same `maxTokens`, so the answer's own budget has to
+ * cover both. Measured on real 8-slot batches: thinking alone ran 1057–4086
+ * tokens, and a cap of `220 x 8 + 1000` cut one run off mid-JSON, which parsed to
+ * zero slots and lost the whole batch. `900` per slot plus the reserve below
+ * parsed 8 of 8 on every attempt.
+ */
+const EXTRACT_TOKENS_PER_TURN = 900
 
 /**
  * Fixed thinking reserve added to every extraction call's `maxTokens`.
@@ -515,14 +591,6 @@ interface Turn {
   errors: string[]
   writes: string[]
   /**
-   * Question/answer pairs the assistant put to the user in this turn.
-   *
-   * Rendered by code rather than by the model: the model changed its Asked format
-   * four times across runs, and each change silently broke the position or the
-   * content. Both halves are in the log, so there is nothing to summarise.
-   */
-  asked: { question: string; answer: string }[]
-  /**
    * The extracted summary for this turn, when extraction succeeded.
    *
    * Set here rather than appended to a separate block so the extraction takes
@@ -537,74 +605,6 @@ interface Section {
   turns: Turn[]
 }
 
-/**
- * The question an `ask_user_question` call put, with its options, or undefined.
- *
- * @param argumentsJson - the call's raw arguments.
- * @returns one line per question, options appended in brackets.
- */
-function questionTextOf(argumentsJson: string): string | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(argumentsJson)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null) return undefined
-  const questions = (parsed as Record<string, unknown>)['questions']
-  if (!Array.isArray(questions)) return undefined
-  const lines = questions
-    .map((question) => {
-      if (typeof question !== 'object' || question === null) return ''
-      const record = question as Record<string, unknown>
-      const text = typeof record['question'] === 'string'
-        ? record['question']
-        : typeof record['header'] === 'string' ? record['header'] : ''
-      if (text.trim().length === 0) return ''
-      const options = Array.isArray(record['options'])
-        ? record['options']
-          .map((option) => (typeof option === 'object' && option !== null
-            ? String((option as Record<string, unknown>)['label'] ?? '')
-            : ''))
-          .filter((label) => label.length > 0)
-        : []
-      return options.length === 0 ? text.trim() : `${text.trim()} [${options.join(' / ')}]`
-    })
-    .filter((line) => line.length > 0)
-  return lines.length > 0 ? lines.join('\n') : undefined
-}
-
-/**
- * The answer carried by an `ask_user_question` result, or undefined.
- *
- * @param text - the result body.
- * @returns the chosen labels, or the typed reply when nothing was chosen.
- */
-function answerTextOf(text: string): string | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null) return undefined
-  const answers = (parsed as Record<string, unknown>)['answers']
-  if (!Array.isArray(answers)) return undefined
-  const chosen = answers
-    .flatMap((answer) => {
-      if (typeof answer !== 'object' || answer === null) return []
-      const record = answer as Record<string, unknown>
-      const selected = record['selected']
-      const picked = Array.isArray(selected) ? selected.map((value) => String(value)) : []
-      // A typed answer arrives with `selected: []` and the text in `custom`.
-      const typed = typeof record['custom'] === 'string' && record['custom'].trim().length > 0
-        ? [record['custom'].trim()] : []
-      return [...picked, ...typed]
-    })
-    .filter((value) => value.length > 0)
-  return chosen.length > 0 ? chosen.join(' / ') : undefined
-}
-
 /** The turn number an event belongs to, when the log records one. */
 function turnOf(event: SessionEvent): number | undefined {
   const turn = (event.data as { turn?: unknown }).turn
@@ -613,7 +613,7 @@ function turnOf(event: SessionEvent): number | undefined {
 
 /** A fresh, empty turn accumulator. */
 function emptyTurn(turn: number | undefined): Turn {
-  return { turn, user: [], assistant: [], tools: new Map(), resultBytes: 0, errors: [], writes: [], asked: [] }
+  return { turn, user: [], assistant: [], tools: new Map(), resultBytes: 0, errors: [], writes: [] }
 }
 
 /**
@@ -650,8 +650,6 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
   // times across a long autonomous run.
   const recordedObjectives = new Set<string>()
 
-  // Question text by tool-call id, so the matching result can be read as its answer.
-  const pendingQuestions = new Map<string, string>()
 
   for (const event of events) {
     if (event.type === 'turn/start') {
@@ -680,16 +678,6 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
       const text = textOf(event)
       currentTurn.resultBytes += text.length
       const message = messageOf(event)
-      // A question's own result is its answer. Recorded here rather than left to the
-      // model, which dropped or reworded it depending on its heading style.
-      const callId = (message as { toolCallId?: string } | null)?.toolCallId
-      if (callId !== undefined) {
-        const question = pendingQuestions.get(callId)
-        if (question !== undefined) {
-          pendingQuestions.delete(callId)
-          currentTurn.asked.push({ question, answer: answerTextOf(text) ?? '(no answer recorded)' })
-        }
-      }
       if ((message as { isError?: boolean } | null)?.isError === true) {
         const firstLine = text.split('\n')[0] ?? ''
         currentTurn.errors.push(firstLine.slice(0, 100))
@@ -726,10 +714,6 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
     const text = textOf(event)
     if (text.length > 0) currentTurn.assistant.push(text)
     for (const call of toolCallsOf(event)) {
-      if (call.name === 'ask_user_question') {
-        const question = questionTextOf(call.arguments)
-        if (question !== undefined) pendingQuestions.set(call.id, question)
-      }
       currentTurn.tools.set(call.name, (currentTurn.tools.get(call.name) ?? 0) + 1)
       if (!WRITE_TOOLS.has(call.name)) continue
       const path = pathArgumentOf(call.arguments)
@@ -821,47 +805,6 @@ function materialKey(events: readonly SessionEvent[]): string {
  * The tool pointer line stays either way: it is one line, and it is the only
  * record of what was actually run when the prose and extraction both say little.
  */
-/**
- * Move the `## Asked` section to the end of one extraction block.
- *
- * The digest reads as a conversation, and the user's next message is often just
- * "8399" or "继续". That reply only makes sense beside the question it answers, so
- * Asked belongs at the bottom of the block. The model puts it first about as often
- * as last, so the order is fixed here rather than requested in the prompt.
- *
- * @param block - one extraction block, possibly malformed.
- * @returns the same block with Asked last; unchanged when Asked is absent or already last.
- */
-export function moveAskedLast(block: string, asked: readonly { question: string; answer: string }[] = []): string {
-  const lines = block.split('\n')
-  // Recognise every form the model has used for this section, in both languages, so
-  // it can be dropped. The content is regenerated from the log instead: four format
-  // changes across runs each broke either the position or the wording, and the log
-  // already holds both halves verbatim.
-  const isAsked = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?(?:Asked|问)(?:\*\*)?\s*[:：]?\s*$/i.test(line)
-  const isAskedInline = (line: string): boolean => /^\s*(?:[-*]\s+)?(?:\*\*)?(?:Asked|问)(?:\*\*)?\s*[:：]/i.test(line)
-  const isOther = (line: string): boolean => /^\s*(?:#{0,6}\s*|[-*]\s+)?(?:\*\*)?(?:Did|Concluded|Overturned|做|结论|推翻)(?:\*\*)?\s*[:：]?/i.test(line)
-
-  const start = lines.findIndex((line) => isAsked(line) || isAskedInline(line))
-  const kept = [...lines]
-  if (start >= 0) {
-    const inline = isAskedInline(kept[start] ?? '') && !isAsked(kept[start] ?? '')
-    let end = start + 1
-    if (!inline) {
-      while (end < kept.length && !isOther(kept[end] ?? '')) end += 1
-    }
-    kept.splice(start, end - start)
-  }
-  while (kept.length > 0 && (kept.at(-1) ?? '').trim().length === 0) kept.pop()
-
-  if (asked.length === 0) return kept.join('\n')
-  const block_lines = asked.map(({ question, answer }) => {
-    const q = question.split('\n').join(' ')
-    return `- ${q} → ${answer}`
-  })
-  return [...kept, '', '## Asked', ...block_lines].join('\n')
-}
-
 function renderSection(section: Section, capChars: number | undefined): string {
   const lines: string[] = []
   for (const turn of section.turns) {
@@ -873,17 +816,16 @@ function renderSection(section: Section, capChars: number | undefined): string {
       if (capChars !== undefined && block.length > capChars) {
         block = `${block.slice(0, capChars)}\n…(+${block.length - capChars} chars)`
       }
-      // Errors and writes sit after the block: Asked has to be the last thing in the
-      // turn, and the errors line directly under `## user` read as if the user had
-      // said it. Asked is inside the block, so the trailer goes before Asked instead
-      // — see moveAskedLast being applied after the trailer is joined.
+      // The trailer goes *above* the block, not below it. `## Asked` is the block's
+      // last section and the user's reply is the very next line, so an errors line
+      // in between would separate the reply from the question it answers.
       const trailer: string[] = []
       if (turn.errors.length > 0) {
         trailer.push(`  errors: ${turn.errors.length}: ${turn.errors.slice(0, 3).join(' | ')}`)
       }
       if (turn.writes.length > 0) trailer.push(`  wrote: ${turn.writes.join(', ')}`)
-      const body = trailer.length > 0 ? `${block}\n${trailer.join('\n')}` : block
-      lines.push(`### assistant\n${moveAskedLast(body, turn.asked)}`)
+      const body = trailer.length > 0 ? `${trailer.join('\n')}\n${block}` : block
+      lines.push(`### assistant\n${body}`)
     } else {
       let body = turn.assistant.join('\n')
       if (capChars !== undefined && body.length > capChars) {
@@ -1470,7 +1412,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     // bodies plus `(duplicate of SLOT 4:0)` placeholders in the digest. The extra
     // turns keep their prose and their own headings; only the first carries the
     // section's extraction.
-    const slots: { key: string; turn: number | undefined; events: SessionEvent[] }[] = []
+    const slots: ExtractionSlot[] = []
     for (const [sectionIndex, section] of sections.entries()) {
       const first = section.turns[0]
       if (first === undefined) continue
