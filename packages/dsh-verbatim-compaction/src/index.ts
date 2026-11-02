@@ -361,6 +361,18 @@ const TURNS_PER_CALL = 8
 /** Output tokens allowed per turn in an extraction call. */
 const EXTRACT_TOKENS_PER_TURN = 220
 
+/**
+ * Fixed thinking reserve added to every extraction call's `maxTokens`.
+ *
+ * `maxTokens` covers thinking and the answer together, and thinking is a
+ * per-call cost that does not shrink with the batch. Measured on the live route
+ * with real-length material: one slot at `220 x 1` with no reserve returned zero
+ * parseable slots in 4 of 4 runs, while `220 x 1 + 1000` parsed in 4 of 4. See
+ * `extractOnce` for the effort half of the same problem, and for why the reserve
+ * is the fix rather than an `off` effort.
+ */
+const EXTRACT_THINKING_RESERVE_TOKENS = 1000
+
 /** Most tool calls one turn may contribute to the hint block. */
 const MAX_HINTS_PER_TURN = 120
 
@@ -1117,30 +1129,149 @@ export function buildExtractionMaterial(turn: readonly SessionEvent[], prose: st
  * compaction does (`ctx.llm.stream` with the session's provider/model), so no
  * separate credential or configuration is involved.
  *
- * Every failure path returns null and the caller falls back to the plain digest:
- * a compaction that cannot reach the model must still compact, or the session
- * dies of context overflow instead of losing detail.
+ * Every failure path yields no blocks and the caller falls back to the plain
+ * digest: a compaction that cannot reach the model must still compact, or the
+ * session dies of context overflow instead of losing detail. The degradation is
+ * per turn, but it is never silent — a batch that comes back unusable is
+ * reported, because the whole point of that fallback is invisible otherwise.
  *
- * @param ctx - plugin context carrying the `llm` service.
+ * @param ctx - plugin context carrying the `llm` service and a logger.
  * @param agent - owner of the session being compacted; supplies the routed model.
- * @param turn - one turn's events.
- * @param prose - that turn's assistant prose, already extracted.
+ * @param batch - slots to extract, in one call unless the answer is truncated.
  * @param signal - cancellation forwarded to the adapter.
- * @returns the extracted block, or null when extraction is unavailable.
+ * @returns the extracted blocks by slot key; empty when extraction is unavailable.
  */
 async function extractBatch(
-  ctx: { llm?: { stream: (options: any) => AsyncIterable<any> } },
+  ctx: ExtractionContext,
   agent: Agent,
-  batch: readonly { key: string; turn: number | undefined; events: readonly SessionEvent[] }[],
+  batch: readonly ExtractionSlot[],
   signal?: AbortSignal,
 ): Promise<Map<string, Extraction>> {
   const out = new Map<string, Extraction>()
+  if (batch.length === 0) return out
+
+  const attempt = await extractOnce(ctx, agent, batch, signal)
+  if (!attempt.truncated) {
+    if (attempt.blocks.size === 0) {
+      ctx.logger?.warn(
+        `verbatim-compaction: extraction returned no usable JSON for ${batch.length} slot(s) `
+        + `(${batch.map((slot) => slot.key).join(', ')}); those turns keep their verbatim prose`,
+      )
+    }
+    return attempt.blocks
+  }
+
+  // A truncated answer parses to nothing, so one over-budget turn would cost
+  // every turn in its batch. Measured on 191 real compactions, failures arrived
+  // in runs of exactly `TURNS_PER_CALL`, which is this batching, not the model
+  // failing per turn. Halving bounds the loss to the half that still does not
+  // fit, and a single slot cannot be split further.
+  if (batch.length === 1) {
+    ctx.logger?.warn(
+      `verbatim-compaction: extraction truncated at the token cap for slot ${batch[0]?.key ?? '?'}; `
+      + 'that turn keeps its verbatim prose',
+    )
+    return attempt.blocks
+  }
+  for (const [key, block] of attempt.blocks) out.set(key, block)
+  const middle = Math.ceil(batch.length / 2)
+  for (const half of [batch.slice(0, middle), batch.slice(middle)]) {
+    for (const [key, block] of await extractBatch(ctx, agent, half, signal)) out.set(key, block)
+  }
+  return out
+}
+
+/** One slot handed to an extraction call. */
+interface ExtractionSlot {
+  key: string
+  turn: number | undefined
+  events: readonly SessionEvent[]
+}
+
+/** What one extraction call produced, and whether the answer was cut short. */
+interface ExtractionAttempt {
+  blocks: Map<string, Extraction>
+  truncated: boolean
+}
+
+/** The slice of the plugin context an extraction call needs. */
+interface ExtractionContext {
+  llm?: {
+    stream: (options: any) => AsyncIterable<any>
+    resolveModelInfo?: (provider: string, model: string, signal?: AbortSignal) => Promise<any>
+  }
+  logger?: { warn: (message: string) => void }
+}
+
+/**
+ * The cheapest effort a route advertises, or undefined when it advertises none.
+ *
+ * The route's own default is not used: it is typically the highest level, and
+ * thinking is paid out of the answer's token budget. The list is ordered from
+ * least to greatest effort by the host's own contract, so the first entry is the
+ * cheapest. `off` is skipped even when present — pi-ai maps it to a wire value
+ * the route may reject, and a level that cannot be sent is worse than a cheap
+ * one that can.
+ *
+ * @param efforts - the route's advertised efforts, in escalation order.
+ * @returns the cheapest usable effort id, or undefined to leave the choice alone.
+ */
+function cheapestEffort(efforts: readonly { id: string }[] | undefined): string | undefined {
+  return efforts?.find((entry) => entry.id !== 'off')?.id
+}
+
+/**
+ * One extraction request, no retry.
+ *
+ * The cap must carry a fixed thinking reserve on top of the per-slot output
+ * budget. `maxTokens` covers thinking and the answer together, and thinking is
+ * a per-call cost that does not shrink when the batch does. Measured against the
+ * live route (deepseek-flash, `reasoning_effort` unset, real-length material):
+ * a single slot at the old `220 x 1` cap returned zero parseable slots in 4 of 4
+ * runs, the thinking block having consumed the entire cap; the same single slot
+ * at `220 x 1 + 1000` parsed in 4 of 4. The reserve is what makes the cap work
+ * for a batch of any size, including the batches the caller splits down to.
+ *
+ * The effort is pinned to the route's cheapest advertised level rather than left
+ * to the route default. Thinking is paid out of the same `maxTokens` as the
+ * answer, so a default that thinks hard shrinks the answer budget even with the
+ * reserve in place. Measured on the live route at a 2-slot cap with the reserve:
+ * `low` spent 375 thinking tokens and parsed 3 of 3; `high` spent 931 and parsed
+ * 2 of 3.
+ *
+ * Two things that look like fixes and are not:
+ *
+ *   - `off` cannot be reached through pi-ai. Its `deepseek` thinking format maps
+ *     the `off` level to `reasoning_effort: "minimal"`, which the route rejects
+ *     outright (`valid levels: low, medium, high`), and its `thinking` field is
+ *     pinned to `{type: "enabled"}` for every level. Captured from pi-ai 1.3.0
+ *     against a local echo server, not inferred.
+ *   - Only the provider's own `thinking: {type: "disabled"}` actually stops
+ *     thinking (0 thinking tokens, measured), but `GenerateOptions` has no field
+ *     that carries it, so no plugin on this seam can send it.
+ *
+ * An effort is requested only when the route advertises it, because the host
+ * rejects one it does not.
+ *
+ * @param ctx - plugin context carrying the `llm` service and a logger.
+ * @param agent - owner of the session being compacted.
+ * @param batch - slots to ask about in this one call.
+ * @param signal - cancellation forwarded to the adapter.
+ * @returns the parsed blocks and whether the model stopped at the token cap.
+ */
+async function extractOnce(
+  ctx: ExtractionContext,
+  agent: Agent,
+  batch: readonly ExtractionSlot[],
+  signal?: AbortSignal,
+): Promise<ExtractionAttempt> {
+  const out = new Map<string, Extraction>()
   const llm = ctx.llm
-  if (llm === undefined) return out
+  if (llm === undefined) return { blocks: out, truncated: false }
   const route = agent.session.requestHeader()?.config
   const provider = route?.provider ?? agent.options.provider
   const model = route?.model ?? agent.options.model
-  if (provider === undefined || model === undefined) return out
+  if (provider === undefined || model === undefined) return { blocks: out, truncated: false }
 
   // The label the model echoes back is the slot key, not the turn number: two
   // requests can share a number, and a duplicate label would collapse two blocks
@@ -1156,9 +1287,15 @@ async function extractBatch(
     if (material.length === 0) continue
     parts.push(`=== SLOT ${slot.key} (turn ${slot.turn ?? '?'}) ===\n${material}`)
   }
-  if (parts.length === 0) return out
+  if (parts.length === 0) return { blocks: out, truncated: false }
+
+  const info = await Promise.resolve()
+    .then(() => llm.resolveModelInfo?.(provider, model, signal))
+    .catch(() => undefined)
+  const cheapest = cheapestEffort(info?.reasoning?.efforts)
 
   const chunks: string[] = []
+  let truncated = false
   try {
     const stream = llm.stream({
       provider,
@@ -1166,22 +1303,25 @@ async function extractBatch(
       messages: [
         { role: 'user', content: [{ type: 'text', text: `${parts.join('\n\n')}\n\n${EXTRACT_INSTRUCTION}` }] },
       ],
-      maxTokens: EXTRACT_TOKENS_PER_TURN * parts.length,
+      maxTokens: EXTRACT_TOKENS_PER_TURN * parts.length + EXTRACT_THINKING_RESERVE_TOKENS,
       sessionId: agent.session.id,
       purpose: 'compaction',
+      ...(cheapest === undefined ? {} : { reasoningEffort: cheapest }),
       ...(signal === undefined ? {} : { signal }),
     })
     for await (const chunk of stream) {
-      const delta = chunk as { type?: string; text?: string }
+      const delta = chunk as { type?: string; text?: string; reason?: { kind?: string } }
       if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
+      else if (delta.type === 'finish' && delta.reason?.kind === 'max-tokens') truncated = true
     }
-  } catch {
-    return out
+  } catch (error) {
+    ctx.logger?.warn(`verbatim-compaction: extraction call failed for ${parts.length} slot(s): ${String(error)}`)
+    return { blocks: out, truncated: false }
   }
 
   const answer = chunks.join('').trim()
-  if (answer.length === 0) return out
-  return parseExtraction(answer)
+  if (answer.length === 0) return { blocks: out, truncated }
+  return { blocks: parseExtraction(answer), truncated }
 }
 
 

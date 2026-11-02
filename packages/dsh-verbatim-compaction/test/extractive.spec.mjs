@@ -40,14 +40,24 @@ function buildSession() {
 
 async function harness(options = {}) {
   const ctx = new Context()
+  const warnings = options.warnings ?? []
+  ctx.logger.warn = (...args) => warnings.push(args.map(String).join(' '))
+  let callIndex = 0
   await ctx.plugin((c) => {
     c.provide('sessionProjections')
     c.set('sessionProjections', { register: () => () => {} })
     c.provide('llm')
     c.set('llm', {
-      resolveModelInfo: async () => ({ provider: 'fixture', id: 'fixture-model', contextWindow: 450000 }),
+      resolveModelInfo: async () => options.modelInfo
+        ?? { provider: 'fixture', id: 'fixture-model', contextWindow: 450000 },
       stream: async function* stream(request) {
         options.onCall?.(request)
+        const scripted = options.answer?.(request, callIndex++)
+        if (scripted !== undefined) {
+          if (scripted.text.length > 0) yield { type: 'text-delta', text: scripted.text }
+          yield { type: 'finish', reason: scripted.finish ?? { kind: 'stop' } }
+          return
+        }
         if (options.extraction !== undefined) {
           // Answer in the batch protocol: one `=== TURN n ===` block per turn
           // named in the request. A model that answers in the old per-turn shape
@@ -836,4 +846,130 @@ test('malformed extraction yields nothing rather than a mangled block', () => {
   // A fenced block is still JSON; models like to wrap it.
   const fenced = '```json\n{"slots":[{"key":"0:0","did":["X"]}]}\n```'
   assert.deepEqual(parseExtraction(fenced).get('0:0'), { did: ['X'], concluded: [], overturned: [] })
+})
+
+test('the extraction cap carries a thinking reserve on top of the per-slot budget', async () => {
+  // maxTokens covers thinking and the answer together, and thinking is a per-call
+  // cost that does not shrink with the batch. Measured on the live route with
+  // real-length material: one slot at `220 x 1` with no reserve returned zero
+  // parseable slots in 4 of 4 runs (the thinking block took the whole cap), while
+  // `220 x 1 + 1000` parsed in 4 of 4. Without the reserve a split-down batch —
+  // the very retry path below — is guaranteed to fail.
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- X', onCall: (request) => calls.push(request) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  assert.ok(calls.length > 0, 'extraction must run')
+  for (const call of calls) {
+    const slots = [...String(call.messages.at(-1).content.map((block) => block.text).join(''))
+      .matchAll(/^=== SLOT (\S+) \(turn /gm)].length
+    assert.ok(slots > 0, 'a call must name its slots')
+    assert.equal(
+      call.maxTokens,
+      220 * slots + 1000,
+      `cap must leave thinking room beyond the ${slots}-slot output budget`,
+    )
+  }
+})
+
+test('the extraction call pins the cheapest advertised effort, never the route default', async () => {
+  // Thinking is paid out of the same maxTokens as the answer, so the route's
+  // default (typically the highest level) shrinks the answer budget. Measured on
+  // the live route at a 2-slot cap with the reserve in place: `low` spent 375
+  // thinking tokens and parsed 3 of 3; `high` spent 931 and parsed 2 of 3.
+  //
+  // `off` is deliberately skipped: pi-ai's `deepseek` thinking format maps it to
+  // `reasoning_effort: "minimal"`, which the route rejects outright. Captured
+  // from pi-ai 1.3.0 against a local echo server, not inferred.
+  const calls = []
+  const { engine } = await harness({
+    extraction: '## Did\n- X',
+    modelInfo: {
+      provider: 'fixture',
+      id: 'fixture-model',
+      contextWindow: 450000,
+      reasoning: {
+        efforts: [{ id: 'off', name: 'Off' }, { id: 'low', name: 'Low' }, { id: 'high', name: 'High' }],
+        defaultEffort: 'high',
+      },
+    },
+    onCall: (request) => calls.push(request),
+  })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  assert.ok(calls.length > 0, 'extraction must run')
+  for (const call of calls) assert.equal(call.reasoningEffort, 'low', 'must not inherit the high route default')
+})
+
+test('a route that advertises no effort is never sent one', async () => {
+  // The host rejects an effort the route does not advertise, so naming one
+  // blindly would turn every extraction into an exception.
+  const calls = []
+  const { engine } = await harness({ extraction: '## Did\n- X', onCall: (request) => calls.push(request) })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  assert.ok(calls.length > 0, 'extraction must run')
+  for (const call of calls) assert.equal('reasoningEffort' in call, false)
+})
+
+test('a batch truncated at the token cap is split and retried, not dropped whole', async () => {
+  // A truncated answer parses to nothing, so one over-budget turn costs every
+  // turn in its batch. Measured across 191 real compactions, failures ran in
+  // blocks of exactly TURNS_PER_CALL — this batching, not the model failing per
+  // turn. Halving bounds the loss to the half that still does not fit.
+  const batches = []
+  const { engine } = await harness({
+    answer: (request, index) => {
+      const prompt = request.messages.at(-1).content.map((block) => block.text).join('')
+      const keys = [...prompt.matchAll(/^=== SLOT (\S+) \(turn /gm)].map((match) => match[1])
+      batches.push(keys)
+      if (index === 0) {
+        // What a max-tokens stop actually returns: an object cut mid-string.
+        return { text: '{"slots":[{"key":"0:0","did":["A"]', finish: { kind: 'max-tokens' } }
+      }
+      return { text: JSON.stringify({ slots: keys.map((key) => ({ key, did: ['RECOVERED'] })) }) }
+    },
+  })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  const first = batches[0]
+  assert.ok(first.length > 1, `first call must carry a batch, got ${first.length} slot(s)`)
+  const covered = new Set()
+  for (const keys of batches.slice(1)) {
+    for (const key of keys) if (first.includes(key)) covered.add(key)
+    if (covered.size === first.length) break
+  }
+  assert.equal(covered.size, first.length, 'the retry must cover the slots the truncated batch named')
+
+  const text = digestOf(checkpointOf(session))
+  assert.ok(text.includes('RECOVERED'), 'the retried turns must reach the digest')
+})
+
+test('an extraction that cannot be recovered leaves a warning, not silence', async () => {
+  // Without this the plugin degrades to a prose-only digest and nothing anywhere
+  // records that it happened, which is why the instability was unfindable.
+  const warnings = []
+  const { engine } = await harness({
+    warnings,
+    answer: () => ({ text: 'I am unable to summarise this.', finish: { kind: 'stop' } }),
+  })
+  const session = buildSession()
+  const nodes = session.surface.nodes
+  await engine.compactRegion(nodes[1], nodes.at(-1), agentFor(session))
+
+  assert.ok(warnings.length > 0, 'a dropped extraction must be reported')
+  assert.ok(
+    warnings.some((line) => line.includes('verbatim-compaction')),
+    `warning must identify the plugin, got: ${warnings.join(' | ')}`,
+  )
+  // The degradation itself is still the designed behaviour.
+  assert.ok(digestOf(checkpointOf(session)).includes('ASSISTANT-'))
 })
