@@ -164,7 +164,10 @@ function fakeSchedule() {
  */
 function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = [], projections } = {}) {
   const listeners = new Map();
-  const registered = [];
+  const contexts = [];
+  const globals = [];
+  HARNESS_APPENDED.length = 0;
+  HARNESS_REGISTERED.length = 0;
   const hiddenGlobally = new Set(agentScoped);
   const agents = new Map(
     Object.entries(parents).map(([id, parentSession]) => [
@@ -182,15 +185,31 @@ function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = 
       // does not need it, because `register` already ties the tool to the
       // plugin's fiber.
       register: (definition) => {
-        registered.push(definition);
+        globals.push(definition);
         return () => {};
       },
     },
     agents: { get: (id) => agents.get(id) },
+    // The host's prompt registry: the plugin registers runtime contexts here,
+    // and the stub records each one so a test can render it directly. Orders
+    // are recorded by name, because the numeric value belongs to the host.
+    systemPrompt: {
+      getContextOrder: (contextName) => contextName,
+      getSectionOrder: (sectionName) => sectionName,
+      context: (definition) => {
+        contexts.push(definition);
+        return () => {};
+      },
+      section: (definition) => {
+        contexts.push(definition);
+        return () => {};
+      },
+    },
     get: (service) => {
       if (service === 'schedule') return schedule;
       if (service === 'llm') return llm;
       if (service === 'sessionProjections') return projections;
+      if (service === 'systemPrompt') return ctx.systemPrompt;
       return undefined;
     },
     on: (event, handler) => {
@@ -200,7 +219,22 @@ function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = 
     },
   };
   apply(ctx);
-  return { listeners, registered };
+  /**
+   * Run the `agent/created` listeners for one agent, which is what registers the
+   * agent-scoped todo tool. Tests that need the replacement call this; tests
+   * about the gate and the meter do not, because those paths never touch it.
+   */
+  const createAgent = async (agent) => {
+    for (const handler of listeners.get('agent/created') ?? []) await handler({ agent });
+    return agent;
+  };
+  return {
+    listeners,
+    registered: HARNESS_REGISTERED,
+    contexts,
+    appended: HARNESS_APPENDED,
+    createAgent,
+  };
 }
 
 /**
@@ -433,8 +467,32 @@ function seatCall(agent, toolName, args = {}) {
 }
 
 /** The root session: a header with no delegating parent. */
+/** Session appends observed by {@link rootAgent}, cleared at each harness build. */
+const HARNESS_APPENDED = [];
+
+/** Agent-scoped tool registrations made through {@link rootAgent}'s own context. */
+const HARNESS_REGISTERED = [];
+
 function rootAgent() {
-  return { session: { id: 'root-1', header: {}, inheritedEventCount: 0, snapshotEvents: () => [] } };
+  return {
+    ctx: {
+      tools: {
+        register: (definition) => {
+          HARNESS_REGISTERED.push(definition);
+          return () => {};
+        },
+      },
+    },
+    session: {
+      id: 'root-1',
+      header: {},
+      inheritedEventCount: 0,
+      snapshotEvents: () => [],
+      append: (type, data) => {
+        HARNESS_APPENDED.push({ type, data });
+      },
+    },
+  };
 }
 
 /**
@@ -760,13 +818,15 @@ function routeDelegation(args, agent = rootAgent(), toolName = 'subagent') {
   return { name: toolName, arguments: { prompt: 'x', description: 'y', ...args }, agent };
 }
 
-test('refuses a delegation that names no route at all', async () => {
+test('allows a delegation that names no route, which inherits the parent route', async () => {
   const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
   const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({}), ALLOW);
-  assert.equal(decision.kind, 'deny');
-  assert.match(decision.reason, /provider/);
-  assert.match(decision.reason, /model/);
-  assert.match(decision.reason, /list_subagent_models/, 'the model must be told how to find the route');
+  // Measured on dsh 0.2.1-rc.2: an unnamed route is not a defect. The host's
+  // `requestedAgentOptions` returns the configured options unchanged when the
+  // call names no route field, and with no tool-instance defaults configured the
+  // child inherits the parent's provider and model. One live delegation without
+  // either field ran on `cpa/deepseek-flash`, the parent's own route.
+  assert.deepEqual(decision, { kind: 'allow' }, 'omitting the route inherits the parent, which is a choice');
 });
 
 test('refuses a route with only half of it named', async () => {
@@ -777,18 +837,25 @@ test('refuses a route with only half of it named', async () => {
   }
 });
 
-test('refuses a route field that carries only whitespace', async () => {
+test('refuses a route field that carries only whitespace, which leaves half a route', async () => {
   const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
-  for (const blank of [
-    { provider: 'cpa', model: '   ' },
-    { provider: 'cpa', model: 'gemini-3.8-flash-high', reasoning_effort: ' ' },
-  ]) {
-    const decision = await fire(listeners, 'tools/pre-execute', routeDelegation(blank), ALLOW);
-    assert.equal(decision.kind, 'deny', `${JSON.stringify(blank)} names nothing`);
-  }
+  const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({ provider: 'cpa', model: '   ' }), ALLOW);
+  assert.equal(decision.kind, 'deny', 'a blank model leaves provider alone, which identifies no route');
+  assert.match(decision.reason, /`model`/);
 });
 
-test('refuses a route that omits the effort its model advertises', async () => {
+test('allows a blank effort, which the host inherits rather than requiring', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
+  const decision = await fire(
+    listeners,
+    'tools/pre-execute',
+    routeDelegation({ provider: 'cpa', model: 'gemini-3.8-flash-high', reasoning_effort: ' ' }),
+    ALLOW,
+  );
+  assert.deepEqual(decision, { kind: 'allow' }, 'the host inherits the parent effort on an unchanged route');
+});
+
+test('allows a route that omits the effort its model advertises', async () => {
   const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
   const decision = await fire(
     listeners,
@@ -796,8 +863,9 @@ test('refuses a route that omits the effort its model advertises', async () => {
     routeDelegation({ provider: 'cpa', model: 'gemini-3.8-flash-high' }),
     ALLOW,
   );
-  assert.equal(decision.kind, 'deny');
-  assert.match(decision.reason, /reasoning_effort/);
+  // Requiring the effort forced a route to be named in every call; that is the
+  // cost this gate no longer pays. The host resolves the route's own default.
+  assert.deepEqual(decision, { kind: 'allow' });
 });
 
 test('allows a route that names provider, model, and effort', async () => {
@@ -859,7 +927,7 @@ test('does not gate a route-discovering tool that is not a delegation', async ()
   assert.deepEqual(decision, { kind: 'allow' }, 'discovery must stay callable without naming a route');
 });
 
-test('the delegation tool description carries the route requirement', async () => {
+test('the delegation tool description carries the marker requirement but no route demand', async () => {
   const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL, bash: PLAIN_TOOL } });
   const assembly = {
     tools: [
@@ -869,19 +937,22 @@ test('the delegation tool description carries the route requirement', async () =
   };
   const assembled = await fireAssembly(listeners, assembly, { agent: undefined }, async () => assembly);
   const byName = new Map(assembled.tools.map((tool) => [tool.name, tool]));
-  assert.match(byName.get('subagent').description, /provider/, 'the route is stated where the call is written');
-  assert.match(byName.get('subagent').description, /reasoning_effort/);
-  assert.match(byName.get('subagent').description, /list_subagent_models/);
+  const description = byName.get('subagent').description;
+  assert.match(description, /\[只读\]/, 'the marker is still stated where the call is written');
+  // The route demand was removed after measurement: it blocked 25 delegations
+  // and pushed the model at a discovery output that reads like a model line.
+  assert.doesNotMatch(description, /MUST name the child route/, 'the route demand is gone');
+  assert.doesNotMatch(description, /list_subagent_models/, 'and so is the discovery prompt it pushed');
   assert.equal(byName.get('bash').description, 'Run a command.', 'a non-delegation tool is untouched');
 });
 
-test('the route requirement lands exactly once across repeated assemblies', async () => {
+test('the marker requirement lands exactly once across repeated assemblies', async () => {
   const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL } });
   const source = () => ({ tools: [{ name: 'subagent', description: 'Delegate a task.', parameters: {} }] });
   const first = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
   const second = await fireAssembly(listeners, source(), { agent: undefined }, async () => source());
   assert.deepEqual(second, first, 'a stable description keeps the request header from churning every step');
-  assert.equal(first.tools[0].description.split('child route').length - 1, 1);
+  assert.equal(first.tools[0].description.split('authority marker').length - 1, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -907,7 +978,6 @@ test('a delegation tool visible only in the assembly scope still gets the requir
   const assembly = { tools: [{ name: 'subagent', description: 'Delegate a task.', parameters: {} }] };
   const assembled = await fireAssembly(listeners, assembly, { agent: {}, scope }, async () => assembly);
   assert.match(assembled.tools[0].description, /\[只读\]/, 'the marker requirement reaches the request');
-  assert.match(assembled.tools[0].description, /MUST name the child route/, 'the route requirement reaches it too');
 });
 
 test('an assembly with no scope falls back to the calling agent rather than crashing', async () => {
@@ -1079,4 +1149,157 @@ test('a reading without an oversized result does not suggest a seat', async () =
   const agent = rootAgent();
   await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(5000)));
   assert.doesNotMatch(await readingAfter(listeners, agent), /have a seat read it/);
+});
+
+// ---------------------------------------------------------------------------
+// The delegation cue, in the runtime-context slot the host reserves for it.
+//
+// The host allocates `SUBAGENT_DELEGATION` (order 120) and re-assembles it every
+// step, but its only contribution reports the depth ceiling -- it says when to
+// stop delegating, never when to start. The rule that says when to start lives
+// in AGENTS.md, which is injected once per turn and diluted long before the
+// decision; measured over 341 sessions, 264 never wrote a todo at all, so a
+// requirement placed on the todo tool cannot reach them. This slot is the one
+// place that is both step-visible and independent of any tool call.
+// ---------------------------------------------------------------------------
+
+test('the delegation cue registers into the host\'s own delegation slot', () => {
+  const { contexts } = harness();
+  const cue = contexts.find((entry) => entry.name === 'force-rules:delegation-cue');
+  assert.ok(cue, 'the cue is registered');
+  assert.equal(cue.order, 'SUBAGENT_DELEGATION', 'it shares the host\'s reserved placement');
+});
+
+test('the cue states the criterion rather than restating a preference', () => {
+  const { contexts } = harness();
+  const cue = contexts.find((entry) => entry.name === 'force-rules:delegation-cue');
+  const text = cue.text({ agent: rootAgent(), scope: undefined });
+  assert.match(text, /three independent sources/i, 'the countable test is stated');
+  assert.match(text, /only a conclusion/i, 'the shape of the deliverable is stated');
+});
+
+test('the cue names the todo line still owned by root once it has cost something', async () => {
+  const { listeners, contexts, registered, createAgent, appended } = harness({
+    projections: {
+      stateOf: (_session, key) =>
+        key !== 'todos'
+          ? undefined
+          : (appended.filter((event) => event.type === 'todo/write').at(-1)?.data.todos ?? null),
+    },
+  });
+  const agent = rootAgent();
+  await createAgent(agent);
+  const todo = registered.find((tool) => tool.name === 'todo_write');
+  await todo.execute(
+    {
+      todos: [
+        { content: 'survey the build setup', status: 'in_progress', owner: 'root' },
+        { content: 'write the workflow', status: 'in_progress', owner: 'seat' },
+      ],
+    },
+    { agent },
+  );
+  for (let i = 0; i < 12; i++) {
+    await fireNotification(listeners, 'tools/result', ...settled(agent, 'x'.repeat(1000)));
+  }
+  // The cue reads the host projection, which folds the `todo/write` this tool
+  // just appended; the harness supplies that fold from the same events.
+  const written = appended.find((event) => event.type === 'todo/write');
+  const cue = contexts.find((entry) => entry.name === 'force-rules:delegation-cue');
+  const text = cue.text({ agent, scope: undefined });
+  assert.ok(written, 'the list reached the host');
+  assert.match(text, /survey the build setup/, 'the specific line is named');
+  assert.doesNotMatch(text, /write the workflow/, 'a line already delegated is not named');
+});
+
+test('a session that has not spent anything is given the criterion but not an accusation', async () => {
+  const { contexts } = harness({
+    projections: fakeProjections([{ content: '[root] survey the build setup', status: 'pending' }]),
+  });
+  const text = contexts.find((entry) => entry.name === 'force-rules:delegation-cue').text({ agent: rootAgent(), scope: undefined });
+  assert.match(text, /three independent sources/i);
+  assert.doesNotMatch(text, /survey the build setup/, 'nothing has been spent, so nothing is named');
+});
+
+test('a session with no list at all still gets the criterion', () => {
+  const { contexts } = harness();
+  const text = contexts.find((entry) => entry.name === 'force-rules:delegation-cue').text({ agent: rootAgent(), scope: undefined });
+  assert.match(text, /three independent sources/i, 'the 264 sessions that never write a list are exactly who this is for');
+});
+
+test('the cue stays silent for a seat, which cannot delegate', () => {
+  const { contexts } = harness({ parents: { 'seat-1': 'root-1' } });
+  const text = contexts.find((entry) => entry.name === 'force-rules:delegation-cue').text({
+    agent: { session: { id: 'seat-1', header: { parentSession: 'root-1' } } },
+    scope: undefined,
+  });
+  assert.equal(text, '');
+});
+
+// ---------------------------------------------------------------------------
+// Ownership as a schema field rather than a string prefix.
+//
+// The prefix convention was adopted in form but never in substance: measured
+// across 341 sessions, zero wrote `[seat: ...]`, because a prefix inside a free
+// text field is a thing to remember while a declared field is a thing to fill.
+// The host's todo schema is closed (`additionalProperties: false`), so the only
+// way to add a field is to register the tool again in the agent's own scope,
+// which shadows the global one.
+// ---------------------------------------------------------------------------
+
+test('the todo tool is replaced with one that declares ownership', async () => {
+  const { registered, createAgent } = harness();
+  await createAgent(rootAgent());
+  const todo = registered.find((tool) => tool.name === 'todo_write');
+  assert.ok(todo, 'a todo tool is registered for the agent');
+  const item = todo.parameters.properties.todos.items;
+  assert.deepEqual(item.properties.owner.enum, ['root', 'seat'], 'ownership is a closed choice');
+  assert.ok(item.required.includes('owner'), 'and it cannot be left out');
+  assert.ok(item.required.includes('content'), 'the original fields survive');
+});
+
+test('the replacement writes the host todo snapshot and reports counts', async () => {
+  const { registered, appended, createAgent } = harness();
+  await createAgent(rootAgent());
+  const todo = registered.find((tool) => tool.name === 'todo_write');
+  const value = await todo.execute(
+    {
+      todos: [
+        { content: 'survey', status: 'in_progress', owner: 'root' },
+        { content: 'workflow', status: 'pending', owner: 'seat' },
+      ],
+    },
+    { agent: rootAgent() },
+  );
+  assert.equal(appended.length, 1, 'the host projection is fed');
+  assert.equal(appended[0].type, 'todo/write');
+  assert.deepEqual(value.counts, { pending: 1, inProgress: 1, completed: 0 });
+});
+
+test('the snapshot the host stores drops the owner field', async () => {
+  const { registered, appended, createAgent } = harness();
+  await createAgent(rootAgent());
+  const todo = registered.find((tool) => tool.name === 'todo_write');
+  await todo.execute({ todos: [{ content: 'survey', status: 'pending', owner: 'root' }] }, { agent: rootAgent() });
+  assert.deepEqual(appended[0].data.todos, [{ content: 'survey', status: 'pending' }], 'the host event keeps its own shape');
+});
+
+test('the owner survives where the cue can read it', async () => {
+  const { registered, contexts, appended, createAgent } = harness();
+  await createAgent(rootAgent());
+  const todo = registered.find((tool) => tool.name === 'todo_write');
+  await todo.execute({ todos: [{ content: 'survey', status: 'pending', owner: 'seat' }] }, { agent: rootAgent() });
+  const text = contexts.find((entry) => entry.name === 'force-rules:delegation-cue').text({ agent: rootAgent(), scope: undefined });
+  assert.doesNotMatch(text, /survey/, 'a line already owned by a seat is not named as root work');
+  assert.ok(appended.length === 1);
+});
+
+test('an empty list is still rejected the way the host rejects it', async () => {
+  const { registered, createAgent } = harness();
+  await createAgent(rootAgent());
+  const todo = registered.find((tool) => tool.name === 'todo_write');
+  await assert.rejects(
+    () => todo.execute({ todos: [{ content: '   ', status: 'pending', owner: 'root' }] }, { agent: rootAgent() }),
+    /content/,
+  );
 });

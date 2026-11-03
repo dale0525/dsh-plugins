@@ -52,6 +52,8 @@
  * @module @logictan/dsh-force-rules
  */
 
+import { defineTool } from '@deepseek-ai/dsh-tools';
+
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
 export const name = 'force-rules';
 
@@ -67,6 +69,27 @@ export const name = 'force-rules';
  * subscribe the same way without injecting it.
  */
 export const inject = ['tools', 'agents'];
+
+/**
+ * Runtime-context slot the host reserves for delegation guidance.
+ *
+ * Resolved by name through `getContextOrder` rather than hardcoded, so the
+ * plugin follows the host's own placement if it ever moves. The host fills this
+ * slot today with a depth-ceiling warning only — it says when to stop
+ * delegating, never when to start — so this contribution is the missing half of
+ * a slot the host already allocates and re-assembles on every step.
+ */
+const DELEGATION_CUE_SLOT = 'SUBAGENT_DELEGATION';
+
+/**
+ * Tool results a `[root]` line must have cost before the cue names it.
+ *
+ * Below this the line has not spent anything worth handing over, and naming it
+ * would be an accusation the model can correctly ignore. The threshold is the
+ * same order of magnitude as the "three independent sources" test in the
+ * criterion, so a line that crosses it is one the criterion already covers.
+ */
+const CUE_AFTER_CALLS = 8;
 
 /**
  * Silence allowed before the checkpoint wakes the delegating session.
@@ -472,18 +495,6 @@ function declaresRoute(properties) {
 }
 
 /**
- * Whether the tool behind one call or assembly entry declares a route field.
- *
- * @param ctx - the plugin context.
- * @param exec - the pending call, or an assembly entry naming the tool.
- * @param scope - the scope that owns the tool; defaults to the calling agent.
- * @returns whether the tool advertises `provider` and/or `model`.
- */
-function advertisesRoute(ctx, exec, scope = exec.agent) {
-  return declaresRoute(ctx.tools.get(exec.name, scope)?.parameters?.properties);
-}
-
-/**
  * One route field, or undefined when the call named nothing usable.
  *
  * Whitespace-only counts as absent: the host rejects a zero-length value but
@@ -498,71 +509,41 @@ function namedValue(value) {
 }
 
 /**
- * Whether the selected route's model advertises reasoning efforts.
+ * Judge one delegation call against the pairing rule.
  *
- * An effort is required only where one exists: the host rejects any effort on a
- * model that advertises none, so requiring it unconditionally would deny every
- * possible value for such a route — a retry loop, not a gate.
+ * An omitted route is not a defect: the host inherits the parent's route, which
+ * is the delegator's own choice by construction. A *half* route is a defect —
+ * `provider` without `model` identifies no route, and the host rejects it with
+ * a less specific message further down. This gate therefore says nothing when
+ * the call names neither field, and only speaks when the call names one.
  *
- * Returns undefined when the runtime cannot answer: no `llm` service, an
- * unregistered provider, or an unknown model. The host resolves the same route
- * again before dispatch and diagnoses it in far more detail than this gate
- * could, so an unresolvable route is left to it rather than denied twice with a
- * worse message.
- *
- * @param ctx - the plugin context.
- * @param exec - the pending call.
- * @param provider - the named provider.
- * @param model - the named model.
- * @returns whether an effort must be named, or undefined when unknown.
- */
-async function requiresEffort(ctx, exec, provider, model) {
-  const llm = ctx.get('llm');
-  if (llm === undefined) return undefined;
-  let info;
-  try {
-    info = await llm.resolveModelInfo(provider, model, exec.signal);
-  } catch {
-    // Route validity is the host's to report. This gate exists to catch a
-    // missing name, not to second-guess whether a route resolves.
-    return undefined;
-  }
-  return (info?.reasoning?.efforts?.length ?? 0) > 0;
-}
-
-/**
- * Judge one delegation call against the route requirement.
+ * Effort is deliberately not required. Requiring it forced a route to be named
+ * in every call, which cost 25 delegations across 524 sessions to a gate that
+ * was protecting against a default the host had already chosen sensibly, and it
+ * pushed the model into `list_subagent_models`, whose no-argument output
+ * (`cpa — CPA`, a provider line) reads exactly like a model line and produced
+ * two delegations to the non-existent route `cpa/CPA`. The host inherits the
+ * parent's effort on an unchanged route, which is the same sensible default.
  *
  * @param ctx - the plugin context.
  * @param exec - the pending call.
  * @returns a denial reason, or undefined to allow the call.
  */
-async function checkRoute(ctx, exec) {
+function checkRoute(ctx, exec) {
   if (!isDelegation(ctx, exec)) return undefined;
   const properties = ctx.tools.get(exec.name, exec.agent)?.parameters?.properties;
   if (!declaresRoute(properties)) return undefined;
   const args = exec.arguments;
   const provider = namedValue(args?.provider);
   const model = namedValue(args?.model);
-  const missing = [];
-  if (provider === undefined) missing.push('`provider`');
-  if (model === undefined) missing.push('`model`');
-  if (
-    missing.length === 0 &&
-    properties.reasoning_effort !== undefined &&
-    namedValue(args?.reasoning_effort) === undefined &&
-    (await requiresEffort(ctx, exec, provider, model))
-  ) {
-    missing.push('`reasoning_effort`');
-  }
-  if (missing.length === 0) return undefined;
+  if (provider !== undefined && model !== undefined) return undefined;
+  if (provider === undefined && model === undefined) return undefined;
+  const named = provider === undefined ? '`model`' : '`provider`';
+  const missing = provider === undefined ? '`provider`' : '`model`';
   return [
-    'A delegation must name the child route the seat runs on; an unnamed route silently',
-    'runs the seat on a default the delegator did not choose.',
-    'Missing from this call: ' + missing.join(', ') + '.',
-    'Pass `provider` and `model` together in the call arguments, plus `reasoning_effort`',
-    'when the selected model advertises one. Call `list_subagent_models` to read the',
-    'available routes and their efforts.',
+    'This delegation names ' + named + ' but not ' + missing + ', which identifies no route.',
+    'Pass `provider` and `model` together, or omit both to inherit the route this session',
+    'already runs on.',
   ].join(' ');
 }
 
@@ -590,24 +571,6 @@ const MARKER_REQUIREMENT = [
 ].join(' ');
 
 /**
- * The route requirement appended to every delegation tool's own description.
- *
- * The host presents the child route as optional and lets the seat inherit a
- * default, which is exactly the framing the gate refuses — so the requirement
- * is stated where the delegator writes the call, not only in the denial it
- * would meet afterwards. Same seam and same reasoning as the marker
- * requirement below; the two are appended together on a delegation tool.
- */
-const ROUTE_REQUIREMENT = [
-  'A call to this tool MUST name the child route the seat runs on: pass `provider` and',
-  '`model` together in the call arguments, plus `reasoning_effort` when the selected',
-  'model advertises one. An unnamed route silently runs the seat on a default you did',
-  'not choose. Call `list_subagent_models` first to read the available routes and their',
-  'efforts, then write those three fields into this call\'s arguments — naming a model',
-  'only in the instruction prose does not select it.',
-].join(' ');
-
-/**
  * The decomposition requirement appended to `todo_write`'s own description.
  *
  * The rule — decompose first, name who does each line — lives in AGENTS.md and
@@ -626,6 +589,38 @@ const DECOMPOSITION_REQUIREMENT = [
   '`in_progress` until its seat reports, and give one line to one executor rather',
   'than splitting it across several.',
 ].join(' ');
+
+/**
+ * Render the delegation cue for one step.
+ *
+ * Two parts, in this order: the criterion, which is constant and belongs to
+ * every session; then, only when this turn has actually spent something, the
+ * specific `[root]` lines that are still open. A criterion with no instance is
+ * the shape that already failed four times — it is read and applied to nothing —
+ * while an instance with no criterion invites delegating everything.
+ *
+ * @param spentCalls - tool results this turn has produced.
+ * @param rootLines - open todo contents still marked `[root]`, or `undefined` when the session has no list.
+ * @returns the model-facing text, or `''` when this agent must not be told.
+ */
+function renderDelegationCue(spentCalls, rootLines) {
+  const criterion =
+    'A line that needs to read three independent sources and delivers only a conclusion is ' +
+    'cheaper to hand to a seat than to run here: the seat returns the conclusion, and this ' +
+    'context never holds the sources. Hand it out at the moment you split the work, not after ' +
+    'you have read the first of them — by then the saving is already spent.';
+  if (spentCalls < CUE_AFTER_CALLS || rootLines === undefined || rootLines.length === 0) {
+    return criterion;
+  }
+  const named = rootLines.slice(0, 3).map((line) => `- ${line}`).join('\n');
+  return (
+    `${criterion}\n\n` +
+    `This turn has already spent ${spentCalls} tool results, and these open lines are still ` +
+    `marked \`[root]\`:\n${named}\n` +
+    'If any of them is the shape above, delegate it now; if it is genuinely yours, the list is ' +
+    'right and nothing needs to change.'
+  );
+}
 
 /**
  * Format a character count as the shortest unit a model can weigh at a glance.
@@ -717,6 +712,15 @@ export function apply(ctx) {
    * stop being actionable.
    */
   const spentBySession = new Map();
+  /**
+   * Session id -> the owner each todo line was last declared with.
+   *
+   * The host's `todo/write` payload has no owner field and is not ours to
+   * change, so ownership is kept beside it rather than inside it: the host
+   * snapshot stays exactly what its projection expects, and the cue reads the
+   * owner from here. Cleared with the session, like the meter.
+   */
+  const ownersBySession = new Map();
 
   /**
    * Drive one session's checkpoint to match its current live seats.
@@ -784,8 +788,9 @@ export function apply(ctx) {
     };
   });
 
-  // Rule 5: a delegation that can select the child's model must name the route
-  // it selected. Registered after rule 1 so a one-shot call is refused by the
+  // Rule 5: a delegation that names half a route is refused, because half a
+  // route identifies none. Naming neither field is legal — the host inherits the
+  // parent's route. Registered after rule 1 so a one-shot call is refused by the
   // rule that explains the sharper failure first.
   ctx.on('tools/pre-execute', async (exec, next) => {
     const reason = await checkRoute(ctx, exec);
@@ -819,6 +824,138 @@ export function apply(ctx) {
   // global view. Without it both tests below answer false and this whole
   // listener becomes a no-op — which is exactly how the requirement went
   // missing from a real delegation.
+  // Ownership as a declared field: the todo tool is registered again in the
+  // agent's own scope, which the registry lets shadow the global one. A prefix
+  // inside free text was adopted in form but never in substance (0 of 341
+  // sessions wrote `[seat: ...]`), because a prefix is something to remember
+  // while a required field is something to fill. The host snapshot is written
+  // back unchanged — the owner lives beside it, not inside it.
+  ctx.on('agent/created', ({ agent }) => {
+    const sessionId = agent?.session?.id;
+    const scoped = agent?.ctx;
+    if (sessionId === undefined || scoped === undefined) return;
+    scoped.tools.register(
+      defineTool({
+        name: 'todo_write',
+        description:
+          'Record and update a task list to plan multi-step work and show progress; skip it for ' +
+          'trivial single-step tasks. Add one todo per concrete step before you start. Every todo ' +
+          'names who does it: `owner: "root"` for a line this session does itself, `owner: "seat"` ' +
+          'for a line handed to a subagent. Two lines with no dependency between them are two todos ' +
+          'started together — a list whose every entry is `root` says the whole task is one thread, ' +
+          'which is the shape to look at twice before starting.',
+        parameters: {
+          todos: {
+            type: 'array',
+            required: true,
+            description: 'The COMPLETE task list, replacing any previous list.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                content: { type: 'string', required: true, description: 'What the task is — a short imperative line.' },
+                status: {
+                  type: 'string',
+                  required: true,
+                  enum: ['pending', 'in_progress', 'completed'],
+                  description: 'pending (not started) | in_progress (now) | completed (done).',
+                },
+                owner: {
+                  type: 'string',
+                  required: true,
+                  enum: ['root', 'seat'],
+                  description: 'Who executes this line: "root" for this session, "seat" for a subagent.',
+                },
+              },
+            },
+          },
+        },
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              todos: {
+                type: 'array',
+                required: true,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    content: { type: 'string', required: true },
+                    status: { type: 'string', required: true, enum: ['pending', 'in_progress', 'completed'] },
+                  },
+                },
+              },
+              counts: {
+                type: 'object',
+                additionalProperties: false,
+                required: true,
+                properties: {
+                  pending: { type: 'integer', required: true },
+                  inProgress: { type: 'integer', required: true },
+                  completed: { type: 'integer', required: true },
+                },
+              },
+            },
+          },
+          render: (_args, value) =>
+            [
+              {
+                type: 'text',
+                text: `Updated todo list: ${value.counts.pending} pending, ${value.counts.inProgress} in progress, ${value.counts.completed} completed.`,
+              },
+            ],
+        },
+        execute(args) {
+          const seen = new Set();
+          const owners = new Map();
+          const todos = args.todos.map((item) => {
+            const content = item.content.trim();
+            if (content.length === 0) throw new Error('invalid todo: `content` must be a non-empty string');
+            if (seen.has(content)) throw new Error(`invalid todos: duplicate content ${JSON.stringify(content)}`);
+            seen.add(content);
+            owners.set(content, item.owner);
+            return { content, status: item.status };
+          });
+          agent.session.append('todo/write', { todos });
+          ownersBySession.set(sessionId, owners);
+          const count = (status) => todos.filter((todo) => todo.status === status).length;
+          return Promise.resolve({
+            todos,
+            counts: { pending: count('pending'), inProgress: count('in_progress'), completed: count('completed') },
+          });
+        },
+      }),
+    );
+  });
+
+  // The delegation cue: the half of the host's own delegation slot that is
+  // missing. Read through `ctx.get` rather than injected, so a host without the
+  // prompt service keeps the gate and the wait bound instead of losing all of it.
+  const prompts = ctx.get('systemPrompt');
+  if (prompts !== undefined) {
+    prompts.context({
+      name: 'force-rules:delegation-cue',
+      order: prompts.getContextOrder(DELEGATION_CUE_SLOT),
+      text: (context) => {
+        const agent = context.agent;
+        // A seat cannot delegate further in the way this cue describes, and the
+        // host already tells it when its own depth ceiling is reached.
+        if (agent?.session?.header?.parentSession !== undefined) return '';
+        const spent = spentBySession.get(agent?.session?.id);
+        const todos = ctx.get('sessionProjections')?.stateOf(agent?.session, 'todos');
+        const owners = ownersBySession.get(agent?.session?.id);
+        const rootLines = todos === undefined || todos === null
+          ? undefined
+          : todos
+              .filter((todo) => todo.status !== 'completed' && owners?.get(todo.content) === 'root')
+              .map((todo) => todo.content);
+        return renderDelegationCue(spent?.calls ?? 0, rootLines);
+      },
+    });
+  }
+
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next();
     const scope = context?.scope;
@@ -830,10 +967,7 @@ export function apply(ctx) {
       }
       if (!isDelegation(ctx, tool, scope)) return tool;
       touched = true;
-      const requirement = advertisesRoute(ctx, tool, scope)
-        ? MARKER_REQUIREMENT + ' ' + ROUTE_REQUIREMENT
-        : MARKER_REQUIREMENT;
-      return { ...tool, description: tool.description + ' ' + requirement };
+      return { ...tool, description: tool.description + ' ' + MARKER_REQUIREMENT };
     });
     return touched ? { ...assembly, tools } : assembly;
   });
@@ -926,5 +1060,6 @@ export function apply(ctx) {
   // counters alive for the life of the process.
   ctx.on('agent/disposed', ({ agent }) => {
     spentBySession.delete(agent.session.id);
+    ownersBySession.delete(agent.session.id);
   });
 }
