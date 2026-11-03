@@ -486,14 +486,15 @@ test('the tools pointer is gone and nothing else was removed with it', () => {
   // described calls, so it needed no pointer either.
   //
   // The fixture happens to contain no failing tool result, so one is added here:
-  // otherwise this test could not show that the error line survived the removal.
+  // this test then also pins that the `errors:` trailer is gone, since both lines
+  // were removed for the same reason.
   const events = [
     ...events2(),
     { type: 'tool/result', seq: 900, time: 9, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', isError: true, content: [{ type: 'text', text: 'Error: boom' }] } } },
   ]
   const text = renderDigest(events, 20000)
   assert.ok(!/^ {2}tools: /m.test(text), 'the tools pointer must be gone')
-  assert.ok(/^ {2}errors: /m.test(text), 'the error line must stay: the model cannot see failures')
+  assert.ok(!/^ {2}errors: /m.test(text), 'the error trailer must be gone too')
 })
 
 test('the wrote line still records exact paths', () => {
@@ -549,11 +550,11 @@ test('a slot carries the whole section, not just its first message', async () =>
   )
 })
 
-test('an ask_user_question hint carries the question and the chosen answer', () => {
+test('an answered tool question reaches the digest with its chosen answer', () => {
   // `ask_user_question` has no `description` argument — its payload is
-  // `questions[]` — so `hintOf` returned '' and the extractor saw only
-  // `TOOL ask_user_question`. The question and the user's selection were both
-  // lost, which is why `## Asked` kept coming out empty or wrong.
+  // `questions[]` — and the answer is the tool result, not a user message. Both
+  // halves are rendered from the log into `## Answers`; the tool trace does not
+  // carry them, because a hint would only invite the model to restate them.
   const events = [
     {
       type: 'assistant/message', seq: 1, time: 1, surfaceOp: 'append',
@@ -589,10 +590,11 @@ test('an ask_user_question hint carries the question and the chosen answer', () 
       },
     },
   ]
-  const hints = collectHints(events)
-  assert.ok(hints.includes('ask_user_question'), 'the tool must be named')
-  assert.ok(hints.includes('验证码已发出'), 'the question text must survive')
-  assert.ok(hints.includes('现在试'), 'the chosen answer must survive')
+  const text = renderDigest(events, 20000)
+  assert.ok(text.includes('## Answers'), 'answered tool questions need their own section')
+  assert.ok(text.includes('验证码已发出'), 'the question text must survive')
+  assert.ok(text.includes('现在试'), 'the chosen answer must survive')
+  assert.ok(!collectHints(events).includes('ask_user_question'), 'the hint block must not restate it')
 })
 
 test('a free-text answer is kept even when nothing was selected', () => {
@@ -625,8 +627,8 @@ test('a free-text answer is kept even when nothing was selected', () => {
       },
     },
   ]
-  const hints = collectHints(events)
-  assert.ok(hints.includes('拖动了，但是提示发码失败'), 'the typed answer must survive')
+  const text = renderDigest(events, 20000)
+  assert.ok(text.includes('拖动了，但是提示发码失败'), 'the typed answer must survive')
 })
 
 test('the extraction instruction tells the model to answer in the material\'s language', async () => {
@@ -666,11 +668,11 @@ test('the Asked section is rendered last, right before the user reply', () => {
   assert.ok(text.indexOf('\n## user\n1') > text.indexOf('OPT-A'), 'the reply follows the options')
 })
 
-test('the Asked section stays last even when the turn has an errors line', () => {
+test('the Asked section stays last, after the wrote line', () => {
   const events = [
     { type: 'user/message', seq: 1, time: 2, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
     { type: 'assistant/message', seq: 2, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
-    { type: 'tool/result', seq: 3, time: 4, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', isError: true, content: [{ type: 'text', text: 'Error: boom' }] } } },
+    { type: 'assistant/message', seq: 3, time: 4, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'write', arguments: JSON.stringify({ path: '/repo/src/a.ts' }) }] } } },
   ]
   const extracted = new Map([['0:0', {
     did: ['DID-TEXT'], concluded: [], overturned: [],
@@ -678,9 +680,186 @@ test('the Asked section stays last even when the turn has an errors line', () =>
   }]])
   const text = renderDigest(events, 20000, extracted)
   assert.ok(
-    text.indexOf('ASKED-TEXT') > text.indexOf('errors:'),
+    text.indexOf('ASKED-TEXT') > text.indexOf('wrote:'),
     'Asked must be the last thing before the next user message',
   )
+})
+
+test('a tool question and the answer the user gave are both in the digest', () => {
+  // Measured on a real session: three questions went through
+  // `ask_user_question`, the user answered all three inside the tool's own
+  // picker, and the answer came back as the tool result — no `user/message` was
+  // ever written. The digest renders `## Asked` from the model and the reply from
+  // the next `## user` line, so both halves of that exchange were missing from
+  // two consecutive checkpoints.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    {
+      type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append',
+      data: {
+        turn: 1, step: 1,
+        message: {
+          role: 'assistant',
+          content: [{
+            type: 'tool-call', id: 'call_1', name: 'ask_user_question',
+            arguments: JSON.stringify({
+              questions: [
+                { id: 'segment_align', question: '高亮该按哪种方式落到正文上？', options: [{ label: '按段落归并' }, { label: '按原样切块高亮' }] },
+                { id: 'quota', question: '剩余额度这个数字从哪来？' },
+              ],
+            }),
+          }],
+        },
+      },
+    },
+    {
+      type: 'tool/result', seq: 3, time: 3, surfaceOp: 'append',
+      data: {
+        turn: 1, step: 1,
+        message: {
+          role: 'tool', toolCallId: 'call_1', isError: false,
+          content: [{ type: 'text', text: JSON.stringify({ answers: [
+            { id: 'segment_align', selected: ['按原样切块高亮'] },
+            { id: 'quota', selected: [], custom: '我给你的文档里不写了每个月 50 万 token？' },
+          ] }) }],
+        },
+      },
+    },
+  ]
+  const text = renderDigest(events, 20000)
+  assert.ok(text.includes('## Answers'), 'the answered questions need a section of their own')
+  assert.ok(text.includes('高亮该按哪种方式落到正文上？'), 'the question must be recorded')
+  assert.ok(text.includes('按原样切块高亮'), 'the chosen option must be recorded')
+  assert.ok(text.includes('每个月 50 万 token'), 'a typed answer must be recorded, not dropped for having no selection')
+})
+
+test('a late answer delivered as a user message is recorded, not swallowed as injection', () => {
+  // When the user answers after the tool call already returned a pending notice,
+  // the host writes a `user/message` whose source is `user-question-reply` and
+  // whose body carries the questions and the answers together. Every injected
+  // kind is filtered out of the digest, so this message used to vanish whole —
+  // the answer existed in the log and nowhere in the summary.
+  const body = JSON.stringify({
+    kind: 'answer_to_pending_question',
+    tool: 'ask_user_question',
+    callId: 'call_7',
+    questions: [{ id: 'drag_slider', question: '请拖动滑块' }],
+    answers: [{ id: 'drag_slider', selected: [], custom: '拖动了，但是提示发码失败' }],
+  })
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'PROSE' }] } } },
+    { type: 'user/message', seq: 3, time: 3, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: body }], source: { kind: 'user-question-reply', callId: 'call_7', outcome: 'answered' } } },
+  ]
+  const text = renderDigest(events, 20000)
+  assert.ok(text.includes('请拖动滑块'), 'the question must be recorded')
+  assert.ok(text.includes('拖动了，但是提示发码失败'), 'the late answer must be recorded')
+  assert.equal((text.match(/^## user$/gm) ?? []).length, 1, 'the reply is not a new user request')
+  assert.ok(!text.includes('answer_to_pending_question'), 'the JSON envelope must not leak into the digest')
+})
+
+test('a turn body dropped for budget takes its answers with it', () => {
+  // `withoutBodies` exists to strip everything the assistant produced while
+  // keeping the user's requests. `answered` is produced by the assistant's own
+  // tool call, so a dropped body must drop it too — otherwise the oldest turns
+  // keep rendering `## Answers` at every tier and the truncation never fits.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'FIRST-REQUEST' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q1', question: `OLD-QUESTION-${'x'.repeat(200)}` }] }) }] } } },
+    { type: 'tool/result', seq: 3, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'q1', selected: ['OLD-ANSWER'] }] }) }] } } },
+    { type: 'user/message', seq: 4, time: 4, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'SECOND-REQUEST' }], source: { kind: 'user' } } },
+  ]
+  const roomy = renderDigest(events, 20000)
+  assert.ok(roomy.includes('OLD-QUESTION'), 'the answers must be present when the budget is roomy')
+  // 60 tokens = 240 chars. Both user lines are 47 chars, the answers are ~250, so
+  // dropping the oldest turn's body is exactly what buys the fit — and the request
+  // above it must survive, which is the whole point of dropping bodies rather than
+  // turns. Leaving `answered` in place made this tier buy nothing and the walk fell
+  // through to dropping the request itself.
+  const tight = renderDigest(events, 60)
+  assert.ok(!tight.includes('OLD-QUESTION'), 'a dropped turn body must not keep its answers')
+  assert.ok(tight.includes('FIRST-REQUEST'), 'the oldest request outlives its body')
+  assert.ok(tight.includes('SECOND-REQUEST'), 'the newest request is what the next turn answers')
+})
+
+test('answers keep the assistant heading when the turn has no prose', () => {
+  // A turn that only asked a question has no assistant text. Emitting the
+  // answers bare put `## Answers` directly under `## user`, at the user's
+  // heading level, where it reads as something the user said.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q', question: 'QUESTION-TEXT' }] }) }] } } },
+    { type: 'tool/result', seq: 3, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'q', selected: ['PICKED'] }] }) }] } } },
+  ]
+  const text = renderDigest(events, 20000)
+  const at = text.indexOf('## Answers')
+  assert.ok(at > 0, 'the answers must be rendered')
+  assert.ok(
+    text.slice(0, at).includes('### assistant'),
+    'Answers must sit under the turn\'s assistant heading, not under ## user',
+  )
+})
+
+test('answers sit above Asked inside the extraction block', () => {
+  // The extracted branch places Answers with `insertAnswers`, which no other
+  // test exercises: every other answers test renders without an extraction.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q', question: 'QUESTION-TEXT' }] }) }] } } },
+    { type: 'tool/result', seq: 3, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'q', selected: ['PICKED'] }] }) }] } } },
+  ]
+  const extracted = new Map([['0:0', {
+    did: ['DID-TEXT'], concluded: [], overturned: [],
+    asked: [{ question: 'ASKED-TEXT', options: ['OPT-A'] }],
+  }]])
+  const text = renderDigest(events, 20000, extracted)
+  const answersAt = text.indexOf('## Answers')
+  const askedAt = text.indexOf('## Asked')
+  assert.ok(answersAt > text.indexOf('DID-TEXT'), 'Answers belongs inside the block, after Did')
+  assert.ok(answersAt < askedAt, 'Answers must come before Asked, so the reply stays under its options')
+  assert.ok(askedAt < text.indexOf('OPT-A'), 'the options stay under their question')
+})
+
+test('an item containing the Asked heading does not split the block', () => {
+  // `did`/`concluded` items are free strings. Matching the bare text `## Asked`
+  // found the marker inside a bullet and inserted the answers mid-sentence.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q', question: 'QUESTION-TEXT' }] }) }] } } },
+    { type: 'tool/result', seq: 3, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: JSON.stringify({ answers: [{ id: 'q', selected: ['PICKED'] }] }) }] } } },
+  ]
+  const extracted = new Map([['0:0', {
+    did: ['TRAP ## Asked TRAP'], concluded: [], overturned: [],
+    asked: [{ question: 'ASKED-TEXT', options: ['OPT-A'] }],
+  }]])
+  const text = renderDigest(events, 20000, extracted)
+  assert.ok(text.includes('- TRAP ## Asked TRAP'), 'the bullet stays whole')
+  assert.ok(text.indexOf('## Answers') > text.indexOf('TRAP'), 'Answers goes after the bullet, not inside it')
+})
+
+test('a question left pending renders no Answers section', () => {
+  // Inside the waiting window the tool returns a pending notice, not an answer
+  // batch. Rendering an empty section there would claim the user answered.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'ask_user_question', arguments: JSON.stringify({ questions: [{ id: 'q', question: 'QUESTION-TEXT' }] }) }] } } },
+    { type: 'tool/result', seq: 3, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: JSON.stringify({ pending: true, message: 'This is pending, not a skipped answer' }) }] } } },
+  ]
+  assert.ok(!renderDigest(events, 20000).includes('## Answers'))
+})
+
+test('a tool result that is not an answer batch contributes no answers', () => {
+  // Only a result belonging to an `ask_user_question` call is an answer. Reading
+  // every result would also mean JSON-parsing the whole log (536 KB across 157
+  // results in one measured session, the largest 49.9 KB) on every compaction.
+  const events = [
+    { type: 'user/message', seq: 1, time: 1, surfaceOp: 'append', data: { role: 'user', content: [{ type: 'text', text: 'DO IT' }], source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 2, time: 2, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'c2', name: 'bash', arguments: JSON.stringify({ command: 'cat fixtures/answers.json' }) }] } } },
+    { type: 'tool/result', seq: 3, time: 3, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'c2', content: [{ type: 'text', text: JSON.stringify({ questions: [{ id: 'q', question: 'FAKE-QUESTION' }], answers: [{ id: 'q', selected: ['FAKE-ANSWER'] }] }) }] } } },
+  ]
+  const text = renderDigest(events, 20000)
+  assert.ok(!text.includes('## Answers'), 'a bash result that merely looks like a batch is not an answer')
+  assert.ok(!text.includes('FAKE-QUESTION'))
 })
 
 test('a user message and the work it triggers stay in one turn', () => {

@@ -72,12 +72,19 @@ test('tool results contribute no content and no pointer line', () => {
   assert.ok(!digest.includes('TOOL-OUTPUT'), 'tool output content must never appear')
 })
 
-test('tool errors surface as a first-line pointer', () => {
+test('failing tool results leave no trace in the digest', () => {
+  // The `  errors: N: <first line>` trailer was removed. What it carried was
+  // always a transport or exit-status string ("命令超过 600 秒未结束"), never the
+  // part of a failure that mattered, so it cost tokens on every turn that hit
+  // one and was read by nobody.
   const { events } = fixture()
-  const digest = renderDigest(events, 196752)
-  if (events.some((event) => event.type === 'tool/result' && event.data.message.isError === true)) {
-    assert.ok(/ {2}errors: \d+: /.test(digest))
-  }
+  const withFailure = [
+    ...events,
+    { type: 'tool/result', seq: 900, time: 9, surfaceOp: 'append', data: { turn: 1, step: 1, message: { role: 'tool', isError: true, content: [{ type: 'text', text: 'Error: boom' }] } } },
+  ]
+  const digest = renderDigest(withFailure, 196752)
+  assert.ok(!/ {2}errors: /.test(digest), 'the error trailer must be gone')
+  assert.ok(!digest.includes('boom'), 'the error text must not leak through another line')
 })
 
 test('the digest is deterministic', () => {

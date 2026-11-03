@@ -187,66 +187,105 @@ function toolCallsOf(event: SessionEvent): { id: string; name: string; arguments
   return calls
 }
 
+/** One question the user answered through the question tool, with its answer. */
+interface AnsweredQuestion {
+  question: string
+  /** The labels the user picked, in the order they were offered. */
+  selected: string[]
+  /** What the user typed instead of picking, when they did. */
+  typed: string
+}
+
+/** The `questions[]` payload of an `ask_user_question` call, as `{id → text}`. */
+function questionTextsOf(argumentsJson: string): Map<string, string> {
+  const out = new Map<string, string>()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(argumentsJson)
+  } catch {
+    return out
+  }
+  if (typeof parsed !== 'object' || parsed === null) return out
+  const questions = (parsed as Record<string, unknown>)['questions']
+  if (!Array.isArray(questions)) return out
+  for (const question of questions) {
+    if (typeof question !== 'object' || question === null) continue
+    const record = question as Record<string, unknown>
+    const id = record['id']
+    const text = typeof record['question'] === 'string' ? record['question'] : undefined
+    if (typeof id === 'string' && text !== undefined) out.set(id, text)
+  }
+  return out
+}
+
 /**
- * The answer the user gave to one `ask_user_question` call, or undefined.
+ * Read one answer batch into per-question answers.
  *
- * The answer is the tool's own result — `{"answers":[{"id":"…","selected":[…]}]}`
- * — not an error, so without this the result was skipped and the only record of
- * what the user chose never reached the extractor. The user's next message is
- * often just "1" or "继续", which is unreadable without the question beside it.
+ * The batch is `{answers:[{id, selected:[…], custom?}]}`, and it arrives two
+ * ways: as the result of an answered `ask_user_question` call, and inside the
+ * `user/message` the host writes when the user answers after the call already
+ * returned its pending notice. Both carry the same shape, so both are read here.
  *
- * @param event - any event; non-results and unrelated results yield undefined.
- * @param askedIds - tool-call ids of this turn's questions.
- * @returns the chosen labels, or undefined when this result answers no question.
+ * A typed answer arrives with `selected: []` and the text in `custom`. Ten of 31
+ * real questions in one session were answered that way, and those carried the
+ * user's actual observations rather than a menu label.
+ *
+ * @param text - the JSON body.
+ * @param texts - question id to question text, from the call's arguments.
+ * @returns one entry per answered question; empty when the body is not a batch.
  */
-function answerOf(event: SessionEvent, askedIds: ReadonlySet<string>): string | undefined {
-  if (askedIds.size === 0) return undefined
-  const message = messageOf(event)
-  if (message === null) return undefined
-  const callId = (message as { toolCallId?: string }).toolCallId
-  if (callId === undefined || !askedIds.has(callId)) return undefined
-  const text = textOf(event)
+function answersOf(text: string, texts: ReadonlyMap<string, string>): AnsweredQuestion[] {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
-    return undefined
+    return []
   }
-  if (typeof parsed !== 'object' || parsed === null) return undefined
-  const answers = (parsed as Record<string, unknown>)['answers']
-  if (!Array.isArray(answers)) return undefined
-  const chosen = answers
-    .flatMap((answer) => {
-      if (typeof answer !== 'object' || answer === null) return []
-      const record = answer as Record<string, unknown>
-      const selected = record['selected']
-      const picked = Array.isArray(selected) ? selected.map((value) => String(value)) : []
-      // A typed answer arrives with `selected: []` and the text in `custom`. Ten
-      // of 31 real questions were answered this way, and those carried the user's
-      // actual observations rather than a menu label.
-      const typed = typeof record['custom'] === 'string' ? [record['custom']] : []
-      return [...picked, ...typed]
-    })
-    .filter((value) => value.length > 0)
-  if (chosen.length === 0) return undefined
-  return chosen.join(' / ').replace(/\s+/g, ' ').slice(0, HINT_CHARS * 2)
+  if (typeof parsed !== 'object' || parsed === null) return []
+  // A late reply carries its own `questions` array beside the answers, so it does
+  // not depend on the call still being in the same turn's events.
+  const body = parsed as Record<string, unknown>
+  const own = Array.isArray(body['questions']) ? body['questions'] : []
+  const merged = new Map(texts)
+  for (const question of own) {
+    if (typeof question !== 'object' || question === null) continue
+    const record = question as Record<string, unknown>
+    const id = record['id']
+    const text = record['question']
+    if (typeof id === 'string' && typeof text === 'string') merged.set(id, text)
+  }
+  const answers = body['answers']
+  if (!Array.isArray(answers)) return []
+  const out: AnsweredQuestion[] = []
+  for (const answer of answers) {
+    if (typeof answer !== 'object' || answer === null) continue
+    const record = answer as Record<string, unknown>
+    const id = typeof record['id'] === 'string' ? record['id'] : ''
+    const question = merged.get(id)
+    if (question === undefined) continue
+    const selected = Array.isArray(record['selected'])
+      ? record['selected'].map((value) => String(value)).filter((value) => value.length > 0)
+      : []
+    const typed = typeof record['custom'] === 'string' ? record['custom'].trim() : ''
+    if (selected.length === 0 && typed.length === 0) continue
+    out.push({ question, selected, typed })
+  }
+  return out
 }
 
 /**
- * Whether one tool result is a failure.
+ * Render one answered question as a digest line pair.
  *
- * Reads `data.message.isError` and nothing else. Matching the serialized text
- * for /error/i was tried and is wrong: tool output routinely contains that word
- * (grep misses, compiler logs, dumps of source files), so it labelled every
- * result in a 347-result turn as failed and the summarizer reported the whole
- * turn as a failure.
- *
- * @param event - a `tool/result` event.
- * @returns true only when the log itself marks the result as an error.
+ * @param answered - one question and the answer it got.
+ * @returns the question line and, indented under it, the answer line.
  */
-export function isErrorResult(event: SessionEvent): boolean {
-  const message = messageOf(event)
-  return (message as { isError?: unknown } | null)?.isError === true
+function renderAnswered(answered: AnsweredQuestion): string[] {
+  const picked = [...answered.selected]
+  if (answered.typed.length > 0) picked.push(answered.typed)
+  return [
+    `- ${answered.question.replace(/\s+/g, ' ').trim()}`,
+    `  → ${picked.join(' / ').replace(/\s+/g, ' ').trim()}`,
+  ]
 }
 
 /** Directive appended as the final user message of the extraction call. */
@@ -539,9 +578,6 @@ const MAX_HINTS_PER_TURN = 120
 /** Characters kept from one call's description or command head. */
 const HINT_CHARS = 100
 
-/** Characters kept from one failing result's first line. */
-const ERROR_CHARS = 140
-
 /**
  * The best short description of what one call was for.
  *
@@ -558,32 +594,6 @@ function hintOf(argumentsJson: string): string {
   } catch {
     return ''
   }
-  // `ask_user_question` carries `questions[]`, not a `description`. Without this
-  // branch the hint was the bare tool name, so the extractor never saw what was
-  // asked and `## Asked` came out empty or wrong on every turn that used it.
-  const questions = parsed['questions']
-  if (Array.isArray(questions)) {
-    const asked = questions
-      .map((question) => {
-        if (typeof question !== 'object' || question === null) return ''
-        const record = question as Record<string, unknown>
-        const text = typeof record['question'] === 'string'
-          ? record['question']
-          : typeof record['header'] === 'string' ? record['header'] : ''
-        const options = Array.isArray(record['options'])
-          ? record['options']
-            .map((option) => (typeof option === 'object' && option !== null
-              ? String((option as Record<string, unknown>)['label'] ?? '')
-              : ''))
-            .filter((label) => label.length > 0)
-          : []
-        if (text.length === 0) return ''
-        return options.length === 0 ? text : `${text} [options: ${options.join(' / ')}]`
-      })
-      .filter((text) => text.length > 0)
-      .join(' | ')
-    if (asked.length > 0) return asked.replace(/\s+/g, ' ').slice(0, HINT_CHARS * 2)
-  }
   for (const key of ['description', 'command', 'query', 'file_path', 'path', 'pattern']) {
     const candidate = parsed[key]
     if (typeof candidate === 'string' && candidate.trim().length > 0) {
@@ -599,8 +609,10 @@ function hintOf(argumentsJson: string): string {
  * This is what lets a turn whose assistant prose is empty still leave a record:
  * in the measured session one turn ran 342 tool calls and emitted zero prose, so
  * the verbatim digest reduced it to a single `tools:` count line. The trace names
- * what was attempted and which attempts failed, which is enough for a model to
- * state the outcome.
+ * what was attempted, which is enough for a model to state the outcome.
+ *
+ * Tool results are not read. Their only contribution used to be a first-line
+ * error string, and that string was never the part of a failure that mattered.
  *
  * Bounded on purpose — 500 calls would otherwise produce a prompt larger than the
  * material it summarizes.
@@ -611,44 +623,22 @@ function hintOf(argumentsJson: string): string {
 export function collectHints(events: readonly SessionEvent[]): string {
   const lines: string[] = []
   let calls = 0
-  // Tool-call ids of this turn's questions, so the matching result can be read as
-  // an answer rather than being skipped as a non-error result.
-  const askedIds = new Set<string>()
   for (const event of events) {
     // Tool calls are blocks inside `assistant/message`, not standalone events:
     // `digestSource` emits no `tool/call` type at all, so selecting on that type
     // matched nothing and a 342-call turn produced a single hint line.
-    if (event.type === 'assistant/message') {
-      for (const call of toolCallsOf(event)) {
-        // A question is never dropped by the cap. It is the only record of what was
-        // asked, and its answer is matched by call id rather than by the cap, so
-        // dropping the question left an orphan ANSWER line with nothing beside it —
-        // a real turn made 292 calls, the question came late, and the user's choice
-        // never reached the digest.
-        const isQuestion = call.name === 'ask_user_question'
-        if (!isQuestion) {
-          if (calls >= MAX_HINTS_PER_TURN) break
-          calls += 1
-        }
-        const hint = hintOf(call.arguments)
-        lines.push(hint.length > 0 ? `TOOL ${call.name}: ${hint}` : `TOOL ${call.name}`)
-        if (isQuestion) askedIds.add(call.id)
-      }
-      continue
+    if (event.type !== 'assistant/message') continue
+    for (const call of toolCallsOf(event)) {
+      // A question is not a hint. It and its answer are rendered from the log by
+      // `renderAnswers`, so listing it here as well only invited the model to
+      // restate it in `asked` — the same exchange printed twice, once of them
+      // paraphrased.
+      if (call.name === 'ask_user_question') continue
+      if (calls >= MAX_HINTS_PER_TURN) break
+      calls += 1
+      const hint = hintOf(call.arguments)
+      lines.push(hint.length > 0 ? `TOOL ${call.name}: ${hint}` : `TOOL ${call.name}`)
     }
-    if (event.type !== 'tool/result') continue
-    // The answer to a question is the tool's own result, not an error. It is the
-    // only record of what the user chose, and the next user message is often just
-    // "1" — so it has to travel with the question.
-    const answered = answerOf(event, askedIds)
-    if (answered !== undefined) {
-      lines.push(`ANSWER: ${answered}`)
-      continue
-    }
-    if (!isErrorResult(event)) continue
-    const firstLine = textOf(event).split('\n')[0] ?? ''
-    if (firstLine.trim().length === 0) continue
-    lines.push(`ERR ${firstLine.trim().slice(0, ERROR_CHARS)}`)
   }
   return lines.join('\n')
 }
@@ -680,9 +670,20 @@ interface Turn {
   user: string[]
   assistant: string[]
   tools: Map<string, number>
-  resultBytes: number
-  errors: string[]
   writes: string[]
+  /**
+   * Questions this turn put to the user through `ask_user_question`, with the
+   * answers they got.
+   *
+   * Read from the log rather than asked of the model, and rendered as its own
+   * `## Answers` section. The model's `asked` field covers questions written in
+   * prose; a question asked through the tool is answered in the tool's own picker,
+   * and that answer is the tool result. Measured on one real session: three such
+   * questions were answered inside the picker and no `user/message` was written at
+   * all, so both the question and the choice were absent from two consecutive
+   * checkpoints.
+   */
+  answered: AnsweredQuestion[]
   /**
    * The extracted summary for this turn, when extraction succeeded.
    *
@@ -706,7 +707,7 @@ function turnOf(event: SessionEvent): number | undefined {
 
 /** A fresh, empty turn accumulator. */
 function emptyTurn(turn: number | undefined, fromRequest: boolean = false): Turn {
-  return { turn, fromRequest, user: [], assistant: [], tools: new Map(), resultBytes: 0, errors: [], writes: [] }
+  return { turn, fromRequest, user: [], assistant: [], tools: new Map(), writes: [], answered: [] }
 }
 
 /**
@@ -743,6 +744,18 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
   // times across a long autonomous run.
   const recordedObjectives = new Set<string>()
 
+  // Question id to question text, for every `ask_user_question` call seen so far.
+  // The answer batch names questions by id only, and an id like `quota` says
+  // nothing on its own.
+  const questionTexts = new Map<string, string>()
+
+  // Call ids of this turn's `ask_user_question` calls. A result is an answer only
+  // when its own call asked something: without this every result in the log was
+  // JSON-parsed (536 KB across 157 results in one measured session, the largest
+  // 49.9 KB) and any output that happened to look like an answer batch — a file
+  // dump, a test fixture — would be recorded as something the user chose.
+  const questionCallIds = new Set<string>()
+
 
   for (const event of events) {
     if (event.type === 'turn/start') {
@@ -767,14 +780,20 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
       continue
     }
     if (event.type === 'tool/result') {
-      if (currentTurn === undefined) continue
-      const text = textOf(event)
-      currentTurn.resultBytes += text.length
-      const message = messageOf(event)
-      if ((message as { isError?: boolean } | null)?.isError === true) {
-        const firstLine = text.split('\n')[0] ?? ''
-        currentTurn.errors.push(firstLine.slice(0, 100))
-      }
+      // An answered question arrives as this call's own result. The call's
+      // arguments named the questions; the result carries the choices.
+      const callId = (messageOf(event) as { toolCallId?: string } | null)?.toolCallId
+      if (callId === undefined || !questionCallIds.has(callId) || currentTurn === undefined) continue
+      currentTurn.answered.push(...answersOf(textOf(event), questionTexts))
+      continue
+    }
+    // The host answers a question two ways. Inside the waiting window the answer
+    // is the tool result above; after the call already returned its pending
+    // notice, it is a `user/message` whose source kind is `user-question-reply`
+    // and whose body is the same answer batch. That message is not a new request,
+    // so it is read here rather than opening a section.
+    if (sourceKind(event) === 'user-question-reply') {
+      if (currentTurn !== undefined) currentTurn.answered.push(...answersOf(textOf(event), questionTexts))
       continue
     }
     if (event.type !== 'user/message' && event.type !== 'assistant/message') continue
@@ -808,6 +827,11 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
     if (text.length > 0) currentTurn.assistant.push(text)
     for (const call of toolCallsOf(event)) {
       currentTurn.tools.set(call.name, (currentTurn.tools.get(call.name) ?? 0) + 1)
+      if (call.name === 'ask_user_question') {
+        for (const [id, question] of questionTextsOf(call.arguments)) questionTexts.set(id, question)
+        questionCallIds.add(call.id)
+        continue
+      }
       if (!WRITE_TOOLS.has(call.name)) continue
       const path = pathArgumentOf(call.arguments)
       if (path !== undefined && !currentTurn.writes.includes(path)) currentTurn.writes.push(path)
@@ -951,25 +975,69 @@ function renderSection(
     if (turn.extracted !== undefined && renderExtractionBlock(turn.extracted, level).length > 0) {
       const block = renderExtractionBlock(turn.extracted, level)
       // The trailer goes *above* the block, not below it. `## Asked` is the block's
-      // last section and the user's reply is the very next line, so an errors line
+      // last section and the user's reply is the very next line, so a trailer line
       // in between would separate the reply from the question it answers.
       const trailer: string[] = []
-      if (turn.errors.length > 0) {
-        trailer.push(`  errors: ${turn.errors.length}: ${turn.errors.slice(0, 3).join(' | ')}`)
-      }
       if (turn.writes.length > 0) trailer.push(`  wrote: ${turn.writes.join(', ')}`)
-      const body = trailer.length > 0 ? `${trailer.join('\n')}\n${block}` : block
+      const withAnswers = insertAnswers(block, renderAnswers(turn))
+      const body = trailer.length > 0 ? `${trailer.join('\n')}\n${withAnswers}` : withAnswers
       lines.push(`### assistant\n${body}`)
     } else {
       const body = turn.assistant.join('\n')
-      if (body.length > 0) lines.push(`### assistant\n${body}`)
-      if (turn.errors.length > 0) {
-        lines.push(`  errors: ${turn.errors.length}: ${turn.errors.slice(0, 3).join(' | ')}`)
-      }
+      const answers = renderAnswers(turn)
+      // The heading goes on whenever there is anything to put under it. Emitting
+      // the answers bare put `## Answers` directly below `## user`, at the user's
+      // own heading level, where it reads as something the user said.
+      if (body.length > 0 || answers.length > 0) lines.push(`### assistant\n${[body, answers].filter((part) => part.length > 0).join('\n')}`)
       if (turn.writes.length > 0) lines.push(`  wrote: ${turn.writes.join(', ')}`)
     }
   }
   return lines.join('\n')
+}
+
+/**
+ * Render a turn's tool questions and their answers, or an empty string.
+ *
+ * This section exists because `## Asked` cannot cover these. `asked` is written by
+ * the model from prose, and its contract says the reply is the next `## user` line
+ * — true for a question asked in prose, false for one asked through
+ * `ask_user_question`: the user answers inside the picker, the answer becomes the
+ * tool result, and no user message is ever written. Two consecutive checkpoints of
+ * a real session carried neither the question nor the answer.
+ *
+ * Rendered from the log, so it cannot be paraphrased away, and placed after the
+ * assistant block because it belongs to that turn's work.
+ *
+ * @param turn - one turn's digest material.
+ * @returns the `## Answers` section, or an empty string when nothing was asked.
+ */
+function renderAnswers(turn: Turn): string {
+  if (turn.answered.length === 0) return ''
+  return `## Answers\n${turn.answered.flatMap(renderAnswered).join('\n')}`
+}
+
+/**
+ * Place the `## Answers` section just above `## Asked`, or at the end when the
+ * block has none.
+ *
+ * Not at the end unconditionally: `## Asked` is the block's last section because
+ * the user's reply — a bare `1` — is the very next line and needs the options
+ * directly above it. A second question-and-answer block wedged in between would
+ * separate them.
+ *
+ * @param block - the rendered extraction block.
+ * @param answers - the rendered `## Answers` section, or an empty string.
+ * @returns the block with the answers placed.
+ */
+function insertAnswers(block: string, answers: string): string {
+  if (answers.length === 0) return block
+  // The heading as a whole line, not the bare text: a `did`/`concluded` item is a
+  // free string, and one that happens to contain `## Asked` would otherwise be
+  // split in the middle of a bullet.
+  const at = block.startsWith('## Asked\n') ? 0 : block.indexOf('\n## Asked\n') + 1
+  if (at <= 0 && !block.startsWith('## Asked\n')) return `${block}\n${answers}`
+  const head = block.slice(0, at)
+  return head.length === 0 ? `${answers}\n${block}` : `${head}${answers}\n${block.slice(at)}`
 }
 
 
@@ -1128,8 +1196,11 @@ export function renderDigest(
       // key's absence and its undefined value as different types.
       delete target.extracted
       target.assistant = []
-      target.errors = []
       target.writes = []
+      // The answers belong to the body: they were produced by this turn's own
+      // tool call, so a dropped body that kept them would still print a full
+      // `## Answers` at every tier, and the truncation would never fit.
+      target.answered = []
     }
     return trimmed
   }
@@ -1187,7 +1258,7 @@ export function renderDigest(
   // is the part the next turn is answering.
   const keeperTurn = turnAt(positions[lastRequest])
   if (keeperTurn === undefined) return ''
-  const bare: Turn = { ...keeperTurn, assistant: [], errors: [], writes: [] }
+  const bare: Turn = { ...keeperTurn, assistant: [], writes: [], answered: [] }
   delete bare.extracted
   return render([{ turns: [bare] }], 0)
 }

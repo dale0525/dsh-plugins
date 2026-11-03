@@ -1,16 +1,18 @@
 /**
  * The per-turn hint block fed to the summarizer.
  *
- * These tests exist because the first hand-rolled version of this got the
- * failure signal wrong: it matched /error/i against the serialized tool result,
- * and every one of 347 results matched — because tool output routinely contains
- * the word "error" (grep misses, compiler logs, stack traces in file dumps). The
- * model was then told "all 347 results failed" and dutifully reported that the
- * whole turn was a failure. The only trustworthy signal is `data.isError`.
+ * One line per call, carrying the call's own `description` (or a short command
+ * head). `ask_user_question` is not listed: it and its answer are rendered from
+ * the log into `## Answers`, so a hint would only invite the model to restate the
+ * exchange. Nothing is read out of a tool result here: results are the bulk of
+ * the log, and the earlier attempt to mine them for failures was wrong twice over
+ * — `/error/i` matched 347 successful results in one turn, and even the
+ * trustworthy `data.isError` flag only ever produced a transport string
+ * ("命令超过 600 秒未结束") that no later turn used.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { collectHints, isErrorResult } from '../lib/index.js'
+import { collectHints } from '../lib/index.js'
 
 // Real logs carry tool calls as blocks inside `assistant/message`; there is no
 // standalone `tool/call` event type in what `digestSource` emits. The fixture
@@ -27,14 +29,15 @@ const result = (text, isError) => ({
   data: { message: { role: 'tool', isError, content: [{ type: 'text', text }] } },
 })
 
-test('a result is a failure only when isError is literally true', () => {
-  assert.equal(isErrorResult(result('boom', true)), true)
-  assert.equal(isErrorResult(result('boom', false)), false)
-  // The trap: the text says "error" but the flag does not.
-  assert.equal(isErrorResult(result('Error: no matches found', false)), false,
-    'matching the text was the bug that mislabelled 347 successful results')
-  assert.equal(isErrorResult(result('error', undefined)), false)
-  assert.equal(isErrorResult({ type: 'tool/result', seq: 1, data: {} }), false)
+test('a failing result contributes nothing to the hints', () => {
+  // The `ERR <first line>` line was removed with the digest's `errors:` trailer:
+  // a failure's first line is the transport or exit status, and the model never
+  // turned it into anything a later turn used.
+  const hints = collectHints([call('bash', { description: 'a' }), result('command not found: foo', true)])
+  assert.doesNotMatch(hints, /ERR/)
+  assert.doesNotMatch(hints, /command not found/)
+  // The call's own description still reaches the model, so the attempt is visible.
+  assert.match(hints, /TOOL bash: a/)
 })
 
 test('hints carry the call description, not the whole command', () => {
@@ -49,15 +52,6 @@ test('hints carry the call description, not the whole command', () => {
 test('hints fall back to a short command head when there is no description', () => {
   const hints = collectHints([call('bash', { command: 'git status --short' })])
   assert.match(hints, /git status --short/)
-})
-
-test('only failing results contribute an error line', () => {
-  const ok = collectHints([call('bash', { description: 'a' }), result('Error: no matches found', false)])
-  assert.doesNotMatch(ok, /ERR/, 'a non-failing result must not be reported as an error')
-
-  const bad = collectHints([call('bash', { description: 'a' }), result('command not found: foo', true)])
-  assert.match(bad, /ERR/)
-  assert.match(bad, /command not found/)
 })
 
 test('hints are bounded so one huge turn cannot blow the budget', () => {
