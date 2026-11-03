@@ -85,7 +85,7 @@ test('the digest is deterministic', () => {
   assert.equal(renderDigest(events, 196752), renderDigest(events, 196752))
 })
 
-test('truncation always keeps the newest user request and drops the oldest', () => {
+test('truncation keeps every user request while the budget can hold them', () => {
   const { events } = fixture()
   // Goal messages are recorded as their objective, so the "newest request" here
   // is the last human message; goal rounds sit after it in the fixture and are
@@ -94,11 +94,22 @@ test('truncation always keeps the newest user request and drops the oldest', () 
     .filter((event) => event.type === 'user/message' && event.data.source?.kind === 'user')
     .map((event) => event.data.content[0].text)
 
-  // The newest request is what the next turn depends on, so every budget must
-  // keep it, and every budget below the whole digest must have dropped something
-  // older than it.
-  // Budgets far below the user text, so T1 must actually cut.
-  for (const budget of [100, 200, 300]) {
+  // User prose is what a later turn cannot reconstruct — an assistant's reply can
+  // be inferred from its tool calls, a request cannot — so it is the last thing to
+  // go. Below the whole digest the bodies are thinned first: at 300 tokens every
+  // request survives with its block reduced, and the requests are still all there.
+  const thinned = renderDigest(events, 300)
+  assert.deepEqual(
+    userTexts.filter((text) => !thinned.includes(text)),
+    [],
+    'at a budget above the user text, every request must survive',
+  )
+  assert.ok(!thinned.includes('## Did'), 'the bodies are what gets thinned first')
+
+  // The newest request is what the next turn depends on, so it survives even a
+  // budget too small to hold the requests themselves. Only there does the oldest
+  // request go, and only because nothing else is left to drop.
+  for (const budget of [100, 200]) {
     const digest = renderDigest(events, budget)
     assert.ok(digest.includes(userTexts.at(-1)), `newest user request lost at budget ${budget}`)
     assert.ok(!digest.includes(userTexts[0]), `oldest user request kept at budget ${budget}`)

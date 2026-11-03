@@ -15,7 +15,7 @@
  * This backend keeps the base class's replay, range selection, durable
  * transaction and shrink guard untouched and overrides only `summarize()`, the
  * one hook the base class documents for exactly this purpose. The replacement
- * summary is built deterministically, with no model call:
+ * summary is built from the log, with one model call per batch of turns:
  *
  *   - user and assistant prose verbatim, per turn;
  *   - tool results reduced to one line (tool names, call counts, bytes);
@@ -64,9 +64,6 @@ const FRAME_TOKENS = 86
 
 /** Safety margin below the shrink guard, in tokens. */
 const SHRINK_MARGIN_TOKENS = 512
-
-/** Per-turn floor when assistant prose has to be truncated, in characters. */
-const MIN_TURN_CHARS = 800
 
 /**
  * Share of the budget user prose may occupy before oldest-first truncation.
@@ -395,16 +392,21 @@ export function parseExtraction(answer: string): Map<string, Extraction> {
  * @returns markdown with a heading per non-empty field; empty string when every
  * field is empty.
  */
-export function renderExtractionBlock(extraction: Extraction | undefined): string {
+export function renderExtractionBlock(extraction: Extraction | undefined, level: number = 3): string {
   if (extraction === undefined) return ''
   const lines: string[] = []
   const section = (heading: string, items: readonly string[] | undefined): void => {
     if (items === undefined || items.length === 0) return
     lines.push(`## ${heading}`, ...items.map((item) => `- ${item}`))
   }
-  section('Did', extraction.did)
-  section('Concluded', extraction.concluded)
-  section('Overturned', extraction.overturned)
+  // `level` is how many of the graded sections survive: 3 keeps all, 2 drops
+  // Overturned, 1 keeps only Did, 0 keeps only Asked. Asked is never dropped by
+  // the level because it is the one section nothing later can rebuild — the
+  // reply arrives in the next turn, but the question and its options exist only
+  // here. See `renderDigest` for why the ladder exists at all.
+  if (level >= 1) section('Did', extraction.did)
+  if (level >= 2) section('Concluded', extraction.concluded)
+  if (level >= 3) section('Overturned', extraction.overturned)
   // Asked goes last and its options are listed under it, so the user's reply — the
   // next `## user` line — lands directly under the list it chose from.
   if (extraction.asked.length > 0) {
@@ -422,8 +424,90 @@ export function renderExtractionBlock(extraction: Extraction | undefined): strin
   return lines.join('\n')
 }
 
+/**
+ * The group starts a fold walk visits, oldest first, one entry per group.
+ *
+ * Extracted so the walk's bounds are testable without a session, a logger and a
+ * model: the walk itself was where two defects lived — a bound that skipped the
+ * last group, and a start advanced from the success count, which retried a failed
+ * group on every pass.
+ *
+ * @param sectionCount - how many sections the digest has.
+ * @returns the start index of each group, in order.
+ */
+export function foldGroupStarts(sectionCount: number): number[] {
+  const starts: number[] = []
+  for (let start = 0; start < sectionCount; start += CONDENSE_GROUP) starts.push(start)
+  return starts
+}
+
+/**
+ * A folded-up summary of a run of consecutive sections, keyed by the `turnKey` of
+ * the first section it covers. The key's second component is always 0: a fold
+ * starts at a section boundary, never mid-section.
+ *
+ * Produced when the plain digest overflows: the oldest turns are handed to the
+ * model together and replaced by one paragraph. Deleting those turns instead —
+ * what the budget walk used to do — loses what they established, while folding
+ * keeps a statement of it in a fraction of the room.
+ */
+export interface Condensed {
+  /** The folded text, already in the digest's own wording. */
+  text: string
+  /**
+   * How many sections this block stands in for, counting from the key's own
+   * section.
+   *
+   * Sections, not turns: `buildSections` opens one section per user request, so a
+   * run of consecutive requests is a run of consecutive sections. Counting turns
+   * would cover only the first section and leave the rest rendering their own
+   * blocks — the fold bought nothing.
+   */
+  covers: number
+}
+
 /** Turns handed to one extraction call. */
 const TURNS_PER_CALL = 8
+
+/**
+ * Sections folded into one condensed block when the digest overflows.
+ *
+ * Each fold is a model call, so the group size trades calls against compression.
+ * Simulated on a 700- and a 1200-turn digest at the measured 8.2% fold ratio:
+ *
+ *   group  20 → 19 and 52 calls
+ *   group  50 →  8 and 21 calls
+ *   group 100 →  4 and 11 calls
+ *
+ * Larger groups fold more text per call, which is also where the ratio holds
+ * best: a 20-section group is small enough that the model's own paragraph is a
+ * larger share of it. 100 keeps a long session to a handful of calls.
+ */
+const CONDENSE_GROUP = 100
+
+/**
+ * Output tokens allowed for one condensation call.
+ *
+ * A condensed block stands in for `CONDENSE_GROUP` sections, so it has to be far
+ * smaller than what it replaces to buy any room at all. Measured on 12000
+ * characters of real digest: the answer ran 565 tokens and produced 987
+ * characters, 8.2% of the input.
+ *
+ * The cap is far above that answer because thinking is charged to the same
+ * budget and is not small: the same call spent 1873 tokens thinking. At a 1200
+ * cap it returned an empty string in one run out of one — the thinking block
+ * took the whole allowance, the same failure the extraction call had.
+ */
+const CONDENSE_TOKENS = 6000
+
+const CONDENSE_INSTRUCTION = [
+  'The text above is the digest of a run of already-finished turns from a coding session.',
+  'Fold it into one short paragraph that a later turn can read to know what that stretch established.',
+  'Keep: decisions still in force, constraints that still apply, conclusions a later turn would otherwise redo, and anything later turns disproved.',
+  'Drop: per-turn narration, restatements, and detail already superseded by later turns in the same run.',
+  'Reply with the paragraph and nothing else. No heading, no bullets, no code fence, no preamble.',
+  'Write in the same language as the material.',
+].join('\n')
 
 /**
  * Output tokens allowed per turn in an extraction call.
@@ -584,6 +668,15 @@ function pathArgumentOf(argumentsJson: string): string | undefined {
 /** One turn's accumulated digest material. */
 interface Turn {
   turn: number | undefined
+  /**
+   * True when a human request opened this turn, false when a `goal` objective did.
+   *
+   * Both fill the `user` slot, so `user.length > 0` cannot tell them apart — and
+   * the difference decides which turn is kept when the budget is too small to
+   * hold the digest: dropping the newest human request loses what the next turn
+   * is answering, while dropping a goal round only loses a restated objective.
+   */
+  fromRequest: boolean
   user: string[]
   assistant: string[]
   tools: Map<string, number>
@@ -612,8 +705,8 @@ function turnOf(event: SessionEvent): number | undefined {
 }
 
 /** A fresh, empty turn accumulator. */
-function emptyTurn(turn: number | undefined): Turn {
-  return { turn, user: [], assistant: [], tools: new Map(), resultBytes: 0, errors: [], writes: [] }
+function emptyTurn(turn: number | undefined, fromRequest: boolean = false): Turn {
+  return { turn, fromRequest, user: [], assistant: [], tools: new Map(), resultBytes: 0, errors: [], writes: [] }
 }
 
 /**
@@ -634,12 +727,12 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
   let currentTurn: Turn | undefined
   let lastTurn: number | undefined
 
-  const openTurn = (turn: number | undefined): Turn => {
+  const openTurn = (turn: number | undefined, fromRequest: boolean = false): Turn => {
     if (current === undefined) {
       current = { turns: [] }
       sections.push(current)
     }
-    const next = emptyTurn(turn)
+    const next = emptyTurn(turn, fromRequest)
     current.turns.push(next)
     if (turn !== undefined) lastTurn = turn
     return next
@@ -669,7 +762,7 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
       // takes the user slot: it is the request this turn serves.
       current = { turns: [] }
       sections.push(current)
-      currentTurn = openTurn(turnOf(event) ?? lastTurn)
+      currentTurn = openTurn(turnOf(event) ?? lastTurn, false)
       currentTurn.user.push(objective)
       continue
     }
@@ -694,7 +787,7 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
       // what makes the digest readable after a hundred turns.
       current = { turns: [] }
       sections.push(current)
-      currentTurn = openTurn(eventTurn)
+      currentTurn = openTurn(eventTurn, true)
       const text = textOf(event)
       if (text.length > 0) currentTurn.user.push(text)
       continue
@@ -761,18 +854,35 @@ function turnKey(sectionIndex: number, turnIndex: number): string {
 }
 
 /**
+ * A stable hex digest of one string, used as a cache key.
+ *
+ * FNV-1a, 32-bit, two seeds. Not cryptographic: the risk here is an accidental
+ * collision between two inputs, and 64 bits over a few hundred entries makes that
+ * vanishingly unlikely.
+ *
+ * @param input - the text to hash.
+ * @returns a stable hex key.
+ */
+function hashText(input: string): string {
+  let a = 0x811c9dc5
+  let b = 0x01000193
+  for (let index = 0; index < input.length; index += 1) {
+    const code = input.charCodeAt(index)
+    a = Math.imul(a ^ code, 0x01000193) >>> 0
+    b = Math.imul(b ^ (code + index), 0x85ebca6b) >>> 0
+  }
+  return `${a.toString(16)}${b.toString(16)}`
+}
+
+/**
  * Cache key for one slot's extraction material: a hash of everything the model
  * would be shown.
  *
  * The material, not the slot's position or turn number: positions shift as
  * history grows and numbers repeat, but identical material must produce an
- * identical extraction. Hashing the exact string `buildExtractionMaterial`
- * returns means a change anywhere in the user request, the prose, or the tool
- * trace invalidates the entry — nothing can silently go stale.
- *
- * FNV-1a, 32-bit, two seeds. Not cryptographic: the risk here is an accidental
- * collision between two turns, and 64 bits over a few hundred entries makes that
- * vanishingly unlikely.
+ * identical extraction. Hashing the exact string `buildExtractionMaterial` returns
+ * means a change anywhere in the user request, the prose, or the tool trace
+ * invalidates the entry — nothing can silently go stale.
  *
  * @param events - one slot's events, in log order.
  * @returns a stable hex key.
@@ -783,15 +893,7 @@ function materialKey(events: readonly SessionEvent[]): string {
     .map((event) => textOf(event))
     .filter((text) => text.length > 0)
     .join('\n')
-  const material = buildExtractionMaterial(events, prose)
-  let a = 0x811c9dc5
-  let b = 0x01000193
-  for (let index = 0; index < material.length; index += 1) {
-    const code = material.charCodeAt(index)
-    a = Math.imul(a ^ code, 0x01000193) >>> 0
-    b = Math.imul(b ^ (code + index), 0x85ebca6b) >>> 0
-  }
-  return `${a.toString(16)}${b.toString(16)}`
+  return hashText(buildExtractionMaterial(events, prose))
 }
 
 /**
@@ -805,17 +907,49 @@ function materialKey(events: readonly SessionEvent[]): string {
  * The tool pointer line stays either way: it is one line, and it is the only
  * record of what was actually run when the prose and extraction both say little.
  */
-function renderSection(section: Section, capChars: number | undefined): string {
+function renderSection(
+  section: Section,
+  level: number,
+  condensed: ReadonlyMap<string, Condensed> | undefined,
+  sectionIndex: number,
+): string {
   const lines: string[] = []
-  for (const turn of section.turns) {
+  // The block that covers this section, if any. Looked up by scanning the keys
+  // rather than by probing one key per turn: a fold spans whole sections, so the
+  // covering key belongs to an earlier section, not to this turn's own key.
+  const index = sectionIndex ?? 0
+  let covering: { key: string, block: Condensed } | undefined
+  if (condensed !== undefined) {
+    for (const [key, block] of condensed) {
+      const start = Number(key.split(':')[0])
+      if (index >= start && index < start + block.covers) {
+        covering = { key, block }
+        break
+      }
+    }
+  }
+  if (covering !== undefined) {
+    // The user line stays: a request is a standing constraint. Only the first
+    // covered section prints the folded text — the rest contribute their user
+    // lines alone, which is the room the condensation buys.
+    const start = Number(covering.key.split(':')[0])
+    for (const turn of section.turns) {
+      if (turn.user.length > 0) lines.push(`\n## user\n${turn.user.join('\n')}`)
+    }
+    if (index === start) {
+      const range = covering.block.covers <= 1
+        ? `section ${start + 1}`
+        : `sections ${start + 1}-${start + covering.block.covers}`
+      lines.push(`\n### assistant\n## Condensed (condensed from ${range})\n- ${covering.block.text}`)
+    }
+    return lines.join('\n')
+  }
+  for (const [turnIndex, turn] of section.turns.entries()) {
     if (turn.user.length > 0) lines.push(`\n## user\n${turn.user.join('\n')}`)
     // An extraction whose every field is empty renders nothing: a heading followed by
     // no body reads as a turn that did something but says nothing.
-    if (turn.extracted !== undefined && renderExtractionBlock(turn.extracted).length > 0) {
-      let block = renderExtractionBlock(turn.extracted)
-      if (capChars !== undefined && block.length > capChars) {
-        block = `${block.slice(0, capChars)}\n…(+${block.length - capChars} chars)`
-      }
+    if (turn.extracted !== undefined && renderExtractionBlock(turn.extracted, level).length > 0) {
+      const block = renderExtractionBlock(turn.extracted, level)
       // The trailer goes *above* the block, not below it. `## Asked` is the block's
       // last section and the user's reply is the very next line, so an errors line
       // in between would separate the reply from the question it answers.
@@ -827,10 +961,7 @@ function renderSection(section: Section, capChars: number | undefined): string {
       const body = trailer.length > 0 ? `${trailer.join('\n')}\n${block}` : block
       lines.push(`### assistant\n${body}`)
     } else {
-      let body = turn.assistant.join('\n')
-      if (capChars !== undefined && body.length > capChars) {
-        body = `${body.slice(0, capChars)}\n…(+${body.length - capChars} chars)`
-      }
+      const body = turn.assistant.join('\n')
       if (body.length > 0) lines.push(`### assistant\n${body}`)
       if (turn.errors.length > 0) {
         lines.push(`  errors: ${turn.errors.length}: ${turn.errors.slice(0, 3).join(' | ')}`)
@@ -841,63 +972,53 @@ function renderSection(section: Section, capChars: number | undefined): string {
   return lines.join('\n')
 }
 
-/**
- * Total characters of turn bodies across every section: the extraction where a
- * turn has one, its prose otherwise.
- *
- * Both must count, because the cap applies to whichever body is rendered. When
- * only prose counted, a digest made almost entirely of extractions reported a
- * bound of zero, the bisection had nothing to shrink, and the renderer fell
- * through to dropping the oldest turns outright — which deleted the earliest
- * human messages, the standing constraints the digest exists to keep.
- */
-function assistantChars(sections: readonly Section[]): number {
-  let total = 0
-  for (const section of sections) {
-    for (const turn of section.turns) {
-      total += turn.extracted !== undefined
-        ? renderExtractionBlock(turn.extracted).length
-        : turn.assistant.join('\n').length
-    }
-  }
-  return total
-}
 
 /**
  * Render the digest under a hard character budget.
  *
- * The two truncation tiers are the plan's T1 and T1', in that order:
+ * Three tiers, in order:
  *
  * - **T1** user prose is verbatim unless it alone exceeds `USER_BUDGET_SHARE` of
  *   the budget, then the oldest turns are cut first. The share is 0.9 rather than
  *   0.5 because real user prose is a few percent of the digest: at 0.5 the
  *   extracted blocks crowded out the oldest human messages, which are exactly the
  *   standing constraints (「请用pixi管理开发环境」) that must survive.
- * - **T1'** assistant prose is verbatim unless the whole digest overflows, then
- *   it is cut evenly per turn down to `MIN_TURN_CHARS`.
+ * - **T1'** the graded ladder: each block drops Overturned, then Concluded, then
+ *   Did, while Asked survives every level.
+ * - **T2** whole turn bodies go, oldest first, when even the surviving sections
+ *   overflow. The user lines stay; only what the assistant produced is dropped.
  *
  * T1' runs *after* T1 because a user's own words are the least reconstructible
- * thing in the log: an assistant's reply can be inferred from its tool calls
- * and the surrounding turns, a user's request cannot. The 800-character floor
- * exists so a tight budget thins every turn instead of erasing the last few.
+ * thing in the log: an assistant's reply can be inferred from its tool calls and
+ * the surrounding turns, a user's request cannot.
  *
- * Both tiers run on a long session, and that is by design: the ceiling is
+ * All three tiers run on a long session, and that is by design: the ceiling is
  * absolute (`DIGEST_TOKEN_CEILING`), so a 122-turn history with 316k characters
  * of assistant prose cannot fit verbatim. In the extractive design most turns
  * carry an extraction instead of prose, which keeps the digest far below the
  * ceiling; the tiers exist for the turns where extraction was unavailable and
  * the prose is all that remains.
+ *
+ * When `condensed` is supplied the tiers are skipped and the digest is returned
+ * whole. That path is entered only by `condenseOldest`, which owns the overflow:
+ * degrading here would report "fits" at a level that has already dropped the
+ * sections the fold was meant to preserve, and the fold loop would stop early
+ * having bought nothing. Measured at 1200 turns: the ladder dropped 475 turn
+ * bodies, leaving only `## Asked`, before condensation ever got a chance.
  */
 export function renderDigest(
   events: readonly SessionEvent[],
   budgetTokens: number,
   extracted?: ReadonlyMap<string, Extraction>,
+  condensed?: ReadonlyMap<string, Condensed>,
 ): string {
   const sections = extracted === undefined ? buildSections(events) : withExtractions(buildSections(events), extracted)
   const budgetChars = Math.max(0, budgetTokens * 4)
 
-  const render = (capChars: number | undefined, trimmed?: Section[]): string =>
-    (trimmed ?? sections).map((section) => renderSection(section, capChars)).join('\n')
+  const render = (trimmed?: Section[], level: number = 3): string =>
+    (trimmed ?? sections)
+      .map((section, index) => renderSection(section, level, condensed, index))
+      .join('\n')
 
   // User prose is reserved before anything else is placed.
   //
@@ -915,7 +1036,7 @@ export function renderDigest(
     ),
   )
 
-  const verbatim = render(undefined)
+  const verbatim = render()
   if (verbatim.length <= budgetChars) return verbatim
 
   // T1: user prose over its share, oldest first. Only the user side changes, so
@@ -943,40 +1064,132 @@ export function renderDigest(
       }
     }
   }
-  const afterT1 = render(undefined, t1)
+  const afterT1 = render(t1)
   if (afterT1.length <= budgetChars) return afterT1
   // The user side fits inside its reserve; what overflows is the turn bodies
   // (extraction or prose plus pointers). Thin those, and only drop whole turns
   // once every body is already at zero — dropping a turn also drops the user
   // prose in it, which is what the reserve exists to prevent.
 
-  // T1': assistant prose, evenly per turn. Length is monotone non-decreasing in
-  // the cap, so bisection finds the largest cap that fits exactly, in about
-  // eight renders. The floor is honoured only while it fits; below that the cap
-  // follows the budget down and the final slice guarantees the ceiling.
-  let low = 0
-  let high = assistantChars(t1)
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2)
-    if (render(mid, t1).length <= budgetChars) low = mid
-    else high = mid - 1
+  // T1': the graded ladder. Each level drops one section from every block —
+  // Overturned first, then Concluded, then Did — and Asked survives all of them.
+  //
+  // This replaces a character cap applied to each block. That cap sliced every
+  // extraction at the same offset, and because Asked is the block's last section
+  // it was the first thing eaten: at 490 turns each question rendered as `  1.`
+  // with its options gone, and by 520 both Asked and Overturned were absent from
+  // every block. A half-line reads as data, so slicing loses more than dropping:
+  // the reader cannot tell a truncated fact from a short one.
+  //
+  // Asked outranks everything because it is the only section nothing later can
+  // rebuild. Did and Concluded describe work whose results are still in the
+  // working tree; the question and the options the user chose between exist only
+  // in this line.
+  //
+  // No character cap at any level: a block either renders whole or loses a whole
+  // section. Slicing was the original mechanism and it cut Asked's options off
+  // mid-list, which reads as data rather than as truncation.
+  //
+  // The ladder only runs when no condensation was supplied. A condensed digest
+  // that still overflows is the caller's problem to fix by folding more turns:
+  // degrading it here would report "fits" at a level that has already dropped the
+  // sections the fold was meant to preserve, and the fold loop would stop early
+  // having bought nothing. Measured at 1200 turns: the ladder dropped 475 turn
+  // bodies, leaving only `## Asked`, before condensation ever got a chance.
+  if (condensed !== undefined && condensed.size > 0) {
+    // Returned whole even when it still overflows. The caller folds more turns and
+    // asks again; slicing here would cut the last block mid-line, which is the
+    // failure this whole path exists to remove.
+    return render(t1, 3)
   }
-  const capped = render(low, t1)
-  if (capped.length <= budgetChars) return capped
+  for (let level = 3; level >= 0; level -= 1) {
+    const whole = render(t1, level)
+    if (whole.length <= budgetChars) return whole
+  }
 
-  // Even cap 0 overflows, so the headings and pointers alone exceed the budget.
-  // Drop the oldest sections instead of slicing the head: a truncated tail would
-  // cut the newest turns, which are exactly the ones the next request needs.
+  // Every level overflowed with prose already at zero, so the user lines plus the
+  // surviving Asked sections alone exceed the budget. Drop the oldest turn
+  // *bodies* rather than the oldest sections: a dropped section takes the user's
+  // request with it, and those requests are standing constraints ("请用pixi管理
+  // 开发环境") that never expire, while a body describes work already superseded.
+  // The newest turns are the ones the next request depends on, so the cut runs
+  // from the oldest end.
+  const positions: Array<{ section: number, turn: number }> = []
+  for (const [section, { turns }] of t1.entries()) {
+    for (let turn = 0; turn < turns.length; turn += 1) positions.push({ section, turn })
+  }
+  const withoutBodies = (count: number): Section[] => {
+    const trimmed = t1.map((section) => ({ turns: section.turns.map((turn) => ({ ...turn })) }))
+    for (const { section, turn } of positions.slice(0, count)) {
+      const target = trimmed[section]?.turns[turn]
+      if (target === undefined) continue
+      // The user line stays; only what the assistant produced goes. `delete`
+      // rather than assigning undefined: `exactOptionalPropertyTypes` treats the
+      // key's absence and its undefined value as different types.
+      delete target.extracted
+      target.assistant = []
+      target.errors = []
+      target.writes = []
+    }
+    return trimmed
+  }
+  // Lower bound on the drop count: the smallest number that fits. `Math.floor`
+  // rather than `ceil` is load-bearing — with `ceil`, `mid` equals `high` once the
+  // range narrows to two entries, so a fitting `mid` left `high` unchanged and the
+  // loop never terminated. A 2200-turn digest hung here; 2100 happened to converge.
+  let low = 0
+  let high = positions.length
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    const marker = mid === 0 ? '' : `…(${mid} oldest turn bodies dropped: over budget)\n`
+    if (marker.length + render(withoutBodies(mid), 0).length <= budgetChars) high = mid
+    else low = mid + 1
+  }
+  const marker = low === 0 ? '' : `…(${low} oldest turn bodies dropped: over budget)\n`
+  const stripped = render(withoutBodies(low), 0)
+  if (marker.length + stripped.length <= budgetChars) return `${marker}${stripped}`
+
+  // Even with every body gone the user lines alone overflow — a budget smaller
+  // than the requests it must hold. Only here do whole sections go, oldest first:
+  // slicing the tail instead would cut the newest turns, which are exactly the
+  // ones the next request depends on.
+  // Still over budget with every body gone. Drop whole turns from the oldest end
+  // — a dropped turn takes its user line with it, which is the price of a budget
+  // too small to hold the requests themselves. The newest turn is never dropped,
+  // and the walk keeps every turn after the cut point rather than only the last
+  // one: a `goal` round records its objective as a user message and can sit after
+  // the newest request, so keeping just `slice(-1)` kept the goal and lost the
+  // request.
+  // The cut never passes the last turn carrying a user request. Without this the
+  // walk reached the very end — the fixture's `goal` round is the last position,
+  // so dropping up to it kept the goal and lost `USER-13`, the newest request.
+  const turnAt = (position: { section: number, turn: number } | undefined): Turn | undefined =>
+    position === undefined ? undefined : t1[position.section]?.turns[position.turn]
+  let lastRequest = positions.length - 1
+  while (lastRequest > 0 && turnAt(positions[lastRequest])?.fromRequest !== true) lastRequest -= 1
   let first = 0
-  let dropped = 0
-  while (first < t1.length - 1) {
-    dropped += 1
+  while (first < lastRequest) {
     first += 1
-    const rest = render(0, t1.slice(first))
-    const text = `…(${dropped} earlier turn(s) dropped: over budget)\n${rest}`
+    const cut = positions[first]
+    if (cut === undefined) break
+    const kept = t1
+      .map((section, sectionIndex) => ({
+        turns: section.turns.filter((_, turnIndex) => sectionIndex > cut.section || (sectionIndex === cut.section && turnIndex >= cut.turn)),
+      }))
+      .filter((section) => section.turns.length > 0)
+    const rest = render(kept, 0)
+    const text = `…(${first} earlier turn(s) dropped: over budget)\n${rest}`
     if (text.length <= budgetChars) return text
   }
-  return render(0, t1.slice(-1)).slice(0, budgetChars)
+  // Nothing fit, so keep the one turn the next request depends on: the newest one
+  // carrying a user request, not the last position in the log.
+  // Only the user line: the budget cannot even hold one full turn, and the request
+  // is the part the next turn is answering.
+  const keeperTurn = turnAt(positions[lastRequest])
+  if (keeperTurn === undefined) return ''
+  const bare: Turn = { ...keeperTurn, assistant: [], errors: [], writes: [] }
+  delete bare.extracted
+  return render([{ turns: [bare] }], 0)
 }
 
 /**
@@ -1083,6 +1296,72 @@ export function buildExtractionMaterial(turn: readonly SessionEvent[], prose: st
  * @param signal - cancellation forwarded to the adapter.
  * @returns the extracted blocks by slot key; empty when extraction is unavailable.
  */
+/**
+ * One condensation request: fold a run of already-finished turns into a paragraph.
+ *
+ * Module-level and shaped like `extractOnce` rather than a method, so both calls
+ * derive their route and reasoning effort the same way.
+ *
+ * @param ctx - plugin context carrying the `llm` service and a logger.
+ * @param agent - owner of the session being compacted.
+ * @param material - the rendered blocks being folded.
+ * @param signal - cancellation forwarded to the adapter.
+ * @returns the folded paragraph, or undefined when the call produced nothing.
+ */
+async function condenseOnce(
+  ctx: ExtractionContext,
+  agent: Agent,
+  material: string,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const llm = ctx.llm
+  if (llm === undefined) {
+    ctx.logger?.warn('verbatim-compaction: no llm service, condensation skipped')
+    return undefined
+  }
+  const route = agent.session.requestHeader()?.config
+  const provider = route?.provider ?? agent.options.provider
+  const model = route?.model ?? agent.options.model
+  if (provider === undefined || model === undefined) {
+    ctx.logger?.warn('verbatim-compaction: no route for condensation, skipped')
+    return undefined
+  }
+
+  const info = await Promise.resolve()
+    .then(() => llm.resolveModelInfo?.(provider, model, signal))
+    .catch(() => undefined)
+  const cheapest = cheapestEffort(info?.reasoning?.efforts)
+
+  const chunks: string[] = []
+  try {
+    const stream = llm.stream({
+      provider,
+      model,
+      messages: [{ role: 'user', content: [{ type: 'text', text: `${material}\n\n${CONDENSE_INSTRUCTION}` }] }],
+      maxTokens: CONDENSE_TOKENS,
+      sessionId: agent.session.id,
+      purpose: 'compaction',
+      ...(cheapest === undefined ? {} : { reasoningEffort: cheapest }),
+      ...(signal === undefined ? {} : { signal }),
+    })
+    for await (const chunk of stream) {
+      const delta = chunk as { type?: string; text?: string }
+      if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
+    }
+  } catch (error) {
+    ctx.logger?.warn(`verbatim-compaction: condensation call failed: ${String(error)}`)
+    return undefined
+  }
+  const text = chunks.join('').trim()
+  if (text.length === 0) {
+    // Silence here is what makes "the digest stopped folding" invisible at runtime:
+    // the summary still renders, just without the room the fold would have bought.
+    ctx.logger?.warn(`verbatim-compaction: condensation returned no text for ${material.length} chars of material`)
+    return undefined
+  }
+  return text
+}
+
 async function extractBatch(
   ctx: ExtractionContext,
   agent: Agent,
@@ -1268,7 +1547,7 @@ async function extractOnce(
 
 
 /**
- * Deterministic compaction backend: verbatim prose, pointerized tools, no model
+ * Extractive compaction backend: verbatim user prose, one model call per batch,
  * call.
  *
  * Everything except `summarize()` is inherited. The base class prices pressure,
@@ -1296,6 +1575,14 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
    */
   private readonly extractionCache = new Map<string, Extraction>()
   /**
+   * Folded text, keyed by provider, model and a hash of the material folded.
+   *
+   * Same reasoning as `extractionCache`: the fold is a model call over material
+   * rebuilt from the raw log on every compaction, so the same run of old turns is
+   * re-folded on every later compaction unless it is remembered.
+   */
+  private readonly condensedCache = new Map<string, string>()
+  /**
    * Build the replacement checkpoint content from the session log.
    *
    * The budget is the shrink guard's own bound rather than only the fixed
@@ -1307,13 +1594,13 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
    *
    * @param input - replayed conversation prefix the base class is shadowing.
    * @param agent - owner of the session being compacted.
-   * @param _signal - unused: the digest is synchronous and cannot be cancelled midway.
+   * @param signal - cancellation forwarded to the extraction and fold calls.
    * @returns text summary blocks, unmarked by any LLM call.
    */
   protected override async summarize(
     input: SummarizationInput,
     agent: Agent,
-    _signal?: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<SummaryResult> {
     const session = agent.session
     const shadowed = shadowedSeqs(session, input)
@@ -1333,8 +1620,27 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       Math.min(DIGEST_TOKEN_CEILING, shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS),
     )
 
-    const extracted = await this.extractAll(source, agent, _signal)
-    const text = renderDigest(source, budget, extracted)
+    const extracted = await this.extractAll(source, agent, signal)
+
+    // Fold the oldest turns up only when the plain digest overflows. The fold is an
+    // LLM call, so a digest that already fits must not pay for one.
+    let condensed: ReadonlyMap<string, Condensed> | undefined
+    if (renderDigest(source, budget, extracted).length > budget * 4) {
+      condensed = await this.condenseOldest(source, extracted, agent, budget, signal)
+    }
+    // The fold path returns its digest whole, so it can still overflow when every
+    // group has been folded and the user lines alone are too long. The budget is a
+    // contract the host's shrink guard depends on, so that case falls back to the
+    // ladder: a degraded digest beats an over-budget one. The fold is the better
+    // outcome, not the only permitted one.
+    let text = renderDigest(source, budget, extracted, condensed)
+    if (text.length > budget * 4) {
+      this.ctx.logger?.warn(
+        `verbatim-compaction: digest still over budget after folding ${condensed?.size ?? 0} group(s) `
+        + `(${text.length} > ${budget * 4} chars), falling back to the graded ladder`,
+      )
+      text = renderDigest(source, budget, extracted)
+    }
 
     const route = session.requestHeader()?.config
     return {
@@ -1342,6 +1648,111 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       provider: route?.provider ?? agent.options.provider ?? 'verbatim',
       model: route?.model ?? agent.options.model ?? 'digest',
     }
+  }
+
+  /**
+   * Fold the oldest turns into condensed blocks until the digest fits.
+   *
+   * Only reached when the plain digest overflows `budget`. The oldest turns are
+   * the right ones to fold: they describe work already superseded, while the
+   * newest are what the next request depends on.
+   *
+   * Linear in groups, not bisected: a fold is not monotone in how much is folded —
+   * a paragraph's length depends on what the model chose to keep — so there is no
+   * boundary to bisect. The walk stops at the first size that fits, which is the
+   * fewest calls that buy enough room. Each block covers `CONDENSE_GROUP`
+   * consecutive sections, so the number of calls is proportional to the digest,
+   * not to the number of turns.
+   *
+   * Cached by content, like the extraction: the same prefix of turns folds to the
+   * same text, and a later compaction re-reads the same history.
+   *
+   * @param source - digest source events, in log order.
+   * @param extracted - per-turn extractions already computed.
+   * @param agent - owner of the session being compacted.
+   * @param budget - token budget the digest must fit.
+   * @param signal - cancellation forwarded to every call.
+   * @returns condensed blocks keyed by the `turnKey` of the first covered section.
+   */
+  private async condenseOldest(
+    source: readonly SessionEvent[],
+    extracted: ReadonlyMap<string, Extraction>,
+    agent: Agent,
+    budget: number,
+    signal?: AbortSignal,
+  ): Promise<ReadonlyMap<string, Condensed>> {
+    const sections = withExtractions(buildSections(source), extracted)
+    const budgetChars = budget * 4
+    const out = new Map<string, Condensed>()
+
+    // One group per iteration, oldest first, checking after each whether the digest
+    // fits. Single loop, `start` monotone: the earlier two-level form advanced its
+    // inner start from `out.size`, so a group whose call failed was retried on every
+    // outer pass (45 calls instead of 4 with the model down), and the outer bound
+    // `covered < sections.length` stopped one group short of the end — at 700
+    // sections the last 100 were never folded, and at 100 or fewer the loop body
+    // never ran at all.
+    for (const start of foldGroupStarts(sections.length)) {
+      if (signal?.aborted === true) break
+      const group = sections.slice(start, start + CONDENSE_GROUP)
+      if (group.length === 0) continue
+      const text = await this.condenseGroup(group, agent, signal)
+      // A failed group is skipped rather than retried: the next group still buys
+      // room, and retrying the same material against a failing model only spends
+      // calls. The remaining turns keep their own blocks either way.
+      if (text === undefined) continue
+      out.set(turnKey(start, 0), { text, covers: group.length })
+      if (renderDigest(source, budget, extracted, out).length <= budgetChars) return out
+    }
+    return out
+  }
+
+  /**
+   * Hand one group of turns to the model and return its folded text.
+   *
+   * @param group - consecutive sections to fold into one paragraph.
+   * @param agent - owner of the session being compacted.
+   * @param signal - cancellation forwarded to the call.
+   * @returns the folded paragraph, or undefined when the call produced nothing.
+   */
+  private async condenseGroup(
+    group: readonly Section[],
+    agent: Agent,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    // Both sources, because a turn has one or the other: extraction succeeds and
+    // the block replaces the prose, or it fails and the verbatim prose is what the
+    // digest shows. Reading only `extracted` meant a run of turns whose extraction
+    // failed contributed nothing — and because the fold then still replaced them,
+    // their content vanished from the digest entirely rather than merely being
+    // summarised badly.
+    const material = group
+      .map((section) => section.turns
+        .map((turn) => {
+          const block = renderExtractionBlock(turn.extracted)
+          return block.length > 0 ? block : turn.assistant.join('\n')
+        })
+        .filter((block) => block.length > 0)
+        .join('\n'))
+      .filter((block) => block.length > 0)
+      .join('\n\n')
+    if (material.length === 0) return undefined
+
+    const llm = this.ctx.llm
+    if (llm === undefined) return undefined
+    const route = agent.session.requestHeader()?.config
+    const provider = route?.provider ?? agent.options.provider
+    const model = route?.model ?? agent.options.model
+    if (provider === undefined || model === undefined) return undefined
+
+    const key = `${provider}:${model}:${hashText(material)}`
+    const cached = this.condensedCache.get(key)
+    if (cached !== undefined) return cached
+
+    const text = await condenseOnce(this.ctx, agent, material, signal)
+    if (text === undefined) return undefined
+    this.condensedCache.set(key, text)
+    return text
   }
 
   /**
