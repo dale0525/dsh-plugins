@@ -717,16 +717,23 @@ function renderCost(spent, openTodos) {
 /**
  * Remove every checkpoint this plugin owns on one session.
  *
- * Looked up by title rather than remembered in memory so that "at most one live
- * checkpoint" survives a restart, which is exactly when a stale one would
- * otherwise fire on top of a fresh one.
+ * `catalog()` rather than `list()`: a one-shot reminder that already fired is
+ * `inactive` and absent from `list()`, but its row is still owned by this
+ * session and would otherwise survive every later settlement. A model that
+ * renews the checkpoint through `schedule_create` may also give it a new
+ * title, so the fixed prompt identifies it as reliably as the title did.
+ * Enumerated from durable storage rather than remembered in memory so that
+ * "at most one live checkpoint" survives a restart, which is exactly when a
+ * stale one would otherwise fire on top of a fresh one.
  *
  * @param schedule - the reminder service.
  * @param sessionId - the delegating session.
  */
 async function clearCheckpoints(schedule, sessionId) {
-  for (const record of await schedule.list({ sessionId })) {
-    if (record.title === CHECKPOINT_TITLE) await schedule.delete({ sessionId, id: record.id });
+  for (const record of await schedule.catalog()) {
+    if (record.sessionId !== sessionId) continue;
+    if (record.title !== CHECKPOINT_TITLE && record.prompt !== CHECKPOINT_PROMPT) continue;
+    await schedule.delete({ sessionId, id: record.id });
   }
 }
 

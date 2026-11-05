@@ -153,13 +153,16 @@ function fakeSchedule() {
   const created = [];
   const deleted = [];
   const stored = [];
+  let nextId = 1;
   return {
     created,
     deleted,
     stored,
-    list: async ({ sessionId }) => stored.filter((record) => record.sessionId === sessionId),
+    // The host's catalog() exposes every row of every session, including the
+    // inactive history of fired reminders and rows owned by other sessions.
+    catalog: async () => stored.map((record) => ({ ...record })),
     create: async (sessionId, request) => {
-      const record = { id: `schedule-${stored.length + 1}`, sessionId, ...request };
+      const record = { id: `schedule-${nextId++}`, sessionId, status: 'active', ...request };
       stored.push(record);
       created.push({ sessionId, request });
       return record;
@@ -404,6 +407,41 @@ test('a start and an end that interleave still converge to one checkpoint', asyn
   const ending = fire(listeners, 'subagent/end', { id: 'child-1' });
   await Promise.all([starting, ending]);
   assert.equal(schedule.stored.length, 0, 'the seat already reported, so no wake-up is owed');
+});
+
+test('clears a renewed checkpoint whose title was replaced', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  const renewal = schedule.stored[0];
+  renewal.title = '检查两个调研席位是否结算';
+  await fire(listeners, 'subagent/end', { id: 'child-1', stopReason: 'completed' });
+  assert.deepEqual(schedule.deleted, [{ sessionId: 'root-1', id: renewal.id }]);
+  assert.equal(schedule.stored.length, 0, 'a renamed checkpoint is still this plugin\'s to remove');
+});
+
+test('clears a checkpoint that already fired', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  const fired = schedule.stored[0];
+  fired.status = 'inactive';
+  await fire(listeners, 'subagent/end', { id: 'child-1', stopReason: 'completed' });
+  assert.deepEqual(schedule.deleted, [{ sessionId: 'root-1', id: fired.id }]);
+  assert.equal(schedule.stored.length, 0, 'a delivered one-shot checkpoint is not owed another wake-up');
+});
+
+test('does not clear unrelated reminders', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  const unrelated = [
+    { ...schedule.stored[0], id: 'schedule-foreign', sessionId: 'root-2', status: 'inactive' },
+    { id: 'schedule-personal', sessionId: 'root-1', status: 'active', title: 'weekly cleanup', prompt: 'clean up' },
+  ];
+  schedule.stored.push(...unrelated);
+  await fire(listeners, 'subagent/end', { id: 'child-1', stopReason: 'completed' });
+  assert.deepEqual(schedule.stored, unrelated);
 });
 
 test('a second seat that starts after the first reported re-arms the checkpoint', async () => {
