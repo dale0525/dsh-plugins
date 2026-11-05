@@ -57,6 +57,7 @@ DSH_HOME=$H dsh plugin --profile $P add file:$PKG
 - `add` 同时写 `package.json` 的 `dependencies` 与 `dsh.profile.bundles`、`pnpm-lock.yaml`、`node_modules/<pkg>/`；是否写 `cordis.patch.yml` 未见 CLI 写入证据，按实际文件核对。
 - **独立纯 host-half 子包必须保留 `dsh.profile.bundles`**：它的 `- id: <id>` patch 行是唯一挂载来源，靠 bundles 列表加载。`dsh-plugin-release/references/ci-failures.md:76-95` 那条「摘掉 bundles」针对的是「已由聚合包 patch 挂载、又单独 add 一次」的相反场景，别照搬。
 - **不要再装 `@logictan/dsh-plugins-all`**：聚合 patch 已含该子包，两个 `- id` 并存会 `duplicate loader entry id` 硬崩（仓库 `AGENTS.md`）。
+- **只装目标子包时，客户端硬依赖要单独补 registry 包**：`file:` 安装不解析子包客户端产物里的 `require("@logictan/dsh-plugins-shared-client")` 这类共享模块，缺它会在页面顶部报 `Failed to load plugins` / `client-modules: require(...) missed the module table` 且整页空白（按钮数为 0、web boot 1 entry did not activate）。`--dump-config` 与 `shasum` 都查不出这个缺口，判据只能是「隔离页面 DOM 没有 Failed to load plugins」。补法：`DSH_HOME=$H dsh plugin --profile $P add @logictan/dsh-plugins-shared-client`，再重启隔离服务取新 token；不是装聚合包。
 - 若 pnpm 10 的 `allowBuilds` 拦下本地包，看 `<profile>/.plugin-manager/logs/operation-*/pnpm.log`。
 
 验证（不需重启）：

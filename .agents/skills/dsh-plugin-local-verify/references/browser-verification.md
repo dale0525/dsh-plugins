@@ -6,6 +6,7 @@
 
 - Chrome 必须带 `--remote-debugging-port=9222` 且用**独立** `--user-data-dir` 的专用 profile 启动；macOS 默认 profile 会被 Chrome 拒绝（`DevTools remote debugging requires a non-default data directory`）。前台 `&` 起的 Chrome 会随命令返回被回收，用后台作业。
 - `browser_agent` 插件需配 TypeSafe API key。
+- CDP 目标列表里必须已有本次隔离 URL 的 `type=page` 标签，否则 browser_agent 第 1 步就 `blocked`（回显 URL 丢 token）。服务起来后先 `curl -s -X PUT "http://127.0.0.1:9222/json/new?$(node -e "console.log(encodeURIComponent(process.argv[1]))" "<完整 token URL>")"` 建标签；多个同 URL 标签时关掉旧标签，旧标签缓存的失败页会误判当前状态。判断当前状态用带 cookie 的 curl 与最新标签的 DOM，不用 CDP 列表里的历史标题。
 - 隔离 profile 已按 `profile-lifecycle.md` 复制 `.credentials.yaml` 与最小配置块；此后服务不要求 DeepSeek 账号登录。CDP 列表里残留的 `platform.deepseek.com/sign_in` 是旧标签，不能作为当前页面需要登录的证据；用本次 token URL 带 cookie 访问结果和当前 DOM 判断。
 - 工具选择见 `interface-operations` 技能：网页任务整体交给 `browser_agent({url, goal})` 一次跑完；不要自己逐步调 `cua_driver_native__*` 原语。`done` 是模型对截图下的判断，不是独立验证，转述时如实说明。
 
