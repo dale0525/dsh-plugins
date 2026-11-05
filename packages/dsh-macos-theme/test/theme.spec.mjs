@@ -139,6 +139,15 @@ test('the compiled stylesheet carries no Tailwind preflight', () => {
   }
 })
 
+test('plugin detail rows are not sized by their state attribute', () => {
+  // A disabled component row carries data-state="off" on the <li>. Styling every
+  // [data-state] descendant shrinks the whole row to a 6px dot, leaving its text
+  // zero pixels wide and wrapped one character per line.
+  const css = compiledCss()
+  assert.equal(/body\s*\[data-plugin-detail\]\s*\[data-state\]\s*\{/.test(css), false)
+  assert.equal(/body\s*\[data-plugin-detail\]\s*li\[data-state\]/.test(css), false)
+})
+
 test('the stylesheet resolves colours from tokens, not literals', () => {
   // Colour must come from the token layer so one stylesheet serves both
   // palettes. A regression that hard-codes the light values here would silently
