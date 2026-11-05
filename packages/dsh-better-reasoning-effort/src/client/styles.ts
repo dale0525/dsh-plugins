@@ -804,4 +804,76 @@ body:not([data-ds-dark-theme]) .bre-effort.is-dragging .bre-effort-knob {
 .bre-headers .bre-effort-note.bre-warn { color: var(--dsw-alias-state-warn-label, #dd8629); }
 .bre-headers .bre-effort-message.bre-success { color: var(--dsw-alias-state-success-primary, #22c55e); }
 .bre-headers .bre-effort-message.bre-error { color: var(--dsw-alias-state-error-primary, #ec1313); }
+
+/* Models-page footer editor for the two auxiliary-call overrides. */
+.bre-purpose-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-2);
+  box-sizing: border-box;
+}
+.bre-purpose-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+.bre-purpose-hint {
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.bre-purpose-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+  padding: 6px 0;
+}
+.bre-purpose-row-disabled { opacity: 0.6; }
+.bre-purpose-title {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+.bre-purpose-row > .bre-purpose-hint { grid-column: 1 / -1; }
+.bre-purpose-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.bre-purpose-field > span {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.bre-purpose-field select {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 240px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  cursor: pointer;
+}
+.bre-purpose-field select:focus {
+  outline: none;
+  border-color: var(--dsw-alias-brand-primary);
+}
+.bre-purpose-field select:disabled { opacity: 0.6; cursor: default; }
+.bre-purpose-message {
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+}
 `

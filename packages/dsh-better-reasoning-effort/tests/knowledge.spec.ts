@@ -487,6 +487,18 @@ describe('knowledge base hygiene', () => {
     }
   })
 
+  it('offers no off level on GLM entries whose notes rule it out', () => {
+    for (const id of ['glm-vision', 'glm']) {
+      const entry = KNOWLEDGE_BASE.find(candidate => candidate.id === id)
+      expect(entry?.efforts, id).toEqual({ high: 'high' })
+      expect(entry?.note, id).not.toContain('请手动删 Off 档')
+      expect(entry?.note, id).toContain('不声明 Off')
+      expect(entry?.defaultEffort, id).toBe('high')
+    }
+    expect(suggestEfforts('glm-4.5v', {}).efforts).toEqual({ high: 'high' })
+    expect(suggestEfforts('glm-4-plus', {}).efforts).toEqual({ high: 'high' })
+  })
+
   it('wires anthropicAdaptive only on families that declare a real ladder', () => {
     for (const entry of KNOWLEDGE_BASE) {
       if (entry.anthropicAdaptive !== true) continue

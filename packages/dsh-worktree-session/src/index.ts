@@ -49,8 +49,9 @@ import { promisify } from 'node:util'
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { BlockAssembler, boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, boundContextSummary, createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmRuntime } from '@deepseek-ai/dsh-llm'
+import Schema from '@deepseek-ai/schemastery'
 import { appendPluginRecord, pluginRecordOf, SessionId, type Session } from '@deepseek-ai/dsh-session'
 // Type-only: pull the Cordis Context augmentations (webServer / connection) and
 // the WebRoute contract without any runtime import.
@@ -76,6 +77,55 @@ export const name = 'worktree-session'
  * read through `ctx.get` at call time, and cordis supplies `logger` itself.
  */
 export const inject: string[] = []
+
+/** Live reference Cordis hands over for a volatile Config field. */
+interface ConfigRef<T> { get(): T }
+
+/** Optional model/effort override for the branch-naming call. */
+export interface PurposeConfig {
+  provider?: ConfigRef<string>
+  model?: ConfigRef<string>
+  reasoningEffort?: ConfigRef<string>
+}
+
+/** Three editable scalars; empty strings mean "follow the chat model". */
+export const Config = Schema.object({
+  provider: Schema.string().default('').volatile(),
+  model: Schema.string().default('').volatile(),
+  reasoningEffort: Schema.string().default('').volatile(),
+})
+
+/** A provider/model override takes effect only as a complete pair. */
+export function pairedRouteOf(config: PurposeConfig | undefined): { provider: string; model: string } | undefined {
+  const provider = config?.provider?.get().trim()
+  const model = config?.model?.get().trim()
+  return provider !== undefined && provider !== '' && model !== undefined && model !== ''
+    ? { provider, model }
+    : undefined
+}
+
+/** Apply the optional override without disturbing any other request field. */
+export function applyPurposeOverride<T extends object>(options: T, config: PurposeConfig | undefined): T {
+  const route = pairedRouteOf(config)
+  const effort = config?.reasoningEffort?.get().trim()
+  if (route === undefined && (effort === undefined || effort === '')) return options
+  return {
+    ...options,
+    ...(route === undefined ? {} : { provider: route.provider, model: route.model }),
+    ...(effort === undefined || effort === '' ? {} : { reasoningEffort: ReasoningEffortId(effort) }),
+  } as T
+}
+
+/** Test seam: the real naming call is used by apply() with its live Config. */
+export async function chooseNameForTest(
+  llm: LlmRuntime | undefined,
+  agent: Agent,
+  prompt: string,
+  signal: AbortSignal,
+  config?: PurposeConfig,
+): Promise<string> {
+  return chooseName(llm, agent, prompt, signal, config)
+}
 
 /* -------------------------------------------------- optional host services */
 
@@ -689,6 +739,7 @@ async function chooseName(
   agent: Agent,
   prompt: string,
   signal: AbortSignal,
+  config?: PurposeConfig,
 ): Promise<string> {
   const provider = agent.options.provider
   const model = agent.options.model
@@ -697,7 +748,7 @@ async function chooseName(
   const assembler = new BlockAssembler()
   const control = AbortSignal.any([signal, AbortSignal.timeout(NAME_TIMEOUT_MS)])
   try {
-    const options: GenerateOptions = {
+    const options = applyPurposeOverride<GenerateOptions>({
       provider,
       model,
       system: NAME_INSTRUCTION,
@@ -709,7 +760,7 @@ async function chooseName(
       ],
       maxTokens: MAX_NAME_TOKENS,
       signal: control,
-    }
+    }, config)
     for await (const chunk of llm.stream(options)) assembler.push(chunk)
   } catch {
     return fallbackName()
@@ -816,6 +867,7 @@ async function createDeferredWorktree(
   turn: number,
   step: number,
   signal: AbortSignal,
+  config?: PurposeConfig,
 ): Promise<void> {
   if (turn !== 1 || step !== 1) return
   const session = agent.session
@@ -840,7 +892,7 @@ async function createDeferredWorktree(
   const prompt = firstHumanText(messages)
   if (prompt === undefined) return
 
-  const name = await chooseName(ctx.get('llm'), agent, prompt, signal)
+  const name = await chooseName(ctx.get('llm'), agent, prompt, signal, config)
   signal.throwIfAborted()
   appendPluginRecord(session, CREATION, { name })
 
@@ -1042,7 +1094,7 @@ export function makeRoutes(ctx: Context, connection: HostConnectionHandle): WebR
  * serving them without its fence would serve them unfenced.
  * @param ctx - host plugin context.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: PurposeConfig): void {
   // File-class mutations are the only ones whose target arrives here already
   // resolved. A shell command's target is the string the model typed, where
   // guessing the paths it touches would warn on `cat` and miss `cd`.
@@ -1085,6 +1137,7 @@ export function apply(ctx: Context): void {
         payload.turn,
         payload.step,
         payload.signal,
+        config,
       )
     } catch (error) {
       // The turn must still run: it proceeds in the Session's original

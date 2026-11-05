@@ -11,7 +11,7 @@
  * @module dsh-better-reasoning-effort/autofill
  */
 
-import { AUTOFILL_MARKER, INPUT_UNSET_MARKER, UNSET_MARKER } from './constants.js'
+import { AUTOFILL_MARKER, DEFAULT_EFFORT_FIELD, INPUT_UNSET_MARKER, UNSET_MARKER } from './constants.js'
 import { isSelfHostedRelay, NEW_COMPAT_KEYS, suggestEfforts } from './knowledge.js'
 import { isRecord, routeFactsOf } from './shared.js'
 
@@ -129,6 +129,13 @@ export function buildAutofillPatch(
       if (!effortsDeclared && fillEfforts) {
         touched = true
         fill['reasoningEfforts'] = suggestion.efforts as JsonObject
+        // A present field of any value (including an empty string) is the
+        // user's own pick; only a row with no field at all receives the
+        // curated default. Declared ladders stay in the never-touch branch
+        // above, so this cannot rewrite one just to add the pick.
+        if (suggestion.defaultEffort !== undefined && model[DEFAULT_EFFORT_FIELD] === undefined) {
+          fill[DEFAULT_EFFORT_FIELD] = suggestion.defaultEffort
+        }
         // Provenance: the browser flush has to be able to tell this knowledge
         // base suggestion apart from a declaration the user made, or a staged
         // intent that differs in one spelling is dropped as a takeover (see

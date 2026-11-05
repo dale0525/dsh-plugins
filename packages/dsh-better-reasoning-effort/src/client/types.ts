@@ -221,6 +221,9 @@ export type ModelDirectoryLike = ModelDirectory
 
 // ---- (rest unchanged) ----
 
+/** Re-export the editor's one shape for embedders of the client entry. */
+export type { ConfiguredModel, Purpose, PurposeOverride } from '../purpose-overrides.js'
+
 /**
  * One result of writing a model's declaration. `staged` reports that the
  * write was queued rather than committed: the editor holds the document while

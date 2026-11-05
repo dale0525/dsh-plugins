@@ -28,7 +28,7 @@
  */
 
 import { AUTOFILL_MARKER, INPUT_UNSET_MARKER, PLUGIN_ID, UNSET_MARKER } from '../../constants.js'
-import { draftCapacityOf } from '../draft-capacity.js'
+import { draftCapacityOf, draftEffortPropsOf } from '../draft-capacity.js'
 import { suggestEfforts, type CompatSuggestion, type InputModalities, type ReasoningEfforts } from '../../knowledge.js'
 import { modelsOf, routeFactsOf, isRecord, usesModelOverrides } from '../../shared.js'
 import { sameEfforts } from '../effort.js'
@@ -755,9 +755,10 @@ export function effectiveStagedIntents(
       || current[INPUT_UNSET_MARKER] === true
   const efforts: EffortWriteIntent = ladderTaken ? 'keep' : declaration.efforts
   const input = inputTaken ? undefined : declaration.input
-  // The default-effort pick has no takeover question: host autofill never
-  // writes this field, so whatever the document holds is a user decision and
-  // the staged intent (write or clear) passes through untouched.
+  // Host autofill now writes the curated default pick on undeclared rows too,
+  // so an equal value in the document no longer proves a user decision. The
+  // staged intent still passes through untouched: the editor only stages this
+  // field after the user actually changes it.
   const defaultEffort = declaration.defaultEffort
   if (efforts === 'keep' && input === undefined && defaultEffort === undefined) return null
   return {
@@ -1535,6 +1536,25 @@ export function reconcile(root: HTMLElement, deps: InjectorDeps, state: ScanStat
       const routeBaseURL = routeStaged && typedBaseURL.length > 0
         ? typedBaseURL
         : typeof profile['baseURL'] === 'string' ? profile['baseURL'] as string : undefined
+      const officialReasoning = officialReasoningOf(target.container)
+      // A fresh unsaved row has no pending declaration yet: show the curated
+      // reasoning parameters from the same suggestion the saved-row autofill
+      // writes, so the user can see and edit them before Save. The official
+      // reasoning-levels control owns the ladder when present, so the plugin
+      // never puts one in its own editor on those rows. Nothing is staged or
+      // written here -- the idle autofill still lands the values after Save.
+      const draftPrefill = staged && state.pending.get(route)?.get(target.modelId) === undefined
+        ? draftEffortPropsOf(target.modelId, {
+          ...routeFactsOf(providers, route),
+          ...(routeApi === undefined ? {} : { api: routeApi }),
+          ...(routeBaseURL === undefined ? {} : { baseURL: routeBaseURL }),
+          ...(modelName === undefined ? {} : { displayName: modelName }),
+        }, officialReasoning)
+        : undefined
+      const visibleEfforts = efforts ?? draftPrefill?.efforts
+      const visibleInput = input ?? draftPrefill?.input
+      const visibleCompat = compat ?? draftPrefill?.compat
+      const visibleDefaultEffort = defaultEffort ?? draftPrefill?.defaultEffort
       // The editor's write seam reads the namespace LIVE through its own
       // describe (not this scan's snapshot): a conflict retry must re-read a
       // fresh revision to have any chance of succeeding. Staged rows stage
@@ -1546,14 +1566,14 @@ export function reconcile(root: HTMLElement, deps: InjectorDeps, state: ScanStat
         ...routeBaseURL === undefined ? {} : { routeBaseURL },
         modelId: target.modelId,
         ...modelName === undefined ? {} : { modelName },
-        ...efforts === undefined ? {} : { efforts },
-        ...input === undefined ? {} : { input },
-        ...compat === undefined ? {} : { compat },
-        ...defaultEffort === undefined ? {} : { defaultEffort },
+        ...visibleEfforts === undefined ? {} : { efforts: visibleEfforts },
+        ...visibleInput === undefined ? {} : { input: visibleInput },
+        ...visibleCompat === undefined ? {} : { compat: visibleCompat },
+        ...visibleDefaultEffort === undefined ? {} : { defaultEffort: visibleDefaultEffort },
         index,
         staged,
         officialInputTypes: officialInputTypesOf(target.container),
-        officialReasoning: officialReasoningOf(target.container),
+        officialReasoning,
         syncOfficialInput: (input: readonly string[]) => { syncOfficialInputTypes(target.container, input) },
         api: createEditorApi(
           deps.api,

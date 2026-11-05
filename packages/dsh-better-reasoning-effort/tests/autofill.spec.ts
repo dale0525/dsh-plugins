@@ -70,6 +70,44 @@ describe('buildAutofillPatch', () => {
     expect(models[0]['compat']).toEqual({ thinkingFormat: 'qwen' })
   })
 
+  it('fills defaultEffort only where the curated suggestion has one and the row has none', () => {
+    const patch = buildAutofillPatch({
+      route: {
+        api: 'openai-completions',
+        models: [
+          { id: 'qwen-max' },
+          { id: 'qwen-turbo', defaultEffort: 'low' },
+          { id: 'qwen-plus', defaultEffort: '' },
+          { id: 'deepseek-chat' },
+        ],
+      },
+    })
+    const models = (patch!.providers as Record<string, { models: Record<string, unknown>[] }>).route.models
+    expect(models[0]['reasoningEfforts']).toEqual({ off: null, high: 'high' })
+    expect(models[0]['defaultEffort']).toBe('high')
+    expect(models[1]['defaultEffort']).toBe('low')
+    expect(models[2]['defaultEffort']).toBe('')
+    // deepseek-v3 carries no defaultEffort in the knowledge base.
+    expect(models[3]['defaultEffort']).toBeUndefined()
+  })
+
+  it('never rewrites a declared ladder just to add defaultEffort', () => {
+    const patch = buildAutofillPatch({
+      route: {
+        api: 'openai-completions',
+        models: [
+          { id: 'qwen-max', reasoningEfforts: { high: 'high' } },
+          { id: 'qwen-turbo', reasoningEffortsUnset: true },
+        ],
+      },
+    })
+    const models = (patch!.providers as Record<string, { models: Record<string, unknown>[] }>).route.models
+    expect(models[0]['reasoningEfforts']).toEqual({ high: 'high' })
+    expect(models[0]['defaultEffort']).toBeUndefined()
+    expect(models[0][AUTOFILL_MARKER]).toBeUndefined()
+    expect(models[1]['defaultEffort']).toBeUndefined()
+  })
+
   it('withholds compat on protocols whose gate does not take it', () => {
     for (const api of ['openai-responses', 'anthropic-messages']) {
       const patch = buildAutofillPatch({

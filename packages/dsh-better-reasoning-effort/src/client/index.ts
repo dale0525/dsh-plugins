@@ -6,6 +6,7 @@
  * them to the plugin fiber's lifecycle. The behaviour itself lives in
  * `src/client/injection/`, one module per seam:
  *
+ *   PurposeOverrides.tsx    the Models-page auxiliary-purpose model selectors
  *   models-page.ts          the Models-page DOM injection (observer + editors)
  *   models-page-editor.ts   the editor injector behind it (anchors, staging, flush)
  *   composer-menu.ts        the composer slider
@@ -28,8 +29,8 @@
  *   2. The composer reasoning-effort slider, mounted inside the OFFICIAL model
  *      menu opened from the bottom-right seat. The seat's trigger is never
  *      touched — the official "model · effort" display stays.
- *   3. The Models-page slider toggle, taking the official
- *      'settings.models.footer' slot unconditionally at apply.
+ *   3. The Models-page slider toggle and the auxiliary-purpose model selectors,
+ *      both taking the official 'settings.models.footer' slot at apply.
  *   4. The stylesheet and copy dictionaries.
  *
  * @module dsh-better-reasoning-effort/client
@@ -56,6 +57,7 @@ import { createSessionDirectoryTracker } from './injection/session-directory.js'
 import { modelMenuOf } from './injection/model-menu.js'
 import { registerProviderCardSlot } from './injection/provider-card-slot.js'
 import { registerSliderToggleSlot } from './injection/slider-toggle-slot.js'
+import { registerPurposeOverridesSlot } from './PurposeOverrides.js'
 
 /** Stable plugin id, matching the cordis.patch.yml row and the bundle id. */
 export const name = PLUGIN_ID
@@ -241,6 +243,10 @@ export function apply(ctx: ClientContext): void {
   }, 'dsh-better-reasoning-effort: slider preference')
 
   ctx.effect(() => registerSliderToggleSlot(ctx, t), 'dsh-better-reasoning-effort: footer slot activation')
+  ctx.effect(
+    () => registerPurposeOverridesSlot(ctx, settingsApi, t),
+    'dsh-better-reasoning-effort: purpose overrides footer slot',
+  )
 
   // The request-header editor (issue #12) takes the OFFICIAL provider-card seat:
   // keyed by the adapter family's settings namespace, it receives every
@@ -253,6 +259,8 @@ export function apply(ctx: ClientContext): void {
 }
 
 export type { BreKey }
+export { PurposeOverrides, registerPurposeOverridesSlot } from './PurposeOverrides.js'
+export type { PurposeOverridesProps } from './PurposeOverrides.js'
 export { EffortEditor } from './EffortEditor.tsx'
 export type { EffortEditorProps, EffortModel } from './EffortEditor.tsx'
 export { findModelMenu } from './injection/model-menu.js'

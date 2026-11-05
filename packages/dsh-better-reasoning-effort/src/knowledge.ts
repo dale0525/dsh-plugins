@@ -954,15 +954,16 @@ export const KNOWLEDGE_BASE: readonly KnowledgeEntry[] = [
     // 'glm 4 6v', so the pattern must carry the same inner separator; the
     // same fold gives 'glm-4.5v' -> 'glm 4 5v'.
     patterns: ['glm-4v', 'glm-4-6v', 'glm-4-5v', 'glm-5v'],
-    efforts: { off: null, high: 'high' },
-    // GLM-4.5V is forced-thinking and the 4.x line defaults to enabled
-    // (docs.bigmodel.cn thinking page) -- the on state is High.
+    // GLM-4.5V is forced-thinking (docs.bigmodel.cn thinking page): sending
+    // thinking.type=disabled errors, so the family declares no Off level at
+    // all. The 4.x line defaults to enabled -- the on state is High.
+    efforts: { high: 'high' },
     defaultEffort: 'high',
     compat: { thinkingFormat: 'zai' },
     input: ['text', 'image'],
     contextWindow: 131_072,
     maxTokens: 32_768,
-    note: '智谱视觉线（GLM-4V/4.5V/4.6V/5V）：thinking 开关（开=High），收图。GLM-4.5V 为强制思考（传 disabled 报错，请手动删 Off 档）。',
+    note: '智谱视觉线（GLM-4V/4.5V/4.6V/5V）：thinking 开关（开=High），收图。GLM-4.5V 为强制思考（传 disabled 报错），不声明 Off 档。',
   },
   {
     id: 'glm-5-3-flash',
@@ -1019,12 +1020,13 @@ export const KNOWLEDGE_BASE: readonly KnowledgeEntry[] = [
     // the zai format sends exactly that switch (and no effort value,
     // because supportsReasoningEffort is not declared). GLM-4.5/4.6
     // default to enabled (hybrid reasoning: the model decides per
-    // request) -- the on state is High.
-    efforts: { off: null, high: 'high' },
+    // request) -- the on state is High. GLM-4.7 is forced-thinking and
+    // errors on disabled, so the family declares no Off level.
+    efforts: { high: 'high' },
     defaultEffort: 'high',
     compat: { thinkingFormat: 'zai' },
     input: ['text'],
-    note: 'GLM 通用：thinking 开关（无 effort 档），开=High；effort 阶梯仅 GLM-5.2+ 支持（见上两条目）。注意 GLM-4.7/GLM-4.5V 为强制思考，传 disabled 会报错（请手动删 Off 档）。视觉线见 glm-vision 条目。',
+    note: 'GLM 通用：thinking 开关（无 effort 档），开=High；effort 阶梯仅 GLM-5.2+ 支持（见上两条目）。GLM-4.7/GLM-4.5V 为强制思考（传 disabled 报错），不声明 Off 档。视觉线见 glm-vision 条目。',
   },
   {
     id: 'kimi-k3',

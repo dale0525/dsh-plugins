@@ -32,13 +32,60 @@
  */
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { ContentBlock, Message } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, type ContentBlock, type Message } from '@deepseek-ai/dsh-llm'
+import Schema from '@deepseek-ai/schemastery'
 import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
 // Type-only: brings the `ctx.tokenMeter` augmentation into scope.
 import type {} from '@deepseek-ai/dsh-token-meter'
 
 /** Cordis companion plugin name. Must equal this plugin's `cordis.patch.yml` row id. */
 export const name = 'verbatim-compaction'
+
+/** Live reference Cordis hands over for a volatile Config field. */
+interface ConfigRef<T> { get(): T }
+
+/** Optional model/effort override for compaction's two LLM calls. */
+export interface PurposeConfig {
+  provider?: ConfigRef<string>
+  model?: ConfigRef<string>
+  reasoningEffort?: ConfigRef<string>
+}
+
+/** Three editable scalars; empty strings mean "follow the chat model". */
+export const OVERRIDE_FIELDS = {
+  provider: Schema.string().default('').volatile(),
+  model: Schema.string().default('').volatile(),
+  reasoningEffort: Schema.string().default('').volatile(),
+}
+
+/** A provider/model override takes effect only as a complete pair. */
+export function pairedRouteOf(config: PurposeConfig | undefined): { provider: string; model: string } | undefined {
+  const provider = config?.provider?.get().trim()
+  const model = config?.model?.get().trim()
+  return provider !== undefined && provider !== '' && model !== undefined && model !== ''
+    ? { provider, model }
+    : undefined
+}
+
+/**
+ * Apply the optional override; without a configured effort the cheapest usable
+ * effort still wins, because a route's own default is typically the priciest.
+ */
+export function applyPurposeOverride<T extends object>(
+  options: T,
+  config: PurposeConfig | undefined,
+  cheapest: string | undefined,
+): T {
+  const route = pairedRouteOf(config)
+  const configured = config?.reasoningEffort?.get().trim()
+  const effort = configured !== undefined && configured !== '' ? configured : cheapest
+  if (route === undefined && effort === undefined) return options
+  return {
+    ...options,
+    ...(route === undefined ? {} : { provider: route.provider, model: route.model }),
+    ...(effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) }),
+  } as T
+}
 
 /**
  * Absolute ceiling for one digest, in the meter's fixed 4-chars-per-token
@@ -1383,7 +1430,8 @@ async function condenseOnce(
   ctx: ExtractionContext,
   agent: Agent,
   material: string,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  override: PurposeConfig | undefined,
 ): Promise<string | undefined> {
   const llm = ctx.llm
   if (llm === undefined) {
@@ -1405,16 +1453,15 @@ async function condenseOnce(
 
   const chunks: string[] = []
   try {
-    const stream = llm.stream({
+    const stream = llm.stream(applyPurposeOverride({
       provider,
       model,
       messages: [{ role: 'user', content: [{ type: 'text', text: `${material}\n\n${CONDENSE_INSTRUCTION}` }] }],
       maxTokens: CONDENSE_TOKENS,
       sessionId: agent.session.id,
       purpose: 'compaction',
-      ...(cheapest === undefined ? {} : { reasoningEffort: cheapest }),
       ...(signal === undefined ? {} : { signal }),
-    })
+    }, override, cheapest))
     for await (const chunk of stream) {
       const delta = chunk as { type?: string; text?: string }
       if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
@@ -1437,12 +1484,13 @@ async function extractBatch(
   ctx: ExtractionContext,
   agent: Agent,
   batch: readonly ExtractionSlot[],
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  override: PurposeConfig | undefined,
 ): Promise<Map<string, Extraction>> {
   const out = new Map<string, Extraction>()
   if (batch.length === 0) return out
 
-  const attempt = await extractOnce(ctx, agent, batch, signal)
+  const attempt = await extractOnce(ctx, agent, batch, signal, override)
   if (!attempt.truncated) {
     if (attempt.blocks.size === 0) {
       ctx.logger?.warn(
@@ -1468,7 +1516,7 @@ async function extractBatch(
   for (const [key, block] of attempt.blocks) out.set(key, block)
   const middle = Math.ceil(batch.length / 2)
   for (const half of [batch.slice(0, middle), batch.slice(middle)]) {
-    for (const [key, block] of await extractBatch(ctx, agent, half, signal)) out.set(key, block)
+    for (const [key, block] of await extractBatch(ctx, agent, half, signal, override)) out.set(key, block)
   }
   return out
 }
@@ -1555,7 +1603,8 @@ async function extractOnce(
   ctx: ExtractionContext,
   agent: Agent,
   batch: readonly ExtractionSlot[],
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  override: PurposeConfig | undefined,
 ): Promise<ExtractionAttempt> {
   const out = new Map<string, Extraction>()
   const llm = ctx.llm
@@ -1589,7 +1638,7 @@ async function extractOnce(
   const chunks: string[] = []
   let truncated = false
   try {
-    const stream = llm.stream({
+    const stream = llm.stream(applyPurposeOverride({
       provider,
       model,
       messages: [
@@ -1598,9 +1647,8 @@ async function extractOnce(
       maxTokens: EXTRACT_TOKENS_PER_TURN * parts.length + EXTRACT_THINKING_RESERVE_TOKENS,
       sessionId: agent.session.id,
       purpose: 'compaction',
-      ...(cheapest === undefined ? {} : { reasoningEffort: cheapest }),
       ...(signal === undefined ? {} : { signal }),
-    })
+    }, override, cheapest))
     for await (const chunk of stream) {
       const delta = chunk as { type?: string; text?: string; reason?: { kind?: string } }
       if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
@@ -1627,6 +1675,25 @@ async function extractOnce(
  * subclass cannot diverge from the host's transaction semantics.
  */
 export default class VerbatimCompactionEngine extends BasicCompactionEngine {
+
+  /**
+   * The Loader reads Config from the default-exported class, and the base
+   * constructor rejects unknown keys, so the base schema is merged instead of
+   * replaced. Only the three new fields are volatile: existing keys stay
+   * ordinary patch-level configuration.
+   */
+  static override Config: typeof BasicCompactionEngine.Config = Schema.object({
+    ...BasicCompactionEngine.Config.dict,
+    ...OVERRIDE_FIELDS,
+  }) as typeof BasicCompactionEngine.Config
+
+  private readonly purposeConfig: PurposeConfig
+
+  constructor(ctx: ConstructorParameters<typeof BasicCompactionEngine>[0], config: any) {
+    const { provider, model, reasoningEffort, ...base } = config ?? {}
+    super(ctx, base)
+    this.purposeConfig = { provider, model, reasoningEffort }
+  }
 
   /**
    * Extraction results, keyed by a hash of the material they were derived from.
@@ -1691,13 +1758,13 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       Math.min(DIGEST_TOKEN_CEILING, shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS),
     )
 
-    const extracted = await this.extractAll(source, agent, signal)
+    const extracted = await this.extractAll(source, agent, signal, this.purposeConfig)
 
     // Fold the oldest turns up only when the plain digest overflows. The fold is an
     // LLM call, so a digest that already fits must not pay for one.
     let condensed: ReadonlyMap<string, Condensed> | undefined
     if (renderDigest(source, budget, extracted).length > budget * 4) {
-      condensed = await this.condenseOldest(source, extracted, agent, budget, signal)
+      condensed = await this.condenseOldest(source, extracted, agent, budget, signal, this.purposeConfig)
     }
     // The fold path returns its digest whole, so it can still overflow when every
     // group has been folded and the user lines alone are too long. The budget is a
@@ -1750,7 +1817,8 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     extracted: ReadonlyMap<string, Extraction>,
     agent: Agent,
     budget: number,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    override: PurposeConfig | undefined,
   ): Promise<ReadonlyMap<string, Condensed>> {
     const sections = withExtractions(buildSections(source), extracted)
     const budgetChars = budget * 4
@@ -1767,7 +1835,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       if (signal?.aborted === true) break
       const group = sections.slice(start, start + CONDENSE_GROUP)
       if (group.length === 0) continue
-      const text = await this.condenseGroup(group, agent, signal)
+      const text = await this.condenseGroup(group, agent, signal, override)
       // A failed group is skipped rather than retried: the next group still buys
       // room, and retrying the same material against a failing model only spends
       // calls. The remaining turns keep their own blocks either way.
@@ -1789,7 +1857,8 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
   private async condenseGroup(
     group: readonly Section[],
     agent: Agent,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    override: PurposeConfig | undefined,
   ): Promise<string | undefined> {
     // Both sources, because a turn has one or the other: extraction succeeds and
     // the block replaces the prose, or it fails and the verbatim prose is what the
@@ -1820,7 +1889,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     const cached = this.condensedCache.get(key)
     if (cached !== undefined) return cached
 
-    const text = await condenseOnce(this.ctx, agent, material, signal)
+    const text = await condenseOnce(this.ctx, agent, material, signal, override)
     if (text === undefined) return undefined
     this.condensedCache.set(key, text)
     return text
@@ -1850,7 +1919,8 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
   private async extractAll(
     source: readonly SessionEvent[],
     agent: Agent,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    override: PurposeConfig | undefined,
   ): Promise<Map<string, Extraction>> {
     // Walk the same sections the renderer will use, so a key addresses the exact
     // slot the block will be written into. Grouping by turn number instead lost
@@ -1912,7 +1982,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     for (let index = 0; index < missing.length; index += TURNS_PER_CALL) {
       if (signal?.aborted === true) break
       const batch = missing.slice(index, index + TURNS_PER_CALL)
-      const blocks = await extractBatch(this.ctx, agent, batch, signal)
+      const blocks = await extractBatch(this.ctx, agent, batch, signal, override)
       for (const slot of batch) {
         const block = blocks.get(slot.key)
         if (block === undefined) continue
