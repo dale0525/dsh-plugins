@@ -142,18 +142,15 @@ for (const role of ['--dsh-theme-accent', '--dsh-theme-ink-2', '--dsh-theme-hove
   assert.ok(clientCode.includes(role), `按钮样式应读主题 role 变量 ${role}`);
 }
 assert.ok(!/--dsh-theme-radius\s*[,)]/.test(clientCode), '主题没有裸 --dsh-theme-radius，只能用 -xs/-sm/-md/-lg 阶梯');
-for (const step of ['--dsh-theme-radius-xs', '--dsh-theme-radius-sm', '--dsh-theme-radius-md']) {
+for (const step of ['--dsh-theme-radius-sm', '--dsh-theme-radius-md']) {
   assert.ok(clientCode.includes(step), `圆角应取主题 radius 阶梯 ${step}`);
 }
 // 圆角不得再用 999px 药丸——主题的按钮是圆角矩形（radius 阶梯 md=10px）
 const btnBlock = clientCode.slice(clientCode.indexOf('var primaryBtnStyle'), clientCode.indexOf('// 编辑态：图片缩略图保持在编辑框上方'));
 assert.ok(!/borderRadius:\s*"999px"/.test(btnBlock), '编辑态按钮不得再用 999px 药丸圆角');
 assert.ok(/borderRadius:\s*"var\(--dsh-theme-radius-md/.test(btnBlock), '按钮圆角应取主题 radius 阶梯');
-// 撤回条标签同理：字号跟主题正文、圆角跟主题阶梯
-const labelLine = clientCode.split('\n').find((l) => l.includes('label.style.cssText'));
-assert.ok(labelLine.includes('--dsh-chat-font-size'), '撤回条标签字号应跟主题正文');
-assert.ok(labelLine.includes('--dsh-theme-radius-xs'), '撤回条标签圆角应取主题阶梯');
-assert.ok(!labelLine.includes('999px'), '撤回条标签不得再用 999px 药丸');
+// 撤回待定态已删除：不再注入「正在修改」条，也不再有它的标签样式
+assert.ok(!clientCode.includes('label.style.cssText'), '不得再注入撤回条标签（撤回确认即截断，无待定态）');
 // 撤回确认胶囊同样不得硬编码浅色：`#ffffff` 底 + `#000000` 字在暗色下是一块白斑
 const capsule = clientCode.slice(clientCode.indexOf('function ConfirmCapsule'), clientCode.indexOf('// ---------- 设置卡片'));
 assert.ok(!/background:\s*"#ffffff"/.test(capsule), '确认胶囊按钮不得写死 #ffffff 底色');

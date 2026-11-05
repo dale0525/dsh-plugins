@@ -26,10 +26,9 @@ assert.ok(bundleCode.includes('function safeOpenSession('), '编译产物中必�
 assert.ok(srcCode.includes('function setPrimaryButtonSendingState('), 'src 中必须包含 setPrimaryButtonSendingState');
 assert.ok(srcCode.includes('15000'), '置灰锁必须包含 15s 兜底自动解锁');
 
-// 1.4 验证 preparingSession 多语言字段已在 zh, en, ja 中完整定义
-assert.ok(srcCode.includes('preparingSession: "正在准备新会话…"'), '必须包含中文 preparingSession 文案');
-assert.ok(srcCode.includes('preparingSession: "Preparing new session…"'), '必须包含英文 preparingSession 文案');
-assert.ok(srcCode.includes('preparingSession: "新しいセッションを準備中…"'), '必须包含日文 preparingSession 文案');
+// 1.4 撤回不再有「待发送」态：确认即截断，不回填、不等待用户发送
+assert.ok(!srcCode.includes('preparingSession'), '「正在准备新会话」文案随撤回待定态一并删除');
+assert.ok(!srcCode.includes('type: "recall"'), '不得再写撤回待定项（pending.type=recall）');
 
 console.log('✓ 静态规则检测全部通过');
 

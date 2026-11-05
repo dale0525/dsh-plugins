@@ -5,9 +5,9 @@
  * 控制台报 `computeRecallBoundary is not defined`，编辑重发在第一步就抛错并被
  * catch 吞成一行错误日志，界面表现为「点了没反应」。
  *
- * 成因：撤回/编辑共用的四个辅助函数被写在 `RecallBanner` 组件体内，
- * 只有 `RecallBanner` 自己的闭包能看见；`confirmEdit` 属于另一个组件
- * （`UserBubbleView`），对它不可见。这类错误没有任何构建期检查能发现——
+ * 成因：编辑/撤回共用的四个辅助函数曾被写在 `RecallBanner` 组件体内，
+ * 只有 `RecallBanner` 自己的闭包能看见；`confirmEdit` 与撤回处理器属于另一个组件
+ * （`UserBubbleView`），对它们不可见。这类错误没有任何构建期检查能发现——
  * client.src.js 是模板字符串形式的单文件 bundle，不经过 TS 作用域分析。
  *
  * 所以这里按**作用域深度**钉住它们：声明位置的括号深度必须等于模块级函数
@@ -43,7 +43,7 @@ console.log('--- 开始测试：编辑重发辅助函数的作用域可达性 --
 // 基准：RecallBanner 是模块级组件，它所在深度即「模块作用域」。
 const moduleDepth = depthAt(declarationLine('RecallBanner'));
 
-// 四个函数都被 confirmEdit / doRecallThenSend 跨组件调用，因此必须与 RecallBanner 同级。
+// 四个函数都被 confirmEdit / doRecall 跨组件调用，因此必须与 RecallBanner 同级。
 for (const name of ['computeRecallBoundary', 'snapshotHasMore', 'loadThroughTarget', 'readCurrentComposerText']) {
   const line = declarationLine(name);
   assert.equal(
@@ -66,12 +66,12 @@ function bodyOf(name) {
   throw new Error(`${name} 的函数体没有闭合`);
 }
 
-// confirmEdit 与 doRecallThenSend 都真的在调用它们（防止「提升了但没人用」的空洞修复）。
+// confirmEdit 与 doRecall 都真的在调用它们（防止「提升了但没人用」的空洞修复）。
 for (const [caller, callee] of [
   ['confirmEdit', 'computeRecallBoundary'],
   ['confirmEdit', 'loadThroughTarget'],
   ['confirmEdit', 'readCurrentComposerText'],
-  ['doRecallThenSend', 'computeRecallBoundary'],
+  ['doRecall', 'computeRecallBoundary'],
 ]) {
   assert.ok(
     new RegExp(`\\b${callee}\\(`).test(bodyOf(caller)),
@@ -84,7 +84,7 @@ console.log('✓ 跨组件调用点存在');
 // 第二个同源缺陷（2026-10-29 实测）：useChat / useSession 是 React hook，只在渲染期合法。
 // 边界计算跑在点击处理器里，直接调它会抛 React #321（Invalid hook call），catch 吞掉后
 // 边界恒为 null —— 表现为「编辑任何一条消息都重置整个对话」。
-for (const handler of ['confirmEdit', 'doRecallThenSend']) {
+for (const handler of ['confirmEdit', 'doRecall']) {
   const body = bodyOf(handler);
   assert.ok(
     !/getChatSnapshot\(|\.useChat\(|\.useSession\(/.test(body),

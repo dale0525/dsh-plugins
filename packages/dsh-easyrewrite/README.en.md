@@ -14,9 +14,9 @@
 
 </div>
 
-**Inline-edit & recall your own user messages in the DeepSeek Harness Web UI — lazily, seamlessly, and without ever losing your work.**
+**Inline-edit & recall your own user messages in the DeepSeek Harness Web UI — lightweight, native-styled, and effective the moment you confirm. Recall only deletes; edit deletes and replaces with a new message.**
 
-Click your own message bubble to edit it in place; hit the recall button beside copy to withdraw it and everything after it. Nothing is ever really changed until you commit — the conversation, the model context, and the session log stay untouched until you press **Confirm** (rewrite) or **Send** (recall).
+Click your own message bubble to edit it in place: confirming truncates the conversation and sends the revised text as a new message. Hit the recall button beside copy and confirm in the inline capsule to immediately delete that message and everything after it, then open the truncated new session — nothing new is sent. Cancelling before confirm leaves the conversation and the composer completely untouched.
 
 > Compatible with DeepSeek Harness Web (**v2.6.0 fully supports both dsh 0.1.7-rc.1+ and 0.1.2-rc.1+**; users on dsh 0.1.1-rc.2 and older hosts, please stay on **2.3.1** — the final release of that line, fully functional, no further features). Built on official extension points only — no source patches.
 
@@ -42,9 +42,10 @@ dsh plugin --profile web add dsh-easyrewrite
 
 ### Bubble Inline Edit (Rewrite) — Shipped (M2/M4)
 - **Click to edit**: Click your message bubble to enter inline editing directly (original Markdown source preserved), Esc to cancel / Ctrl+Enter to confirm.
-- **Adjustable width modes**: Compact (starts at bubble width, up to 360px) / Standard (fixed 360px) / Expanded (full message width) / Custom, with automatic vertical expansion and smooth inner scrolling.
+- **Adjustable width modes**: Compact (starts at bubble width) / Standard (fits the content, never narrower than the action buttons) / Expanded (full message width) / Custom. All modes are capped at 80% of the message content width and grow with the text, with smooth inner scrolling.
 - **On-the-spot model & effort switching**: Native dropdown menu embedded inside the bubble editor allows instant switching of provider, model, and reasoning effort for the resend.
 - **Rich image support & drag-drop management**: Multi-image messages render in equal-width thumbnail strips, supporting individual `×` deletion, clipboard paste, and drag-and-drop addition. Edits survive tab switching and page reloads.
+- **Confirm to resend**: Confirming truncates at the closed-turn boundary before the target message and sends the revised text as a new message; the original session is archived and the new one opens.
 
 <div align="center">
   <img src="docs/images/bubble-edit-active.png" alt="Bubble inline edit" width="380" />
@@ -59,23 +60,21 @@ dsh plugin --profile web add dsh-easyrewrite
 
 ### Message Recall (撤回) — Done, End to End
 - **Native & frictionless action**: Permanent recall button placed cleanly next to the official copy button on hover.
-- **Inline confirmation capsule**: Native-styled capsule (`撤回这条消息及其后 x 条提问？` + Confirm / Cancel pills), calculating the exact count of subsequent user prompts to be truncated in real time.
-- **Lazy commit & "正在修改" editing bar**: Confirming only populates the composer with a top editing bar; truncation only commits when you press **Send**. Cancelling (`×`) at any point cleanly restores your draft with zero context disruption.
-- **Seamless replacement & context folding**: Subsequent conversation turns are automatically folded and hidden during edit. Resending archives the original session and seamlessly replaces it with the truncated new session.
+- **Inline confirmation capsule**: Native-styled capsule (`撤回这条消息及其后 x 条提问？` + Confirm / Cancel pills), calculating the exact count of subsequent user prompts to be deleted in real time (0 shows "是否撤回这条消息？"); with the confirmation toggle off, clicking the button executes recall directly.
+- **Confirm to delete**: Pressing Confirm immediately removes that message and everything after it — the session is forked at the closed-turn boundary before the target, the original is archived, and the truncated new session opens. No new message is sent and the composer is left untouched.
+- **First message works too**: With no earlier closed-turn boundary, the current session is archived and a blank new session opens — again, nothing is sent automatically.
+- **Seamless session switch**: The original session is archived and the truncated new one takes over. A still-open turn shows a wait hint until the reply finishes.
 
 <div align="center">
   <img src="docs/images/message-hover-actions.png" alt="Message hover actions" width="220" />
   &nbsp;&nbsp;
   <img src="docs/images/recall-confirm-capsule.png" alt="Inline confirmation capsule" width="300" />
 </div>
-<div align="center" style="margin-top: 8px;">
-  <img src="docs/images/recall-editing.png" alt="Recall editing and context fold" width="780" />
-</div>
 
 <br>
 
 ### Version Pager (< X >) — Shipped (M3)
-- **Seamless history version navigation**: The **`‹ X/N ›`** control is embedded directly inside the action strip of the final reply after every recall/edit resend.
+- **Seamless history version navigation**: The **`‹ X/N ›`** control is embedded directly inside the action strip of the final reply after every edit resend (new versions come from edit resends).
 - **Context synchronization**: Clicking arrows (or pressing ←/→ keys) toggles the target branch, and **all subsequent dialogue context automatically syncs with the active version**.
 - **Archive swap & smooth viewport anchoring**: The workspace list keeps only one active session at any time, while the chat viewport stays rock-solid without jumping.
 
@@ -90,9 +89,8 @@ dsh plugin --profile web add dsh-easyrewrite
 - **Rich toggles & fine-grained control**:
   - Bubble edit toggle & fallback recall button
   - Bubble editor width presets (Compact / Standard / Expanded / Custom)
-  - Recall confirmation capsule & visual display modes (Simple / Minimal / Info)
+  - Recall confirmation capsule toggle & "count only user prompts" statistic option
   - Customizable shortcut recording (trigger recall with one keystroke when composer is unfocused)
-  - Composer conflict resolution (Overwrite mode safely restores pre-existing draft upon send/cancel)
   - Full version history tree explorer with manual restoration
   - Built-in one-click plugin update check & auto-upgrade
 
@@ -104,11 +102,6 @@ dsh plugin --profile web add dsh-easyrewrite
 
 <br>
 
-### Draft Auto-Backup — Shipped (M3)
-- Pending drafts untouched for over 10 seconds with recent changes are safely backed up locally; deleted immediately upon Confirm/Send.
-- Path: `$DSH_HOME/dsh-easyrewrite/backups/<sessionId>.json`.
-- Crash recovery: restores draft automatically only when there is no active local draft — never overwriting your live input.
-
 ---
 
 ## How we differ from similar plugins
@@ -116,11 +109,12 @@ dsh plugin --profile web add dsh-easyrewrite
 | Capability | dsh-easyrewrite | Other recall/edit plugins |
 | :--- | :---: | :--- |
 | Recall | ✅ | Basic capability |
-| **Seamless replacement** (feels like a *native* feature — frictionless edit-resend) | ✅ | Basic capability, but ours is **more refined** |
-| **Lazy commit** (context changes only after you confirm; closing mid-way changes nothing) | ✅ | Some competitors edit immediately, causing cache-hit / context issues |
+| **Confirm-to-delete** (pressing Confirm immediately removes that message and everything after it, without sending anything new) | ✅ | Most competitors add an extra send or more steps |
+| **Seamless session switch** (original session archived, truncated new session opened after edit resend / recall) | ✅ | Basic capability, but ours is **more refined** |
+| **Zero change before confirm** (cancelling the capsule or an edit leaves session, context and composer untouched) | ✅ | Some competitors edit immediately, causing cache-hit / context issues |
 | **Bubble inline edit (Rewrite)** | ✅ | **No comparable feature in any competitor** |
-| **Version pager < X >** (switch history versions — a **gold-standard design** proven by countless Chatbox users) | ✅ | **No comparable feature in any competitor** |
-| **Draft persistence + timeout auto-backup + crash recovery** (solid recovery that protects every bit of your thinking) | ✅ | **No comparable feature in any competitor** |
+| **Version pager < X >** (switch history versions produced by edit resends — a **gold-standard design** proven by countless Chatbox users) | ✅ | **No comparable feature in any competitor** |
+| **Edit draft kept per session** (progress resumes after switching chats or reloading) | ✅ | **No comparable feature in any competitor** |
 | **Attachment-preserving edit resend** | ✅ | No comparable feature in any competitor |
 | **Official extension points only** (zero source patches, clean uninstall) | ✅ | Competitors rely on source patches — hard to uninstall, complex dependencies |
 | Trilingual UI & i18n | ✅ | Few have proper i18n; we natively support multiple languages with three presets |
@@ -142,20 +136,19 @@ dsh plugin --profile web add dsh-easyrewrite
 - UI language follows dsh's native design (grey-blue palette, rounded corners, pills, official icons), dark/light theme aware — feels like an official feature, not "another plugin skin".
 - Original interactions stay intact: copy key, hover timestamps, bubble look — all preserved.
 - **Invisible**: day-to-day use barely notices the plugin — features live where you expect them, results match intuition; no popups, no interrupted rhythm.
-- **Lazy commit** is the foundation: entering edit mode or confirming a recall is purely local draft state; **context changes only at "确定" (rewrite) or "发送" (recall)**. Close dsh mid-way and nothing moves.
-- **Seamless replacement**: after a recall it *feels* like the original conversation was edited — the old session is archived, a same-titled replacement takes over, and your edited text is sent for you. No "a new conversation appeared" split.
+- **Effective on confirm**: recall deletes immediately when you press Confirm in the inline capsule; edit resends immediately when you press Confirm. Until then — or after Cancel/Esc — the session, model context and composer stay untouched. They are independent: **recall only deletes, edit deletes and replaces with a new message**.
+- **Seamless switch**: after a recall the original session is archived and the truncated new one takes over — no "a new conversation appeared" split. Nothing is sent automatically; just type to continue whenever you like.
 - **Bubble edit (landing soon)**: click the bubble to edit in place, what you edit is what you send — the natural extension of the same seamless philosophy.
 
-**3. Persistent & accident-proof**
+**3. Edit draft kept, accident-proof**
 
-- Edit/recall drafts **persist per session**: switching chats, refreshing, even restarting dsh — progress resumes where you left it. No "lost half-written" moments.
-- In overwrite mode the pre-recall draft is restored after both send and cancel — **no data loss on any path**.
-- Long-idle pending drafts auto-backup to local files (removed once handled) — a safety net for the extreme case.
-- Every destructive step has a confirm and an undo path: confirmation capsule, × cancel, one-pending-per-session — **mistakes are recoverable, data is never lost**.
+- Edit drafts are **kept per session**: switching chats, refreshing, even restarting dsh — progress resumes where you left it. No "lost half-written" moments.
+- Recall has no pending state before confirm: pressing Cancel or dismissing the capsule leaves the session and composer exactly as they were.
+- Every key step has a confirm and a cancel path: confirmation capsule, Esc/Cancel — **mistakes are recoverable, data is never lost**.
 
 **4. Complete logging, fast diagnosis**
 
-- Every client step (load, confirm, pending, send-hook, fork, resume) is reported to the host and written to a unified log: `$DSH_HOME/dsh-easyrewrite.log`.
+- Every client step (load, confirm, truncation, fork, opening the new session, resume) is reported to the host and written to a unified log: `$DSH_HOME/dsh-easyrewrite.log`.
 - Uniform format (JSON lines: time / level / tag / message / data) — one reproduction is enough to locate the issue, no back-and-forth descriptions.
 - Host behaviour lands in the same log (requests, rejection reasons, exceptions), so both halves reconcile on one trail.
 - Logs stay local; nothing is uploaded.
