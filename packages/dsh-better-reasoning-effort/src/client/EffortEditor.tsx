@@ -6,8 +6,8 @@
  * isolation. The draft/intent rules live in the client/effort module.
  *
  * Suggestion feedback is ZONED: provenance + confidence form their own line;
- * capacity references render as a separate read-only block explicitly marked
- * "never auto-filled" -- the official capacity inputs above stay untouched.
+ * physical capacities render as a separate read-only block; a new model row
+ * gets its official capacity inputs filled from them on the autofill pass.
  * The apply/reset actions sit at the very bottom and own every section.
  *
  * @module dsh-better-reasoning-effort/EffortEditor

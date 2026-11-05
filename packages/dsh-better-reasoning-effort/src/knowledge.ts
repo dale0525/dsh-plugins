@@ -3,6 +3,7 @@
  * inference engine.
  *
  * Every model a third-party provider route serves must declare its
+
  * 'reasoningEfforts' (which DSH thinking levels it accepts, and the exact
  * string to send on the wire for each) before the composer's model picker
  * offers any reasoning control for it. This module answers "what should this
@@ -25,6 +26,7 @@
  *
  * @module dsh-better-reasoning-effort/knowledge
  */
+import { MODEL_ID_CATALOG } from './model-id-catalog.js'
 
 /** The canonical pi-ai escalation order accepted by llm-pi-ai. */
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -136,12 +138,9 @@ export interface KnowledgeEntry {
    * audio, video) is recorded in 'note' until the core vocabulary grows.
    */
   input?: InputModalities
-  /**
-   * Reference context window in tokens (display-only advice; the official
-   * capacity inputs are never auto-filled).
-   */
+  /** The model family's physical context window in tokens. */
   contextWindow?: number
-  /** Reference max output tokens in tokens (display-only advice). */
+  /** The model family's maximum output tokens. */
   maxTokens?: number
   /**
    * The vendor's own default level for the family, when its docs name one
@@ -206,9 +205,9 @@ export interface EffortSuggestion {
   input?: InputModalities
   /** Where the modality part came from -- its confidence rides this. */
   inputSource?: InputSource
-  /** Reference context window (display-only; never auto-filled anywhere). */
+  /** The matched family's physical context window. */
   contextWindow?: number
-  /** Reference max output tokens (display-only). */
+  /** The matched family's maximum output tokens. */
   maxTokens?: number
   /** Whether a knowledge-base entry matched (vs protocol inference). */
   matched: boolean
@@ -227,8 +226,10 @@ export interface EffortSuggestion {
 }
 
 /**
- * The curated knowledge base. Patterns are lowercase substring matches against
- * the model id (and display name). First match wins, longest pattern wins.
+ * The curated knowledge base. Official/canonical ids in MODEL_ID_CATALOG win
+ * the exact tier; patterns are lowercase substring matches over one spelling
+ * at a time. The row id is matched before the mapped/display id, and within a
+ * spelling first match wins, longest pattern wins.
  *
  * Sources of truth (per family; DeepSeek / OpenAI / Anthropic re-checked
  * 2026-09 against their current official docs, the rest 2026-08): official API docs --
@@ -1298,6 +1299,27 @@ function normalizeLoose(value: string): string {
   return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, ' ')
 }
 
+/** Normalized literal spelling used by MODEL_ID_CATALOG (no spaces left). */
+function normalizeId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+/**
+ * Exact-tier lookup for one spelling. Provider prefixes are registered in the
+ * catalog both with and without the prefix, so 'anthropic/claude-...' and
+ * 'claude-...' are separate candidate keys, never a general strip rule.
+ */
+function exactEntry(value: string): KnowledgeEntry | undefined {
+  const candidates = [normalizeId(value)]
+  const slash = value.lastIndexOf('/')
+  if (slash > 0 && slash < value.length - 1) candidates.push(normalizeId(value.slice(slash + 1)))
+  for (const key of candidates) {
+    const id = MODEL_ID_CATALOG[key]
+    if (id !== undefined) return KNOWLEDGE_BASE.find(entry => entry.id === id)
+  }
+  return undefined
+}
+
 /**
  * Whether the occurrence of a pattern at index 'at' sits on a word boundary
  * in the haystack: neither neighbor may be a letter/digit. Keeps short family
@@ -1310,9 +1332,8 @@ function onBoundary(haystack: string, at: number, length: number): boolean {
   return !isAlnum(before) && !isAlnum(after)
 }
 
-/** Match the knowledge base: first match wins, longest boundary hit wins. */
-export function matchKnowledgeBase(modelId: string, displayName?: string): KnowledgeEntry | undefined {
-  const haystack = normalizeLoose(modelId) + ' ' + normalizeLoose(displayName ?? '')
+/** Longest boundary hit over one haystack; first match wins a tie. */
+function longestBoundaryHit(haystack: string): KnowledgeEntry | undefined {
   let best: { entry: KnowledgeEntry; length: number } | undefined
   for (const entry of KNOWLEDGE_BASE) {
     for (const pattern of entry.patterns) {
@@ -1330,6 +1351,49 @@ export function matchKnowledgeBase(modelId: string, displayName?: string): Knowl
     }
   }
   return best?.entry
+}
+
+/**
+ * Shorthand tier. A gateway may serve a model under a stem of a registered
+ * pattern ('hy4' for 'hy4-preview'): the normal tier only asks whether the
+ * input CONTAINS a pattern, so the reverse direction missed it entirely.
+ * A whole-token prefix is required and every candidate pattern must belong to
+ * one entry, so an ambiguous stem like 'gpt-5' or 'deepseek' produces no
+ * guess. Very short stems are excluded: 'hy' is a token of 'hy-4-preview'
+ * but is not a model identity. This tier runs only after the exact and
+ * substring tiers of BOTH strings miss, leaving the frozen longest-boundary
+ * contract untouched.
+ */
+function uniqueShorthandEntry(value: string): KnowledgeEntry | undefined {
+  if (normalizeId(value).length < 3) return undefined
+  const prefix = normalizeLoose(value) + ' '
+  let owner: KnowledgeEntry | undefined
+  for (const entry of KNOWLEDGE_BASE) {
+    for (const pattern of entry.patterns) {
+      if (!normalizeLoose(pattern).startsWith(prefix)) continue
+      if (owner === undefined) owner = entry
+      else if (owner.id !== entry.id) return undefined
+    }
+  }
+  return owner
+}
+
+/**
+ * Match the knowledge base. The row id and its mapped/display id are matched
+ * separately: the row id wins on the exact, substring, and shorthand tiers,
+ * and only when all three miss does the second string get a say.
+ */
+export function matchKnowledgeBase(modelId: string, displayName?: string): KnowledgeEntry | undefined {
+  const exact = exactEntry(modelId)
+  if (exact !== undefined) return exact
+  const family = longestBoundaryHit(normalizeLoose(modelId))
+  if (family !== undefined) return family
+  const shorthand = uniqueShorthandEntry(modelId)
+  if (shorthand !== undefined) return shorthand
+  if (displayName === undefined || displayName.length === 0) return undefined
+  const second = exactEntry(displayName) ?? longestBoundaryHit(normalizeLoose(displayName))
+  if (second !== undefined) return second
+  return uniqueShorthandEntry(displayName)
 }
 
 /**

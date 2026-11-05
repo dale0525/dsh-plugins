@@ -15,6 +15,31 @@ import { AUTOFILL_MARKER, INPUT_UNSET_MARKER, UNSET_MARKER } from './constants.j
 import { isSelfHostedRelay, NEW_COMPAT_KEYS, suggestEfforts } from './knowledge.js'
 import { isRecord, routeFactsOf } from './shared.js'
 
+/** compaction-basic's default tokens reserved for the compression call itself. */
+const COMPACTION_HEADROOM_TOKENS = 65_536
+
+/** Effective-context ceiling: past this, model quality starts to degrade. */
+const EFFECTIVE_CONTEXT_CEILING = 256_000
+
+/**
+ * Translate a model's physical capacities into the fields its pi-ai model row
+ * should carry. The row's contextWindow is DSH's accounting window, not the
+ * vendor's physical limit: compaction-basic triggers at
+ * `floor(min(0.8 * W, W - maxTokens - headroom))`, so solving for the wanted
+ * effective context T gives `W = max(ceil(T / 0.8), T + maxTokens + headroom)`.
+ * The second term always wins here: T <= 256000 < 4 * headroom = 262144.
+ */
+export function capacityFillOf(
+  physicalWindow: number,
+  maxOutputTokens: number,
+): { contextWindow: number; maxTokens: number } {
+  const effective = Math.min(EFFECTIVE_CONTEXT_CEILING, physicalWindow)
+  return {
+    maxTokens: maxOutputTokens,
+    contextWindow: effective + maxOutputTokens + COMPACTION_HEADROOM_TOKENS,
+  }
+}
+
 /** A JSON object patch. */
 type JsonObject = Record<string, unknown>
 
@@ -98,9 +123,6 @@ export function buildAutofillPatch(
       }
       const fill: JsonObject = { ...model }
       let touched = false
-      // Capacities are never filled here: contextWindow / maxTokens are
-      // display-only reference values in the browser half, and writing them
-      // host-side would silently override the route defaults.
       // Reaching this branch means neither part was declared and no durable
       // unset marker stands on the row -- so there is no stale marker inside
       // `fill` to scrub; the guards above already excluded it.
@@ -120,6 +142,18 @@ export function buildAutofillPatch(
       if (!inputDeclared && fillModalities && suggestion.input !== undefined) {
         touched = true
         fill['input'] = [...suggestion.input]
+      }
+      // Capacity fill rides on the same patch as the ladder/modality fill, so
+      // only rows the builder is already filling receive it; a row whose two
+      // declaration parts are both settled is skipped by the guard above.
+      // Translate the curated physical capacities into pi-ai's accounting
+      // fields, but never overwrite a capacity the user already set.
+      if (suggestion.contextWindow !== undefined
+        && suggestion.maxTokens !== undefined
+        && model['contextWindow'] === undefined
+        && model['maxTokens'] === undefined) {
+        touched = true
+        Object.assign(fill, capacityFillOf(suggestion.contextWindow, suggestion.maxTokens))
       }
       if (!touched) {
         nextModels.push(model)

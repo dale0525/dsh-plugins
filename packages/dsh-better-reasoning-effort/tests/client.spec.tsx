@@ -220,8 +220,11 @@ describe('client apply()', () => {
       expect(models.map(model => model['id'])).toEqual(['qwen-max', 'qwen-turbo'])
       // Both rows were undeclared, so the knowledge base fills both.
       expect(models.every(model => model['reasoningEfforts'] !== undefined)).toBe(true)
-      // Capacities are never this plugin's to write.
-      expect(models.every(model => model['contextWindow'] === undefined)).toBe(true)
+      // Both rows are new: the knowledge base fills their capacities too
+      // (qwen family: 1,000,000 physical window / 65,536 max output ->
+      // 256000 + 65536 + 65536 effective-context window).
+      expect(models.every(model => model['maxTokens'] === 65_536)).toBe(true)
+      expect(models.every(model => model['contextWindow'] === 387_072)).toBe(true)
     } finally {
       h.disposeAll()
       vi.unstubAllGlobals()

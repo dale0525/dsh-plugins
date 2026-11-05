@@ -245,9 +245,9 @@ export type SuggestReply =
         input?: InputModalities
         /** Where the modality part came from -- its confidence rides this. */
         inputSource?: InputSource
-        /** Reference context window (display-only; never auto-filled). */
+        /** The matched family's physical context window. */
         contextWindow?: number
-        /** Reference max output tokens (display-only). */
+        /** The matched family's maximum output tokens. */
         maxTokens?: number
         matched: boolean
         source: string

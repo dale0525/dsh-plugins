@@ -28,6 +28,7 @@
  */
 
 import { AUTOFILL_MARKER, INPUT_UNSET_MARKER, PLUGIN_ID, UNSET_MARKER } from '../../constants.js'
+import { draftCapacityOf } from '../draft-capacity.js'
 import { suggestEfforts, type CompatSuggestion, type InputModalities, type ReasoningEfforts } from '../../knowledge.js'
 import { modelsOf, routeFactsOf, isRecord, usesModelOverrides } from '../../shared.js'
 import { sameEfforts } from '../effort.js'
@@ -69,6 +70,10 @@ export interface HostLabels {
   modelId: readonly string[]
   /** The per-row display-name input. */
   modelName: readonly string[]
+  /** The per-row context-window input ("Context window 1" / "上下文窗口 1"). */
+  contextWindow: readonly string[]
+  /** The per-row maximum-output input ("Max output tokens 1" / "最大输出 token 数 1"). */
+  maxTokens: readonly string[]
   /** The create card's route-id input. */
   routeId: readonly string[]
   /** The create card's endpoint input. */
@@ -1093,6 +1098,46 @@ export function syncOfficialInputTypes(container: HTMLElement, input: readonly s
   })
 }
 
+/** Rows whose draft capacities were already seeded this editing session. */
+const seededCapacityRows = new WeakSet<HTMLElement>()
+
+/**
+ * Prefill the official capacity inputs of a freshly adopted, still-unsaved row.
+ * The host renders exactly two `modelField` text inputs in contextWindow /
+ * maxTokens order (ModelListEditor's own map), both controlled by React; the
+ * native value setter plus a bubbling input event is the only way an outside
+ * script reaches that onChange. Seeded rows are remembered so a later scan or
+ * a user clearing an input never overwrites a decision. Nothing is written to
+ * settings here: the card's own Save carries the draft.
+ * @param container - the row's expanded disclosure.
+ * @param modelId - the model id as typed/adopted in this row.
+ * @param contextLabels - localized aria-label prefixes for the window field.
+ * @param maxLabels - localized aria-label prefixes for the output field.
+ * @returns whether both inputs received a value.
+ */
+export function prefillDraftCapacities(
+  container: HTMLElement,
+  modelId: string,
+  contextLabels: readonly string[],
+  maxLabels: readonly string[],
+): boolean {
+  if (seededCapacityRows.has(container)) return false
+  const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('input[aria-label][inputmode="numeric"]'))
+  const context = inputs.find(input => contextLabels.some(label => (input.getAttribute('aria-label') ?? '').startsWith(label)))
+  const max = inputs.find(input => maxLabels.some(label => (input.getAttribute('aria-label') ?? '').startsWith(label)))
+  if (context === undefined || max === undefined || context.disabled || max.disabled) return false
+  const capacity = draftCapacityOf(modelId, context.value, max.value)
+  if (capacity === undefined) return false
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+  if (setter === undefined) return false
+  for (const [input, value] of [[context, capacity.contextWindow], [max, capacity.maxTokens]] as const) {
+    setter.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+  seededCapacityRows.add(container)
+  return true
+}
+
 /** Whether an editor is already mounted in a container (idempotency guard). */
 function hasEditor(container: HTMLElement): boolean {
   return container.querySelector(`[data-plugin="${PLUGIN_ID}"]`) !== null
@@ -1426,6 +1471,11 @@ export function reconcile(root: HTMLElement, deps: InjectorDeps, state: ScanStat
       // staging rides the same flush-on-save path as the create card.
       const savedModelIds = new Set(models.map(model => model['id']))
       const staged = routeStaged || !savedModelIds.has(target.modelId)
+      // A row just adopted from the endpoint listing is a form draft: show the
+      // computed capacities in the official inputs before Save. Once seeded,
+      // the WeakSet keeps later scans (and a user clearing an input) from
+      // overwriting the draft; saved rows keep their stored values.
+      if (staged) prefillDraftCapacities(target.container, target.modelId, labels.contextWindow, labels.maxTokens)
       // A staged row's baseline is the pending store (the settings document
       // holds nothing for the model yet); the create card's typed protocol
       // and endpoint stand in for the stored profile facts, both for the

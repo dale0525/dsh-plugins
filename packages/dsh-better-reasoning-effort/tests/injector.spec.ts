@@ -148,6 +148,8 @@ function makeDeps(overrides?: Partial<InjectorDeps>): InjectorDeps & {
       capacity: ['Capacities'],
       modelId: ['Model ID'],
       modelName: ['Display name'],
+      contextWindow: ['Context window'],
+      maxTokens: ['Max output tokens'],
       routeId: ['Provider ID'],
       baseUrl: ['Base URL'],
       apiProtocol: ['API protocol'],
@@ -225,6 +227,35 @@ function buildCreateDom(route = 'acme-gateway'): HTMLElement {
 }
 
 describe('reconcile', () => {
+  it('prefills the official capacity inputs of an adopted draft row', async () => {
+    document.body.innerHTML = `
+      <div class="section">
+        <div class="editor">
+          <div class="editorHeader"><span class="editorTitle">Custom provider</span></div>
+          <div class="field"><input aria-label="Provider ID" value="acme-gateway" /></div>
+          <div class="field"><input aria-label="Base URL" value="https://gw.example.com/v1" /></div>
+          <div class="field"><select aria-label="API protocol"><option selected>openai-completions</option></select></div>
+          <div class="modelCatalog">
+            <div class="modelEntry">
+              <div class="modelRow">
+                <input aria-label="Model ID" value="gpt-5.6-sol" />
+                <button aria-label="Capacities 1"></button>
+              </div>
+              <div class="modelAdvanced" style="display:block">
+                <label><span>Context window</span><input type="text" inputmode="numeric" aria-label="Context window 1" /></label>
+                <label><span>Max output tokens</span><input type="text" inputmode="numeric" aria-label="Max output tokens 1" /></label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>`
+    const deps = makeDeps()
+    const state = createScanState()
+    await settle(() => reconcile(document.querySelector('.section') as HTMLElement, deps, state), state)
+    const inputs = document.querySelectorAll<HTMLInputElement>('.modelAdvanced input[inputmode="numeric"]')
+    expect([inputs[0]!.value, inputs[1]!.value]).toEqual(['449536', '128000'])
+  })
+
   it('mounts one editor per model row with the right props', async () => {
     const deps = makeDeps()
     const state = createScanState()
