@@ -780,6 +780,86 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /* --------------------------------------------- open-in-app directory */
+
+    /** The route the Host's "Open in <app>" control posts a directory to. */
+    var OPEN_IN_APP_OPEN_ROUTE = 'open-in-app/open'
+
+    /** Whether one fetch URL names that directory-opening route. */
+    function isOpenInAppOpen(url) {
+      var cut = url.indexOf('?')
+      if (cut !== -1) url = url.slice(0, cut)
+      return url === OPEN_IN_APP_OPEN_ROUTE ||
+        url.slice(-(OPEN_IN_APP_OPEN_ROUTE.length + 1)) === '/' + OPEN_IN_APP_OPEN_ROUTE
+    }
+
+    /**
+     * Make "Open in <app>" follow a Session's worktree, not its Workspace.
+     *
+     * The shipped control reads `session.cwd` — the directory the Session was
+     * CREATED in — and posts it as `body.path`. A Session whose tools run in a
+     * linked worktree keeps that original `cwd` (so it stays in its Workspace
+     * group) and carries the checkout in `projectionValues.workingDirectory`.
+     * Rewriting this route leaves the Host's controls, their app menus and every
+     * other request alone; requests whose path is not the active Session's cwd
+     * are forwarded unchanged.
+     *
+     * The Host's launcher calls `fetch(...)` through a default arrow that reads
+     * the global at call time, so a wrapper installed here is seen by it. This
+     * is not the RPC transport, which binds `fetch` at module initialisation.
+     * @param sessions - the client Session store, for the active row.
+     * @returns a disposer restoring the previous `fetch`.
+     */
+    function applyOpenInAppDirectory(sessions) {
+      if (sessions === undefined) return undefined
+      var native = globalThis.fetch
+      if (typeof native !== 'function') return undefined
+
+      /** The checkout the active Session runs in, when its Workspace is `cwd`. */
+      var worktreeDirectory = function (cwd) {
+        var snapshot = sessions.list.getSnapshot()
+        var byId = (snapshot && snapshot.byId) || {}
+        var active
+        for (var id in byId) {
+          var row = byId[id]
+          if (row && row.retainedBy && row.retainedBy.mainView > 0) {
+            active = row
+            break
+          }
+        }
+        if (active === undefined || active.cwd !== cwd) return undefined
+        var projected = active.projectionValues ? active.projectionValues.workingDirectory : undefined
+        if (typeof projected !== 'string' || projected === '' || projected === cwd) return undefined
+        return projected
+      }
+
+      var wrapped = function (input, init) {
+        var url = typeof input === 'string' ? input : (input && input.url) || ''
+        if (!isOpenInAppOpen(url) || !init || init.method !== 'POST' || typeof init.body !== 'string') {
+          return native.apply(this, arguments)
+        }
+        var body
+        try {
+          body = JSON.parse(init.body)
+        } catch {
+          return native.apply(this, arguments)
+        }
+        if (body === null || typeof body !== 'object' || typeof body.path !== 'string') {
+          return native.apply(this, arguments)
+        }
+        var directory = worktreeDirectory(body.path)
+        if (directory === undefined) return native.apply(this, arguments)
+        body.path = directory
+        return native.call(this, input, Object.assign({}, init, { body: JSON.stringify(body) }))
+      }
+
+      globalThis.fetch = wrapped
+      return function () {
+        // HMR may dispose this effect after another wrapper took our place.
+        if (globalThis.fetch === wrapped) globalThis.fetch = native
+      }
+    }
+
     /**
      * Register the picker at the left of the composer tool row.
      *
@@ -796,6 +876,16 @@ window.__ModuleLoader__.load({
         },
         'worktree-session: dictionaries',
       )
+      // Only the Session store is needed here; the picker and sidebar markers
+      // await the workspace services separately below.
+      ctx.inject(['sessions'], function (scoped) {
+        scoped.effect(
+          function () {
+            return applyOpenInAppDirectory(scoped.sessions)
+          },
+          'worktree-session: open-in-app directory',
+        )
+      })
       ctx.inject(['workspaces', 'uiWorkspace', 'sessions'], function (scoped) {
         // A worktree's sidebar row is plain markup with no plugin seat, so it
         // is marked and restyled rather than rendered by a slot.

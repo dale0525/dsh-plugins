@@ -133,12 +133,162 @@ describe('client apply wiring', () => {
     assert.equal(share.uiWorkspace, uiWorkspace)
   })
 
-  it('registers its dictionaries and its row markers through effects', () => {
+  it('registers its dictionaries, row markers and directory rewrite through effects', () => {
     const { effects } = applyWith({})
 
     // The marker effect needs a DOM; driving it is the row-marker suite's job.
-    assert.equal(effects.length, 2)
+    assert.equal(effects.length, 3)
     assert.equal(typeof effects[0](), 'function')
+  })
+})
+
+describe('open-in-app worktree directory', () => {
+  const originalFetch = globalThis.fetch
+
+  after(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  /** Install a prior fetch and return this plugin's active rewrite. */
+  function rewrite(sessions) {
+    const requests = []
+    globalThis.fetch = (url, init) => {
+      requests.push({ url, init })
+      return Promise.resolve({ ok: true })
+    }
+    const { effects } = applyWith({ sessions })
+    const dispose = effects[1]()
+    return { requests, dispose }
+  }
+
+  /** A Session snapshot with one main-view row and one worktree row. */
+  function sessionsOf(byId, activeId) {
+    return {
+      list: {
+        getSnapshot: () => ({
+          byId: Object.fromEntries(
+            Object.entries(byId).map(([id, row]) => [
+              id,
+              { ...row, retainedBy: { mainView: id === activeId ? 1 : 0 } },
+            ]),
+          ),
+        }),
+      },
+    }
+  }
+
+  it('opens the worktree directory the active Session works in', async () => {
+    const active = rewrite(
+      sessionsOf(
+        {
+          'session-wt': {
+            cwd: '/repo',
+            projectionValues: { workingDirectory: '/repo/.worktrees/fix-the-parser' },
+          },
+        },
+        'session-wt',
+      ),
+    )
+
+    await globalThis.fetch('open-in-app/open', {
+      method: 'POST',
+      body: JSON.stringify({ app: 'vscode', path: '/repo' }),
+    })
+
+    assert.deepEqual(JSON.parse(active.requests[0].init.body), {
+      app: 'vscode',
+      path: '/repo/.worktrees/fix-the-parser',
+    })
+    active.dispose()
+  })
+
+  it('leaves a Session in its workspace alone', async () => {
+    const active = rewrite(
+      sessionsOf({ 'session-main': { cwd: '/repo', projectionValues: { workingDirectory: '/repo' } } }, 'session-main'),
+    )
+
+    await globalThis.fetch('open-in-app/open', {
+      method: 'POST',
+      body: JSON.stringify({ app: 'finder', path: '/repo' }),
+    })
+
+    assert.equal(active.requests[0].init.body, '{"app":"finder","path":"/repo"}')
+    active.dispose()
+  })
+
+  it('leaves every other request untouched', async () => {
+    const active = rewrite(
+      sessionsOf(
+        {
+          'session-wt': {
+            cwd: '/repo',
+            projectionValues: { workingDirectory: '/repo/.worktrees/fix-the-parser' },
+          },
+        },
+        'session-wt',
+      ),
+    )
+    const body = JSON.stringify({ app: 'vscode', path: '/repo' })
+
+    await globalThis.fetch('open-in-app/apps', { method: 'POST', body })
+    await globalThis.fetch('/open-in-app/open', { method: 'GET' })
+
+    assert.equal(active.requests[0].init.body, body)
+    assert.equal(active.requests[1].init.body, undefined)
+    active.dispose()
+  })
+
+  it('leaves a directory belonging to another session alone', async () => {
+    const active = rewrite(
+      sessionsOf(
+        {
+          'session-wt': {
+            cwd: '/repo',
+            projectionValues: { workingDirectory: '/repo/.worktrees/fix-the-parser' },
+          },
+        },
+        'session-wt',
+      ),
+    )
+    const body = JSON.stringify({ app: 'vscode', path: '/another-workspace' })
+
+    await globalThis.fetch('open-in-app/open', { method: 'POST', body })
+
+    assert.equal(active.requests[0].init.body, body)
+    active.dispose()
+  })
+
+  it('rewrites only for the active Session, not another row in the same Workspace', async () => {
+    const active = rewrite(
+      sessionsOf(
+        {
+          'session-plain': { cwd: '/repo', projectionValues: { workingDirectory: '/repo' } },
+          'session-wt': {
+            cwd: '/repo',
+            projectionValues: { workingDirectory: '/repo/.worktrees/fix-the-parser' },
+          },
+        },
+        'session-plain',
+      ),
+    )
+    const body = JSON.stringify({ app: 'vscode', path: '/repo' })
+
+    await globalThis.fetch('open-in-app/open', { method: 'POST', body })
+
+    assert.equal(active.requests[0].init.body, body)
+    active.dispose()
+  })
+
+  it('restores the fetch it wrapped when the effect is disposed', () => {
+    const native = () => Promise.resolve({ ok: true })
+    globalThis.fetch = native
+    const { effects } = applyWith({ sessions: sessionsOf({}, undefined) })
+
+    const dispose = effects[1]()
+    assert.notEqual(globalThis.fetch, native)
+    dispose()
+
+    assert.equal(globalThis.fetch, native)
   })
 })
 
@@ -300,7 +450,7 @@ describe('workspace row markers', () => {
     globalThis.window = dom.window
     globalThis.MutationObserver = dom.MutationObserver
     const { effects } = applyWith({ workspaces, sessions })
-    const cleanup = effects[1]()
+    const cleanup = effects[2]()
     await settle()
     return cleanup
   }
