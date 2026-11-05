@@ -1682,6 +1682,54 @@ test('the compaction body is prose, on the same ladder as the assistant body', (
   assert.match(code, /font-size:\s*var\(--dsh-chat-font-size\)\s*!important/, 'the host em-based size must be beaten')
 })
 
+test('manual /compact prose uses the same ladder as automatic compaction', () => {
+  // The host renders /compact as data-chat-flow-kind="manual-compaction" and
+  // keeps the same CompactionItem -> MarkdownText subtree, so only the outer
+  // flow-kind differs. Every rule styling the automatic body needs a parallel
+  // selector for the manual kind, or its expanded summary falls back to the
+  // host's 17px system face.
+  const prose = "body [data-chat-flow-kind='manual-compaction'] [class*='_markdown']"
+  const root = lastRule(prose)
+  assert.ok(root, 'the manual compaction prose must be styled')
+  assert.match(root, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'takes the chat face')
+  assert.match(root, /font-size:\s*var\(--dsh-chat-font-size\)/, 'takes the chat size')
+  assert.match(root, /line-height:\s*var\(--dsh-chat-line-height\)/, 'takes the chat line-height')
+
+  const ladder = { h1: 22, h2: 18, h3: 15, h4: 14, h5: 14, h6: 14 }
+  for (const [tag, size] of Object.entries(ladder)) {
+    const body = lastRule(`${prose} ${tag}`)
+    assert.ok(body, `${tag} must be styled in the manual body`)
+    assert.match(body, new RegExp(`font-size:\\s*${size}px`), `${tag} sits at ${size}px`)
+  }
+
+  const code = lastRule(`${prose} :not(pre) > code`)
+  assert.ok(code, 'manual inline code must be styled')
+  assert.match(code, /font-size:\s*var\(--dsh-chat-font-size\)\s*!important/, 'host em size must be beaten')
+})
+
+test('manual /compact command row is a themed card on the shared chat scale', () => {
+  // /compact is idle and log-only, rendered outside the [data-step-process]
+  // group tree, so every card/row rule keyed on that ancestor misses it. The
+  // manual flow-kind is the only stable anchor.
+  const scope = "body [data-chat-flow-kind='manual-compaction']"
+  const card = lastRule(`${scope} [class*='_callRow']`)
+  assert.ok(card, 'the command row must be a card')
+  assert.match(card, /border-radius:\s*12px/, 'card radius matches the process card')
+  assert.match(card, /background-color:\s*var\(--dsw-alias-bg-layer-2\)/, 'card reads a palette token')
+  assert.match(card, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'card takes the chat face')
+  assert.match(card, /font-size:\s*var\(--dsh-chat-font-size\)/, 'card takes the chat size')
+  // Colours come from tokens only: no literal light value needing a dark twin.
+  assert.doesNotMatch(card, /#[0-9a-fA-F]{3,8}\b/, 'card colours come from tokens only')
+
+  const title = lastRule(`${scope} [class*='compactionTitle']`)
+  assert.ok(title, 'the row title must be styled')
+  assert.match(title, /font-size:\s*var\(--dsh-chat-font-size\)/, 'title takes the chat size')
+
+  const pre = lastRule(`${scope} pre[class*='_body']`)
+  assert.ok(pre, 'the running card body must restyle the host font shorthand')
+  assert.match(pre, /font-family:\s*var\(--dsh-chat-font, inherit\)/, 'body takes the chat face')
+})
+
 test('the elapsed-time digits follow the row they sit in', () => {
   // `_durationNumber` states `--ds-font-family-code` itself (for tabular figures),
   // so 「31s」 sat in SF Mono inside a Fira Code label — one row, two faces. Only

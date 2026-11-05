@@ -1626,7 +1626,8 @@ body [data-step-process]:not([hidden]) [data-step-process-content] [class*='imag
    change every selector a test pins. Inline code is pinned with `!important`
    for the same reason as there: the host's own `font-size: .875em` is
    `!important`, and `.875em` of 13px would be a third size. */
-body [data-chat-flow-kind='compaction'] [class*='_markdown'] {
+body [data-chat-flow-kind='compaction'] [class*='_markdown'],
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] {
   font-family: var(--dsh-chat-font, inherit);
   font-size: var(--dsh-chat-font-size);
   line-height: var(--dsh-chat-line-height);
@@ -1637,40 +1638,99 @@ body [data-chat-flow-kind='compaction'] [class*='_markdown'] h2,
 body [data-chat-flow-kind='compaction'] [class*='_markdown'] h3,
 body [data-chat-flow-kind='compaction'] [class*='_markdown'] h4,
 body [data-chat-flow-kind='compaction'] [class*='_markdown'] h5,
-body [data-chat-flow-kind='compaction'] [class*='_markdown'] h6 {
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h6,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h1,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h2,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h3,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h4,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h5,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h6 {
   font-family: var(--dsh-chat-font, inherit);
   line-height: 1.35;
   color: var(--dsw-alias-label-primary);
   margin: 14px 0 6px;
 }
 
-body [data-chat-flow-kind='compaction'] [class*='_markdown'] h1 {
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h1,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h1 {
   font-size: 22px;
   font-weight: 600;
   margin: 24px 0 10px;
 }
 
-body [data-chat-flow-kind='compaction'] [class*='_markdown'] h2 {
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h2,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h2 {
   font-size: 18px;
   font-weight: 600;
   margin: 20px 0 8px;
 }
 
-body [data-chat-flow-kind='compaction'] [class*='_markdown'] h3 {
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h3,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h3 {
   font-size: 15px;
   font-weight: 500;
 }
 
 body [data-chat-flow-kind='compaction'] [class*='_markdown'] h4,
 body [data-chat-flow-kind='compaction'] [class*='_markdown'] h5,
-body [data-chat-flow-kind='compaction'] [class*='_markdown'] h6 {
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] h6,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h4,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h5,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] h6 {
   font-size: 14px;
   font-weight: 400;
 }
 
-body [data-chat-flow-kind='compaction'] [class*='_markdown'] :not(pre) > code {
+body [data-chat-flow-kind='compaction'] [class*='_markdown'] :not(pre) > code,
+body [data-chat-flow-kind='manual-compaction'] [class*='_markdown'] :not(pre) > code {
   font-family: var(--dsh-chat-font, inherit);
   font-size: var(--dsh-chat-font-size) !important;
+}
+
+/* Manual /compact is idle and log-only, so the host renders its command row
+   outside the [data-step-process] group tree with data-chat-flow-kind=
+   "manual-compaction". Both card shapes reuse the process card's geometry and
+   the shared chat type scale; colours resolve from tokens, so light and dark
+   need no separate rule. */
+body [data-chat-flow-kind='manual-compaction'] [class*='_callRow'] {
+  box-sizing: border-box;
+  border-style: solid;
+  border-width: 1px;
+  border-color: var(--dsw-alias-border-l3);
+  border-radius: 12px;
+  background-color: var(--dsw-alias-bg-layer-2);
+  padding: 14px;
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+}
+
+body [data-chat-flow-kind='manual-compaction'] [class*='compactionTitle'],
+body [data-chat-flow-kind='manual-compaction'] [class*='_callRow'] div[class*='_root'][data-variant] [class*='_title'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
+}
+
+body [data-chat-flow-kind='manual-compaction'] [class*='compactionSummary'],
+body [data-chat-flow-kind='manual-compaction'] [class*='_callRow'] div[class*='_root'][data-variant] [class*='_summary'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+  color: var(--dsw-alias-label-tertiary);
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+/* The running card's <pre> states a font shorthand of its own, so inheritance
+   cannot restyle it. */
+body [data-chat-flow-kind='manual-compaction'] pre[class*='_body'] {
+  font-family: var(--dsh-chat-font, inherit);
+  font-size: var(--dsh-chat-font-size);
+  line-height: var(--dsh-chat-line-height);
+  color: var(--dsw-alias-label-primary);
 }
 
 /* The inspect card states `--dsw-font-xs-13` in the system face on its root, so

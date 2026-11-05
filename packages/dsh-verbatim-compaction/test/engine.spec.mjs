@@ -25,6 +25,29 @@ function buildSession() {
 }
 
 /**
+ * Build the same session with its last turn closed.
+ *
+ * The fixture ends on an unmatched `turn/start` (seq 220). `compactNow` is an
+ * idle-only operation and rejects a session with an open turn, so a manual
+ * compaction test needs the closing `turn/end` the real host would have written.
+ */
+function idleSession() {
+  const source = events()
+  const last = source.at(-1)
+  const turn = source.filter((event) => event.type === 'turn/start').at(-1).data.turn
+  const header = { version: SESSION_FORMAT_VERSION, id: 'fixture', createdAt: 1, isSeeded: false }
+  return Session.create('fixture', [
+    ...source,
+    {
+      type: 'turn/end',
+      seq: last.seq + 1,
+      time: last.time + 1,
+      data: { turn, reason: { kind: 'completed' } },
+    },
+  ], header, 0)
+}
+
+/**
  * Mount the backend over real `TokenMeter` and a counting llm stub, and return
  * the mounted engine plus the call counter.
  *
@@ -150,6 +173,27 @@ test('a second compaction keeps the first compaction\'s content', async () => {
     assert.ok(afterSecond.includes(prose), `user prose lost on the second compaction: ${prose.slice(0, 40)}`)
   }
   assert.ok(afterSecond.length >= afterFirst.length / 2)
+})
+
+test('compactNow routes manual /compact through the verbatim digest', async () => {
+  // `command-compact` calls compactNow, while automatic compaction calls
+  // compactRegion. Both must reach the same summarize() override; a checkpoint
+  // carrying the host's nine-section template means the manual path picked a
+  // different compaction service instance.
+  const { engine } = await harness()
+  const session = idleSession()
+  const result = await engine.compactNow(agentFor(session), new AbortController().signal, 'cmd-manual')
+
+  assert.ok(result, 'manual compaction must produce a result')
+  const checkpoint = checkpointOf(session)
+  assert.ok(checkpoint, 'a compaction checkpoint must be written')
+  const digest = digestOf(checkpoint)
+  assert.ok(digest.length > 0)
+  assert.ok(!digest.includes('## Primary Request and Intent'), 'the host summarizer must not run')
+  assert.ok(digest.includes('## user'), 'the verbatim digest must be used')
+
+  const lifecycle = session.snapshotEvents().filter((event) => event.type.startsWith('compaction/'))
+  assert.ok(lifecycle.some((event) => event.data?.sourceCommandId === 'cmd-manual'), 'manual lifecycle must carry the command id')
 })
 
 test('the summary is smaller than the span it replaces', async () => {
