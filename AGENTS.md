@@ -56,6 +56,7 @@ dsh-plugins/
 | 客户端 UI：槽位内容、注入 `<style>`、替换宿主元素、拦截 RPC；页面空白或样式不生效 | [`dsh-plugin-client-ui`](.agents/skills/dsh-plugin-client-ui/SKILL.md) |
 | 会话列表／历史的请求参数与响应字段、首屏体积、长会话打不开 | [`dsh-session-payload`](.agents/skills/dsh-session-payload/SKILL.md) |
 | 改完代码确认是否生效：重启还是 HMR、bundle 是否新构建、`dsh-web status` 报错 | [`dsh-plugin-runtime`](.agents/skills/dsh-plugin-runtime/SKILL.md) |
+| 准备本地测试插件、想用临时 profile 真机验证本地改动、或说「按本地测试流程走一遍」 | [`dsh-plugin-local-verify`](.agents/skills/dsh-plugin-local-verify/SKILL.md) |
 | 同步 fork 子包到上游新版本、预演同步冲突 | [`dsh-plugin-upstream`](.agents/skills/dsh-plugin-upstream/SKILL.md) |
 | 发版、升版本号、配 trust、CI 发布失败、清理本地验证脚手架 | [`dsh-plugin-release`](.agents/skills/dsh-plugin-release/SKILL.md) |
 | 测试红了判断是不是自己改坏的、写碰时钟／临时目录／平台分支的测试 | [`dsh-test-judgement`](.agents/skills/dsh-test-judgement/SKILL.md) |
