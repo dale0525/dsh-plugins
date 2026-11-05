@@ -70,16 +70,17 @@ DSH_HOME=$H dsh --profile $P --dump-config | grep -A2 '<id>'    # 应见 - id / 
 
 **实测修正（2026-11-05，隔离 `file:` 安装 `@logictan/dsh-force-rules`）**：`createRuntimeResolution(...).entries.some(e => e.name === '<pkg>')` 对独立 `file:` 包返回 `false`，保留与摘掉 `dsh.profile.bundles` 两种形态都是 `false`，但保留 bundles 时 `--dump-config` 有 `- id: force-rules`、摘掉后该行消失，且服务能启动、会话里规则注入生效。所以这里**不要**拿 `ci-failures.md:90-95` 的解析表结果判独立包是否挂载；判据改用 `--dump-config` 的 patch 行 + `lib/` 校验和 + 运行时证据。解析表那条只适用于它记录的「已由聚合包 patch 挂载、又单独 add」场景。
 
-## 4. 复制登录态（空白 profile 卡在登录时才做）
+## 4. 复制登录态（浏览器验证前必须做）
 
-全新隔离 home 没有账号与模型凭据，browser agent 会停在「继续 → 登录」。用户选择「复制本机登录态」后，按下面做；用户选择手动登录或跳过验证时，不改这些文件。
+空白隔离 home 没有模型凭据与配置块；不复制会让 GUI 停在登录/模型配置。复制完整凭据与最小配置块后，隔离服务本身**不需要 DeepSeek 账号登录**。CDP 目标列表里的 `platform.deepseek.com/sign_in` 可能是复制凭据前遗留的旧标签，不代表当前页面状态；判断当前状态要看本次打开的隔离 URL、带 cookie 的 curl 返回和页面 DOM。
 
-1. 先停隔离服务：`kill "$(cat /tmp/dsh-$P.pid)"`，确认 `$PORT` 无 owner。**不要**用 `dsh-web stop`。
+1. 若隔离服务已启动，先停它：`kill "$(cat /tmp/dsh-$P.pid)"`，确认 `$PORT` 无 owner。**不要**用 `dsh-web stop`。首次尚未启动服务时跳过本步。
 2. 复制凭据文件，保持 600：`cp ~/.dsh/.credentials.yaml "$H/.credentials.yaml"; chmod 600 "$H/.credentials.yaml"`。只列文件名，不把内容打进日志或对话。
 3. 从 `~/.dsh/profiles/web/cordis.patch.yml` **按 `- id:` 精确切块**复制最小配置到 `$H/profiles/$P/cordis.patch.yml`：`llm-pi-ai`（模型与 provider）、`agent-default-model`、`permission`、`agent-preset-registry`、`subagent`（含 `maxDepth: 2`）。用脚本按 id 切块，不整份拷贝 web patch——整份会带进 lan-access、本地脚本等无关配置，且可能与独立子包 patch id 撞车。
-4. 目标 patch 文件里宿主自写的 `ui-settings-general` 等行保留，复制块追加在后面；先 `cp` 一份 `$DST.before` 做回滚。
+4. 目标 patch 文件里宿主自写的 `ui-settings-general` 等行保留，复制块追加在后面；先 `cp` 一份 `$DST.before` 做回滚。空白模板的 `cordis.patch.yml` 是 `[]`，追加的是列表项而不是第二份 YAML 标量；复制后用 `--dump-config` 确认语法可解析。
 5. 验证：`DSH_HOME=$H dsh --profile $P --dump-config` 里能看到上述 id，且仍有目标子包的 `- id: <id>`；`--dump-config` 不 boot，不需重启。
-6. 重启隔离服务（第 5 节命令），取**新** token URL 并重新告知用户；旧 token 失效。凭据只留在 `$H`，第 6 节删 `$H` 时一并清除。
+6. 启动或重启隔离服务（第 5 节命令），取**新** token URL 并重新告知用户；旧 token 失效。凭据只留在 `$H`，第 6 节删 `$H` 时一并清除。
+7. 浏览器验证前用带 cookie 的 `curl -sS -c <jar> -b <jar> -L '<完整 token URL>'` 确认页面可进入：token URL 会先 303 设置认证 cookie 再跳到 `/`，不带 cookie 重放会误得 401，不能据此判定需要登录。
 
 `llm-pi-ai` 的 `apiKeyEnv` 指向 `.credentials.yaml` 里的键，两者必须一起复制；模型回复能否成功以隔离会话日志 `assistant/message` 为准，不以 browser agent 的 `done` 为准。
 

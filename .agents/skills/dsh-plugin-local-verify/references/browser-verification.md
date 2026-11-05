@@ -4,8 +4,9 @@
 
 ## 前置
 
-- Chrome 必须带 `--remote-debugging-port=9222` 且用**独立** `--user-data-dir` 的专用 profile 启动；macOS 默认 profile 会被 Chrome 拒绝（`DevTools remote debugging requires a non-default data directory`）。前台 `&` 起的 Chrome 会随命令返回被回收，用后台作业。每台设备首次仍需人工登录一次。
+- Chrome 必须带 `--remote-debugging-port=9222` 且用**独立** `--user-data-dir` 的专用 profile 启动；macOS 默认 profile 会被 Chrome 拒绝（`DevTools remote debugging requires a non-default data directory`）。前台 `&` 起的 Chrome 会随命令返回被回收，用后台作业。
 - `browser_agent` 插件需配 TypeSafe API key。
+- 隔离 profile 已按 `profile-lifecycle.md` 复制 `.credentials.yaml` 与最小配置块；此后服务不要求 DeepSeek 账号登录。CDP 列表里残留的 `platform.deepseek.com/sign_in` 是旧标签，不能作为当前页面需要登录的证据；用本次 token URL 带 cookie 访问结果和当前 DOM 判断。
 - 工具选择见 `interface-operations` 技能：网页任务整体交给 `browser_agent({url, goal})` 一次跑完；不要自己逐步调 `cua_driver_native__*` 原语。`done` 是模型对截图下的判断，不是独立验证，转述时如实说明。
 
 ## 硬顺序

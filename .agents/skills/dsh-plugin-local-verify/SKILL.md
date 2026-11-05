@@ -22,7 +22,7 @@ description: 用户说「本地测试插件」「用临时 profile 真机验证�
 1. 读 `references/profile-lifecycle.md`——建档、装本地包、选端口启动、验证与删除都要照它执行。
 2. 读 `references/browser-verification.md`——启动服务后、调用 browser agent 之前读。
 3. 建立临时 profile，确认名称与目录是新建的、与 `web` 隔离；记录绝对路径。按子包 `package.json` 的构建钩子先构建产物，再本地安装目标包。核对 profile 里实际落盘的是本地包而非 registry 旧版。
-4. 空白 profile 首次打开会卡在登录/模型凭据配置。若用户选择「复制本机登录态」，按 `references/profile-lifecycle.md` 的「复制登录态」小节，先停隔离服务，把最小配置块与凭据文件复制到隔离 home，再重启服务；不整份拷贝 `web` profile，不触碰 web 进程。复制后重新告知新链接。
+4. 空白隔离 home 没有模型凭据与配置块。启动浏览器验证前，按 `references/profile-lifecycle.md` 的「复制登录态」小节把 `.credentials.yaml` 与最小配置块复制到隔离 home；不整份拷贝 `web` profile，不触碰 web 进程。复制后重新告知新链接。复制完整凭据后服务本身不需要 DeepSeek 账号登录；不要把 CDP 里残留的 `platform.deepseek.com/sign_in` 标签当成当前页面状态。
 5. 在 web profile 之外选一个未占用端口启动该 profile 的 Web 服务；确认进程参数指向临时 profile、端口 owner 正确、页面可访问。把完整访问链接告知用户后再开始浏览器测试。
 6. 用 `browser_agent` 验证本次改动的可观察行为；必要时请用户手动测试并等待确认。只通过「磁盘产物含新代码」不算真机验证通过；`done` 只是模型对截图的判断，关键结论再用会话日志或请求头独立取证。
 7. 验证通过后停止临时服务并删除临时 profile，核对目录已消失、`web` profile 未受影响。按 `dsh-plugin-release` 清理本地验证脚手架。
