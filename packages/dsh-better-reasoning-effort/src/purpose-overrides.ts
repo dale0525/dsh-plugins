@@ -11,7 +11,7 @@ import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
 
 /** Namespaces whose plugin rows own one auxiliary model selection. */
 export const PURPOSE_NAMESPACES = {
-  compaction: 'verbatim-compaction',
+  compaction: 'verbatim-compaction-purpose',
   worktreeBranch: 'worktree-session',
 } as const
 

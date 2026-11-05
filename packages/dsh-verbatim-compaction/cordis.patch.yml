@@ -11,3 +11,5 @@
     - id: verbatim-compaction
       name: '@logictan/dsh-verbatim-compaction'
       disabled: true
+    - id: verbatim-compaction-purpose
+      name: '@logictan/dsh-verbatim-compaction/purpose'

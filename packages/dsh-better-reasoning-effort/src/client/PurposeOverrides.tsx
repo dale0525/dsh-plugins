@@ -2,7 +2,7 @@
  * Models-page footer editor for the two auxiliary model calls this plugin can
  * steer through settings.
  *
- * The owning plugin rows are `verbatim-compaction` (compaction) and
+ * The owning plugin rows are `verbatim-compaction-purpose` (compaction) and
  * `worktree-session` (worktree branch naming). Their Config rows carry three
  * optional scalars; this component is the one place a user edits both. All
  * selectable routes come from the RAW USER layer of `llm-pi-ai.providers`, so

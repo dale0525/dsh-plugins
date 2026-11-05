@@ -33,30 +33,13 @@
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ReasoningEffortId, type ContentBlock, type Message } from '@deepseek-ai/dsh-llm'
-import Schema from '@deepseek-ai/schemastery'
 import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
+import { getLiveConfig, type PurposeConfig } from './purpose.js'
 // Type-only: brings the `ctx.tokenMeter` augmentation into scope.
 import type {} from '@deepseek-ai/dsh-token-meter'
 
 /** Cordis companion plugin name. Must equal this plugin's `cordis.patch.yml` row id. */
 export const name = 'verbatim-compaction'
-
-/** Live reference Cordis hands over for a volatile Config field. */
-interface ConfigRef<T> { get(): T }
-
-/** Optional model/effort override for compaction's two LLM calls. */
-export interface PurposeConfig {
-  provider?: ConfigRef<string>
-  model?: ConfigRef<string>
-  reasoningEffort?: ConfigRef<string>
-}
-
-/** Three editable scalars; empty strings mean "follow the chat model". */
-export const OVERRIDE_FIELDS = {
-  provider: Schema.string().default('').volatile(),
-  model: Schema.string().default('').volatile(),
-  reasoningEffort: Schema.string().default('').volatile(),
-}
 
 /** A provider/model override takes effect only as a complete pair. */
 export function pairedRouteOf(config: PurposeConfig | undefined): { provider: string; model: string } | undefined {
@@ -1676,24 +1659,6 @@ async function extractOnce(
  */
 export default class VerbatimCompactionEngine extends BasicCompactionEngine {
 
-  /**
-   * The Loader reads Config from the default-exported class, and the base
-   * constructor rejects unknown keys, so the base schema is merged instead of
-   * replaced. Only the three new fields are volatile: existing keys stay
-   * ordinary patch-level configuration.
-   */
-  static override Config: typeof BasicCompactionEngine.Config = Schema.object({
-    ...BasicCompactionEngine.Config.dict,
-    ...OVERRIDE_FIELDS,
-  }) as typeof BasicCompactionEngine.Config
-
-  private readonly purposeConfig: PurposeConfig
-
-  constructor(ctx: ConstructorParameters<typeof BasicCompactionEngine>[0], config: any) {
-    const { provider, model, reasoningEffort, ...base } = config ?? {}
-    super(ctx, base)
-    this.purposeConfig = { provider, model, reasoningEffort }
-  }
 
   /**
    * Extraction results, keyed by a hash of the material they were derived from.
@@ -1758,13 +1723,13 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       Math.min(DIGEST_TOKEN_CEILING, shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS),
     )
 
-    const extracted = await this.extractAll(source, agent, signal, this.purposeConfig)
+    const extracted = await this.extractAll(source, agent, signal, getLiveConfig())
 
     // Fold the oldest turns up only when the plain digest overflows. The fold is an
     // LLM call, so a digest that already fits must not pay for one.
     let condensed: ReadonlyMap<string, Condensed> | undefined
     if (renderDigest(source, budget, extracted).length > budget * 4) {
-      condensed = await this.condenseOldest(source, extracted, agent, budget, signal, this.purposeConfig)
+      condensed = await this.condenseOldest(source, extracted, agent, budget, signal, getLiveConfig())
     }
     // The fold path returns its digest whole, so it can still overflow when every
     // group has been folded and the user lines alone are too long. The budget is a

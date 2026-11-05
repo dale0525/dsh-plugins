@@ -1,22 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import VerbatimCompactionEngine, {
+import {
   applyPurposeOverride,
   pairedRouteOf,
 } from '../lib/index.js'
-
-test('static Config keeps the base-class keys and adds three editable override scalars', () => {
-  const fields = Object.keys(VerbatimCompactionEngine.Config.dict)
-  assert.ok(fields.includes('thresholdRatio'))
-  assert.ok(fields.includes('summarizationProvider'))
-  assert.deepEqual(fields.filter((key) => ['provider', 'model', 'reasoningEffort'].includes(key)), [
-    'provider', 'model', 'reasoningEffort',
-  ])
-  for (const key of ['provider', 'model', 'reasoningEffort']) {
-    assert.equal(VerbatimCompactionEngine.Config.dict[key].meta.volatile, true)
-  }
-})
 
 test('an empty configuration preserves the resolved route and the cheapest effort', () => {
   const base = { provider: 'chat-provider', model: 'chat-model', purpose: 'compaction' }

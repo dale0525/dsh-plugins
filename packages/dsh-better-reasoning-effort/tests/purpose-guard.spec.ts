@@ -36,7 +36,7 @@ function describeValue(stored: Record<string, Record<string, string>>) {
           },
         },
       },
-      { ns: 'verbatim-compaction', revision: 7, value: stored['verbatim-compaction'] ?? {} },
+      { ns: 'verbatim-compaction-purpose', revision: 7, value: stored['verbatim-compaction-purpose'] ?? {} },
       { ns: 'worktree-session', revision: 11, value: stored['worktree-session'] ?? {} },
     ],
   }
@@ -176,7 +176,7 @@ describe('PurposeOverrides footer editor', () => {
         modelSelect.dispatchEvent(new Event('change', { bubbles: true }))
       })
       await vi.waitFor(() => expect(mutate).toHaveBeenCalled())
-      expect(mutate.mock.calls[0]![0]).toBe('verbatim-compaction')
+      expect(mutate.mock.calls[0]![0]).toBe('verbatim-compaction-purpose')
       expect(mutate.mock.calls[0]![2]).toBe(7)
     } finally {
       await view.unmount()
