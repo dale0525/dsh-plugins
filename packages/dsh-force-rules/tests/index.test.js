@@ -111,6 +111,28 @@ const ROUTE_ONLY_TOOL = {
   },
 };
 
+/** A tool whose output merely carries a seat constant outside `properties.kind`. */
+const CONST_COLLISION_TOOL = {
+  output: {
+    schema: {
+      type: 'object',
+      properties: { state: { type: 'string', const: 'activation' }, jobId: { type: 'string' } },
+    },
+  },
+  parameters: { type: 'object', properties: { prompt: { type: 'string' } } },
+};
+
+/** A tool with a seat-shaped outcome but no instruction to give the child. */
+const SEAT_KIND_WITHOUT_PROMPT = {
+  output: {
+    schema: {
+      type: 'object',
+      properties: { kind: { type: 'string', const: 'activation' }, subagentId: { type: 'string' } },
+    },
+  },
+  parameters: { type: 'object', properties: { description: { type: 'string' } } },
+};
+
 /** A tool that shares `run_in_background` but can never produce a seat. */
 const PLAIN_TOOL = {
   output: {
@@ -901,11 +923,101 @@ test('leaves a route this runtime cannot resolve to the host preflight', async (
   assert.deepEqual(decision, { kind: 'allow' }, 'the host owns the route diagnosis; the gate adds no second one');
 });
 
-test('gates a seat that delegates on to a seat of its own', async () => {
+test('a read-only seat delegates to a read-only seat, including an unmarked prompt', async () => {
   const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL }, llm: fakeLlm(EFFORT_ROUTES) });
+  for (const prompt of ['survey the tests', '[只读] survey the tests', '[readonly] survey the tests']) {
+    const agent = seatAgent({ prompt: '[只读] survey the codebase' });
+    const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({ prompt }, agent), ALLOW);
+    assert.deepEqual(decision, { kind: 'allow' }, prompt);
+  }
+});
+
+test('a read-only seat cannot delegate its way into commands or writes', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL } });
+  for (const prompt of ['[审核] check the diff', '[review] check the diff', '[编辑: src/a.js] fix it', '[edit: src/a.js] fix it']) {
+    const agent = seatAgent({ prompt: '[只读] survey the codebase', id: prompt });
+    const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({ prompt }, agent), ALLOW);
+    assert.equal(decision.kind, 'deny', prompt);
+    assert.match(decision.reason, /exceeds the parent/);
+    assert.match(decision.reason, /different non-read-only profile/);
+  }
+});
+
+test('a review seat delegates to a review or read-only seat, but not to an edit seat', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL } });
+  for (const [prompt, allowed] of [
+    ['[审核] check the diff', true],
+    ['[只读] read the diff', true],
+    ['[编辑: src/a.js] fix it', false],
+  ]) {
+    const agent = seatAgent({ prompt: '[审核] check the codebase', id: prompt });
+    const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({ prompt }, agent), ALLOW);
+    assert.equal(decision.kind, allowed ? 'allow' : 'deny', prompt);
+  }
+});
+
+test('an edit seat delegates only within its own authorized paths', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL } });
+  for (const [prompt, allowed] of [
+    ['[编辑: src/a.js] fix it', true],
+    ['[编辑: ./src/a.js] fix it', true],
+    ['[只读] read it', true],
+    ['[审核] check it', false],
+    ['[编辑: src/b.js] fix it', false],
+    ['[编辑: src/a.js, src/b.js] fix both', false],
+  ]) {
+    const agent = seatAgent({ prompt: '[编辑: src/a.js] fix it', id: prompt });
+    const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({ prompt }, agent), ALLOW);
+    assert.equal(decision.kind, allowed ? 'allow' : 'deny', prompt);
+  }
+});
+
+test('a seat delegates through subagent_fork with the same authority limit', async () => {
+  const { listeners } = harness({ definitions: { subagent_fork: ACTIVATION_TOOL } });
   const agent = seatAgent({ prompt: '[只读] survey the codebase' });
-  const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({}, agent), ALLOW);
-  assert.equal(decision.kind, 'deny', 'a seat names a route exactly as the root session does');
+  const allowed = await fire(
+    listeners,
+    'tools/pre-execute',
+    routeDelegation({ prompt: '[只读] survey the tests' }, agent, 'subagent_fork'),
+    ALLOW,
+  );
+  assert.deepEqual(allowed, { kind: 'allow' });
+  const denied = await fire(
+    listeners,
+    'tools/pre-execute',
+    routeDelegation({ prompt: '[编辑: src/a.js] fix it' }, agent, 'subagent_fork'),
+    ALLOW,
+  );
+  assert.equal(denied.kind, 'deny');
+});
+
+test('a tool that merely carries a seat constant is still refused by the allow-list', async () => {
+  for (const [toolName, definition] of [
+    ['const_collision', CONST_COLLISION_TOOL],
+    ['seat_kind_without_prompt', SEAT_KIND_WITHOUT_PROMPT],
+  ]) {
+    const { listeners } = harness({ definitions: { [toolName]: definition } });
+    for (const prompt of ['[只读] survey the codebase', '[审核] check the diff', '[编辑: src/a.js] fix it']) {
+      const agent = seatAgent({ prompt, id: prompt });
+      const decision = await fire(
+        listeners,
+        'tools/pre-execute',
+        seatCall(agent, toolName, { prompt: 'survey the tests' }),
+        ALLOW,
+      );
+      assert.equal(decision.kind, 'deny', `${toolName} / ${prompt} must not bypass the allow-list`);
+      assert.match(decision.reason, /not among the tools it may use/);
+    }
+  }
+});
+
+test('workflow stays unavailable to a seat, and the root delegation is unchanged', async () => {
+  const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL, workflow: PLAIN_TOOL } });
+  const agent = seatAgent({ prompt: '[只读] survey the codebase' });
+  const workflow = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'workflow', { script: 'return 1' }), ALLOW);
+  assert.equal(workflow.kind, 'deny');
+  const root = await fire(listeners, 'tools/pre-execute', routeDelegation({}, rootAgent()), ALLOW);
+  assert.deepEqual(root, { kind: 'allow' });
 });
 
 test('does not gate a delegation tool that advertises no route fields', async () => {
@@ -1227,7 +1339,7 @@ test('a session with no list at all still gets the criterion', () => {
   assert.match(text, /three independent sources/i, 'the 264 sessions that never write a list are exactly who this is for');
 });
 
-test('the cue stays silent for a seat, which cannot delegate', () => {
+test('the root decomposition cue stays silent for a child session', () => {
   const { contexts } = harness({ parents: { 'seat-1': 'root-1' } });
   const text = contexts.find((entry) => entry.name === 'force-rules:delegation-cue').text({
     agent: { session: { id: 'seat-1', header: { parentSession: 'root-1' } } },

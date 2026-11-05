@@ -128,10 +128,11 @@ const CHECKPOINT_PROMPT = [
 /**
  * Whether one JSON Schema node declares a subagent seat as its outcome.
  *
- * The delegation tools are the only tools in the host that start a seat, and
- * they say so in their own output schema. Keying on that declaration rather than
- * on a tool name is what keeps this gate off `bash`, `pwsh`, and `workflow`,
- * which cannot produce a seat at all.
+ * Only `properties.kind.const` counts, plus the `oneOf` / `anyOf` / `allOf`
+ * branches that host generations use to list outcomes. A recursive scan for any
+ * `const` anywhere would treat an unrelated tool that happens to output the
+ * string "activation" as a delegation tool, and a seat would then be allowed to
+ * call that tool outside the allow-list.
  *
  * Two constants mean the same thing across host generations: `continuable` on
  * dsh 0.2.0, where the tool also offered a one-shot path, and `activation` on
@@ -145,8 +146,12 @@ const CHECKPOINT_PROMPT = [
 function declaresSeat(node) {
   if (Array.isArray(node)) return node.some(declaresSeat);
   if (node === null || typeof node !== 'object') return false;
-  if (node.const === 'continuable' || node.const === 'activation') return true;
-  return Object.values(node).some(declaresSeat);
+  const kind = node.properties?.kind;
+  if (kind?.const === 'continuable' || kind?.const === 'activation') return true;
+  for (const key of ['oneOf', 'anyOf', 'allOf']) {
+    if (Array.isArray(node[key]) && node[key].some(declaresSeat)) return true;
+  }
+  return false;
 }
 
 /**
@@ -181,8 +186,11 @@ function declaresBackgroundSwitch(ctx, exec) {
  * @returns whether the called tool is a delegation tool.
  */
 function isDelegation(ctx, exec, scope = exec.agent) {
-  const schema = ctx.tools.get(exec.name, scope)?.output?.schema;
-  return schema !== undefined && declaresSeat(schema);
+  const tool = ctx.tools.get(exec.name, scope);
+  const schema = tool?.output?.schema;
+  return schema !== undefined
+    && declaresSeat(schema)
+    && tool?.parameters?.properties?.prompt !== undefined;
 }
 
 /**
@@ -440,12 +448,14 @@ function isAuthorizedPath(paths, candidate) {
  *
  * @param profile - the governing profile.
  * @param exec - the pending call.
+ * @param ctx - the plugin context, used to identify delegation tools.
  * @returns a denial reason, or undefined to allow the call.
  */
-function checkProfile(profile, exec) {
+function checkProfile(profile, exec, ctx) {
   const toolName = exec.name;
   if (toolName === PTC_TRANSPORT) return undefined;
   if (READ_ONLY_TOOLS.has(toolName)) return undefined;
+  if (isDelegation(ctx, exec)) return checkChildAuthority(profile, exec.arguments?.prompt);
   if (profile.kind === 'review' && (toolName === 'bash' || toolName === 'pwsh')) {
     const command = exec.arguments?.command;
     if (isDryRunCommand(command)) return undefined;
@@ -509,6 +519,43 @@ function namedValue(value) {
 }
 
 /**
+ * Judge the authority a seat grants to a child seat.
+ *
+ * Review and edit are not nested: review may run read-only commands but cannot
+ * write, edit may write but cannot run commands. A rank comparison would let an
+ * edit seat gain command execution through a review child, so only the same
+ * profile or read-only is allowed. An edit child's paths must also be a subset
+ * of its parent's, or the delegation would widen the files it may write.
+ *
+ * The host freezes `exec.arguments` and offers no replacement decision, so an
+ * over-granting prompt is refused rather than rewritten.
+ *
+ * @param parent - the profile of the seat making the delegation.
+ * @param childPrompt - the instruction the child seat would receive.
+ * @returns a denial reason, or undefined when the child stays within the parent.
+ */
+function checkChildAuthority(parent, childPrompt) {
+  const child = parseProfile(childPrompt);
+  if (child.kind === 'readonly') return undefined;
+  if (parent.kind === 'readonly' || child.kind !== parent.kind) {
+    return [
+      'This seat is governed by the [' + (parent.kind === 'review' ? '审核' : parent.kind === 'edit' ? '编辑' : '只读') + '] profile.',
+      'A delegated seat may receive only the same profile or read-only.',
+      'A child marker that exceeds the parent or grants a different non-read-only profile is refused.',
+      'Keep the child at the parent profile or omit its marker, and report the blocked step to the delegator.',
+    ].join(' ');
+  }
+  if (parent.kind === 'edit' && !child.paths.every((path) => isAuthorizedPath(parent.paths, path))) {
+    return [
+      'This seat may write only the files named in its own instruction.',
+      'A delegated edit seat cannot name paths outside that set.',
+      'Authorized: ' + (parent.paths.length === 0 ? 'none' : parent.paths.join(', ')) + '.',
+    ].join(' ');
+  }
+  return undefined;
+}
+
+/**
  * Judge one delegation call against the pairing rule.
  *
  * An omitted route is not a defect: the host inherits the parent's route, which
@@ -567,7 +614,9 @@ const MARKER_REQUIREMENT = [
   '`[编辑: <paths>]` (the above plus writing exactly those files).',
   'A prompt with no marker grants read-only authority, and the seat is refused a write only',
   'when it reaches one — so state the marker deliberately. English spellings',
-  '(`[readonly]`, `[review]`, `[edit: ...]`) are equivalent.',
+  '(`[readonly]`, `[review]`, `[edit: ...]`) are equivalent. When a seat delegates,',
+  'the child may receive only the same profile or read-only — never a different',
+  'non-read-only profile, and an edit child may name only paths the parent can write.',
 ].join(' ');
 
 /**
@@ -801,11 +850,12 @@ export function apply(ctx) {
   // Rule 4: a seat receives only the authority its own instruction declares.
   // The profile is read from that instruction and cached, because it cannot
   // change while the seat lives. The root session has no delegating parent, so
-  // it is never constrained here.
+  // it is never constrained here. Delegation calls and every other call go
+  // through the same decision, so the allow-list is never bypassed.
   ctx.on('tools/pre-execute', (exec, next) => {
     const profile = profileOf(profiles, exec.agent);
     if (profile === undefined) return next();
-    const reason = checkProfile(profile, exec);
+    const reason = checkProfile(profile, exec, ctx);
     if (reason === undefined) return next();
     return { kind: 'deny', reason };
   });
@@ -940,8 +990,8 @@ export function apply(ctx) {
       order: prompts.getContextOrder(DELEGATION_CUE_SLOT),
       text: (context) => {
         const agent = context.agent;
-        // A seat cannot delegate further in the way this cue describes, and the
-        // host already tells it when its own depth ceiling is reached.
+        // This cue is for the root session's own decomposition, not for a seat's
+        // child delegation, whose authority is checked at tools/pre-execute.
         if (agent?.session?.header?.parentSession !== undefined) return '';
         const spent = spentBySession.get(agent?.session?.id);
         const todos = ctx.get('sessionProjections')?.stateOf(agent?.session, 'todos');
