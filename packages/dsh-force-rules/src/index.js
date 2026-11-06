@@ -94,14 +94,23 @@ const CUE_AFTER_CALLS = 8;
 /**
  * Silence allowed before the checkpoint wakes the delegating session.
  *
- * The rule is "the order of magnitude of a normal run", not seconds: a seat
- * doing real work routinely runs for minutes, and a short checkpoint would turn
- * waiting into the polling it exists to replace.
+ * An hour, not minutes: the wake-up is a durable session message, so one that
+ * lands just as the last seat settles cannot be retracted by deleting the task.
+ * A long bound keeps that race rare while still bounding the silence of a seat
+ * that dies without ever settling.
  */
-const CHECKPOINT_SECONDS = 600;
+const CHECKPOINT_SECONDS = 3600;
 
 /** Durable title identifying this plugin's checkpoint among a session's reminders. */
 const CHECKPOINT_TITLE = 'subagent checkpoint';
+
+/**
+ * Stable identity for a checkpoint whose title a renewing model may replace.
+ *
+ * Matched as a prefix so a row written under an earlier wait bound (a different
+ * minute count in the first line) is still recognized and cleaned.
+ */
+const CHECKPOINT_PROMPT_PREFIX = 'A subagent seat you delegated has not reported within';
 
 /**
  * Steps allowed between two cost readings of the same turn.
@@ -117,7 +126,7 @@ const LARGE_RESULT_CHARS = 10_000;
 
 /** What the woken delegating session is told to do. */
 const CHECKPOINT_PROMPT = [
-  'A subagent seat you delegated has not reported within 10 minutes.',
+  `${CHECKPOINT_PROMPT_PREFIX} 60 minutes.`,
   'Check the seats with `list_agents`:',
   '- finished: continue from its settlement notification;',
   '- still running: renew this checkpoint with `schedule_create` and wait again;',
@@ -721,10 +730,11 @@ function renderCost(spent, openTodos) {
  * `inactive` and absent from `list()`, but its row is still owned by this
  * session and would otherwise survive every later settlement. A model that
  * renews the checkpoint through `schedule_create` may also give it a new
- * title, so the fixed prompt identifies it as reliably as the title did.
- * Enumerated from durable storage rather than remembered in memory so that
- * "at most one live checkpoint" survives a restart, which is exactly when a
- * stale one would otherwise fire on top of a fresh one.
+ * title, so the stable prompt prefix identifies it as reliably as the title
+ * did — including rows written under an earlier wait bound. Enumerated from
+ * durable storage rather than remembered in memory so that "at most one live
+ * checkpoint" survives a restart, which is exactly when a stale one would
+ * otherwise fire on top of a fresh one.
  *
  * @param schedule - the reminder service.
  * @param sessionId - the delegating session.
@@ -732,7 +742,7 @@ function renderCost(spent, openTodos) {
 async function clearCheckpoints(schedule, sessionId) {
   for (const record of await schedule.catalog()) {
     if (record.sessionId !== sessionId) continue;
-    if (record.title !== CHECKPOINT_TITLE && record.prompt !== CHECKPOINT_PROMPT) continue;
+    if (record.title !== CHECKPOINT_TITLE && !record.prompt?.startsWith(CHECKPOINT_PROMPT_PREFIX)) continue;
     await schedule.delete({ sessionId, id: record.id });
   }
 }
@@ -753,7 +763,7 @@ export function apply(ctx) {
    * Lifecycle edges are published through a contained emitter that does NOT
    * await listeners, so a start and an end can interleave: without this chain a
    * short-lived seat's `create` can land after its own `delete`, leaving a
-   * checkpoint that fires ten minutes later for a seat that is already gone.
+   * checkpoint that fires an hour later for a seat that is already gone.
    * Both handlers do their bookkeeping synchronously before touching this, so
    * enqueue order is the real event order.
    */

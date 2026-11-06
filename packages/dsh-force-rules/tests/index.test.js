@@ -370,8 +370,9 @@ test('arms a bounded checkpoint when a seat starts', async () => {
   await fire(listeners, 'subagent/start', { id: 'child-1', runId: 'run-1' });
   assert.equal(schedule.created.length, 1);
   assert.equal(schedule.created[0].sessionId, 'root-1');
-  assert.equal(schedule.created[0].request.after_seconds, 600);
+  assert.equal(schedule.created[0].request.after_seconds, 3600);
   assert.equal(schedule.created[0].request.title, 'subagent checkpoint');
+  assert.match(schedule.created[0].request.prompt, /within 60 minutes/);
   assert.match(schedule.created[0].request.prompt, /list_agents/);
 });
 
@@ -418,6 +419,18 @@ test('clears a renewed checkpoint whose title was replaced', async () => {
   await fire(listeners, 'subagent/end', { id: 'child-1', stopReason: 'completed' });
   assert.deepEqual(schedule.deleted, [{ sessionId: 'root-1', id: renewal.id }]);
   assert.equal(schedule.stored.length, 0, 'a renamed checkpoint is still this plugin\'s to remove');
+});
+
+test('clears a renewed checkpoint written under the old wait bound', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  const renewal = schedule.stored[0];
+  renewal.title = '检查两个调研席位是否结算';
+  renewal.prompt = renewal.prompt.replace('within 60 minutes.', 'within 10 minutes.');
+  await fire(listeners, 'subagent/end', { id: 'child-1', stopReason: 'completed' });
+  assert.deepEqual(schedule.deleted, [{ sessionId: 'root-1', id: renewal.id }]);
+  assert.equal(schedule.stored.length, 0, 'an older prompt text is still this plugin\'s to remove');
 });
 
 test('clears a checkpoint that already fired', async () => {
