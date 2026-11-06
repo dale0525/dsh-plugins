@@ -47,17 +47,16 @@ description: 发版、升版本号、配 trusted publisher、CI 发布失败（`
 
 **Agent 不得代为执行新包发布**：本机 `npm publish` 需要 OTP，会以 `npm error code EOTP` 失败。
 
-### 首发交接：必须把两条命令原样给用户
+### 首发交接：用 `ask_user_question` 把两条命令原样给用户
 
-新插件做完、门禁全绿之后，**Agent 的交付不算完成**，直到它把下面两条命令按实际包名填好、
-逐字交给用户执行。不要只说「请你人工发布一次」——用户需要能直接粘贴的命令：
+新插件做完、门禁全绿之后，**Agent 的交付不算完成**，直到它用 `ask_user_question` 把下面两条命令按实际包名填好、逐字交给用户执行，并阻塞等待回报。不要只说「请你人工发布一次」——用户需要能直接粘贴的命令：
 
 ```sh
 cd packages/<name> && npm publish --access public
 npm trust github @logictan/<name> --file publish.yml --repo dale0525/dsh-plugins --allow-publish
 ```
 
-交付消息里要同时给出：① 这两条命令；② 一句「执行完告诉我，我再升聚合包版本走 CI」；
+`ask_user_question` 的问题里要同时给出：① 这两条命令；② 一句「执行完告诉我，我再升聚合包版本走 CI」；
 ③ 该包的版本号，因为用户要确认发出去的是哪一个。缺任何一项，用户就得回头问。
 
 > `--allow-publish` 不可省：2026-09-03 之后创建的 trust 配置默认只允许 `npm stage publish`，
@@ -66,7 +65,7 @@ npm trust github @logictan/<name> --file publish.yml --repo dale0525/dsh-plugins
 > **两条命令的顺序也不能反**：trusted publisher 只能配在已存在的包上，
 > 先 `npm trust` 会因包不存在而失败。
 
-用户确认 trust 配好之后，Agent 才继续：升 `packages/all` 版本 → 聚合包走 CI/CD。
+用 `ask_user_question` 等到用户回报 trust 已配好之后，Agent 才继续：升 `packages/all` 版本 → 聚合包走 CI/CD。
 在此之前聚合包不能发——它会把 `^<子包版本>` 写成一个 registry 上还不存在的版本，
 `pnpm install --frozen-lockfile` 在 CI 第一步就解析失败。
 

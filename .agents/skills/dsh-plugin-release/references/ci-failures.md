@@ -60,7 +60,7 @@
   `GitHub Actions <npm-oidc-no-reply@github.com>` 才说明该包走过 CI，
   显示人名则是人工发的。实测 `dsh-stitch-designer` 1.0.0 由人工发布、从未走过 CI，
   于是 CI 首次发它时 `PUT` 被拒 —— 这是**当初漏配 trust**，不是 CDN。
-  修法：让用户在该包设置页补配 trusted publisher，然后 `gh run rerun <id> --failed` 续跑。
+  修法：用 `ask_user_question` 请用户在该包设置页补配 trusted publisher 并阻塞等待回报，然后 `gh run rerun <id> --failed` 续跑。
 
 - **`pnpm/action-setup` 必须显式给 `version`**：本仓库没有 `packageManager` 字段，
   两者都缺时该 action 直接失败。
