@@ -308,6 +308,26 @@ function delegation(name, runInBackground, agent = {}) {
   return { name, arguments: { prompt: 'x', description: 'y', run_in_background: runInBackground }, agent };
 }
 
+/** One settled control-tool result, as published by `tools/result`. */
+function controlResult(name, agent, childId, isError = false) {
+  const args = { agent_id: childId };
+  if (name === 'send_message') args.message = 'continue';
+  return [
+    { name, arguments: args, agent },
+    { content: [{ type: 'text', text: name }], isError },
+  ];
+}
+
+/** A settled `interrupt_agent` call from the delegating session. */
+function interrupted(agent, childId, isError = false) {
+  return controlResult('interrupt_agent', agent, childId, isError);
+}
+
+/** A settled `send_message` call that wakes an interrupted local seat. */
+function resumed(agent, childId, isError = false) {
+  return controlResult('send_message', agent, childId, isError);
+}
+
 test('the row id matches the patch row this plugin ships', () => {
   assert.equal(name, 'force-rules');
   assert.deepEqual(inject, ['tools', 'agents']);
@@ -489,6 +509,140 @@ test('gates and tracks even when the reminder service is absent', async () => {
   await fire(listeners, 'subagent/end', { id: 'child-1' });
   const decision = await fire(listeners, 'tools/pre-execute', delegation('subagent', false), ALLOW);
   assert.equal(decision.kind, 'deny');
+});
+
+// ---------------------------------------------------------------------------
+// Interrupt and resume.
+//
+// A local interrupt never emits `subagent/end`: the host only cancels the
+// agent's turn and keeps the activation resident so `send_message` can wake it.
+// Without these edges the checkpoint stays armed for a seat the delegator has
+// explicitly stopped waiting for, and a resumed seat would then run with no
+// wait bound at all (resume does not emit `subagent/start` either).
+// ---------------------------------------------------------------------------
+
+test('a successful interrupt clears the checkpoint of the last seat', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  const armed = schedule.stored[0];
+  await fireNotification(listeners, 'tools/result', ...interrupted(rootAgent(), 'child-1'));
+  assert.deepEqual(schedule.deleted, [{ sessionId: 'root-1', id: armed.id }]);
+  assert.equal(schedule.stored.length, 0, 'the delegator stopped waiting, so no wake-up is owed');
+});
+
+test('interrupting one seat keeps a single checkpoint for the others', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1', 'child-2': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  await fire(listeners, 'subagent/start', { id: 'child-2' });
+  await fireNotification(listeners, 'tools/result', ...interrupted(rootAgent(), 'child-1'));
+  assert.equal(schedule.stored.length, 1, 'one seat is still running');
+  assert.equal(schedule.created.length, 3, 'the checkpoint is renewed from the interrupt');
+  await fire(listeners, 'subagent/end', { id: 'child-2', stopReason: 'completed' });
+  assert.equal(schedule.stored.length, 0, 'the interrupted seat must not keep the checkpoint alive');
+});
+
+test('a failed interrupt leaves the checkpoint alone', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  await fireNotification(listeners, 'tools/result', ...interrupted(rootAgent(), 'child-1', true));
+  assert.equal(schedule.stored.length, 1);
+  assert.equal(schedule.created.length, 1, 'an unauthorized interrupt is not a settlement');
+  assert.equal(schedule.deleted.length, 0);
+});
+
+test('a resumed local seat re-arms its checkpoint', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  await fireNotification(listeners, 'tools/result', ...interrupted(rootAgent(), 'child-1'));
+  assert.equal(schedule.stored.length, 0);
+  await fireNotification(listeners, 'tools/result', ...resumed(rootAgent(), 'child-1'));
+  assert.equal(schedule.stored.length, 1, 'a woken seat is owed a wait bound again');
+  assert.equal(schedule.created.length, 2);
+  await fire(listeners, 'subagent/end', { id: 'child-1', stopReason: 'completed' });
+  assert.equal(schedule.stored.length, 0, 'lineage survives an interrupt, so the end still clears');
+});
+
+test('a message to an already-armed seat does not churn the checkpoint', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  await fireNotification(listeners, 'tools/result', ...resumed(rootAgent(), 'child-1'));
+  assert.equal(schedule.created.length, 1, 'steering a running seat must not renew its wake-up');
+  assert.equal(schedule.deleted.length, 0);
+});
+
+test('a failed resume does not re-arm a checkpoint', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  await fireNotification(listeners, 'tools/result', ...interrupted(rootAgent(), 'child-1'));
+  await fireNotification(listeners, 'tools/result', ...resumed(rootAgent(), 'child-1', true));
+  assert.equal(schedule.stored.length, 0);
+  assert.equal(schedule.created.length, 1);
+});
+
+test('a message from another session does not re-arm this session\'s seat', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  await fireNotification(listeners, 'tools/result', ...interrupted(rootAgent(), 'child-1'));
+  const stranger = { session: { id: 'root-2', header: {} } };
+  await fireNotification(listeners, 'tools/result', ...resumed(stranger, 'child-1'));
+  assert.equal(schedule.stored.length, 0, 'only the delegator can resume its own seat');
+});
+
+test('a bogus interrupt target does not clear the checkpoint', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  await fireNotification(listeners, 'tools/result', ...interrupted(rootAgent(), 'stranger'));
+  assert.equal(schedule.stored.length, 1);
+  assert.equal(schedule.deleted.length, 0);
+});
+
+test('an interrupt from another session does not clear this session\'s checkpoint', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  const stranger = { session: { id: 'root-2', header: {} } };
+  await fireNotification(listeners, 'tools/result', ...interrupted(stranger, 'child-1'));
+  assert.equal(schedule.stored.length, 1, 'only the delegator can stop waiting for its own seat');
+  assert.equal(schedule.deleted.length, 0);
+});
+
+test('an unrelated tool carrying agent_id does not touch the checkpoint', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  await fireNotification(listeners, 'tools/result', ...controlResult('list_agents', rootAgent(), 'child-1'));
+  assert.equal(schedule.stored.length, 1);
+  assert.equal(schedule.created.length, 1, 'the tool name, not the argument, identifies a control edge');
+  assert.equal(schedule.deleted.length, 0);
+});
+
+test('a seat messaging its parent does not re-arm its own checkpoint', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  await fireNotification(listeners, 'tools/result', ...interrupted(rootAgent(), 'child-1'));
+  const child = { session: { id: 'child-1', header: { parentSession: 'root-1' } } };
+  await fireNotification(listeners, 'tools/result', ...resumed(child, 'root-1'));
+  assert.equal(schedule.stored.length, 0, 'only the delegator can resume a seat');
+});
+
+test('an interrupt and a late subagent/end leave at most one checkpoint', async () => {
+  const schedule = fakeSchedule();
+  const { listeners } = harness({ parents: { 'child-1': 'root-1' }, schedule });
+  await fire(listeners, 'subagent/start', { id: 'child-1' });
+  const interrupting = fireNotification(listeners, 'tools/result', ...interrupted(rootAgent(), 'child-1'));
+  const ending = fire(listeners, 'subagent/end', { id: 'child-1', stopReason: 'cancelled' });
+  await Promise.all([interrupting, ending]);
+  assert.equal(schedule.stored.length, 0, 'an external dispose may publish both edges');
+  assert.equal(schedule.created.length, 1, 'no wake-up is re-armed after the last seat is gone');
 });
 
 // ---------------------------------------------------------------------------

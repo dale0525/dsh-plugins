@@ -1122,6 +1122,34 @@ export function apply(ctx) {
     return reconcile(parentSessionId);
   });
 
+  // A local interrupt is not a settlement: the host cancels the turn but keeps
+  // the activation resident, so `subagent/end` is never published. A resumed
+  // seat does not emit `subagent/start` either. Lineage and authority stay
+  // cached across both edges so a late `subagent/end` still clears the right
+  // session and the woken seat keeps the profile its instruction declared.
+  ctx.on('tools/result', (exec, result) => {
+    if (result.isError) return;
+    const callerSessionId = exec.agent?.session?.id;
+    const childId = exec.arguments?.agent_id;
+    if (callerSessionId === undefined || childId === undefined) return;
+    const parentSessionId = parentOf.get(childId);
+    if (parentSessionId === undefined || callerSessionId !== parentSessionId) return;
+
+    if (exec.name === 'interrupt_agent') {
+      const seats = liveSeats.get(parentSessionId);
+      if (seats !== undefined) {
+        seats.delete(childId);
+        if (seats.size === 0) liveSeats.delete(parentSessionId);
+      }
+      return reconcile(parentSessionId);
+    }
+    if (exec.name !== 'send_message') return;
+    const seats = liveSeats.get(parentSessionId);
+    if (seats?.has(childId)) return;
+    liveSeats.set(parentSessionId, (seats ?? new Set()).add(childId));
+    return reconcile(parentSessionId);
+  });
+
   // The meter's counters are per session and the session is what outlives them:
   // without this, every session a long-running host ever opened would keep its
   // counters alive for the life of the process.
