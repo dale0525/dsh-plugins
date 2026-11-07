@@ -37,10 +37,11 @@
  *
  * @module @logictan/dsh-stitch-designer
  */
+import { createCanvasClient } from './canvas.js';
 import { createStitchClient } from './stitch.js';
 import { createInvoker } from './conventions.js';
 import { SECTION_NAME, SECTION_ORDER, STITCH_GUIDANCE } from './guidance.js';
-import { createToolDefinition, publicToolName } from './tools.js';
+import { createOutput, createToolDefinition, publicToolName } from './tools.js';
 
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
 export const name = 'stitch-designer';
@@ -80,6 +81,7 @@ export function apply(ctx) {
   };
 
   const stitch = createStitchClient({ resolveApiKey });
+  const canvas = createCanvasClient({ resolveApiKey });
 
   // One code project ↔ one Stitch project is enforced here rather than merely
   // announced: this wrapper is the only seam that sees which code project a
@@ -135,9 +137,52 @@ export function apply(ctx) {
         sync().catch(report);
       });
 
+      // `remove_screen_from_canvas` is local, not upstream: Stitch has no
+      // screen-delete route (`stitch delete screen` answers
+      // `UNSUPPORTED_RESOURCE`, `DELETE .../screens/<id>` answers 404), so the
+      // bridge performs the removal itself through a project-level PATCH. It is
+      // registered here unconditionally because it needs no `tools/list` to
+      // describe it — its contract is this file's.
+      const removeScreenDispose = tools.register({
+        name: publicToolName(SERVER_NAME, 'remove_screen_from_canvas'),
+        description:
+          'Remove one screen from a Stitch project canvas. Stitch has no screen-delete API, so this '
+            + 'rewrites the project\'s canvas without that screen. The screen object itself is not '
+            + 'destroyed; it disappears from the project — which is what clears abandoned screens out '
+            + 'of a project. Use mcp__stitch__list_screens to find the screen id first.',
+        parameters: {
+          type: 'object',
+          properties: {
+            projectId: {
+              type: 'string',
+              description: 'Stitch project id (bare id, not "projects/<id>").',
+            },
+            screenId: {
+              type: 'string',
+              description: 'Id of the screen to remove from the canvas.',
+            },
+          },
+          required: ['projectId', 'screenId'],
+        },
+        output: createOutput(undefined),
+        async execute(args, exec) {
+          const result = await canvas.removeScreen(args.projectId, args.screenId, exec);
+          const remaining = Array.isArray(result?.screenInstances) ? result.screenInstances.length : 0;
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Removed screen ${args.screenId} from project ${args.projectId}. The canvas now holds ${remaining} screen(s).`,
+              },
+            ],
+          };
+        },
+      });
+
       return () => {
         disposed = true;
         offCredential();
+        removeScreenDispose();
         for (const dispose of disposers) dispose();
         disposers = [];
       };

@@ -1,7 +1,8 @@
 # @logictan/dsh-stitch-designer
 
-Google Stitch (AI UI generation) inside DSH: the 15 `mcp__stitch__*` tools, plus
-the design conventions that keep one code project bound to one Stitch project.
+Google Stitch (AI UI generation) inside DSH: Stitch's own `mcp__stitch__*` tools,
+one local addition (`remove_screen_from_canvas`), plus the design conventions
+that keep one code project bound to one Stitch project.
 
 Ported from [liuxinlongwa-hue/dsh-stitch-designer](https://github.com/liuxinlongwa-hue/dsh-stitch-designer)
 (MIT, © 2026 liuxinlongwa-hue). What changed here is the tool surface, the key
@@ -10,8 +11,9 @@ storage, and the scope — that project's preview panel, screenshot cache and
 
 ## What it gives the model
 
-The same 15 tools the `mcp-stitch` MCP row used to expose, under the same
-public names, so existing prompts and habits keep working:
+The Stitch tools the `mcp-stitch` MCP row used to expose (and whatever Stitch
+has added since — `download_file` among them), under the same public names, so
+existing prompts and habits keep working:
 
 ```
 mcp__stitch__create_project              mcp__stitch__get_project
@@ -27,6 +29,29 @@ mcp__stitch__update_design_system        mcp__stitch__apply_design_system
 The tool list is read from Stitch at activation, not copied into this package,
 so a tool Stitch adds or renames shows up without a code change. A call budget
 of 180s covers `generate_screen_from_text`, which is long-running.
+
+### `remove_screen_from_canvas` — the one tool Stitch does not offer
+
+Stitch has no screen-delete API. `stitch delete screen` answers
+`UNSUPPORTED_RESOURCE / "Stitch screens do not support delete."`, and
+`DELETE /projects/<p>/screens/<s>` answers 404 in every spelling including
+`:delete` (measured 2026-11-08). The MCP tool list has no `delete_screen`
+either, so this is not a capability the bridge failed to expose.
+
+What the service does accept is a project-level rewrite of the canvas:
+`PATCH /v1/projects/<id>?updateMask=screenInstances` with the instance list
+minus one entry. That is what this tool does, and it is why the plugin carries a
+small REST transport (`src/canvas.js`) alongside the MCP one.
+
+The screen object is not destroyed — it stays addressable at
+`GET /v1/projects/<p>/screens/<s>` — but it leaves the project, which is what
+clears abandoned screens out of a project. Renaming a screen's title has no API
+route at all (the canvas `label` is a separate field and does not change the
+screen `title`), so this plugin offers no rename tool.
+
+```
+mcp__stitch__remove_screen_from_canvas { projectId, screenId }
+```
 
 ## Settings
 
