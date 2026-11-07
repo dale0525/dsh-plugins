@@ -1176,7 +1176,9 @@ export const KNOWLEDGE_BASE: readonly KnowledgeEntry[] = [
     // (boundary-checked) catches seed-first ids some gateways serve. The
     // seed generations are vision-capable; doubao-1.5-pro stays text-only.
     patterns: ['doubao', 'seed'],
-    efforts: { off: null, low: 'low', medium: 'medium', high: 'high' },
+    // off must be the OpenAI spelling: this entry pins thinkingFormat: 'openai',
+    // and null there sends no field at all (see GENERIC_OPENAI_EFFORTS).
+    efforts: { off: 'none', low: 'low', medium: 'medium', high: 'high' },
     compat: { thinkingFormat: 'openai', supportsReasoningEffort: true },
     input: ['text', 'image'],
     note: '豆包档位：Off / Low / Medium / High——effort 阶梯仍是社区证据、官方 Ark 文档明列的为 thinking.type 开关（2026-08-24 复核仍未见到 effort 官方明文）。seed 代收图（1.5-pro 例外）。',
@@ -1249,9 +1251,18 @@ export const KNOWLEDGE_BASE: readonly KnowledgeEntry[] = [
 /**
  * The generic OpenAI-compatible ladder -- the single source for every
  * OpenAI-shaped protocol row below and the fallback when nothing matches.
+ *
+ * `off` MUST be the string 'none', never null. This ladder is what the editor
+ * pairs with `thinkingFormat: 'openai'`, and pi-ai's OpenAI branch closes
+ * thinking by sending a `reasoning_effort` value -- it has no other channel.
+ * `off: null` is read there as "this level is unsupported": nothing is sent at
+ * all and the endpoint's own default (thinking ON on most gateways) applies
+ * silently, so an off selection looks armed but does nothing. The deepseek /
+ * qwen / zai / anthropic formats dispatch on the format itself and ignore this
+ * string, which is why their `off: null` still worked.
  */
 export const GENERIC_OPENAI_EFFORTS: ReasoningEfforts = {
-  off: null,
+  off: 'none',
   low: 'low',
   medium: 'medium',
   high: 'high',
@@ -1616,8 +1627,13 @@ function withRolePin(
   return { ...compat, supportsDeveloperRole: false }
 }
 
-/** Conservative ladder offered when the endpoint confirms reasoning but nothing names the levels. */
-const ENDPOINT_CONFIRMED_LADDER: ReasoningEfforts = { off: null, low: 'low', medium: 'medium', high: 'high' }
+/**
+ * Conservative ladder offered when the endpoint confirms reasoning but nothing
+ * names the levels. Its `compat` is gated to `thinkingFormat: 'openai'`, so
+ * `off` must carry the OpenAI spellings -- see GENERIC_OPENAI_EFFORTS for why
+ * `null` silently switches nothing off.
+ */
+const ENDPOINT_CONFIRMED_LADDER: ReasoningEfforts = { off: 'none', low: 'low', medium: 'medium', high: 'high' }
 
 /**
  * Name-heuristic modality tokens -- the last-resort tier (the practice

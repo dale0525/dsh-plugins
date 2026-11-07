@@ -140,6 +140,40 @@ describe('knowledge base vocabulary grid', () => {
     }
   })
 
+  it('never leaves the off wire empty under a format that ignores it', () => {
+    // pi-ai's `openai` branch closes thinking ONLY by sending a
+    // reasoning_effort value (`reasoning_effort: 'none'`). `off: null` there
+    // is read as "level unsupported": nothing is sent and the endpoint keeps
+    // its own default, which is thinking ON on most gateways. The deepseek /
+    // qwen / zai / anthropic branches dispatch on the format and ignore the
+    // string, so null stays legitimate for them -- but 'none' is harmless and
+    // survives a later thinkingFormat edit, so new openai rows must not use it.
+    const FORMATS_THAT_IGNORE_THE_STRING = new Set(['deepseek', 'qwen', 'zai', 'anthropic'])
+    for (const entry of KNOWLEDGE_BASE) {
+      if (entry.efforts === false || entry.efforts.off === undefined) continue
+      const format = entry.compat?.thinkingFormat
+      const ignoresString = format !== undefined && FORMATS_THAT_IGNORE_THE_STRING.has(format)
+      if (entry.efforts.off === null) {
+        expect(
+          ignoresString,
+          `${entry.id}: off:null sends no field under thinkingFormat "${format ?? '(none)'}" — `
+          + 'name the spelling (e.g. "none") or drop the level',
+        ).toBe(true)
+      }
+    }
+    for (const [key, efforts] of Object.entries(PROTOCOL_INFERENCE)) {
+      if (efforts.off === null) {
+        expect(['deepseek'], `protocol ladder "${key}"`).toContain(key)
+      }
+    }
+    // The endpoint-confirmed ladder pairs with thinkingFormat: 'openai'.
+    const confirmed = suggestEfforts('mystery-model', {}, { reasoning: true, source: 'can_reason' })
+    expect(confirmed.efforts, 'endpoint-confirmed suggestion must carry a ladder').toBeDefined()
+    if (confirmed.efforts !== false) {
+      expect(confirmed.efforts?.off).toBe('none')
+    }
+  })
+
   it('survives the full entry x protocol suggestion grid', () => {
     for (const entry of KNOWLEDGE_BASE) {
       // A representative id that hits this entry (first pattern suffices —

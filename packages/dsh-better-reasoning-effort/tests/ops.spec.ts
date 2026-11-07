@@ -385,7 +385,7 @@ describe('createEditorApi', () => {
     expect(reply.ok).toBe(true)
     if (reply.ok) {
       expect(reply.suggestion.matched).toBe(false)
-      expect(reply.suggestion.efforts).toEqual({ off: null, low: 'low', medium: 'medium', high: 'high' })
+      expect(reply.suggestion.efforts).toEqual({ off: 'none', low: 'low', medium: 'medium', high: 'high' })
     }
   })
 
@@ -924,7 +924,7 @@ describe('createEditorApi', () => {
         expect(reply.suggestion.endpoint).toEqual({ reasoning: true, source: 'supported_features' })
         // The endpoint confirms support but names no spellings — the ladder
         // stays the conservative confirmed set.
-        expect(reply.suggestion.efforts).toEqual({ off: null, low: 'low', medium: 'medium', high: 'high' })
+        expect(reply.suggestion.efforts).toEqual({ off: 'none', low: 'low', medium: 'medium', high: 'high' })
       }
     } finally {
       vi.unstubAllGlobals()

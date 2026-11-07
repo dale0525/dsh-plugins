@@ -416,7 +416,7 @@ describe('suggestEfforts', () => {
     const inferred = suggestEfforts('mystery-model', {}, { reasoning: true, source: 'reasoning' })
     expect(inferred.matched).toBe(false)
     expect(inferred.confidence).toBe('medium')
-    expect(inferred.efforts).toEqual({ off: null, low: 'low', medium: 'medium', high: 'high' })
+    expect(inferred.efforts).toEqual({ off: 'none', low: 'low', medium: 'medium', high: 'high' })
 
     // Unknown signal changes nothing and stays low without the knowledge base.
     const unknown = suggestEfforts('mystery-model', { api: 'openai-completions' }, {
