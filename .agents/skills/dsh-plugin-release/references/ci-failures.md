@@ -54,6 +54,19 @@
 - **registry 404 不等于未发布**：发布后短时间内查询会命中 CDN 缓存。核验时带
   `Cache-Control: no-cache` 与时间戳查询串，并以 npm 日志的 `PUT 200` / 退出码 0 为准。
 
+- **上线了却装回旧版：`dsh plugin add` 会命中 pnpm 的本地元数据缓存，且 `@latest` 静默装旧版**。
+  与上一条方向相反——这次是**客户端**读旧，registry 早已更新。实测 2026-11-08 发完
+  `dsh-plugins-all@0.5.162` 后：`npm view` / `pnpm view` 都报 `0.5.162`，而
+  `dsh plugin --profile web add @logictan/dsh-plugins-all@0.5.162` 报
+  `ERR_PNPM_NO_MATCHING_VERSION ... The latest release is "0.5.161"`——同一时刻在 profile 目录里
+  直接跑 `pnpm add <pkg>@0.5.162` 却成功。差别在 pnpm v11 的元数据缓存
+  `~/Library/Caches/pnpm/v11/metadata/https%3A+registry.npmjs.org/<urlencoded-pkg>.jsonl`
+  里的 `distTags.latest` 还停在旧版（`dsh plugin` 转发 pnpm 时复用了它）。
+  危害在于**指定版本号才会报错**：`@latest` 不报错，静默装回旧版。所以刚发完版要装，
+  别信 `dsh plugin ... @latest` 的「Done」——装完必须
+  `node -p "require('<profile>/node_modules/<pkg>/package.json').version"` 核对落盘版本；
+  装不上就先在该 profile 目录直接 `pnpm add <pkg>@<version>` 刷新缓存，再回到 `dsh plugin`。
+
 - **发布时的 `PUT ... E404` 是「缺 trusted publisher」，不是缓存**：与上面那条相反 ——
   缓存只会让人**读到**旧版本，不会让**写入**被拒；且同一次 run 里其余包都正常处理。
   判据是发布者身份：`npm view <pkg>@<ver> _npmUser` 显示
