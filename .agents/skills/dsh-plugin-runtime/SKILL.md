@@ -9,7 +9,7 @@ description: 改完插件代码要确认是否生效：判断该重启还是走 
 
 ## 🚀 生效门禁（哪类改动需要重启）
 
-**实测结论（2026-09-18，dsh-web PID 未变的前提下逐条验证）**：
+**实测结论（2026-09-18 起逐条验证；末行为 2026-11-07 补充的例外，仍是「进程持有新文件却未生效」）**：
 
 | 改动类型 | 是否需重启 | 机制 |
 |---|---|---|
@@ -18,6 +18,7 @@ description: 改完插件代码要确认是否生效：判断该重启还是走 
 | 插件**客户端产物** `lib/client.js` | **否** | `@deepseek-ai/dsh-client-hmr` 每 500ms stat-poll 各插件 client bundle 的 mtime/size，变化即推 SSE 原位替换 fiber（浏览器无需刷新） |
 | 插件**包代码**同版本覆盖安装 | **是** | `dsh-plugin-manager` 的 `restart-required` 路径：磁盘文件被替换但模块缓存仍是旧代码 |
 | 插件**宿主半边源码**（`src/**` 非 client） | **是**（默认） | `dsh-base` 的 hmr 行是 `config.root: []` —— module watch 默认**关闭** |
+| 子代理模型白名单 `subagent-model-selection-settings.allowedModels` | **是**（HMR 读入文件，但**已存在的会话不变**） | 放行策略是**会话创建时快照**的 `policy.routes`（`@deepseek-ai/dsh-tool-subagent`：注释 `Selection authority captured for this Session`）。改完 patch 后 `lsof` 能证明进程已持有新文件，`list_subagent_models` 与真派席位仍报 `child LLM route "…" is not allowed for this Session`。**新建会话**即生效；要连当前会话一起更新才需 `dsh-web restart` |
 
 **因此**：
 - 改 `src/client/**` → 跑 `pnpm --filter @logictan/dsh-config-manager dev:watch`（脚本在**子包** `packages/dsh-config-manager/scripts/dev-watch.mjs`），浏览器不刷新即见新 UI（已实测：改源码 → 重建 `lib/client.js` → mtime/size 变化）。
