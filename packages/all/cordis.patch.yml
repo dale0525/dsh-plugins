@@ -315,6 +315,26 @@
     - id: worktree-session
       name: '@logictan/dsh-worktree-session'
 
+# from ../dsh-magpie-image
+# Patch row of @logictan/dsh-magpie-image.
+#
+# Two rules this file must keep, both enforced elsewhere:
+#
+#  - `name` is the BARE package name. A subpath resolves to no manifest, so the
+#    loader cannot read `dsh.bundle.patch` and the row never mounts.
+#  - `id` equals the host half's `export const name` ('magpie-image' in
+#    src/index.js). `node scripts/aggregate.mjs --check` does NOT validate row-id
+#    uniqueness; `pnpm run check:host` does, and a duplicate hard-crashes the host
+#    with `duplicate loader entry id`. The "equals `export const name`" half has no
+#    automated check at all and is verified by hand.
+#
+# The row carries no `config:` — the magpie key is NOT a patch value. It reuses the
+# `MAGPIE_API_KEY` credential already set for the magpie LLM provider, which is what
+# keeps it out of `cordis.patch.yml` and therefore out of every config-sync snapshot.
+- insert:
+    - id: magpie-image
+      name: '@logictan/dsh-magpie-image'
+
 # from ../dsh-modal-h3
 # Patch row of @logictan/dsh-modal-h3.
 #
