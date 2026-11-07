@@ -1,7 +1,7 @@
 # @logictan/dsh-stitch-designer
 
 Google Stitch (AI UI generation) inside DSH: Stitch's own `mcp__stitch__*` tools,
-one local addition (`remove_screen_from_canvas`), plus the design conventions
+one local addition (`remove_screens_from_canvas`), plus the design conventions
 that keep one code project bound to one Stitch project.
 
 Ported from [liuxinlongwa-hue/dsh-stitch-designer](https://github.com/liuxinlongwa-hue/dsh-stitch-designer)
@@ -30,7 +30,7 @@ The tool list is read from Stitch at activation, not copied into this package,
 so a tool Stitch adds or renames shows up without a code change. A call budget
 of 180s covers `generate_screen_from_text`, which is long-running.
 
-### `remove_screen_from_canvas` — the one tool Stitch does not offer
+### `remove_screens_from_canvas` — the one tool Stitch does not offer
 
 Stitch has no screen-delete API. `stitch delete screen` answers
 `UNSUPPORTED_RESOURCE / "Stitch screens do not support delete."`, and
@@ -40,8 +40,17 @@ either, so this is not a capability the bridge failed to expose.
 
 What the service does accept is a project-level rewrite of the canvas:
 `PATCH /v1/projects/<id>?updateMask=screenInstances` with the instance list
-minus one entry. That is what this tool does, and it is why the plugin carries a
-small REST transport (`src/canvas.js`) alongside the MCP one.
+minus the unwanted entries. That is what this tool does, and it is why the
+plugin carries a small REST transport (`src/canvas.js`) alongside the MCP one.
+
+Removal is **batch by construction, not by looping**: the canvas is a single
+field, so N ids cost one GET and one PATCH. Looping would mean N
+read-modify-write cycles and a lost removal whenever two of them raced. Passing
+a single id in the list is simply the one-element case.
+
+Ids that are not on the canvas do not fail the call: the ones that are get
+removed, and the leftovers come back in the result so the caller can see them.
+When *none* of the ids is on the canvas the tool raises instead of writing.
 
 The screen object is not destroyed — it stays addressable at
 `GET /v1/projects/<p>/screens/<s>` — but it leaves the project, which is what
@@ -50,7 +59,7 @@ route at all (the canvas `label` is a separate field and does not change the
 screen `title`), so this plugin offers no rename tool.
 
 ```
-mcp__stitch__remove_screen_from_canvas { projectId, screenId }
+mcp__stitch__remove_screens_from_canvas { projectId, screenIds: [screenId, ...] }
 ```
 
 ## Settings

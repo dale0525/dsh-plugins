@@ -86,28 +86,48 @@ export function createCanvasClient(options = {}) {
 
   return {
     /**
-     * Take one screen off a project's canvas.
+     * Take one or more screens off a project's canvas.
+     *
+     * Batch is the primitive: the canvas is a single field, so every removal is
+     * absorbed into ONE read-modify-write cycle and therefore one PATCH, however
+     * many ids are given. Removing one screen is simply the one-element case.
      *
      * @param projectId - the project id (bare, without the `projects/` prefix).
-     * @param screenId - the screen id to remove; the bare id from `list_screens`.
+     * @param screenIds - screen ids to remove; the bare ids from `list_screens`.
      * @param exec - the tool execution context, whose signal is honoured.
-     * @returns the project after the write.
+     * @returns the project after the write, plus which ids were removed and
+     *   which were not on the canvas.
+     * @throws when no id is given, or when none of them is on the canvas.
      */
-    async removeScreen(projectId, screenId, exec) {
+    async removeScreens(projectId, screenIds, exec) {
+      const requested = Array.isArray(screenIds) ? screenIds.filter((id) => typeof id === 'string' && id !== '') : [];
+      if (requested.length === 0) {
+        throw new Error(
+          'No screen id was given: pass at least one screen id in screenIds. ' +
+            'Run list_screens to see the screens this project currently holds.',
+        );
+      }
+
       const apiKey = await requireKey();
       const projectUrl = `${url}/projects/${projectId}`;
 
       const project = await request({ method: 'GET', url: projectUrl, apiKey, timeoutMs, signal: exec?.signal });
       const instances = Array.isArray(project?.screenInstances) ? project.screenInstances : [];
-      const kept = instances.filter((instance) => !String(instance?.sourceScreen ?? '').endsWith(`/screens/${screenId}`));
-      if (kept.length === instances.length) {
+      const screenIdOf = (instance) => String(instance?.sourceScreen ?? '').split('/screens/').pop() ?? '';
+
+      const kept = instances.filter((instance) => !requested.includes(screenIdOf(instance)));
+      const present = instances.map(screenIdOf);
+      const removed = requested.filter((id) => present.includes(id));
+      const missing = requested.filter((id) => !present.includes(id));
+
+      if (removed.length === 0) {
         throw new Error(
-          `Screen ${screenId} is not on the canvas of project ${projectId}, so there is nothing to remove. ` +
+          `None of the given screen ids is on the canvas of project ${projectId}, so there is nothing to remove. ` +
             'Run list_screens to see the screens this project currently holds.',
         );
       }
 
-      return request({
+      const updated = await request({
         method: 'PATCH',
         url: `${projectUrl}?updateMask=screenInstances`,
         apiKey,
@@ -115,6 +135,8 @@ export function createCanvasClient(options = {}) {
         timeoutMs,
         signal: exec?.signal,
       });
+
+      return { ...updated, removed, missing };
     },
   };
 }

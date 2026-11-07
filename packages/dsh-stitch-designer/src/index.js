@@ -137,19 +137,23 @@ export function apply(ctx) {
         sync().catch(report);
       });
 
-      // `remove_screen_from_canvas` is local, not upstream: Stitch has no
+      // `remove_screens_from_canvas` is local, not upstream: Stitch has no
       // screen-delete route (`stitch delete screen` answers
       // `UNSUPPORTED_RESOURCE`, `DELETE .../screens/<id>` answers 404), so the
-      // bridge performs the removal itself through a project-level PATCH. It is
+      // bridge performs the removal itself through one project-level PATCH. The
+      // tool takes a list because the canvas is one field: N removals are one
+      // write, and a single removal is just the one-element list. It is
       // registered here unconditionally because it needs no `tools/list` to
       // describe it — its contract is this file's.
       const removeScreenDispose = tools.register({
-        name: publicToolName(SERVER_NAME, 'remove_screen_from_canvas'),
+        name: publicToolName(SERVER_NAME, 'remove_screens_from_canvas'),
         description:
-          'Remove one screen from a Stitch project canvas. Stitch has no screen-delete API, so this '
-            + 'rewrites the project\'s canvas without that screen. The screen object itself is not '
-            + 'destroyed; it disappears from the project — which is what clears abandoned screens out '
-            + 'of a project. Use mcp__stitch__list_screens to find the screen id first.',
+          'Remove one or more screens from a Stitch project canvas. Stitch has no screen-delete API, so '
+            + 'this rewrites the project\'s canvas without those screens — always in a single write, '
+            + 'however many ids you pass. The screen objects themselves are not destroyed; they disappear '
+            + 'from the project, which is what clears abandoned screens out. Use '
+            + 'mcp__stitch__list_screens to find screen ids first. Ids that are not on the canvas are '
+            + 'reported back rather than failing the whole call.',
         parameters: {
           type: 'object',
           properties: {
@@ -157,25 +161,26 @@ export function apply(ctx) {
               type: 'string',
               description: 'Stitch project id (bare id, not "projects/<id>").',
             },
-            screenId: {
-              type: 'string',
-              description: 'Id of the screen to remove from the canvas.',
+            screenIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Ids of the screens to remove from the canvas. One id is the normal single-removal case.',
             },
           },
-          required: ['projectId', 'screenId'],
+          required: ['projectId', 'screenIds'],
         },
         output: createOutput(undefined),
         async execute(args, exec) {
-          const result = await canvas.removeScreen(args.projectId, args.screenId, exec);
+          const result = await canvas.removeScreens(args.projectId, args.screenIds, exec);
           const remaining = Array.isArray(result?.screenInstances) ? result.screenInstances.length : 0;
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Removed screen ${args.screenId} from project ${args.projectId}. The canvas now holds ${remaining} screen(s).`,
-              },
-            ],
-          };
+          const lines = [
+            `Removed ${result.removed.length} screen(s) from project ${args.projectId}: ${result.removed.join(', ')}.`,
+            `The canvas now holds ${remaining} screen(s).`,
+          ];
+          if (result.missing.length > 0) {
+            lines.push(`Not on the canvas (left alone): ${result.missing.join(', ')}.`);
+          }
+          return { content: [{ type: 'text', text: lines.join(' ') }] };
         },
       });
 
