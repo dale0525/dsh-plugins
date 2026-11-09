@@ -80,6 +80,15 @@ sync exports verbatim.
 
 ## Scope
 
-v1 covers common HTML/ARIA controls, single-tab, single-frame pages. Iframes,
-shadow roots, canvas, file uploads, nested scrolling, pop-ups and screenshots
-are out of scope.
+v1 covers common HTML/ARIA controls, single-tab pages, the document plus every
+open shadow root and same-origin frame it can reach, and both page-level and
+inner-panel scrolling.
+
+Out of scope: cross-origin frames, closed shadow roots, canvas, file uploads,
+pop-ups and screenshots.
+
+An autocomplete list built from plain `<li>` rows is only reachable when the page
+gives those rows a role the observer collects (`option`, `menuitem`, …); a list
+of unroled `<li>` elements shows up in the page text but not in the element
+table, so the run can see the suggestion it needs and still have no target for
+it.

@@ -34,6 +34,7 @@ export const OPERATION_LABELS = Object.freeze({
  */
 export const CONTROL_LABELS = Object.freeze({
   SCROLL_UP: 'Scroll the page up.',
+  SCROLL_INNER: 'Scroll the scrolling panel that still has content below it, e.g. to load an endless list.',
   SCROLL_DOWN: 'Scroll the page down.',
   PRESS_KEY: 'Press one key on the page, e.g. Enter to submit a filled form or Escape to dismiss a popup. A second question chooses the key.',
   WAIT: 'Wait for the page to update.',
@@ -156,6 +157,7 @@ export function actionSpace(observed, options = {}) {
   for (const name of offered) {
     if (name === 'SCROLL_UP') controls.SCROLL_UP = { kind: 'scroll', label: CONTROL_LABELS.SCROLL_UP, delta: -SCROLL_STEP };
     else if (name === 'SCROLL_DOWN') controls.SCROLL_DOWN = { kind: 'scroll', label: CONTROL_LABELS.SCROLL_DOWN, delta: SCROLL_STEP };
+    else if (name === 'SCROLL_INNER') controls.SCROLL_INNER = { kind: 'scrollInner', label: CONTROL_LABELS.SCROLL_INNER, delta: SCROLL_STEP, node: options.innerScroll ?? null };
     else if (name === 'PRESS_KEY') controls.PRESS_KEY = { kind: 'press', label: CONTROL_LABELS.PRESS_KEY };
     else if (name === 'WAIT') controls.WAIT = { kind: 'wait', label: CONTROL_LABELS.WAIT };
   }

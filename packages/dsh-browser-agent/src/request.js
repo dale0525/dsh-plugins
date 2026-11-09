@@ -212,7 +212,9 @@ export function resolveDecision(input) {
       operation,
       kind: control === undefined ? (operation === 'DONE' ? 'done' : 'blocked') : control.kind,
       target: null,
-      descriptor: null,
+      // A scrolling panel control carries the container it scrolls; every other
+      // target-less control has none.
+      descriptor: control?.node === undefined || control.node === null ? null : { node: control.node },
       delta: control?.delta ?? 0,
       confidence: operationAnswer.confidence,
       operationProbabilities: operationAnswer.probabilities,

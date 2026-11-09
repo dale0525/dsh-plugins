@@ -288,3 +288,35 @@ test('refuses a target that left the page', async (t) => {
   const { decision } = fill(7);
   await assert.rejects(execute({ page, decision, valueProvider: async () => 'shoes' }), /target \[1\] is no longer on the page/);
 });
+
+test('scrolls the inner panel it was given instead of the window', async (t) => {
+  const scroller = fakeElement({ scrollTop: 0, scrollHeight: 800, clientHeight: 160 });
+  const page = fakePage([[7, scroller]]);
+  cleanup(t);
+  let windowScrolled = false;
+  globalThis.window.scrollBy = () => {
+    windowScrolled = true;
+  };
+
+  const result = await execute({
+    page,
+    decision: { operation: 'SCROLL_INNER', kind: 'scrollInner', target: null, descriptor: { node: 7 }, delta: 560 },
+  });
+
+  assert.equal(scroller.scrollTop, 800, 'the panel must be scrolled to its own bottom');
+  assert.equal(windowScrolled, false, 'the page must not be scrolled instead');
+  assert.match(result, /inner panel/);
+});
+
+test('reports a panel that is gone instead of claiming it scrolled', async (t) => {
+  const page = fakePage([]);
+  cleanup(t);
+
+  await assert.rejects(
+    execute({
+      page,
+      decision: { operation: 'SCROLL_INNER', kind: 'scrollInner', target: null, descriptor: { node: 7 }, delta: 560 },
+    }),
+    /no longer on the page/,
+  );
+});

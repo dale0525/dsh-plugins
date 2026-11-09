@@ -103,6 +103,19 @@ export async function execute(input) {
     await page.waitForTimeout(SETTLE_MS);
     return `scrolled by ${decision.delta}px`;
   }
+  if (decision.kind === 'scrollInner') {
+    // The container's own box, not the window: an endless list appends while its
+    // scroller is at the bottom, and scrolling the page leaves it untouched.
+    const scrolled = await page.evaluate((node) => {
+      const element = window.__dshBrowserAgent.nodes.get(node);
+      if (!element || !element.isConnected) return false;
+      element.scrollTop = element.scrollHeight;
+      return true;
+    }, decision.descriptor?.node ?? null);
+    if (!scrolled) throw new Error('the scrolling panel is no longer on the page');
+    await page.waitForTimeout(SETTLE_MS);
+    return 'scrolled the inner panel to its bottom';
+  }
 
   const descriptor = decision.descriptor;
 

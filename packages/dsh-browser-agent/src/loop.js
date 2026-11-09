@@ -152,7 +152,7 @@ export async function run(input) {
       pending = null;
     }
 
-    const table = actionSpace(observation.actions, { controls: observation.controls });
+    const table = actionSpace(observation.actions, { controls: observation.controls, innerScroll: observation.innerScroll });
     const body = buildRequest({
       goal,
       page: observation,

@@ -18,6 +18,13 @@
  * `snapshot` is serialized and evaluated in the page, so it must close over
  * NOTHING from this module: its limits arrive as arguments.
  *
+ * The walk crosses every root the page can reach without a second round trip:
+ * the document, each open shadow root, and each same-origin frame's document.
+ * A cross-origin frame reports a null `contentDocument` and is skipped rather
+ * than failing the observation, and a root already visited is not entered
+ * twice. Elements found inside a frame are measured in that frame's own
+ * coordinates, so their viewport test adds the frame's offset.
+ *
  * @module @logictan/dsh-browser-agent/observe
  */
 
@@ -73,6 +80,34 @@ export function snapshot(limits) {
 
   for (const [id, element] of cache.nodes) if (!element.isConnected) cache.nodes.delete(id);
 
+  // Every root reachable without leaving the page, each paired with the offset
+  // its coordinates need before they can be compared with the top viewport.
+  const roots = [];
+  const visited = new Set();
+  const queue = [{ root: document, offsetX: 0, offsetY: 0 }];
+  while (queue.length > 0) {
+    const entry = queue.shift();
+    if (entry.root === null || entry.root === undefined || visited.has(entry.root)) continue;
+    visited.add(entry.root);
+    roots.push(entry);
+    for (const frame of entry.root.querySelectorAll('iframe,frame')) {
+      let inner = null;
+      try {
+        inner = frame.contentDocument;
+      } catch {
+        inner = null;
+      }
+      if (inner === null || inner === undefined) continue;
+      const rect = frame.getBoundingClientRect();
+      queue.push({ root: inner, offsetX: entry.offsetX + rect.x, offsetY: entry.offsetY + rect.y });
+    }
+    for (const host of entry.root.querySelectorAll('*')) {
+      if (host.shadowRoot) queue.push({ root: host.shadowRoot, offsetX: entry.offsetX, offsetY: entry.offsetY });
+    }
+  }
+
+  const ownerOf = (element) => (typeof element.getRootNode === 'function' ? element.getRootNode() : document);
+
   const safe = (element) => !['password', 'file', 'hidden'].includes(element.type);
   const visible = (element) =>
     !element.closest('[aria-hidden="true"],[inert]') &&
@@ -83,7 +118,7 @@ export function snapshot(limits) {
     seen.add(element);
     const referenced = (element.getAttribute('aria-labelledby') || '')
       .split(/\s+/)
-      .map((id) => name(document.getElementById(id), seen))
+      .map((id) => name((ownerOf(element).getElementById ?? document.getElementById).call(ownerOf(element), id), seen))
       .filter(Boolean)
       .join(' ');
     return (
@@ -132,12 +167,12 @@ export function snapshot(limits) {
     limits.roles.map((name_) => '[role="' + name_ + '"]').join(',');
 
   const actions = [];
-  for (const element of document.querySelectorAll(selector)) {
+  for (const entry of roots) for (const element of entry.root.querySelectorAll(selector)) {
     if (!safe(element) || !visible(element) || element.matches(':disabled')) continue;
     if (element.closest('[aria-disabled="true"]')) continue;
     const rect = element.getBoundingClientRect();
-    const centerX = rect.x + rect.width / 2;
-    const centerY = rect.y + rect.height / 2;
+    const centerX = entry.offsetX + rect.x + rect.width / 2;
+    const centerY = entry.offsetY + rect.y + rect.height / 2;
     const elementRole = role(element);
     if (!elementRole || rect.width <= 0 || rect.height <= 0) continue;
     if (centerX < 0 || centerY < 0 || centerX >= innerWidth || centerY >= innerHeight) continue;
@@ -183,19 +218,26 @@ export function snapshot(limits) {
   }
 
   const words = [];
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const range = document.createRange();
-  let node;
   let length = 0;
-  while ((node = walker.nextNode()) && length < limits.maxText) {
-    const value = node.textContent.trim();
-    const parent = node.parentElement;
-    if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;
-    range.selectNodeContents(node);
-    const rect = range.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth) {
-      words.push(value);
-      length += value.length;
+  for (const entry of roots) {
+    const body = entry.root.body ?? (entry.root.documentElement ?? entry.root);
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode()) && length < limits.maxText) {
+      const value = node.textContent.trim();
+      const parent = node.parentElement;
+      if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;
+      range.selectNodeContents(node);
+      const rect = range.getBoundingClientRect();
+      const top = entry.offsetY + rect.top;
+      const bottom = entry.offsetY + rect.bottom;
+      const left = entry.offsetX + rect.left;
+      const right = entry.offsetX + rect.right;
+      if (rect.width > 0 && rect.height > 0 && bottom > 0 && top < innerHeight && right > 0 && left < innerWidth) {
+        words.push(value);
+        length += value.length;
+      }
     }
   }
 
@@ -205,6 +247,21 @@ export function snapshot(limits) {
   const controls = [];
   if (scrollY + innerHeight < document.documentElement.scrollHeight - 2) controls.push('SCROLL_DOWN');
   if (scrollY > 0) controls.push('SCROLL_UP');
+
+  // An inner scroll container is a second place content hides: an infinite list
+  // appends only while its own box is at the bottom, and a page-level scroll
+  // never reaches it. Reported as its own control carrying the container's
+  // identity, because scrolling the window instead would leave the list where
+  // it was and the run with no way to say so.
+  let innerScroll = null;
+  const scroller = [...document.querySelectorAll('*')].find((element) => {
+    if (!['auto', 'scroll'].includes(getComputedStyle(element).overflowY)) return false;
+    return element.scrollHeight > element.clientHeight + 2 && element.scrollTop + element.clientHeight < element.scrollHeight - 2;
+  });
+  if (scroller !== undefined) {
+    innerScroll = identity(scroller);
+    controls.push('SCROLL_INNER');
+  }
   // Always offered: a key goes to whatever the page has focused, and the page
   // decides what it means, so there is no state to read here.
   controls.push('PRESS_KEY');
@@ -216,6 +273,7 @@ export function snapshot(limits) {
     text: words.join('\n').slice(0, limits.maxText),
     actions,
     controls,
+    innerScroll,
     omitted,
   };
 }
