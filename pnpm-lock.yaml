@@ -24,7 +24,7 @@ importers:
         specifier: ^0.5.11
         version: link:../dsh-better-reasoning-effort
       '@logictan/dsh-browser-agent':
-        specifier: ^0.2.6
+        specifier: ^0.2.7
         version: link:../dsh-browser-agent
       '@logictan/dsh-browser-search':
         specifier: ^0.1.1
