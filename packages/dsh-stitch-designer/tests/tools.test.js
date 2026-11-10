@@ -6,7 +6,8 @@
  *
  *  - the 15 public names are `mcp__stitch__<rawName>` VERBATIM, because they are
  *    the model's existing vocabulary from the retired `mcp-stitch` patch row;
- *  - `parameters` must be the raw upstream schema. Stitch's schemas carry
+ *  - `parameters` must be the upstream schema, minus the two prompt-only
+ *    `x-google-*` fields `promptSafeInputSchema` drops. Stitch's schemas carry
  *    `$defs` / `$ref` / `x-google-*`, which `assertSupportedJsonSchema` rejects
  *    (11 of 15 input schemas, 13 of 15 output schemas). Routing them through
  *    `defineTool` — which validates `parameters` at construction — throws; only
@@ -21,8 +22,11 @@ import {
   createOutput,
   createToolDefinition,
   extractText,
+  isAnnounced,
+  promptSafeInputSchema,
   publicToolName,
   supportedOutputSchema,
+  withoutWithdrawn,
 } from '../src/tools.js';
 
 /** Every tool name Stitch's `tools/list` returns, as of 2026-10-08. */
@@ -105,6 +109,44 @@ test('a raw upstream input schema registers even when the subset rejects it', ()
   assert.deepEqual(definition.output.schema.required, ['content']);
 });
 
+test('prompt-only x-google fields are dropped and every standard keyword survives', () => {
+  // The exact shape `create_design_system` sends: 68 font enum values, each with
+  // an English gloss and an all-false deprecation flag, 6,204 characters of
+  // prompt the model cannot act on.
+  const upstream = {
+    type: 'object',
+    properties: {
+      headlineFont: {
+        type: 'string',
+        enum: ['INTER', 'MANROPE'],
+        'x-google-enum-descriptions': ['Inter font.', 'Manrope font.'],
+        'x-google-enum-deprecated': [false, true],
+        'x-google-identifier': true,
+      },
+    },
+    $defs: { Typography: { type: 'object', 'x-google-enum-descriptions': ['x'] } },
+    'x-google-enum-descriptions': ['root-level'],
+  };
+
+  const sanitized = promptSafeInputSchema(upstream);
+  const field = sanitized.properties.headlineFont;
+
+  assert.deepEqual(field.enum, ['INTER', 'MANROPE'], 'every legal value stays');
+  assert.equal(field['x-google-identifier'], true, 'a field the runtime may read stays');
+  assert.equal('x-google-enum-descriptions' in field, false);
+  assert.equal('x-google-enum-deprecated' in field, false);
+  assert.equal('x-google-enum-descriptions' in sanitized.$defs.Typography, false);
+  assert.equal('x-google-enum-descriptions' in sanitized, false);
+  // A subtraction, not a rewrite: the input is untouched and unchanged parts are shared.
+  assert.equal(upstream.properties.headlineFont['x-google-enum-deprecated'].length, 2);
+  assert.equal(sanitized.type, 'object');
+});
+
+test('promptSafeInputSchema returns the same object when nothing is dropped', () => {
+  const schema = { type: 'object', properties: { projectId: { type: 'string' } } };
+  assert.equal(promptSafeInputSchema(schema), schema);
+});
+
 test('createOutput requires structuredContent exactly when a schema was kept', () => {
   const withSchema = createOutput({ type: 'object', properties: {} });
   assert.deepEqual(withSchema.schema.required, ['content', 'structuredContent']);
@@ -155,4 +197,26 @@ test('execute passes structured content through only when Stitch sent it', async
   // Absent, not `undefined`-valued: `createSuccessResult` validates the value
   // against a schema that forbids `structuredContent` when no schema was kept.
   assert.deepEqual(Object.keys(await withoutStructured.execute({}, {})), ['content']);
+});
+
+test('only the guessable tools are withdrawn from the announcement', () => {
+  // A project id, a screen id, a title or a prompt is what the guidance section
+  // spells out; a DesignSystem or a VariantOptions is not. The split exists so
+  // that the cheap half stops paying for a schema it does not need.
+  for (const raw of ['list_projects', 'get_project', 'get_screen', 'list_screens', 'download_file', 'create_project', 'delete_project', 'remove_screens_from_canvas', 'update_design_system']) {
+    assert.equal(isAnnounced(raw), false, `${raw} should be withdrawn`);
+  }
+  for (const raw of ['create_design_system', 'apply_design_system', 'generate_screen_from_text', 'edit_screens', 'generate_variants', 'upload_design_md']) {
+    assert.equal(isAnnounced(raw), true, `${raw} should stay announced`);
+  }
+});
+
+test('withoutWithdrawn touches only this plugin\'s tools and reuses the array otherwise', () => {
+  const foreign = { name: 'mcp__openviking__search', description: '', parameters: {} };
+  const announced = { name: 'mcp__stitch__generate_screen_from_text', description: '', parameters: {} };
+  const withdrawn = { name: 'mcp__stitch__list_screens', description: '', parameters: {} };
+  const untouched = [foreign, announced];
+
+  assert.equal(withoutWithdrawn(untouched, 'mcp__stitch__'), untouched, 'no copy when nothing is withdrawn');
+  assert.deepEqual(withoutWithdrawn([...untouched, withdrawn], 'mcp__stitch__'), untouched);
 });

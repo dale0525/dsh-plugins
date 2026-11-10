@@ -10,13 +10,15 @@
  * Two measured facts drive every choice here (probed against the live
  * `tools/list` of 2026-10-08, all 15 tools):
  *
- *  - `parameters` is passed through VERBATIM. `ToolRuntime.register` validates
- *    only `output.schema`; it never inspects `definition.parameters`. Stitch's
- *    input schemas carry `$defs` / `$ref` / `x-google-*` (11 of 15 fail
+ *  - `parameters` is passed through VERBATIM, minus the two `x-google-*` fields
+ *    {@link PROMPT_ONLY_EXTENSIONS} names. `ToolRuntime.register` validates only
+ *    `output.schema`; it never inspects `definition.parameters`. Stitch's input
+ *    schemas carry `$defs` / `$ref` / `x-google-*` (11 of 15 fail
  *    `assertSupportedJsonSchema`), so routing them through `defineTool` — which
  *    validates its `parameters` at construction — would throw for 11 tools.
- *    Registering the raw schema is therefore not a shortcut, it is the only
- *    shape that keeps the upstream contract intact for the model.
+ *    Registering the upstream schema is therefore not a shortcut, it is the only
+ *    shape that keeps the upstream contract intact for the model; the two fields
+ *    removed on top of it are prompt weight the model cannot act on.
  *  - `output.schema` IS validated, both at registration and again on every
  *    result (`createSuccessResult`). 13 of Stitch's 15 advertised
  *    `outputSchema`s are outside the accepted subset, so they must be dropped
@@ -57,6 +59,107 @@ export function publicToolName(serverName, rawName) {
   if (normalized === joined && normalized.length <= MAX_PUBLIC_NAME_LENGTH) return normalized;
   const hash = createHash('sha256').update(`${serverName}\0${rawName}`).digest('hex').slice(0, HASH_LENGTH);
   return `${normalized.slice(0, MAX_PUBLIC_NAME_LENGTH - HASH_LENGTH - 1)}_${hash}`;
+}
+
+/**
+ * Stitch tools whose definitions stay in the prompt; every other one is withdrawn.
+ *
+ * Measured on the live `tools/list` (2026-11-11): the 17 definitions cost 45,680
+ * characters of a 180,629-character first request, and across 651 local sessions
+ * the two heaviest were called twice. Withdrawing a definition from the prompt
+ * does not unregister the tool — execution resolves through the registry's layer
+ * visibility, not through the assembly — so a model that names one still gets it
+ * run; what it loses is the schema, which for simple string-id tools is not the
+ * thing that decides whether the call is right.
+ *
+ * The split follows that test, not usage: a tool stays announced when its
+ * arguments are structures the model cannot guess (a `DesignSystem`,
+ * a `VariantOptions`, a `screenInstances` entry), and is withdrawn when they are
+ * a project id, a screen id, a title or a prompt — all of which the guidance
+ * section spells out. The two design-system writers alone are 15,815 characters,
+ * so keeping them announced is what makes the split worth anything.
+ */
+export const ANNOUNCED_TOOLS = new Set([
+  'create_design_system',
+  'create_design_system_from_design_md',
+  'apply_design_system',
+  'upload_design_md',
+  'generate_screen_from_text',
+  'edit_screens',
+  'generate_variants',
+]);
+
+/**
+ * Whether one upstream Stitch tool keeps its definition in the prompt.
+ *
+ * @param rawName - Stitch's own tool name.
+ * @returns `true` when the definition is announced.
+ */
+export function isAnnounced(rawName) {
+  return ANNOUNCED_TOOLS.has(rawName);
+}
+
+/**
+ * Drop the withdrawn Stitch definitions from an assembled tool list.
+ *
+ * Names outside the `mcp__<server>__` namespace pass through untouched: the
+ * assembly holds every provider's tools, and only this plugin's are its to
+ * remove. The prefix test is against the public name, not a captured
+ * registration set, so a `tools/list` that failed at boot and succeeded later on
+ * a credential update still gets filtered.
+ *
+ * @param tools - the assembly's tool definitions.
+ * @param prefix - the public-name prefix this plugin registers under.
+ * @returns the same array when nothing was withdrawn, otherwise a filtered copy.
+ */
+export function withoutWithdrawn(tools, prefix) {
+  if (!Array.isArray(tools)) return tools;
+  const kept = tools.filter(
+    (tool) => typeof tool?.name !== 'string' || !tool.name.startsWith(prefix) || isAnnounced(tool.name.slice(prefix.length)),
+  );
+  return kept.length === tools.length ? tools : kept;
+}
+
+/**
+ * `x-google-*` fields the prompt pays for and the model cannot use.
+ *
+ * Measured on the live `tools/list` (2026-11-11): `create_design_system` and
+ * `update_design_system` carry 4,744 characters of `x-google-enum-descriptions`
+ * each — one English gloss per font enum value, restating the value it sits on —
+ * plus 1,460 characters of `x-google-enum-deprecated`, every entry `false`.
+ * Together 44% of each 14,000-character schema, and across 651 local sessions
+ * the pair was called twice. The enum values themselves are untouched, so the
+ * model still sees every legal font; only the glosses and the all-false flags go.
+ */
+const PROMPT_ONLY_EXTENSIONS = new Set(['x-google-enum-descriptions', 'x-google-enum-deprecated']);
+
+/**
+ * Copy an upstream input schema with its prompt-only extension fields removed.
+ *
+ * `parameters` is otherwise passed through verbatim (see the module note), so
+ * this is a subtraction, never a rewrite: object keys, ordering, `$defs`,
+ * `$ref`, `oneOf` and every standard keyword survive as they arrive. The schema
+ * is not validated here — the runtime does not inspect `parameters`, and
+ * Stitch's own schemas would fail `assertSupportedJsonSchema`.
+ *
+ * @param schema - the upstream `inputSchema`.
+ * @returns the same schema, or a copy without {@link PROMPT_ONLY_EXTENSIONS}.
+ */
+export function promptSafeInputSchema(schema) {
+  if (schema === null || typeof schema !== 'object') return schema;
+  if (Array.isArray(schema)) return schema.map(promptSafeInputSchema);
+  let changed = false;
+  const copy = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (PROMPT_ONLY_EXTENSIONS.has(key)) {
+      changed = true;
+      continue;
+    }
+    const next = promptSafeInputSchema(value);
+    if (next !== value) changed = true;
+    copy[key] = next;
+  }
+  return changed ? copy : schema;
 }
 
 /**
@@ -137,7 +240,8 @@ export function createOutput(structuredSchema) {
 /**
  * Adapt one upstream Stitch tool descriptor to a ToolRuntime definition.
  *
- * `parameters` is the raw upstream `inputSchema` (see the module note). The
+ * `parameters` is the raw upstream `inputSchema` minus {@link PROMPT_ONLY_EXTENSIONS}
+ * (see the module note); every other field arrives as Stitch sent it. The
  * result is unregistered; the caller owns registration lifetime.
  *
  * @param options - upstream descriptor fields plus the raw-result callback.
@@ -148,7 +252,7 @@ export function createToolDefinition(options) {
   return {
     name,
     description,
-    parameters: inputSchema,
+    parameters: promptSafeInputSchema(inputSchema),
     output: createOutput(supportedOutputSchema(outputSchema)),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     async execute(args, exec) {

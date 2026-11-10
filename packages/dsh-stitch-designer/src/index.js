@@ -41,7 +41,7 @@ import { createCanvasClient } from './canvas.js';
 import { createStitchClient } from './stitch.js';
 import { createInvoker } from './conventions.js';
 import { SECTION_NAME, SECTION_ORDER, STITCH_GUIDANCE } from './guidance.js';
-import { createOutput, createToolDefinition, publicToolName } from './tools.js';
+import { createOutput, createToolDefinition, publicToolName, withoutWithdrawn } from './tools.js';
 
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
 export const name = 'stitch-designer';
@@ -57,6 +57,9 @@ export const API_KEY_REF = 'STITCH_API_KEY';
 
 /** Server namespace embedded in every public tool name (`mcp__stitch__*`). */
 export const SERVER_NAME = 'stitch';
+
+/** The prefix every tool this plugin registers carries, announcement filter included. */
+const PUBLIC_PREFIX = `mcp__${SERVER_NAME}__`;
 
 /**
  * Register the Stitch tools and announce the design conventions.
@@ -192,6 +195,18 @@ export function apply(ctx) {
         disposers = [];
       };
     }, 'stitch-designer: Stitch tools');
+  });
+
+  // ------------------------------------------------------------ annotation
+  // The withdrawn half of the toolset (see `ANNOUNCED_TOOLS`): registered and
+  // executable, absent from every request's tool list. Filtering by the public
+  // name prefix rather than by a captured registration set keeps this correct
+  // when `tools/list` fails at boot and the tools appear later on a credential
+  // update — the names are the contract, the set of them is not.
+  ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+    const assembly = await next();
+    const tools = withoutWithdrawn(assembly.tools, PUBLIC_PREFIX);
+    return tools === assembly.tools ? assembly : { ...assembly, tools };
   });
 
   // ------------------------------------------------------------- guidance

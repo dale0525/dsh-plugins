@@ -60,6 +60,9 @@ test('apply registers the announcement as one system-prompt section', () => {
     get: (name) => (name === 'systemPrompt' ? { section: (section) => (sections.push(section), () => {}) } : undefined),
     inject: () => {},
     effect: (factory) => factory(),
+    // The announcement filter listens on `system-prompt/assemble`; a host that
+    // never emits it costs the plugin nothing, so the fake only has to accept it.
+    on: () => () => {},
     logger: { info() {}, warn() {} },
   };
 
@@ -75,6 +78,7 @@ test('a missing systemPrompt service does not take the plugin down with it', () 
   const ctx = {
     get: () => undefined,
     effect: (factory) => factory(),
+    on: () => () => {},
     // The tools half runs even though there is no system prompt: a plugin that
     // skipped registration here would lose its tools over a missing banner.
     // `effect`/`logger`/`on` sit on the INJECTED context, not on the service
