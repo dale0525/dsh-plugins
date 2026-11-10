@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-modal-h3",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH Modal H3: MiniMax H3 Ref2VA video generation on Modal as native mcp__modal_h3__* tools, with a multi-account pool kept in a credential. DSH Modal H3 视频生成子插件。",
   "type": "module",
   "main": "lib/index.js",

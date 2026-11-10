@@ -50,6 +50,7 @@ import {
   generateVideoTool,
   getTaskTool,
   listTasksTool,
+  SERVER_NAME,
 } from './tools.js';
 
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
@@ -121,6 +122,21 @@ export function apply(ctx) {
         for (const dispose of disposers) dispose();
       };
     }, 'modal-h3: video generation tools');
+
+    // ------------------------------------------------------- announcement
+    // The generation route's own definition — 3,026 characters of prompt for a
+    // call no local session has made yet — stays out of the assembly while the
+    // guidance section below carries the contract it would describe. The tool
+    // stays registered and executable: a model that names it still gets it run,
+    // because execution resolves through the registry's layers, never through
+    // the assembly. The five small tools remain announced; they are what a model
+    // reads a task's state with, and their arguments are not prose-guessable.
+    const withdrawn = new Set([`mcp__${SERVER_NAME}__generate_video`]);
+    toolsCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+      const assembly = await next();
+      const kept = assembly.tools.filter((tool) => !withdrawn.has(tool.name));
+      return kept.length === assembly.tools.length ? assembly : { ...assembly, tools: kept };
+    });
 
     // ----------------------------------------------------------- guidance
     // Inside this block, and read through `get` rather than `inject`, for two

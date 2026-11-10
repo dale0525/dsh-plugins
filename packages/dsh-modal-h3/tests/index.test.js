@@ -34,6 +34,7 @@ function fakeContext(options = {}) {
   const registered = [];
   const sections = [];
   const effects = [];
+  const handlers = new Map();
   const services = {};
   const ctx = {
     logger: { info() {}, warn() {}, error() {}, debug() {} },
@@ -43,6 +44,9 @@ function fakeContext(options = {}) {
       // missing, so the fake must do the same or it would hide that bug.
       for (const dep of deps) if (services[dep] === undefined) return;
       callback(ctx);
+    },
+    on(event, handler) {
+      handlers.set(event, handler);
     },
     effect(factory, label) {
       effects.push(label);
@@ -65,7 +69,7 @@ function fakeContext(options = {}) {
       },
     };
   }
-  return { ctx, registered, sections, effects };
+  return { ctx, registered, sections, effects, handlers };
 }
 
 test('the row id equals the host half name, which nothing automated checks', () => {
@@ -133,4 +137,32 @@ test('the announced section is unique, ordered, and states the limits the valida
   assert.match(section.text, /effective duration of N seconds/);
   assert.match(section.text, /dry_run/);
   assert.match(section.text, /wait_for_completion: false/);
+});
+
+test('the generation route is withdrawn from the prompt but stays registered', async () => {
+  // 3,026 characters of schema for a call no local session has made yet. The
+  // section below it already carries the contract, and withdrawing the
+  // definition does not unregister the tool: execution resolves through the
+  // registry's layers, never through the assembly.
+  const { ctx, registered, handlers } = fakeContext({ credentials: true, systemPrompt: true });
+  apply(ctx);
+
+  const assemble = handlers.get('system-prompt/assemble');
+  assert.equal(typeof assemble, 'function');
+
+  const announced = registered.map((definition) => ({
+    name: definition.name,
+    description: definition.description,
+    parameters: definition.parameters,
+  }));
+  const assembly = { sections: [], contexts: [], tools: announced, variables: {} };
+  const filtered = await assemble(assembly, {}, async () => assembly);
+
+  assert.equal(
+    filtered.tools.some((tool) => tool.name === 'mcp__modal_h3__generate_video'),
+    false,
+    'generate_video must not be announced',
+  );
+  assert.equal(filtered.tools.length, 5, 'every other tool keeps its definition');
+  assert.equal(registered.length, 6, 'the withdrawn tool remains callable');
 });
