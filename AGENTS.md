@@ -3,7 +3,7 @@
 > 术语表见根 `CONTEXT.md`（若存在）。
 
 本文件只放**每条任务都成立**的约定：仓库结构、单一真源、合并前必过的门禁、边界。
-改动前必知的具体规则按需加载——下表是唯一入口，未触发不读。
+改动前必知的具体规则按需加载——先用 `skill` 加载对应技能，未触发不读。
 
 ## 📦 仓库形态
 
@@ -46,20 +46,7 @@ dsh-plugins/
 
 ## 🧩 项目技能索引
 
-技能正文按需加载：用 `skill` 工具按名字调用（这是唯一生效的加载方式）；下表同时给出文件路径，便于直接读取核对。
-
-| 触发 | 技能 |
-| --- | --- |
-| 新增或移除子插件、判断某目录该不该是上游 fork、收养 git subtree | [`dsh-plugin-lifecycle`](.agents/skills/dsh-plugin-lifecycle/SKILL.md) |
-| 改 `package.json` 的依赖声明；typecheck 报 `never`、插件行被静默禁用或整行不激活 | [`dsh-plugin-deps`](.agents/skills/dsh-plugin-deps/SKILL.md) |
-| 宿主半边：注册路由或事件监听、用 `ctx` 取服务、`inject`、`error` 回调、启动期自动执行 | [`dsh-plugin-host-api`](.agents/skills/dsh-plugin-host-api/SKILL.md) |
-| 客户端 UI：槽位内容、注入 `<style>`、替换宿主元素、拦截 RPC；页面空白或样式不生效 | [`dsh-plugin-client-ui`](.agents/skills/dsh-plugin-client-ui/SKILL.md) |
-| 会话列表／历史的请求参数与响应字段、首屏体积、长会话打不开 | [`dsh-session-payload`](.agents/skills/dsh-session-payload/SKILL.md) |
-| 改完代码确认是否生效：重启还是 HMR、bundle 是否新构建、`dsh-web status` 报错 | [`dsh-plugin-runtime`](.agents/skills/dsh-plugin-runtime/SKILL.md) |
-| 准备本地测试插件、想用临时 profile 真机验证本地改动、或说「按本地测试流程走一遍」 | [`dsh-plugin-local-verify`](.agents/skills/dsh-plugin-local-verify/SKILL.md) |
-| 同步 fork 子包到上游新版本、预演同步冲突 | [`dsh-plugin-upstream`](.agents/skills/dsh-plugin-upstream/SKILL.md) |
-| 发版、升版本号、配 trust、CI 发布失败、清理本地验证脚手架 | [`dsh-plugin-release`](.agents/skills/dsh-plugin-release/SKILL.md) |
-| 测试红了判断是不是自己改坏的、写碰时钟／临时目录／平台分支的测试 | [`dsh-test-judgement`](.agents/skills/dsh-test-judgement/SKILL.md) |
+技能正文按需加载：用 `skill` 工具按名字调用（这是唯一生效的加载方式）。名字与触发条件由每轮注入的 skill catalog 给出，不在此重复；需要直接读文件核对时，在 `.agents/skills/<name>/SKILL.md`。
 
 ## ✅ 验证命令
 
