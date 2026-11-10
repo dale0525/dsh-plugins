@@ -58,25 +58,14 @@ function sdk(options = {}) {
  * @returns the context, the registered definitions, and the recorded effects.
  */
 function host(options = {}) {
-  const { systemPrompt = true } = options;
   const registered = [];
   const effects = [];
   const warnings = [];
-  const sections = [];
   const handlers = new Map();
-
-  const prompt = {
-    getSectionOrder: (kind) => (kind === 'TOOL_COMPUTER_USE' ? 40 : 0),
-    section(definition) {
-      sections.push(definition);
-      return () => {};
-    },
-  };
 
   const ctx = {
     get(name) {
       if (name === 'tools') return { register: (definition) => registered.push(definition) };
-      if (name === 'systemPrompt') return systemPrompt ? prompt : undefined;
       return undefined;
     },
     on(name, handler) {
@@ -92,7 +81,7 @@ function host(options = {}) {
     logger: { warn: (message) => warnings.push(message) },
   };
 
-  return { ctx, registered, effects, warnings, sections, handlers };
+  return { ctx, registered, effects, warnings, handlers };
 }
 
 test('the runtime publishes one prefixed tool per catalog entry', async () => {
@@ -141,25 +130,6 @@ test('an MCP error result is reported as the call\'s own failure', async () => {
     () => registered[0].execute({ pid: 1 }, { signal: new AbortController().signal }),
     /window is gone/,
   );
-});
-
-test('the guidance section registers at the computer-use order', async () => {
-  const { ctx, sections } = host();
-  await mountDriver(ctx, async () => sdk().module);
-
-  assert.equal(sections.length, 1);
-  assert.equal(sections[0].name, 'computer-use:cua-driver-native');
-  assert.equal(sections[0].order, 40);
-  assert.match(sections[0].text, /facility_unavailable/u);
-});
-
-test('a host without the system prompt service warns instead of throwing', async () => {
-  const { ctx, registered, warnings } = host({ systemPrompt: false });
-  await mountDriver(ctx, async () => sdk().module);
-
-  assert.equal(registered.length, CATALOG.length, 'the tools still publish');
-  assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /guidance was not registered/u);
 });
 
 // 56 schemas cost 109,857 chars — 52% of a measured first request, for calls no

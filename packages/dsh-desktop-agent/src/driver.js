@@ -25,14 +25,7 @@ export const TOOL_PREFIX = 'cua_driver_native__';
 /** DeepSeek's function-name alphabet and maximum length are protocol constants. */
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/u;
 
-/** The prompt section this runtime owns. */
-const SECTION_NAME = 'computer-use:cua-driver-native';
 
-const GUIDANCE = `Cua Driver native computer-use tools operate the host desktop. Discover the exact app and window, then get a fresh window snapshot before acting. Use element_token from that snapshot, or coordinates from its screenshot. A new snapshot of that window invalidates its earlier element tokens. Select either target or the legacy pid/window_id fields; do not combine them.
-
-Prefer background delivery. A refusal does not authorize a foreground retry. Verify the requested outcome from fresh state after an action; a delivered click alone does not prove the outcome. After cancellation, inspect current state before retrying because completed input is not rolled back. Other sessions and applications may change the same desktop.
-
-On macOS, cursor-overlay operations may return facility_unavailable even when screenshots and input work.`;
 
 /**
  * Load the native SDK module.
@@ -73,7 +66,7 @@ function readCatalog(value) {
  * plugin mid-startup aborts the in-flight discovery call instead of waiting for
  * it to finish.
  *
- * @param ctx - the plugin context, providing `tools` and optionally `systemPrompt`.
+ * @param ctx - the plugin context, providing `tools`.
  * @param loadSdk - the SDK loader; overridden by tests, which cannot import the native binaries.
  * @returns the effect disposer that tears the runtime down.
  * @throws {Error} when the SDK cannot be loaded, the catalog is unusable, or a registration is refused.
@@ -113,7 +106,7 @@ export async function mountDriver(ctx, loadSdk = loadNativeSdk) {
 }
 
 /**
- * Publish one model tool per catalog entry and the usage guidance section.
+ * Publish one model tool per catalog entry.
  *
  * @param ctx - the plugin context.
  * @param driver - the live native handle.
@@ -175,18 +168,4 @@ async function publishTools(ctx, driver, lifetime, pending) {
     const kept = assembly.tools.filter((tool) => !names.has(tool.name));
     return kept.length === assembly.tools.length ? assembly : { ...assembly, tools: kept };
   });
-
-  const systemPrompt = ctx.get('systemPrompt');
-  if (systemPrompt === null || systemPrompt === undefined) {
-    ctx.logger?.warn?.('desktop-agent: the systemPrompt service is unavailable; the Cua Driver guidance was not registered.');
-    return;
-  }
-  ctx.effect(
-    () => systemPrompt.section({
-      name: SECTION_NAME,
-      order: systemPrompt.getSectionOrder('TOOL_COMPUTER_USE'),
-      text: GUIDANCE,
-    }),
-    'desktop-agent: cua driver guidance',
-  );
 }
