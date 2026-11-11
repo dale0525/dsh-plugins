@@ -126,3 +126,35 @@ function response(result, status = 200) {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+test("the withdrawn tools' arguments are announced with interpolation off", () => {
+  // The section quotes the real `{{ov_privacy:…}}` placeholder syntax in prose.
+  // The host treats every `{{…}}` in a section as a prompt-variable reference
+  // and throws `malformed prompt variable reference` on one it cannot parse —
+  // which took the whole plugin down at assembly. Joining the text through no
+  // interpolation is the fix, so a regression here is a dead plugin, not a
+  // cosmetic one.
+  const sections = [];
+  apply({
+    logger: { debug() {} },
+    provide() {},
+    effect(execute) {
+      execute();
+      return async () => {};
+    },
+    get(name) {
+      return name === "systemPrompt"
+        ? { section: (section) => (sections.push(section), () => {}) }
+        : undefined;
+    },
+    plugin() {},
+    tools: { register() {} },
+    agents: { roots: () => [] },
+    on() {},
+  }, { endpoint: "http://127.0.0.1:1933", workspacePeer: false });
+
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].name, "plugin:dsh-openviking");
+  assert.equal(sections[0].interpolate, false, "literal {{...}} would throw at assembly otherwise");
+  assert.match(sections[0].text, /\{\{ov_privacy:/, "the placeholder syntax the flag exists for must still be quoted");
+});

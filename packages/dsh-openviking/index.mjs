@@ -140,6 +140,12 @@ export function apply(ctx, input = {}) {
         systemPrompt.section({
           name: SECTION_NAME,
           order: SECTION_ORDER,
+          // The prose quotes the real `{{ov_privacy:…}}` placeholder syntax, and
+          // the host reads every `{{…}}` in a section as a prompt-variable
+          // reference — an unparseable one throws `malformed prompt variable
+          // reference` and took the whole plugin down at assembly. Nothing here
+          // is a variable, so the section opts out of interpolation.
+          interpolate: false,
           text: OPENVIKING_GUIDANCE,
         }),
       "openvikingMemory.section()",
