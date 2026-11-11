@@ -5,16 +5,35 @@ import { apply, name } from './index.mjs';
 import { DEFAULT_GUIDANCE, SECTION_NAME } from './guidance.mjs';
 import { DEFAULT_KEEP, filterAnnounced } from './surface.mjs';
 
-/** A cordis-shaped context covering exactly the seams this plugin touches. */
+/**
+ * A cordis-shaped context covering exactly the seams this plugin touches.
+ *
+ * `options.deferredService` simulates the REAL host load order: on this machine
+ * the loader calls `apply` before `dsh-system-prompt` mounts, so `get` returns
+ * `undefined` while the service does arrive a moment later. The old harness
+ * always had the service present at apply time, which is precisely why the
+ * shipped 0.1.0 bug — filter working, prose silently absent — passed 19 tests.
+ */
 function harness(options = {}) {
   const listeners = new Map();
   const sections = [];
-  const systemPrompt =
-    options.systemPrompt === false
-      ? undefined
-      : { section: (section) => (sections.push(section), () => {}) };
+  const sectionFor = (service) => ({
+    section: (section) => (sections.push(section), () => {}),
+  });
+  // The service as `get` sees it NOW; with `deferredService` it is absent until
+  // the deferred callback runs, exactly as during host boot.
+  const available = options.systemPrompt !== false && options.deferredService !== true;
+  const systemPrompt = available ? sectionFor() : undefined;
+  const pending = [];
   const ctx = {
     get: (service) => (service === 'systemPrompt' ? systemPrompt : undefined),
+    // Deferred registration: cordis re-runs the callback once the service
+    // exists. Recorded rather than invoked so a test can fire it explicitly.
+    inject: (deps, callback) => {
+      if (deps.systemPrompt !== true) throw new Error('unexpected inject dependency');
+      if (systemPrompt !== undefined) callback({ systemPrompt, effect: (factory) => factory() });
+      else pending.push(callback);
+    },
     effect: (factory) => factory(),
     on: (event, handler) => {
       const handlers = listeners.get(event) ?? [];
@@ -24,7 +43,16 @@ function harness(options = {}) {
     logger: { info() {}, warn() {} },
   };
   apply(ctx, options.config);
-  return { listeners, sections };
+  return {
+    listeners,
+    sections,
+    /** Deliver the service the way the host would, after `apply` returned. */
+    deliverService() {
+      for (const callback of pending.splice(0)) {
+        callback({ systemPrompt: sectionFor(), effect: (factory) => factory() });
+      }
+    },
+  };
 }
 
 /** Run one assembly waterfall, whose listener takes (assembly, context, next). */
@@ -59,6 +87,35 @@ test('a missing systemPrompt service still filters', async () => {
   const assembly = { sections: [], contexts: [], tools: [{ name: 'ssh_read', parameters: {} }], variables: {} };
   const assembled = await assemble(listeners, assembly);
   assert.deepEqual(assembled.tools, [], 'the filter must not be lost with the prompt service');
+});
+
+test('a service that arrives after apply still gets its section', () => {
+  // The shipped 0.1.0 bug: apply ran before dsh-system-prompt mounted, read the
+  // service as `undefined`, and shipped the filter WITHOUT the prose — 24 tools
+  // announced, the arguments of the other 49 named nowhere. Nothing warned,
+  // because the early return was the designed path. Only a harness that defers
+  // the service can see it.
+  const h = harness({ deferredService: true });
+  assert.equal(h.sections.length, 0, 'no section can exist before the service does');
+  h.deliverService();
+  assert.equal(h.sections.length, 1, 'the deferred registration must fire on arrival');
+  assert.equal(h.sections[0].name, SECTION_NAME);
+  assert.equal(h.sections[0].interpolate, false);
+  assert.equal(h.sections[0].text, DEFAULT_GUIDANCE);
+});
+
+test('the filter is registered regardless of the prompt service', async () => {
+  // The other half of the same requirement: `inject`-gating the whole apply
+  // would have traded one failure for the other. Filtering must never wait.
+  for (const options of [{}, { deferredService: true }, { systemPrompt: false }]) {
+    const { listeners } = harness(options);
+    const assembly = {
+      sections: [], contexts: [], variables: {},
+      tools: [...DEFAULT_KEEP.map((n) => ({ name: n, parameters: {} })), { name: 'ssh_read', parameters: {} }],
+    };
+    const assembled = await assemble(listeners, assembly);
+    assert.deepEqual(assembled.tools.map((t) => t.name), DEFAULT_KEEP, JSON.stringify(options));
+  }
 });
 
 test('the hook leaves exactly the whitelist in the assembly', async () => {

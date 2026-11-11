@@ -60,38 +60,44 @@ export function apply(ctx, config = {}) {
     return tools === assembly.tools ? assembly : { ...assembly, tools };
   });
 
-  // Read through `ctx.get`, not `inject`: `inject` treats a service as REQUIRED
-  // and a missing one would skip the whole plugin — turning "no system prompt"
-  // into "no filtering at all", which is the opposite of what the filter's
-  // absence means.
-  const systemPrompt = ctx.get('systemPrompt');
-  if (systemPrompt === undefined || systemPrompt === null) {
-    ctx.logger?.warn?.(
-      'tool-surface: the systemPrompt service is unavailable; the withdrawn tools were filtered but not described.',
-    );
-    return;
-  }
   if (guidance === '') {
     ctx.logger?.info?.(
       'tool-surface: guidance is empty; the withdrawn tools are filtered without a prompt section.',
     );
     return;
   }
-  ctx.effect(
-    () =>
-      systemPrompt.section({
-        name: SECTION_NAME,
-        order: SECTION_ORDER,
-        // The prose quotes tool names and may quote literal braces. The host
-        // reads every `{{…}}` in a section as a prompt-variable reference and
-        // throws `malformed prompt variable reference` on one it cannot parse,
-        // which took a whole plugin down at assembly on 2026-11-11. Nothing here
-        // is a variable, so the section opts out of interpolation.
-        interpolate: false,
-        text: guidance,
-      }),
-    'tool-surface: withdrawn tool guidance',
-  );
+
+  // The section goes through `ctx.inject`, deferred until the service exists —
+  // NOT `ctx.get` at apply time, which was the shipped bug of 0.1.0. The filter
+  // above registers on an event, so it needs no service and always works; a
+  // one-shot read of `systemPrompt` happens whenever the loader happens to call
+  // `apply`, which on this host is BEFORE `dsh-system-prompt` mounts. It then
+  // returns `undefined`, and the plugin concluded "no prompt service here" and
+  // silently shipped the filter without its prose: 73 tools announced became 24
+  // with the arguments for those 49 named nowhere. Measured live 2026-11-11 —
+  // filtering worked, section absent, and no warning anywhere because the early
+  // return was the documented path rather than an error.
+  //
+  // `inject` alone is not an option: it gates the whole `apply`, so a service
+  // that never arrives would also disable the filter. Scoping it to this one
+  // registration keeps "filter always, prose when possible".
+  ctx.inject({ systemPrompt: true }, (scoped) => {
+    scoped.effect(
+      () =>
+        scoped.systemPrompt.section({
+          name: SECTION_NAME,
+          order: SECTION_ORDER,
+          // The prose quotes tool names and may quote literal braces. The host
+          // reads every `{{…}}` in a section as a prompt-variable reference and
+          // throws `malformed prompt variable reference` on one it cannot parse,
+          // which took a whole plugin down at assembly on 2026-11-11. Nothing
+          // here is a variable, so the section opts out of interpolation.
+          interpolate: false,
+          text: guidance,
+        }),
+      'tool-surface: withdrawn tool guidance',
+    );
+  });
 }
 
 export { DEFAULT_GUIDANCE, DEFAULT_KEEP, filterAnnounced, renderWithdrawnGuidance };
