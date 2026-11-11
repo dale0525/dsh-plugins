@@ -172,6 +172,7 @@ test("apply mounts the tool surface instead of registering tools itself", () => 
       return async () => {};
     },
     plugin: (plugin, config) => mounted.push({ plugin, config }),
+    get() { return undefined; },
     tools: { register: definition => registered.push(definition) },
     agents: { roots: () => [] },
     on() {},
@@ -229,6 +230,7 @@ test("each root agent mounts a bridge carrying its own session's peer", () => {
         return async () => {};
       },
       plugin: (plugin, config) => rootMounts.push({ plugin, config }),
+      get() { return undefined; },
       tools: { register: () => () => {} },
       agents: { roots: () => roots },
       on(event, handler) {

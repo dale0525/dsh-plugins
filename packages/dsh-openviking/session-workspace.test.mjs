@@ -41,6 +41,7 @@ function setup(t) {
         if (name === "openvikingMemory") runtime = value;
       },
       effect(execute) { execute(); },
+      get() { return undefined; },
       on() {},
       plugin() {},
       // The real context always carries the agent registry; this fork mounts a

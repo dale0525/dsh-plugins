@@ -25,6 +25,9 @@ test("session filtering skips subagents without changing main-session recall", a
       return async () => {};
     },
     tools: { register() {} },
+    // The real context always carries `get`; the plugin reads the optional
+    // systemPrompt service through it, and an absent service is a valid host.
+    get() { return undefined; },
     plugin() {},
     agents: { roots: () => [agent] },
     on(name, handler) {

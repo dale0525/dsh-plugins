@@ -1,8 +1,10 @@
 import { OpenVikingClient } from "./client.mjs";
 import { resolveConfig } from "./config.mjs";
+import { OPENVIKING_GUIDANCE, SECTION_NAME, SECTION_ORDER } from "./guidance.mjs";
 import { mountOpenVikingMcp } from "./mcp.mjs";
 import { OpenVikingRuntime } from "./runtime.mjs";
 import { mountOpenVikingSkills } from "./skills.mjs";
+import { withoutWithdrawn } from "./tool-surface.mjs";
 import { guardVikingUri, noticeVikingUri } from "./uri-guard.mjs";
 
 export const name = "openviking-memory";
@@ -112,6 +114,37 @@ export function apply(ctx, input = {}) {
 
   ctx.on("tools/pre-execute", guardVikingUri);
   ctx.on("tools/post-execute", noticeVikingUri);
+
+  // The withdrawn half of the tool surface (see `tool-surface.mjs`): registered
+  // and executable, absent from every request's tool list. Filtering by the
+  // public name prefix rather than by a captured registration set keeps this
+  // correct when `tools/list` fails at boot and the tools appear later on a
+  // credential update — the names are the contract, the set of them is not.
+  ctx.on("system-prompt/assemble", async (_assembly, _context, next) => {
+    const assembly = await next();
+    const tools = withoutWithdrawn(assembly.tools);
+    return tools === assembly.tools ? assembly : { ...assembly, tools };
+  });
+
+  // Withdrawing a definition takes its schema with it, so the arguments have to
+  // be stated somewhere or the tool is knowable by name only. Read through
+  // `ctx.get` rather than `inject`: `inject` treats a service as REQUIRED and
+  // silently skips the whole plugin when it is missing, which would turn "no
+  // system prompt" into "no memory at all".
+  const systemPrompt = ctx.get("systemPrompt");
+  if (systemPrompt === undefined || systemPrompt === null) {
+    ctx.logger?.warn?.("openviking: the systemPrompt service is unavailable; the withdrawn tools' arguments were not announced.");
+  } else {
+    ctx.effect(
+      () =>
+        systemPrompt.section({
+          name: SECTION_NAME,
+          order: SECTION_ORDER,
+          text: OPENVIKING_GUIDANCE,
+        }),
+      "openvikingMemory.section()",
+    );
+  }
 
   // Mounted last, and deliberately not awaited: the bridge's apply blocks on
   // its first tools/list, so a server that accepts the connection but never
