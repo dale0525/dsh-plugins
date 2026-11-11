@@ -2,11 +2,17 @@
  * The two tools this plugin registers.
  *
  * They are NOT named after magpie's own tools (`generate_image`,
- * `generation_result`): `dsh-imagegen` already owns `generate_image`, and
- * `dsh-tools`' registry throws on a second registration of one name
- * (`tool "<name>" is already registered`). The `mcp__magpie__*` prefix is both
- * collision-free and the same vocabulary `@deepseek-ai/dsh-mcp-client` would
- * have produced, so a prompt naming either form keeps working.
+ * `generation_result`). The `mcp__magpie__*` prefix is what these tools were
+ * first published under, and sessions already name them that way, so renaming
+ * them now would break calls that work today. It is also the same vocabulary
+ * `@deepseek-ai/dsh-mcp-client` would have produced.
+ *
+ * Historical note, because the reason changed: the prefix originally existed to
+ * avoid colliding with `dsh-imagegen`, which owned the bare `generate_image`,
+ * and `dsh-tools`' registry throws on a second registration of one name
+ * (`tool "<name>" is already registered`). `dsh-imagegen` was removed on
+ * 2026-11-11, so the collision no longer exists — the names stay anyway, for the
+ * compatibility reason above.
  *
  * Only the image half of magpie is exposed. `generate_video` is deliberately
  * absent — video is covered by dsh-modal-h3. The poller exists because magpie

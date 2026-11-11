@@ -2,8 +2,8 @@
  * dsh-magpie-image — host half.
  *
  * Registers the two `mcp__magpie__*` tools against magpie's image MCP endpoint
- * (`https://hub.logiconsole.com/mcp/magpie/image`) so image generation has a
- * second provider beside `@logictan/dsh-imagegen` rather than replacing it.
+ * (`https://hub.logiconsole.com/mcp/magpie/image`). Since `dsh-imagegen` was
+ * removed on 2026-11-11 this is the only image provider in this repository.
  *
  * Three decisions are load-bearing, each taken from a measured fact about this
  * endpoint (probed 2026-11-07):

@@ -1,8 +1,8 @@
 # @logictan/dsh-magpie-image
 
 Image generation for DSH through magpie's image MCP endpoint, as two native
-`mcp__magpie__*` tools that sit beside `@logictan/dsh-imagegen` rather than
-replacing it.
+`mcp__magpie__*` tools. It replaced `@logictan/dsh-imagegen`, removed on
+2026-11-11, and is now the only image provider in this repository.
 
 ## Tools
 
@@ -11,10 +11,12 @@ replacing it.
 | `mcp__magpie__generate_image` | Text-to-image, or edit/combine images by passing `reference_images`. The result is saved as a durable attachment and shown beside the call. |
 | `mcp__magpie__generation_result` | Fetch a request that outlived magpie's ~20-second budget, by the `task_id` the first call answered with. |
 
-The names carry the `mcp__magpie__` prefix because `dsh-imagegen` already owns
-the bare `generate_image`; two registrations of one tool name throw
-(`tool "<name>" is already registered`), and the prefixed form is the same
-vocabulary `@deepseek-ai/dsh-mcp-client` would have produced.
+The names carry the `mcp__magpie__` prefix because that is how they were first
+published and how sessions already call them; renaming now would break working
+calls. It is also the same vocabulary `@deepseek-ai/dsh-mcp-client` would have
+produced. (The prefix originally avoided a collision with `dsh-imagegen`, which
+owned the bare `generate_image` — two registrations of one tool name throw
+`tool "<name>" is already registered`. That package was removed on 2026-11-11.)
 
 Only the image half of magpie is exposed. Its `generate_video` is deliberately
 absent — video is covered by `@logictan/dsh-modal-h3`.
