@@ -19,7 +19,6 @@ dsh-plugins/
 │   ├── dsh-fakeip-fetch/       # 自制（无上游）→ 不 fork
 │   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-easyrewrite/        # 衍生自上游，已去 fork 化 → 不参与同步
-│   ├── dsh-imagegen/           # 衍生自上游，已去 fork 化 → 不参与同步
 │   └── <pkg>/upstream.json     # 该 fork 的上游身份（仅 fork 有）
 ├── scripts/
 │   ├── aggregate.mjs       # aggregate.yml → patch + deps
@@ -36,13 +35,13 @@ dsh-plugins/
 **「等于宿主半边 `export const name`」这半仍靠人工核对**（脚本不读 `src/`）。
 
 **构建产物不入版本控制**：每个 `packages/<name>/lib/` 由各自 `.gitignore` 忽略，由该包自己的构建脚本生成。
-各包的触发时机**不统一**：多数用 `prepare`（`pnpm install` 即构建），`dsh-imagegen` 只有 `prepack`——
+各包的构建钩子**不统一**：绝大多数用 `prepare`（`pnpm install` 即构建），而无需构建的包（如 `dsh-tool-surface`，纯 `.mjs` 直接发布）没有任何构建钩子——
 **别假设 `pnpm install` 之后每个包的 `lib/` 都已就绪**，
 用某个包的产物前先确认它的 `scripts` 里哪个钩子会构建（`node -p "require('./packages/<name>/package.json').scripts"`）。
 
 **可发布的包必须有一个发布期构建钩子**（`prepack` 或 `prepare`）：CI 只跑 `pnpm install` + typecheck + test，
 不单独构建；包只有 `build` 时 `npm publish` 会把 `files` 里不存在的 `lib/` 静默丢掉，
-发出一个「装得上、加载不了」的空包（`dsh-imagegen` 2.0.0 就这样发过一次）。
+发出一个「装得上、加载不了」的空包（`@logictan/dsh-imagegen` 2.0.0 就这样发过一次，该包已于 2026-11-11 删除，但教训对任何包都成立）。
 
 ## 🧩 项目技能索引
 

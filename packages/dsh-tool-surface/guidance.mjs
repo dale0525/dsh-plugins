@@ -74,10 +74,6 @@ export const GUIDANCE_GROUPS = [
   {
     title: '出图组',
     tools: [
-      { name: 'generate_image', args: '`prompt`，可选 `model`/`size`/`count`/`quality`' },
-      { name: 'edit_image', args: '`prompt` + `source_image` 对象' },
-      { name: 'cancel_image_generation_task', args: '`task_id`' },
-      { name: 'get_image_generation_task', args: '`task_id`' },
       { name: 'mcp__magpie__generate_image', args: '`prompt`，可选 `reference_images`' },
       { name: 'mcp__magpie__generation_result', args: '`task_id`' },
     ],

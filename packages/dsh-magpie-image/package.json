@@ -1,7 +1,7 @@
 {
   "name": "@logictan/dsh-magpie-image",
   "version": "0.1.0",
-  "description": "DSH magpie image: image generation and reference-image editing through magpie's image MCP, as native mcp__magpie__* tools beside dsh-imagegen. DSH magpie 生图子插件。",
+  "description": "DSH magpie image: image generation and reference-image editing through magpie's image MCP, as native mcp__magpie__* tools. The only image plugin since dsh-imagegen was removed. DSH magpie 生图子插件。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

@@ -4,7 +4,6 @@
 patchFrom:
   - ../dsh-config-manager
   - ../dsh-easyrewrite
-  - ../dsh-imagegen
   - ../dsh-fakeip-fetch
   # dsh-browser-search registers the `browser-search` provider on the web seam's
   # search registry, replacing the paid DeepSeek search API without changing the
@@ -34,10 +33,12 @@ patchFrom:
   # dsh-magpie-image registers the two `mcp__magpie__*` tools itself and needs no MCP
   # row: magpie answers with an image block that must become a durable attachment,
   # and it accepts a reference image only as a data URL from any other machine —
-  # neither is expressible in a plain mcp-client row. It coexists with
-  # dsh-imagegen, which keeps the bare `generate_image` name; the `mcp__magpie__*`
-  # prefix is what keeps the two from colliding. The magpie key is the
-  # MAGPIE_API_KEY credential, so the row carries no config.
+  # neither is expressible in a plain mcp-client row. It is the only image
+  # plugin now: dsh-imagegen, which used to own the bare `generate_image` name,
+  # was removed when magpie replaced it. The `mcp__magpie__*` prefix stays as
+  # the plugin's own published tool names — renaming them would break sessions
+  # that already name them. The magpie key is the MAGPIE_API_KEY credential, so
+  # the row carries no config.
   - ../dsh-magpie-image
   # dsh-modal-h3 registers the six `mcp__modal_h3__*` tools itself and needs no
   # MCP row. Its Modal account pool is a credential (MODAL_H3_ACCOUNTS), not a
@@ -84,7 +85,6 @@ patchFrom:
 deps:
   - ../dsh-config-manager
   - ../dsh-easyrewrite
-  - ../dsh-imagegen
   - ../dsh-fakeip-fetch
   - ../dsh-browser-search
   - ../dsh-browser-agent

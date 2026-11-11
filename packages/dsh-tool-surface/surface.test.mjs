@@ -82,11 +82,17 @@ test('guidance names only the withdrawn member of a partially kept group', () =>
  * surface that nobody classified fails the next assertion, which is exactly the
  * reminder wanted — a withdrawn tool named nowhere is a tool the model cannot
  * know exists, and it fails silently at call time instead of at review time.
+ *
+ * Updated the same day `dsh-imagegen` was removed in favour of
+ * `dsh-magpie-image`: `generate_image`, `edit_image` and the two
+ * `*_image_generation_task` tools no longer exist, so keeping them here would
+ * assert that prose names tools the host cannot execute. A list entry must
+ * correspond to a real tool, or the assertion stops meaning anything.
  */
 const WITHDRAWN_ON_2026_11_11 = [
-  'browser_agent', 'cancel_image_generation_task', 'config_sync_pull',
-  'config_sync_push', 'create_goal', 'desktop_agent', 'edit_image',
-  'exit_plan_mode', 'generate_image', 'get_image_generation_task',
+  'browser_agent', 'config_sync_pull',
+  'config_sync_push', 'create_goal', 'desktop_agent',
+  'exit_plan_mode',
   'interrupt_agent', 'list_mcp_resource_templates', 'list_mcp_resources',
   'list_subagent_models', 'mcp__magpie__generate_image',
   'mcp__magpie__generation_result', 'mcp__modal_h3__accounts_status',
