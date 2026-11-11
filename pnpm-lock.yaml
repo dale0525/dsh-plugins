@@ -66,7 +66,7 @@ importers:
         specifier: ^0.1.1
         version: link:../dsh-modal-h3
       '@logictan/dsh-openviking':
-        specifier: ^0.4.13
+        specifier: ^0.4.14
         version: link:../dsh-openviking
       '@logictan/dsh-plugins-shared-client':
         specifier: ^0.1.0

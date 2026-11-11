@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-plugins-all",
-  "version": "0.5.166",
+  "version": "0.5.167",
   "description": "DSH plugin aggregate bundle: one install for every plugin in this repo.",
   "license": "MIT",
   "type": "module",
@@ -34,7 +34,7 @@
     "@logictan/dsh-macos-theme": "^0.1.17",
     "@logictan/dsh-magpie-image": "^0.1.0",
     "@logictan/dsh-modal-h3": "^0.1.1",
-    "@logictan/dsh-openviking": "^0.4.13",
+    "@logictan/dsh-openviking": "^0.4.14",
     "@logictan/dsh-plugins-shared-client": "^0.1.0",
     "@logictan/dsh-reasoning-strip": "^0.1.1",
     "@logictan/dsh-ssh": "^0.1.3",
