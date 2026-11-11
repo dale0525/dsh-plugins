@@ -7,10 +7,11 @@ description: 在宿主半边注册 HTTP 路由或事件监听、用 `ctx` 取服
 
 插件在宿主里不是独立进程：`inject`、context Proxy、路由匹配顺序、事件链、EventEmitter 的 `error` 语义都会让「逻辑正确」的代码静默失效或拖垮整个宿主。
 
-## 七条硬门禁（违反即静默失效或宿主崩溃）
+## 八条硬门禁（违反即静默失效或宿主崩溃）
 
 - **别自造访问控制**：插件自己注册的 `/api/...` exact 路由排在宿主信任围栏之前，围栏根本没机会执行。删掉自写检查，**每次请求**向 `connection.requestRejection(req)` 要结论；`connection` 按请求现取，**不要**写进 `inject`。
 - **`inject` 是「必需」**：只监听事件就不要 inject 那个服务——inject 里的服务缺失时 cordis 不调用 `apply`，整个插件静默消失。
+- **`ctx.get(name)` 在 `apply` 里是「此刻有没有」，不是「终将有没有」**：插件行序由 profile 决定，服务由后面的行提供时 `get` 返回 `undefined`。读不到就提前 return 的写法不报错也不告警，却只保住事件侧、丢掉服务侧——「一半生效」。依赖服务的注册改用 `ctx.inject({svc:true}, scoped => ...)` 延后，事件监听照旧立即注册；别把服务写进插件级 `inject`。测试替身要模拟服务延迟到达，否则测不出。
 - **路由处理器里读服务用 `ctx.get(name)`**，不能用 `ctx.<name>`：路由在另一个 fiber 里跑，属性读会抛 `cannot get property ... without inject`，而宿主把它兜成空 body 的 400。
 - **监听 waterfall 前先确认有没有 peer 不调 `next()`**：有就必须 `prepend: true`，否则你的监听器一次都不执行。
 - **EventEmitter 的 `error` 一律用常驻 `on('error')`**，绝不用 `once`：一次失败可能连发多个 `error`，第二个无人接管即杀死整个宿主进程。
@@ -24,4 +25,4 @@ description: 在宿主半边注册 HTTP 路由或事件监听、用 `ctx` 取服
 
 ## 按需细则
 
-每条的实测数据、症状链、判据与修法（含 `dsh-worktree-session` 的 400 空 body、`jsdom` 的 CJS 解析崩溃、`inject` 的静默消失、waterfall 截断、装配作用域查不到工具）见 `references/seams.md`——只在真的要动其中某处时读。
+每条的实测数据、症状链、判据与修法（含 `dsh-worktree-session` 的 400 空 body、`jsdom` 的 CJS 解析崩溃、`inject` 与 `ctx.get` 的两类静默消失、waterfall 截断、装配作用域查不到工具）见 `references/seams.md`——只在真的要动其中某处时读。

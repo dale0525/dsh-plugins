@@ -35,6 +35,23 @@
   宿主自己的监听方也这么写（`dsh-agent-preset-registry`、`dsh-session-reference` 都监听
   `system-prompt/assemble` 而不 inject `systemPrompt`）。
 
+- **`ctx.get(svc)` 在 `apply` 里读到的是「此刻已挂载」，不是「终将挂载」**：插件行的加载顺序
+  由 profile patch 的行序决定，**不由你控制**。服务由**后面的行**提供时，你的 `apply` 早于它，
+  `ctx.get` 返回 `undefined`。写成「读不到就当作本机没有这个服务，提前 return」是最危险的形态：
+  那条 return 是你自己设计的正常路径，所以**不报错、不告警**，而同一函数里挂在事件上的注册
+  照常生效——插件进入「一半生效」状态，事件侧干活、服务侧静默缺失。
+  修法是把两半拆开：事件监听**立即**注册（它不需要服务），任何依赖服务的注册用
+  `ctx.inject({ svc: true }, (scoped) => ...)` 延后，cordis 会在服务出现时回调。**不要**把服务写进
+  插件级 `inject` —— 那会让缺失时整个插件消失（上一条），正好把事情从「丢一半」升级成「全丢」。
+  实测 2026-11-11 `dsh-tool-surface` 0.1.0：过滤确实生效（公告 73 只降到 24 只），但它自己的
+  提示词段整个缺席——`apply` 早于 `dsh-system-prompt` 挂载，`ctx.get('systemPrompt')` 得
+  `undefined`，走了提前 return。结果是 49 只工具被撤下公告、参数说明一只都没写进提示词，比不撤
+  更糟（模型连工具名都不知道）。0.1.1 改用 `ctx.inject` 才修好。
+  **测试替身必须模拟服务的延迟到达**：该包 19 个用例全绿，因为 harness 让服务在 `apply` 时
+  始终可用——恰好把真实加载顺序掩盖了。补一条 `deferredService`（服务在 `apply` 返回后才出现）
+  的用例，并断言①延迟回调触发后 section 确实注册、②三种服务状态下过滤监听器都还在，
+  否则这个 bug 没有任何测试能守住。
+
 - **在 `system-prompt/assemble` 里查工具注册表，作用域必须取 `context.scope`，不能取装配条目自己的字段**：
   装配条目是**脱壳**的 `{name, description, parameters, deferLoading}`（`dsh-tools` 的 `schemaOf`），
   没有 `agent` 字段。写成 `ctx.tools.get(tool.name, tool.agent)` 就等于 `get(name, undefined)`，
