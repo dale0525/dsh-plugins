@@ -24,8 +24,8 @@
 
 - **devDeps 的世代滞后会制造假绿**：`devDependencies` 里的宿主包是**编译期**类型来源，
   钉在旧世代意味着 `tsc` 校验的是**旧 API 表面** —— typecheck 全绿，但校验了错的对象。
-  对齐到宿主世代后暴露的类型错误是**真实的**（实测 `dsh-imagegen` 对齐后暴露 7 个：
-  宿主已删除 `SettingsScope` / `SettingsScopeSnapshot` / `SettingsSectionHooks`）。
+  对齐到宿主世代后暴露的类型错误是**真实的**（实测某包对齐后一次暴露 7 个错误，全部是
+  宿主已删除的 API：`SettingsScope` / `SettingsScopeSnapshot` / `SettingsSectionHooks`）。
   症状与上面 slots 那条相反：那条是「编译失败、运行正常」，这条是「编译通过、校验错对象」。
 
 - **插件不要引入 require Node 内置模块的第三方 CJS 运行时依赖**：这类包会让插件**根本加载不起来**，

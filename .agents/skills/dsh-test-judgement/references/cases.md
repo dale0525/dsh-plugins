@@ -74,7 +74,7 @@
 > `timeout-minutes`。用「父路径是普通文件」的可移植写法：`mkdir` / `writeFile` 在三个平台都
 > 稳定抛 `ENOTDIR` / `EEXIST`。
 
-> **不要用哈希比对「本机构建产物」与「安装下来的产物」**：`dsh-config-manager` 与 `dsh-imagegen`
+> **不要用哈希比对「本机构建产物」与「安装下来的产物」**：`dsh-config-manager`
 > 的 client 半边用 lightningcss 编译 CSS Modules，而它的类名哈希由**文件绝对路径**派生
 > （`tsdown.config.ts` 把 `resolve(base, source)` 当 `filename` 传给 `transform`）—— 同一份 CSS
 > 在 CI（`/home/runner/work/...`）与本机（如 `/Volumes/LogicExt/...`）构建出的 `lib/client.js`

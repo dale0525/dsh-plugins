@@ -4,10 +4,11 @@
  * A schema describes a plugin's own scalars. It cannot describe the parts of a
  * settings card that are driven by something else: a credential owned by the
  * credentials service, a model list fetched from a plugin's own HTTP route, a
- * structured editor for a list of channel objects. Those three are real (they
- * are `dsh-browser-agent`'s TypeSafe key and route pickers, `dsh-desktop-agent`'s
- * vision-model picker, and `dsh-imagegen`'s channel editor), and without a way
- * to place them the migration would have deleted them.
+ * structured editor for a list of channel objects. Those three were real when the
+ * slot was built — `dsh-browser-agent`'s TypeSafe key and route pickers,
+ * `dsh-desktop-agent`'s vision-model picker, and (since removed on 2026-11-11,
+ * replaced by `dsh-magpie-image`) `dsh-imagegen`'s channel editor — and without a
+ * way to place them the migration would have deleted them.
  *
  * So `ConfigForm` takes `children` (appended inside the card, after the fields)
  * and `renderControl` (replaces one field's control, keeping the schema's label).

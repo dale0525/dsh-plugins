@@ -67,12 +67,14 @@ function text(value: unknown): string | undefined {
  * `.hidden()`.
  *
  * `hidden` is not a style choice: a key can be part of the stored shape while
- * having no sensible manual editor. `dsh-imagegen` carries `apiUrl` and
- * `imageModels` purely as the migration source for its channel list (its own
- * `normalizeChannels` reads them, then writes channels), so rendering them would
- * offer the user two dead text boxes that the next channel edit overwrites.
- * Marking them `.hidden()` keeps the keys in the schema — where the migration
- * still reads them — and off the page.
+ * having no sensible manual editor. The case that motivated it: a plugin carried
+ * `apiUrl` and `imageModels` purely as the migration source for its channel list
+ * (its own `normalizeChannels` read them, then wrote channels), so rendering them
+ * would have offered the user two dead text boxes that the next channel edit
+ * overwrites. Marking them `.hidden()` keeps the keys in the schema — where the
+ * migration still reads them — and off the page. That plugin (`dsh-imagegen`) was
+ * removed on 2026-11-11; the capability stays, so any key of this shape has a
+ * way to be stored without being rendered.
  *
  * @param serialized - the `schema.toJSON()` envelope from the describe view.
  * @returns one entry per renderable top-level field; `[]` for anything else.
