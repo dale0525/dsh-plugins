@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-tool-surface",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH 工具公告面子插件：把每轮随请求发送的工具定义收到一份实测白名单，并把被撤下工具的参数写进系统提示词。",
   "type": "module",
   "main": "index.mjs",
