@@ -40,9 +40,7 @@ export const SECTION_ORDER = 150;
 export const STITCH_GUIDANCE = [
   '本机已安装 dsh-stitch-designer 插件（Google Stitch AI 界面设计）：提供 Stitch 原生工具（数量随上游变化，含建/删/列项目、列/取界面、生成界面、改界面、生成变体、设计系统、设计稿上传与文件下载），以及 1 个本插件自建的 `mcp__stitch__remove_screens_from_canvas`（把一张或多张 screen 从项目画布上移除；传一个 id 就是删一张——Stitch 没有删除单张 screen 的接口）。',
   '',
-  '下面这些工具的参数只有一两个字符串（项目 id、screen id、标题、文件名），所以它们的参数表不进提示词，但工具本身照常可调用——直接按名调用即可：`mcp__stitch__list_projects`、`mcp__stitch__get_project`（`name` 传 `projects/<id>`）、`mcp__stitch__create_project`（`title`）、`mcp__stitch__delete_project`（`name`）、`mcp__stitch__list_screens`（`projectId`）、`mcp__stitch__get_screen`（`name` 传 `projects/<id>/screens/<id>`）、`mcp__stitch__list_design_systems`（`projectId`）、`mcp__stitch__download_file`（`name` 取 screen 的 `html_code.name` 或 `screenshot.name`）、`mcp__stitch__remove_screens_from_canvas`（`projectId` + `screenIds` 数组）。',
-  '',
-  '参数结构复杂的那几只（`create_design_system`、`update_design_system`、`apply_design_system`、`generate_screen_from_text`、`edit_screens`、`generate_variants`、`upload_design_md`、`create_design_system_from_design_md`）参数表保持完整，按提示词里的说明填即可。',
+  'Stitch 全部工具的参数表都不在提示词里（由 dsh-tool-surface 撤下），参数按 dsh-tool-surface 的 stitch 组说明填，直接按名调用即可。其中 `create_design_system`、`update_design_system` 结构复杂（`$defs` 三层嵌套、字体枚举 68 个），先读插件 README 或用 `mcp__stitch__get_project` 读项目里已存的设计系统资产，不要凭空猜字段。',
   '',
   '用 Stitch 设计稿实现界面时，遵守以下规范：',
   '1. 一个代码项目只对应一个 Stitch 项目，对应关系记录在该代码项目根目录的 `.stitch.json`。继续沿用已记录的那个项目，不要为同一个代码项目再调 `create_project`——插件会直接报错拒绝，并告知已绑定的项目 id。记录指向的 Stitch 项目已被删除时，插件会自动清掉记录，可重新创建。',

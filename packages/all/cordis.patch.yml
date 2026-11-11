@@ -424,6 +424,26 @@
     - id: plugins-shared-client
       name: '@logictan/dsh-plugins-shared-client'
 
+# from ../dsh-tool-surface
+# dsh-tool-surface bundle patch layer.
+#
+# One bare plugin row. The package has a host half only: it registers no tool
+# and no client surface. It listens on the host's `system-prompt/assemble`
+# waterfall — filtering runs after `next()`, so it is order-independent — and
+# registers one system-prompt section describing the withdrawn tools' arguments.
+#
+# Row id `tool-surface` equals the host half's `export const name` in index.mjs.
+# `node scripts/aggregate.mjs --check` does NOT validate row-id uniqueness;
+# `pnpm run check:host` does, and a duplicate hard-crashes the host with
+# `duplicate loader entry id`.
+#
+# The row carries no `config:` — the measured whitelist and the guidance text
+# are what the plugin exists to ship. A deployment that wants a different list
+# sets `keep:` here; an empty `guidance: ''` filters without injecting prose.
+- insert:
+    - id: tool-surface
+      name: '@logictan/dsh-tool-surface'
+
 # from ../dsh-lan-access
 # Patch row of @logictan/dsh-lan-access.
 #

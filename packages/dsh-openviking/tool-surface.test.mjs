@@ -35,9 +35,13 @@ test("the guidance names every withdrawn tool and its arguments", () => {
   for (const raw of ["add_resource", "add_skill", "tree", "download", "set_acl", "get_acl", "list_users", "list_groups", "privacy_tree", "privacy_resolve", "privacy_upsert", "rule_search", "find_mcp_tools", "invoke_mcp_tool", "list_watches", "cancel_watch"]) {
     assert.match(OPENVIKING_GUIDANCE, new RegExp(`mcp__openviking__${raw}\\b`), `${raw} must be named`);
   }
-  // The eleven that keep their schema are listed too, so a model reading only
-  // the section still knows which half it should consult the schema for.
-  for (const raw of ["read", "write", "search", "remember"]) {
+  // Which half keeps its schema is stated, so a model reading only the section
+  // knows where to look. `dsh-tool-surface` presses this plugin's eleven down to
+  // these two, so the section must name exactly these as still in the prompt.
+  assert.match(OPENVIKING_GUIDANCE, /参数表保持完整的是 `read` 与 `find`/);
+  // The nine the outer filter withdraws are still listed by name, in backticks,
+  // so a call to any of them is writable from this section alone.
+  for (const raw of ["write", "edit", "search", "list", "remember", "glob", "grep", "forget", "health"]) {
     assert.match(OPENVIKING_GUIDANCE, new RegExp(`\`${raw}\``), `${raw} must be listed`);
   }
   assert.equal(SECTION_NAME, "plugin:dsh-openviking");

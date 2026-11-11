@@ -1,0 +1,44 @@
+{
+  "name": "@logictan/dsh-tool-surface",
+  "version": "0.1.0",
+  "description": "DSH 工具公告面子插件：把每轮随请求发送的工具定义收到一份实测白名单，并把被撤下工具的参数写进系统提示词。",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "index.mjs",
+    "surface.mjs",
+    "guidance.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "tools",
+    "context",
+    "system-prompt"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dale0525/dsh-plugins.git",
+    "directory": "packages/dsh-tool-surface"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  }
+}

@@ -64,6 +64,14 @@ patchFrom:
   # consumer's `require` fails with `missed the module table`. Consumers declare
   # it in `dsh.client.external`, which orders this row ahead of them.
   - ../dsh-plugins-shared-client
+  # dsh-tool-surface presses the assembled tool list down to a measured
+  # whitelist and writes the withdrawn tools' arguments into the system prompt.
+  # Order-independent: its `system-prompt/assemble` listener filters AFTER
+  # `next()`, so it sees every other provider's filter result wherever this row
+  # sits. Its section order (100) puts it before every per-plugin guidance block,
+  # because it explains why those blocks carry argument lists for tools whose
+  # schemas are gone.
+  - ../dsh-tool-surface
   # dsh-lan-access serves the Web UI on one configurable port reachable from both
   # the LAN and 127.0.0.1, by binding the wildcard address itself and forwarding
   # to the host's own listener with the authority rewritten. That is the only
@@ -140,4 +148,7 @@ deps:
   # The access password is the credential DSH_LAN_ACCESS_PASSWORD (set it on the
   # Plugins page), so the row carries no config. Its port must differ from the
   # host's own listener port, or loopback traffic would bypass the plugin's gate.
+  # dsh-tool-surface presses the assembled tool list down to a measured
+  # whitelist and writes the withdrawn tools' arguments into the system prompt.
+  - ../dsh-tool-surface
   - ../dsh-lan-access
