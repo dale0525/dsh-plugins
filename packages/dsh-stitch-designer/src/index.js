@@ -41,7 +41,7 @@ import { createCanvasClient } from './canvas.js';
 import { createStitchClient } from './stitch.js';
 import { createInvoker } from './conventions.js';
 import { SECTION_NAME, SECTION_ORDER, STITCH_GUIDANCE } from './guidance.js';
-import { createOutput, createToolDefinition, publicToolName, withoutWithdrawn } from './tools.js';
+import { createOutput, createToolDefinition, publicToolName, retryWithBackoff, withoutWithdrawn } from './tools.js';
 
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
 export const name = 'stitch-designer';
@@ -60,6 +60,26 @@ export const SERVER_NAME = 'stitch';
 
 /** The prefix every tool this plugin registers carries, announcement filter included. */
 const PUBLIC_PREFIX = `mcp__${SERVER_NAME}__`;
+
+/**
+ * How the boot-time `tools/list` is retried before the tools are given up on.
+ *
+ * The definitions are not shipped statically — they ARE the upstream catalogs —
+ * so registration happens only after a successful `tools/list`, and that fetch
+ * is the one thing that can fail transiently at boot: the credential store may
+ * not be live yet on a cold start, or the network hiccups. The credential-update
+ * event covers the "key set later" case, but a key already present at boot never
+ * fires it, so without a self-retry a single failed fetch left the tools
+ * unregistered for the whole process lifetime while the system prompt still
+ * claimed they existed — the model then called `mcp__stitch__*` and got
+ * "unknown tool" (observed live 2026-11-13: 18 tools reachable via the API, yet
+ * none registered because the one boot fetch failed).
+ *
+ * Bounded exponential backoff, then give up with a warning: an unrecoverable
+ * failure (wrong key, Stitch down) must not spin forever. The credential-update
+ * event remains the recovery path after that point.
+ */
+const SYNC_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
 
 /**
  * Register the Stitch tools and announce the design conventions.
@@ -109,8 +129,9 @@ export function apply(ctx) {
     toolsCtx.effect(() => {
       let disposed = false;
       let disposers = [];
+      let cancelRetry;
 
-      const sync = async () => {
+      const registerListed = async () => {
         const listed = await stitch.listTools();
         if (disposed) return;
         const next = listed.map((tool) =>
@@ -127,17 +148,32 @@ export function apply(ctx) {
         toolsCtx.logger.info(`stitch-designer: registered ${disposers.length} mcp__${SERVER_NAME}__* tools`);
       };
 
-      const report = (error) => {
-        if (disposed) return;
-        toolsCtx.logger.warn(
-          `stitch-designer: the mcp__${SERVER_NAME}__* tools are not registered yet (${error?.message ?? error})`,
-        );
+      // One attempt plus bounded backoff, so the boot fetch that failed
+      // transiently (credential store not live yet, network hiccup) heals
+      // itself instead of leaving the tools missing for the process lifetime.
+      // A failure that persists through every retry is logged once and left to
+      // the credential-update event; an unrecoverable one (wrong key) stops
+      // here rather than spinning. Each new run cancels any pending backoff so
+      // a mid-flight credential update cannot race an in-progress retry.
+      const syncWithRetry = () => {
+        cancelRetry?.();
+        cancelRetry = retryWithBackoff(registerListed, SYNC_RETRY_DELAYS_MS, {
+          shouldStop: () => disposed,
+          onRetry: (error, delay) =>
+            toolsCtx.logger.warn(
+              `stitch-designer: the mcp__${SERVER_NAME}__* tools are not registered yet (${error?.message ?? error}); retrying in ${delay}ms`,
+            ),
+          onGiveUp: (error, attempts) =>
+            toolsCtx.logger.warn(
+              `stitch-designer: the mcp__${SERVER_NAME}__* tools are not registered after ${attempts} attempts (${error?.message ?? error}); set or fix the API key to retry.`,
+            ),
+        });
       };
 
-      sync().catch(report);
+      syncWithRetry();
       const offCredential = toolsCtx.on('credentials/reference-updated', (ref) => {
         if (ref !== API_KEY_REF || disposers.length > 0) return;
-        sync().catch(report);
+        syncWithRetry();
       });
 
       // `remove_screens_from_canvas` is local, not upstream: Stitch has no
@@ -189,6 +225,7 @@ export function apply(ctx) {
 
       return () => {
         disposed = true;
+        cancelRetry?.();
         offCredential();
         removeScreenDispose();
         for (const dispose of disposers) dispose();
@@ -201,8 +238,9 @@ export function apply(ctx) {
   // The withdrawn half of the toolset (see `ANNOUNCED_TOOLS`): registered and
   // executable, absent from every request's tool list. Filtering by the public
   // name prefix rather than by a captured registration set keeps this correct
-  // when `tools/list` fails at boot and the tools appear later on a credential
-  // update — the names are the contract, the set of them is not.
+  // when `tools/list` fails at boot and the tools appear later — either
+  // through the boot retry or a credential update — the names are the
+  // contract, the set of them is not.
   ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     const assembly = await next();
     const tools = withoutWithdrawn(assembly.tools, PUBLIC_PREFIX);

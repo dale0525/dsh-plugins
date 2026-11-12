@@ -267,3 +267,61 @@ export function createToolDefinition(options) {
     },
   };
 }
+
+/**
+ * Run one async attempt, and on failure schedule bounded retries.
+ *
+ * The tool list this plugin registers comes from Stitch's own `tools/list`, so
+ * registration is only possible after that fetch succeeds — and that fetch is
+ * the one thing that can fail transiently at boot (credential store not live
+ * yet, network hiccup). A single failed fetch used to leave the tools missing
+ * for the whole process lifetime, even though the system prompt still announced
+ * them, so the model called `mcp__stitch__*` and got "unknown tool". This is the
+ * bounded self-heal: attempt now, and on rejection wait `delays[0]`, retry, wait
+ * `delays[1]`, and so on, giving up after the delays run out.
+ *
+ * Exported and dependency-injected (`schedule`) so the behavior is testable
+ * without a live endpoint or real timers.
+ *
+ * @param attempt - the work; its rejection is what triggers a retry.
+ * @param delays - backoff in milliseconds before each retry, in order.
+ * @param options - `shouldStop` checked before every retry; `onRetry`/`onGiveUp`
+ *   notifications; `schedule` timer function that MUST return a canceller.
+ * @returns a canceller that stops any pending retry.
+ */
+export function retryWithBackoff(attempt, delays, options = {}) {
+  const {
+    shouldStop = () => false,
+    onRetry,
+    onGiveUp,
+    // Normalized to return a canceller. Bare `setTimeout` returns a Timeout
+    // object, and the teardown path calls the return value — returning the raw
+    // timeout would throw "cancelScheduled is not a function" when the effect is
+    // unloaded during a backoff window.
+    schedule = (fn, delay) => {
+      const timeout = setTimeout(fn, delay);
+      return () => clearTimeout(timeout);
+    },
+  } = options;
+  let cancelled = false;
+  let cancelScheduled;
+
+  const run = (index) => {
+    attempt().catch((error) => {
+      if (cancelled || shouldStop()) return;
+      if (index >= delays.length) {
+        onGiveUp?.(error, index + 1);
+        return;
+      }
+      const delay = delays[index];
+      onRetry?.(error, delay);
+      cancelScheduled = schedule(() => run(index + 1), delay);
+    });
+  };
+
+  run(0);
+  return () => {
+    cancelled = true;
+    cancelScheduled?.();
+  };
+}
