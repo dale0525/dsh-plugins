@@ -52,6 +52,20 @@
   的用例，并断言①延迟回调触发后 section 确实注册、②三种服务状态下过滤监听器都还在，
   否则这个 bug 没有任何测试能守住。
 
+- **把工具注册挂在「启动期一次 `tools/list`」上，失败即整批永久缺失**：动态 MCP 工具要先拿到
+  `tools/list` 回包才注册；若那次拉取只在 boot 跑一次、失败后不重试，而唯一的重试入口是
+  `credentials/reference-updated` 这类事件，则**启动时凭据已存在 → 事件永不触发 → 一次瞬时失败
+  （凭据库未就绪、网络抖动）就让整批工具在进程生命周期内都不进注册表**。症状极具欺骗性：
+  同 `effect` 里**无条件同步注册**的那只工具能真打到远端 API（假 id 回 404 = 请求确实发出、
+  凭据有效、插件已加载），而 `tools/list` 拉来的那些按名一调全是 `unknown tool`——**工具清单/
+  系统提示照旧宣称它们可用**，只是注册表里没有。
+  实测 2026-11-13 `dsh-stitch-designer` 2.1.2：17 只上游工具全 missing，但 `remove_screens_from_canvas`
+  可用；事后用真实凭据重跑 `listTools()` 成功（929ms 返回 18 只），证明 boot 那次是瞬时失败。
+  修法：给拉取加**有界指数退避**（500ms→1s→2s→4s→8s，几次后告警放弃），并把重试驱动抽成可测
+  单元；`effect` 卸载时清除待定退避，默认计时器归一化为返回取消函数（裸 `setTimeout` 返回
+  `Timeout`，退避窗口内卸载会抛 `cancelScheduled is not a function`）。**判据**：任何「先网络后注册」
+  的启动期路径都要有失败重试；测试要模拟「首次拉取失败、第二次成功」，否则这条线没有测试能守住。
+
 - **在 `system-prompt/assemble` 里查工具注册表，作用域必须取 `context.scope`，不能取装配条目自己的字段**：
   装配条目是**脱壳**的 `{name, description, parameters, deferLoading}`（`dsh-tools` 的 `schemaOf`），
   没有 `agent` 字段。写成 `ctx.tools.get(tool.name, tool.agent)` 就等于 `get(name, undefined)`，

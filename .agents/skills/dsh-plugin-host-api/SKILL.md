@@ -7,7 +7,7 @@ description: 在宿主半边注册 HTTP 路由或事件监听、用 `ctx` 取服
 
 插件在宿主里不是独立进程：`inject`、context Proxy、路由匹配顺序、事件链、EventEmitter 的 `error` 语义都会让「逻辑正确」的代码静默失效或拖垮整个宿主。
 
-## 八条硬门禁（违反即静默失效或宿主崩溃）
+## 九条硬门禁（违反即静默失效或宿主崩溃）
 
 - **别自造访问控制**：插件自己注册的 `/api/...` exact 路由排在宿主信任围栏之前，围栏根本没机会执行。删掉自写检查，**每次请求**向 `connection.requestRejection(req)` 要结论；`connection` 按请求现取，**不要**写进 `inject`。
 - **`inject` 是「必需」**：只监听事件就不要 inject 那个服务——inject 里的服务缺失时 cordis 不调用 `apply`，整个插件静默消失。
@@ -16,6 +16,7 @@ description: 在宿主半边注册 HTTP 路由或事件监听、用 `ctx` 取服
 - **监听 waterfall 前先确认有没有 peer 不调 `next()`**：有就必须 `prepend: true`，否则你的监听器一次都不执行。
 - **EventEmitter 的 `error` 一律用常驻 `on('error')`**，绝不用 `once`：一次失败可能连发多个 `error`，第二个无人接管即杀死整个宿主进程。
 - **新增启动期自动执行路径时，把路由层同名操作的全部护栏抄一遍**：启动期路径不继承 `withMutationGate` 那套封装。
+- **工具注册别只挂在启动期一次网络请求上**：动态拉取（如 MCP `tools/list`）只在成功回包里注册工具，而它只在 boot 跑一次、失败后没有重试；若唯一的重试入口是 `credentials/reference-updated` 这类事件，而凭据启动时已存在，该事件永不触发——**一次瞬时失败就让整批工具在进程生命周期内全部缺失**，可提示词/工具清单照旧宣称它们可用，按名一调却是 `unknown tool`。给拉取加**有界指数退避**（几百毫秒到数秒、几次后告警放弃），卸载时清掉待定退避；默认计时器要归一化成返回取消函数（裸 `setTimeout` 返回 `Timeout` 对象，退避窗口内卸载会 `cancelScheduled is not a function`）。
 - **`system-prompt/assemble` 里查工具注册表要用 `context.scope`**：装配条目是脱壳的 `{name, description, parameters}`，没有 `agent` 字段，按它查等于查全局视图；preset 把工具注册在 agent 自己的层里，全局视图看不到，判定恒 false、监听器静默空转。
 
 ## 另外两条
