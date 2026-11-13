@@ -43,3 +43,54 @@ test('a failed naming call still falls back to a random branch name', async () =
   const chosen = await chooseNameForTest(llm, { options: { provider: 'p', model: 'm' } }, 'hello', AbortSignal.timeout(50))
   assert.equal(chosen.startsWith('worktree-'), true)
 })
+
+/** An LLM stand-in answering each call with the next scripted reply. */
+function scripted(replies) {
+  const calls = []
+  return {
+    calls,
+    stream: async function* (options) {
+      calls.push(options)
+      const reply = replies[Math.min(calls.length - 1, replies.length - 1)]
+      if (reply.text !== '') {
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'text-delta', index: 0, text: reply.text }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: reply.text } }
+      }
+      yield { type: 'finish', reason: reply.reason ?? { kind: 'stop' } }
+    },
+  }
+}
+
+const agent = { options: { provider: 'p', model: 'm' } }
+
+test('the naming call leaves room for a model that thinks before answering', async () => {
+  // 24 tokens are consumed entirely by the gateway's reasoning content, so the
+  // reply body never arrives and every branch falls back to a random name.
+  const llm = scripted([{ text: 'fix-app-reconnect' }])
+  const chosen = await chooseNameForTest(llm, agent, 'hello', AbortSignal.timeout(50))
+  assert.equal(chosen, 'fix-app-reconnect')
+  assert.ok(llm.calls[0].maxTokens > 24, `maxTokens was ${llm.calls[0].maxTokens}`)
+})
+
+test('a reply in another script is asked again instead of being truncated to a fragment', async () => {
+  const llm = scripted([{ text: '自研app车控接入米家调研' }, { text: 'mijia-vehicle-control' }])
+  const chosen = await chooseNameForTest(llm, agent, 'hello', AbortSignal.timeout(50))
+  assert.equal(chosen, 'mijia-vehicle-control')
+  assert.equal(llm.calls.length, 2)
+  assert.match(llm.calls[1].system, /English/)
+})
+
+test('a second unusable reply falls back rather than reusing the fragment', async () => {
+  const llm = scripted([{ text: '自研app车控接入米家调研' }, { text: '把车辆型号做批量映射' }])
+  const chosen = await chooseNameForTest(llm, agent, 'hello', AbortSignal.timeout(50))
+  assert.equal(chosen.startsWith('worktree-'), true)
+  assert.equal(llm.calls.length, 2)
+})
+
+test('a truncated reply is not accepted as a name', async () => {
+  const llm = scripted([{ text: 'app-widget', reason: { kind: 'max-tokens' } }, { text: 'app-widget-design' }])
+  const chosen = await chooseNameForTest(llm, agent, 'hello', AbortSignal.timeout(50))
+  assert.equal(chosen, 'app-widget-design')
+  assert.equal(llm.calls.length, 2)
+})

@@ -681,8 +681,16 @@ export async function createWorktree(
 /** Cap on the user text forwarded to the naming call. */
 const MAX_PROMPT_CHARS = 4000
 
-/** Output cap for the naming call; a slug is a few words. */
-const MAX_NAME_TOKENS = 24
+/**
+ * Output cap for the naming call.
+ *
+ * A slug is a few words, but the cap also has to cover whatever the route
+ * spends before the answer: a gateway whose upstream reasons on this request
+ * bills that reasoning to the same budget, and at 24 tokens the whole reply was
+ * consumed by it — `finish_reason: length`, no text, every branch fell back to
+ * a random name.
+ */
+const MAX_NAME_TOKENS = 256
 
 /** Hard cap on the naming call, so a stalled route cannot hold the first step. */
 const NAME_TIMEOUT_MS = 20_000
@@ -694,6 +702,15 @@ const MAX_NAME_CHARS = 60
 const NAME_INSTRUCTION = `Name the task in the user's message as a Git branch.
 Reply with the name and nothing else: 2-4 lowercase words separated by hyphens, ASCII letters and digits only.
 Do not translate, explain, or quote.`
+
+/**
+ * The second attempt's instruction.
+ *
+ * A model that ignores the first instruction and answers in Chinese produces a
+ * slug of one Latin fragment at best ("app") and nothing at worst, so the
+ * retry has to name the failure rather than repeat the same wording.
+ */
+const RETRY_INSTRUCTION = `${NAME_INSTRUCTION}\nThe previous reply was not in English. Translate the task into English words this time.`
 
 /**
  * Reduce model output to a Git-legal branch name.
@@ -716,9 +733,59 @@ export function sanitizeName(text: string): string {
     .replace(/-+$/g, '')
 }
 
+/**
+ * Whether a reply is a name rather than a fragment of one.
+ *
+ * The instruction asks for at least two words. A single word is what a reply in
+ * another script collapses to once the non-Latin text is stripped, so one word
+ * means "ask again" rather than "this one is good".
+ * @param slug - sanitized model output.
+ * @returns whether the slug is worth creating a branch with.
+ */
+function usableName(slug: string): boolean {
+  return slug.includes('-')
+}
+
 /** A name that cannot collide with anything a model would choose. */
 function fallbackName(): string {
   return `worktree-${randomBytes(3).toString('hex')}`
+}
+
+/** One naming attempt's outcome: a usable slug, or why there is none. */
+type NameAttempt = { ok: true; slug: string } | { ok: false; retryable: boolean }
+
+/**
+ * Run one naming call and reduce its reply.
+ *
+ * A truncated or failed call is reported as retryable: the cap or the route
+ * under-provisioned this request, and a second attempt is exactly the remedy.
+ * @param llm - the composition's LLM service.
+ * @param options - the request to send.
+ * @param signal - the turn's cancellation signal with its own deadline.
+ * @returns the usable slug, or whether trying again could help.
+ */
+async function attemptName(
+  llm: LlmRuntime,
+  options: GenerateOptions,
+  signal: AbortSignal,
+): Promise<NameAttempt> {
+  const assembler = new BlockAssembler()
+  try {
+    for await (const chunk of llm.stream({ ...options, signal })) assembler.push(chunk)
+  } catch {
+    return { ok: false, retryable: false }
+  }
+  const finish = assembler.finish
+  if (finish.kind === 'error' || finish.kind === 'aborted') return { ok: false, retryable: false }
+  if (finish.kind === 'max-tokens') return { ok: false, retryable: true }
+  const slug = sanitizeName(
+    assembler
+      .blocks()
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join(''),
+  )
+  return usableName(slug) ? { ok: true, slug } : { ok: false, retryable: true }
 }
 
 /**
@@ -726,12 +793,15 @@ function fallbackName(): string {
  *
  * The route comes from the Agent's own options, so the call uses the model the
  * user already chose for the conversation instead of a second configuration.
- * Every failure — no route, a failed call, an aborted call, unusable output —
- * answers a random name, because naming must never hold up or break the turn.
+ * One retry covers the ways a single call can still come back unusable — a
+ * reply in another script, or a truncated one. Every failure after that — no
+ * route, a failed call, an aborted call, unusable output — answers a random
+ * name, because naming must never hold up or break the turn.
  * @param llm - the composition's LLM service, or undefined when absent.
  * @param agent - Session owner supplying the route.
  * @param prompt - the user's first message text.
  * @param signal - the turn's cancellation signal.
+ * @param config - optional route/effort override for this call.
  * @returns a Git-legal branch name.
  */
 async function chooseName(
@@ -745,36 +815,26 @@ async function chooseName(
   const model = agent.options.model
   if (llm === undefined || provider === undefined || model === undefined) return fallbackName()
 
-  const assembler = new BlockAssembler()
-  const control = AbortSignal.any([signal, AbortSignal.timeout(NAME_TIMEOUT_MS)])
-  try {
-    const options = applyPurposeOverride<GenerateOptions>({
-      provider,
-      model,
-      system: NAME_INSTRUCTION,
-      messages: [
-        createUserMessage({
-          content: [{ type: 'text', text: prompt.slice(0, MAX_PROMPT_CHARS) }],
-          source: { kind: 'user' },
-        }),
-      ],
-      maxTokens: MAX_NAME_TOKENS,
-      signal: control,
-    }, config)
-    for await (const chunk of llm.stream(options)) assembler.push(chunk)
-  } catch {
-    return fallbackName()
+  const base = applyPurposeOverride<GenerateOptions>({
+    provider,
+    model,
+    system: NAME_INSTRUCTION,
+    messages: [
+      createUserMessage({
+        content: [{ type: 'text', text: prompt.slice(0, MAX_PROMPT_CHARS) }],
+        source: { kind: 'user' },
+      }),
+    ],
+    maxTokens: MAX_NAME_TOKENS,
+  }, config)
+
+  for (const system of [NAME_INSTRUCTION, RETRY_INSTRUCTION]) {
+    const control = AbortSignal.any([signal, AbortSignal.timeout(NAME_TIMEOUT_MS)])
+    const attempt = await attemptName(llm, { ...base, system }, control)
+    if (attempt.ok) return attempt.slug
+    if (!attempt.retryable) return fallbackName()
   }
-  const finish = assembler.finish
-  if (finish.kind === 'error' || finish.kind === 'aborted') return fallbackName()
-  const slug = sanitizeName(
-    assembler
-      .blocks()
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text)
-      .join(''),
-  )
-  return slug === '' ? fallbackName() : slug
+  return fallbackName()
 }
 
 /* ------------------------------------------------------------ first message */
