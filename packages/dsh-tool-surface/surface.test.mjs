@@ -7,18 +7,30 @@ import { DEFAULT_KEEP, filterAnnounced, renderWithdrawnGuidance } from './surfac
 /** One tool definition as the assembly carries it. */
 const defined = (name) => ({ name, description: '', parameters: {} });
 
-test('the default whitelist is exactly the 24 most-called tools', () => {
+test('the default whitelist is the 24 most-called tools plus the platform shell slot', () => {
   // Measured on this machine (2026-11-11, the `tool/call` records across 659
   // local sessions), in call-count order. Order is pinned: it is the only
-  // record of WHY these 24 and not 25.
+  // record of WHY these and not one more.
+  //
+  // `pwsh` is the single addition after the measurement: it is the same shell
+  // slot as `bash`, and the host enables exactly one of the two per platform
+  // (`tool-bash` disabled on win32, `tool-pwsh` enabled). It therefore costs no
+  // platform a definition it would otherwise have carried, and without it a
+  // Windows install had no shell tool left in the prompt at all.
   assert.deepEqual(DEFAULT_KEEP, [
-    'bash', 'read', 'write', 'edit', 'glob', 'grep',
+    'bash', 'pwsh', 'read', 'write', 'edit', 'glob', 'grep',
     'web_fetch', 'web_search', 'read_image',
     'todo_write', 'ask_user_question', 'send_message', 'present',
     'subagent', 'list_agents', 'job_output', 'job_list', 'job_kill',
     'skill', 'ssh_exec', 'get_goal', 'update_goal',
     'mcp__openviking__read', 'mcp__openviking__find',
   ]);
+});
+
+test('the two shell slots are both kept, so neither platform loses its shell', () => {
+  // bash and pwsh are mutually exclusive on any single host; the failure this
+  // pins is the Windows half being withdrawn while bash was kept by name.
+  assert.ok(DEFAULT_KEEP.includes('bash') && DEFAULT_KEEP.includes('pwsh'));
 });
 
 test('nothing in the whitelist is removed', () => {
@@ -74,7 +86,7 @@ test('guidance names only the withdrawn member of a partially kept group', () =>
 
 /**
  * Every tool the default whitelist withdraws, frozen from the live assembly of
- * 2026-11-11 (73 announced tools minus the 24 kept).
+ * 2026-11-11 (73 announced tools minus the 24 kept then).
  *
  * Frozen rather than read from a header at test time: a test that needs this
  * machine's session log cannot run in CI, and the point is not "what is

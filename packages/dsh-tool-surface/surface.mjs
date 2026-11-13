@@ -25,9 +25,18 @@
  * `tool/call` records across 659 local sessions), in that order. Every
  * definition kept here is paid for on every request of every session, which is
  * why the list stays this short rather than being the full surface.
+ *
+ * `pwsh` is the one entry that is not a call-count pick: it is the SAME shell
+ * slot as `bash`, mutually exclusive by platform. The host's profile disables
+ * `tool-bash` on win32 and enables `dsh-tool-pwsh` there instead, so a machine
+ * announces exactly one of the two — keeping both names costs no platform a
+ * definition it would not have carried anyway. With only `bash` kept, a Windows
+ * install lost the shell tool's schema AND its name: `pwsh` was withdrawn and
+ * named nowhere (2026-11-13), leaving no shell tool the model could call.
  */
 export const DEFAULT_KEEP = [
   'bash',
+  'pwsh',
   'read',
   'write',
   'edit',

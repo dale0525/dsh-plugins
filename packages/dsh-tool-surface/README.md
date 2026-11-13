@@ -33,11 +33,13 @@
     guidance: ''                  # 可选；空串 = 只过滤不注入提示词段
 ```
 
-`keep` 缺省是本机调用次数前 24 名（按次数降序）：
+`keep` 缺省是本机调用次数前 24 名（按次数降序），外加 `pwsh`：
 
-`bash` `read` `write` `edit` `glob` `grep` `web_fetch` `web_search` `read_image` `todo_write` `ask_user_question` `send_message` `present` `subagent` `list_agents` `job_output` `job_list` `job_kill` `skill` `ssh_exec` `get_goal` `update_goal` `mcp__openviking__read` `mcp__openviking__find`
+`bash` `pwsh` `read` `write` `edit` `glob` `grep` `web_fetch` `web_search` `read_image` `todo_write` `ask_user_question` `send_message` `present` `subagent` `list_agents` `job_output` `job_list` `job_kill` `skill` `ssh_exec` `get_goal` `update_goal` `mcp__openviking__read` `mcp__openviking__find`
 
-按本机 659 个会话统计，这 24 只占 63,718 次调用里的 63,500（99.7%）；工具定义由 81,473 字符降到约 **20,800 字符（−74%）**。
+`pwsh` 是唯一不属于「调用次数」口径的条目：它和 `bash` 是**同一个 shell 槽位**，按平台互斥。宿主 profile 在 win32 上 `disabled` 掉 `dsh-tool-bash`、启用 `dsh-tool-pwsh`，任何一台机器只公告其中一个，所以两个名字都留着不会让谁多背一份定义。只留 `bash` 时，Windows 安装既丢了 `pwsh` 的 schema，也没在提示词里留下它的名字——2026-11-13 就是这样把 shell 工具整个弄丢的。
+
+按本机 659 个会话统计，前 24 只占 63,718 次调用里的 63,500（99.7%）；工具定义由 81,473 字符降到约 **20,800 字符（−74%）**。
 
 `guidance` 缺省见 `guidance.mjs` 的 `GUIDANCE_GROUPS`，按插件分 11 组。它**按当前 `keep` 渲染**：某组工具如果都在 `keep` 里，那一组就不出现——避免模型读到一份它已经完整拥有的 schema 的转述。
 
