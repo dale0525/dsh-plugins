@@ -32,6 +32,7 @@ import type { ReasoningEfforts } from './knowledge.js'
 import { resolveGuardEffort } from './guard.js'
 import { isRecord, looksLikeCompatRefusal, routeFactsOf } from './shared.js'
 import { buildUserAgentIndex, emptyIndex, type UserAgentIndex } from './headers-core.js'
+import { buildOffWireIndex } from './off-thinking.js'
 import { headerOverlayInstalled, installHeaderOverlay, type OverlaySource } from './headers-fetch.js'
 import { detectHeaderConflicts, type HeaderConflictReport } from './headers-conflict.js'
 // The knowledge-base patch builder lives in its own module: the browser half
@@ -774,14 +775,18 @@ export function apply(ctx: Context, config: ConfigRefs): void {
   /** Live index the overlay reads; never undefined once apply has run. */
   const overlaySource: OverlaySource = { current: emptyIndex() }
   const refreshHeaders = (): void => {
-    if (!currentConfig().uaOverride) {
-      overlaySource.current = emptyIndex()
-      return
-    }
     const section = piSection()
     const providers = isRecord(section) && isRecord(section['providers'])
       ? (section['providers'] as Record<string, Record<string, unknown>>)
       : {}
+    // Off-effort body completion follows the route's declared off level, not
+    // the user-agent switch, so it is built whether or not a UA is overridden.
+    const offWire = buildOffWireIndex(providers)
+    overlaySource.offWire = () => offWire
+    if (!currentConfig().uaOverride) {
+      overlaySource.current = emptyIndex()
+      return
+    }
     overlaySource.current = buildUserAgentIndex(providers)
   }
   refreshHeaders()

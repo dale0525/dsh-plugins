@@ -28,6 +28,7 @@
  */
 
 import { emptyIndex, originOf, requestUrlOf, type UserAgentIndex } from './headers-core.js'
+import { emptyOffWireIndex, withOffThinking, type OffWireIndex } from './off-thinking.js'
 
 /** Registry key on `globalThis`, so a second plugin load shares the one wrapper. */
 const REGISTRY = Symbol.for('dsh-better-reasoning-effort.fetch-overrides')
@@ -40,6 +41,8 @@ interface Entry {
    * reach the next request without a plugin reload.
    */
   index: () => UserAgentIndex
+  /** The live off-effort index, read the same way and for the same reason. */
+  offWire: () => OffWireIndex
 }
 
 /** The process-wide wrapper state. */
@@ -61,6 +64,13 @@ function overrideFor(index: UserAgentIndex, url: string): string | undefined {
   return index.byOrigin.get(origin)?.userAgent
 }
 
+/** The off wire values the routes behind one URL declare, or undefined. */
+function offValuesFor(index: OffWireIndex, url: string): string[] | undefined {
+  const origin = originOf(url)
+  if (origin === undefined) return undefined
+  return index.byOrigin.get(origin)
+}
+
 /**
  * The caller's request headers as a mutable copy, seeded the way Fetch itself
  * resolves them: an explicit `init.headers` replaces a `Request`'s own headers,
@@ -74,20 +84,67 @@ function seedHeaders(input: unknown, init: RequestInit | undefined): Headers {
   return new Headers()
 }
 
-/** The wrapper: inject the indexed `user-agent`, delegate everything else. */
+/**
+ * The request body as text, or undefined when this seam cannot rewrite it.
+ *
+ * The adapter serializes every JSON body to a string before handing it to
+ * fetch, so a string is the ordinary case. A stream or a `FormData` is not
+ * ours to parse and is left to the caller unchanged.
+ * @param input - the fetch input, for a `Request`'s own body.
+ * @param init - the caller's init.
+ * @returns the body text, when one can be read without consuming it.
+ */
+function bodyTextOf(input: unknown, init: RequestInit | undefined): string | undefined {
+  if (typeof init?.body === 'string') return init.body
+  if (init?.body !== undefined && init.body !== null) return undefined
+  return undefined
+}
+
+/**
+ * The rewritten body text for one off-effort request, or undefined when the
+ * body needs no change (not JSON, no off effort, or a thinking field already
+ * present).
+ * @param input - the fetch input.
+ * @param init - the caller's init.
+ * @param offValues - the off wire values the route declares.
+ * @returns the body text to send instead, when it differs.
+ */
+function completedBody(input: unknown, init: RequestInit | undefined, offValues: string[]): string | undefined {
+  const text = bodyTextOf(input, init)
+  if (text === undefined) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text) as unknown
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
+  const rewritten = withOffThinking(parsed as Record<string, unknown>, offValues)
+  return rewritten === undefined ? undefined : JSON.stringify(rewritten)
+}
+
+/** The wrapper: inject the indexed `user-agent` and complete an off-effort body. */
 function makeWrapper(base: typeof globalThis.fetch, entries: Map<symbol, Entry>): typeof globalThis.fetch {
   return function fetchWithProviderHeaders(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const url = requestUrlOf(input)
     if (url === undefined) return base(input, init)
     let userAgent: string | undefined
+    let completed: string | undefined
     for (const entry of entries.values()) {
       userAgent = overrideFor(entry.index(), url)
-      if (userAgent !== undefined) break
+      const offValues = offValuesFor(entry.offWire(), url)
+      completed = offValues === undefined ? undefined : completedBody(input, init, offValues)
+      if (userAgent !== undefined || completed !== undefined) break
     }
-    if (userAgent === undefined) return base(input, init)
-    const headers = seedHeaders(input, init)
-    headers.set('user-agent', userAgent)
-    return base(input, { ...init, headers })
+    if (userAgent === undefined && completed === undefined) return base(input, init)
+    const next: RequestInit = { ...init }
+    if (userAgent !== undefined) {
+      const headers = seedHeaders(input, init)
+      headers.set('user-agent', userAgent)
+      next.headers = headers
+    }
+    if (completed !== undefined) next.body = completed
+    return base(input, next)
   }
 }
 
@@ -106,6 +163,8 @@ export interface HeaderOverlay extends HeaderOverlayHandle {
 /** A mutable index source an activation reads on every request. */
 export interface OverlaySource {
   current: UserAgentIndex
+  /** The live off-effort index; omitted means "leave request bodies alone". */
+  offWire?: () => OffWireIndex
 }
 
 /**
@@ -125,7 +184,8 @@ export function installHeaderOverlay(source: OverlaySource): HeaderOverlay {
     holder[REGISTRY] = registry
     globalThis.fetch = wrapper
   }
-  registry.entries.set(token, { index: () => source.current })
+  const offWire = source.offWire ?? emptyOffWireIndex
+  registry.entries.set(token, { index: () => source.current, offWire })
   const owned = registry
   return {
     get active(): boolean {

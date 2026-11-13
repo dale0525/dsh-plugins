@@ -21,6 +21,15 @@ import {
 } from '../src/headers-core.js'
 import { adapterSourcePatched } from '../src/headers-conflict.js'
 import { headerOverlayInstalled, installHeaderOverlay, type OverlaySource } from '../src/headers-fetch.js'
+import { buildOffWireIndex } from '../src/off-thinking.js'
+
+/** Off-effort index for the wire-completion tests, keyed by the relay origin. */
+const offWireIndex = buildOffWireIndex({
+  magpie: {
+    baseURL: 'https://relay.example.com/v1',
+    models: [{ id: 'group/deepseek-flash', reasoningEfforts: { off: 'none', high: 'high' } }],
+  },
+})
 
 describe('originOf', () => {
   it('reads the scheme, host and port and drops the path', () => {
@@ -337,5 +346,52 @@ describe('installHeaderOverlay', () => {
     })
     await globalThis.fetch('https://relay.example.com/v1', { headers: {} })
     expect(new Headers(calls[0]?.init?.headers).get('user-agent')).toBe('first/1')
+  })
+
+  it('completes an off-effort body on a route that declares an off level', async () => {
+    install({ current: emptyIndex(), offWire: () => offWireIndex })
+    const body = JSON.stringify({ model: 'group/deepseek-flash', reasoning_effort: 'none', max_tokens: 24 })
+    await globalThis.fetch('https://relay.example.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    })
+    const sent = JSON.parse(String(calls[0]?.init?.body))
+    expect(sent).toMatchObject({ reasoning_effort: 'none', thinking: { type: 'disabled' } })
+    // The caller's own fields survive the rewrite.
+    expect(sent.max_tokens).toBe(24)
+    // A body rewrite does not invent a user-agent.
+    expect(new Headers(calls[0]?.init?.headers).get('user-agent')).toBeNull()
+  })
+
+  it('leaves a body naming a thinking effort byte-identical', async () => {
+    install({ current: emptyIndex(), offWire: () => offWireIndex })
+    const init: RequestInit = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'm', reasoning_effort: 'high' }),
+    }
+    await globalThis.fetch('https://relay.example.com/v1/chat/completions', init)
+    expect(calls[0]?.init).toBe(init)
+  })
+
+  it('leaves a body alone on an origin that declares no off level', async () => {
+    install({ current: emptyIndex(), offWire: () => offWireIndex })
+    const init: RequestInit = {
+      method: 'POST',
+      body: JSON.stringify({ model: 'm', reasoning_effort: 'none' }),
+    }
+    await globalThis.fetch('https://other.example.com/v1/chat/completions', init)
+    expect(calls[0]?.init).toBe(init)
+  })
+
+  it('never parses a body it cannot own', async () => {
+    install({ current: emptyIndex(), offWire: () => offWireIndex })
+    const streamed = { body: new ReadableStream(), method: 'POST', duplex: 'half' } as RequestInit
+    const notJson = { body: 'not json', method: 'POST' } as RequestInit
+    await globalThis.fetch('https://relay.example.com/v1/chat/completions', streamed)
+    await globalThis.fetch('https://relay.example.com/v1/chat/completions', notJson)
+    expect(calls[0]?.init).toBe(streamed)
+    expect(calls[1]?.init).toBe(notJson)
   })
 })
