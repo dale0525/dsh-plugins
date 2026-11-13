@@ -21,7 +21,7 @@ importers:
   packages/all:
     dependencies:
       '@logictan/dsh-better-reasoning-effort':
-        specifier: ^0.5.11
+        specifier: ^0.5.12
         version: link:../dsh-better-reasoning-effort
       '@logictan/dsh-browser-agent':
         specifier: ^0.2.7
@@ -87,7 +87,7 @@ importers:
         specifier: ^0.13.2
         version: link:../dsh-verbatim-compaction
       '@logictan/dsh-worktree-session':
-        specifier: ^0.1.13
+        specifier: ^0.1.14
         version: link:../dsh-worktree-session
 
   packages/dsh-better-reasoning-effort:
