@@ -32,6 +32,19 @@ export const SERVER_NAME = 'magpie';
 const GENERATE_TIMEOUT_MS = 300_000;
 
 /**
+ * How long `generate_image` keeps polling before handing the task id back.
+ *
+ * magpie answers within about 20 seconds or returns an id to poll, and a real
+ * generation takes a few minutes. Two minutes covers the common case; past that
+ * the id is returned so the work is not lost, rather than blocking the tool for
+ * the full {@link GENERATE_TIMEOUT_MS}.
+ */
+const POLL_BUDGET_MS = 120_000;
+
+/** Delay between two `generation_result` calls. */
+const POLL_INTERVAL_MS = 3_000;
+
+/**
  * Derive the model-facing public name for one magpie tool.
  *
  * @param rawName - magpie's own tool name.
@@ -169,6 +182,45 @@ function restoreRef(value) {
 }
 
 /**
+ * Poll `generation_result` until the image arrives or the budget runs out.
+ *
+ * This polling lives here rather than in the model's hands, and that is the
+ * whole point of the function. magpie's two-step protocol — answer with an id,
+ * then be asked again for the result — was previously exposed as two tools, so
+ * the model had to remember a `task_id` and pick `generation_result` by name for
+ * the second step. Measured on 2026-11-14 in the session that exposed this: the
+ * model named that tool in prose twenty times, called it zero times, and spent
+ * the turns calling an unrelated memory tool instead. A second step the caller
+ * can perform itself should not be a second decision.
+ *
+ * A pending answer carries the id in prose and nothing else, so the id is
+ * carried forward on every retry. When the budget expires the last pending
+ * result is returned unchanged: it still holds the id, which is what makes a
+ * long generation collectable instead of lost.
+ *
+ * @param ctx - the plugin context carrying the attachment store.
+ * @param magpie - the client from {@link createMagpieClient}.
+ * @param initial - the `projectResult` value from `generate_image`.
+ * @param exec - the tool execution context, whose signal is honoured.
+ * @returns a completed result, or the last pending one with its id.
+ */
+async function pollUntilReady(ctx, magpie, initial, exec, poll = {}) {
+  const budgetMs = poll.budgetMs ?? POLL_BUDGET_MS;
+  const intervalMs = poll.intervalMs ?? POLL_INTERVAL_MS;
+  const sleep = poll.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  let current = initial;
+  const deadline = Date.now() + budgetMs;
+  while (current.status === 'pending' && Date.now() < deadline) {
+    if (exec?.signal?.aborted === true) break;
+    await sleep(intervalMs);
+    if (exec?.signal?.aborted === true) break;
+    const result = await magpie.callTool('generation_result', { id: current.task_id }, exec);
+    current = await projectResult(ctx, result);
+  }
+  return current;
+}
+
+/**
  * Turn one magpie result into attachment-backed image references.
  *
  * The attachment store is what makes the images durable: magpie keeps them at a
@@ -223,9 +275,11 @@ async function projectResult(ctx, result) {
  *
  * @param ctx - the plugin context.
  * @param magpie - the client from {@link createMagpieClient}.
+ * @param poll - test seam for the internal polling: `budgetMs`, `intervalMs` and
+ *   `sleep`. Production passes nothing and gets the measured defaults.
  * @returns definitions, unregistered; the caller owns their lifetime.
  */
-export function createToolDefinitions(ctx, magpie) {
+export function createToolDefinitions(ctx, magpie, poll = {}) {
   return [
     defineTool({
       name: publicToolName('generate_image'),
@@ -269,7 +323,7 @@ export function createToolDefinitions(ctx, magpie) {
           ...(args.count === undefined ? {} : { n: args.count }),
           ...(args.background === undefined ? {} : { background: args.background }),
         }, exec);
-        return projectResult(ctx, result);
+        return pollUntilReady(ctx, magpie, await projectResult(ctx, result), exec, poll);
       },
     }),
     defineTool({

@@ -226,3 +226,96 @@ test('client view keys match the host tool names exactly', async () => {
     [publicToolName('generate_image'), publicToolName('generation_result')].sort(),
   );
 });
+
+// ---- internal polling ------------------------------------------------------
+
+/**
+ * A fake magpie that answers `generate_image` with a pending sentence, then
+ * hands back an image from `generation_result` after N polls.
+ *
+ * @param polls - how many `generation_result` calls succeed before the image.
+ * @returns the client plus a record of every call it received.
+ */
+function makePollingMagpie(polls) {
+  const calls = [];
+  let seen = 0;
+  return {
+    calls,
+    async callTool(name, args) {
+      calls.push({ name, args });
+      if (name === 'generate_image') {
+        return {
+          content: [{
+            type: 'text',
+            text: 'The image is still being made (20 s so far; it can take a few minutes). '
+              + 'Don\'t ask for it again: call generation_result with id "img_task1" to wait for it and get it.',
+          }],
+        };
+      }
+      seen += 1;
+      if (seen < polls) {
+        return {
+          content: [{ type: 'text', text: 'Still being made. Call generation_result with id "img_task1" again.' }],
+        };
+      }
+      return { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] };
+    },
+  };
+}
+
+const stubCtx = () => ({
+  attachments: {
+    readImage: async () => ({ data: PNG_BYTES, ref: { mediaType: 'image/png' } }),
+    saveImages: async (images) => images.map((_, index) => ({
+      attachmentId: `sha256:img${index}`, mediaType: 'image/png', bytes: 8, width: 2, height: 2,
+    })),
+  },
+});
+
+test('generate_image polls generation_result internally and returns the image', async () => {
+  // The failure this pins: the two-step protocol was handed to the model, which
+  // then had to remember a task_id and pick a second tool by name. In one
+  // session it never once called the second tool and looped instead (2026-11-14,
+  // measured: 0 magpie calls, 2 openviking calls). Polling belongs here.
+  const magpie = makePollingMagpie(3);
+  const [generate] = createToolDefinitions(stubCtx(), magpie, { sleep: async () => {} });
+  const result = await generate.execute({ prompt: 'a car headlight' }, { signal: undefined });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.images.length, 1);
+  const polls = magpie.calls.filter((call) => call.name === 'generation_result');
+  assert.equal(polls.length, 3, 'it must poll until the image arrives');
+  assert.equal(polls[0].args.id, 'img_task1', 'the id comes from the pending sentence');
+});
+
+test('generate_image stops polling and reports the id when the budget runs out', async () => {
+  // The id is the fallback: without it a timed-out generation is unreproducible
+  // and the image already paid for cannot be collected.
+  const magpie = makePollingMagpie(Number.POSITIVE_INFINITY);
+  const [generate] = createToolDefinitions(stubCtx(), magpie, { sleep: async () => {}, budgetMs: 60, intervalMs: 1 });
+  const result = await generate.execute({ prompt: 'x' }, { signal: undefined });
+
+  assert.equal(result.status, 'pending');
+  assert.equal(result.task_id, 'img_task1');
+  assert.ok(magpie.calls.length > 1, 'it must have tried polling at least once');
+  // The budget is time-based, so the exact poll count depends on the host; what
+  // must hold is that it stops. An unbounded loop here would hang the tool.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const settled = magpie.calls.length;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(magpie.calls.length, settled, 'polling must have stopped at the deadline');
+});
+
+test('a finished image is not polled for', async () => {
+  const calls = [];
+  const magpie = {
+    async callTool(name) {
+      calls.push(name);
+      return { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] };
+    },
+  };
+  const [generate] = createToolDefinitions(stubCtx(), magpie, { sleep: async () => {} });
+  const result = await generate.execute({ prompt: 'x' }, { signal: undefined });
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(calls, ['generate_image']);
+});
