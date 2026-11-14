@@ -77,12 +77,12 @@ export const GUIDANCE_GROUPS = [
       {
         name: 'mcp__magpie__generate_image',
         args: '`prompt`，可选 `reference_images`',
-        note: '出图超过约 20 秒不会直接给图，而是先返回一个 `task_id`，此时下一步必须再取一次结果',
+        note: '一步出图：等得久时插件自己在内部轮询到出图，拿到 `status: "pending"` 说明确实超时了，其中带 `task_id`',
       },
       {
         name: 'mcp__magpie__generation_result',
         args: '`task_id`',
-        note: '取图的唯一入口，按名直调即可——它不显示在工具按钮里但能执行；拿到 `task_id` 后就调它，不要改用记忆、搜索等其它工具代替',
+        note: '只在收到 `status: "pending"` 且确实要那张图时才用，按名直调即可——它不显示在按钮里但能执行；正常出图根本走不到它，不要把它当成流程中的第二步',
       },
     ],
   },

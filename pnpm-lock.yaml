@@ -57,7 +57,7 @@ importers:
         specifier: ^0.1.17
         version: link:../dsh-macos-theme
       '@logictan/dsh-magpie-image':
-        specifier: ^0.1.2
+        specifier: ^0.1.3
         version: link:../dsh-magpie-image
       '@logictan/dsh-modal-h3':
         specifier: ^0.1.1
@@ -81,7 +81,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-todo-goal
       '@logictan/dsh-tool-surface':
-        specifier: ^0.1.4
+        specifier: ^0.1.5
         version: link:../dsh-tool-surface
       '@logictan/dsh-verbatim-compaction':
         specifier: ^0.13.2
