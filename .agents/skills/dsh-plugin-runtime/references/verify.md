@@ -16,6 +16,14 @@
 > 按后两个路径取会得到 0 条，看起来像「插件没挂上」，实际是路径写错。判据是
 > `data.header.tools[0]` 的键为 `name,description,parameters`。
 
+> **`request/header` 只带工具清单，不带提示词正文**：它的 `data.header` 键固定是
+> `config / adapterDefaults / tools`。插件注册的 system-prompt 段落（`systemPrompt.section`
+> 注入的规则文字）**不在其中**，按 `request/header` 判定「新规则进没进提示词」会恒为否。
+> 实测 2026-11-14 改 `dsh-stitch-designer` 的规范条文并重启：两条 `request/header` 都不含
+> 该段文字，而重启后的 `system/message` 事件里逐字可见。判据：核对**提示词正文**读
+> `system/message` 事件（同样取最后一条，第一条是重启前的旧快照），核对**工具清单**才读
+> `request/header`。两件事分开取证，别用一个路径判两件事。
+
 > **该命令靠 `lsof` 找端口 owner，而 `lsof` 在 `/usr/sbin`**：调用方 PATH 缺 `/usr/sbin` 时
 > `port_pid` 取空，输出 `owner pid none` 与 `==NOT LISTENING==`——**服务其实是好的**。
 > 实测同一进程同一秒：PATH 无 `/usr/sbin` 判 NOT LISTENING，补上即 `Verdict: OK`。
