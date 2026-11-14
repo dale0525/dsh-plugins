@@ -72,7 +72,7 @@ importers:
         specifier: ^0.1.1
         version: link:../dsh-reasoning-strip
       '@logictan/dsh-ssh':
-        specifier: ^0.1.3
+        specifier: ^0.1.4
         version: link:../dsh-ssh
       '@logictan/dsh-stitch-designer':
         specifier: ^2.1.3
