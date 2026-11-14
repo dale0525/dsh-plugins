@@ -108,3 +108,21 @@
   ```
 
   返回 `false` 即命中本条；摘掉 `bundles` 里那一项后应变成 `true`（本次 573 → 574）。
+
+- **`Test` 步骤挂、本地全绿：测试 import 了被 gitignore 的构建产物。** `lib/` 是构建产物，
+  由 `prepare`/`prepack` 生成并被各包 `.gitignore` 忽略，所以**全新 clone 与 CI 上没有它**；
+  本机上它存在只是因为曾经跑过构建。测试若直接 `await import(join(root,'lib','client.js'))`，
+  本地恒过、CI 必挂在 `ERR_MODULE_NOT_FOUND`（实测 v0.5.177，`packages/dsh-ssh/tests/client.test.js`，
+  run 43596823729）。判据是 `gh run view <id> --log-failed | grep ERR_MODULE_NOT_FOUND`——
+  该 run 的失败步骤只写 `'test failed'`，真正原因只在完整日志里。
+
+  修法是让测试**在缺产物时自建**，而不是加 commit 或新增 CI 步骤：
+
+  ```js
+  try { await access(bundlePath); }
+  catch { await promisify(execFile)(process.execPath, [join(root,'build.mjs')], { cwd: root }); }
+  await import(bundlePath);
+  ```
+
+  验收必须**先删产物再跑**（`rm -rf lib && node --test tests/client.test.js`），否则又会用本机残留的
+  `lib/` 假通过——这一步漏掉就等于没修。
