@@ -13,7 +13,9 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,7 +52,18 @@ globalThis.window = {
     },
   },
 };
-await import(join(root, 'lib', 'client.js'));
+// `lib/` is build output and git-ignored, so a fresh clone (and CI) has no
+// bundle to import. Locally it exists only because a build ran at some point,
+// which is how this test passed on one machine and failed on CI with
+// ERR_MODULE_NOT_FOUND for lib/client.js (run 43596823729, 2026-11-14). Build
+// once here rather than depending on an artifact nobody committed.
+const bundlePath = join(root, 'lib', 'client.js');
+try {
+  await access(bundlePath);
+} catch {
+  await promisify(execFile)(process.execPath, [join(root, 'build.mjs')], { cwd: root });
+}
+await import(bundlePath);
 
 test('the bundle registers exactly once, under the package name', () => {
   assert.notEqual(registration, undefined, 'the bundle never called __ModuleLoader__.load');
