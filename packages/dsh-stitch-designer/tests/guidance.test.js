@@ -39,7 +39,11 @@ test('the announcement carries the design brief, not only the implementation rul
   assert.match(STITCH_GUIDANCE, /样式一律不写/, 'the brief must not fix layout, spacing or colour');
   assert.match(STITCH_GUIDANCE, /自由发挥/, 'the model must be left room to design');
   assert.match(STITCH_GUIDANCE, /无法实现/, 'the screen must not contain what the implementation cannot express');
-  assert.match(STITCH_GUIDANCE, /暗色/, 'every screen ships a dark variant');
+  assert.match(STITCH_GUIDANCE, /暗色只另外出一页/, 'dark is pinned by one token screen, not a per-screen variant');
+  assert.match(STITCH_GUIDANCE, /只针对明色版/, 'later adds, edits and deletes touch only the light screens');
+  assert.match(STITCH_GUIDANCE, /edit_screens/, 'a screen is revised in place rather than regenerated');
+  assert.match(STITCH_GUIDANCE, /只保留一份/, 'the superseded version does not stay on the canvas');
+  assert.match(STITCH_GUIDANCE, /remove_screens_from_canvas/, 'the superseded ids are the tool that clears them');
 });
 
 test('the announcement names a design language only as the exception', () => {

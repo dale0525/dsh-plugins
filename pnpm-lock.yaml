@@ -75,7 +75,7 @@ importers:
         specifier: ^0.1.4
         version: link:../dsh-ssh
       '@logictan/dsh-stitch-designer':
-        specifier: ^2.1.3
+        specifier: ^2.1.4
         version: link:../dsh-stitch-designer
       '@logictan/dsh-todo-goal':
         specifier: ^0.1.0
