@@ -198,10 +198,17 @@ test('readConfigSnapshotMeta：meta.state 形状不对 → 丢弃；state 缺失
 test('listConfigSnapshots：损坏条目跳过，不阻断其余，结果按 createdAt 倒序', async (t) => {
   const dir = await tmpDir(t, 'list');
   const sections = new Map<SectionId, ExportSection>([['settings', exported('settings', { v: 1 })]]);
-  await saveConfigSnapshot({ dir, kind: 'auto', reason: 'old', sections, state: state(), idFactory: () => 'old' });
+  // createdAt 必须显式错开：两次保存若落进同一毫秒，排序会退到 id 倒序这条兜底规则上，
+  // 于是 'old' 排在 'new' 前面——本测试断言的是「按 createdAt 倒序」，不能靠真实时钟碰运气
+  // （CI 上已实际偶发红过一次）。
+  await saveConfigSnapshot({
+    dir, kind: 'auto', reason: 'old', sections, state: state(),
+    idFactory: () => 'old', now: () => new Date('2026-09-13T04:00:00.000Z'),
+  });
   await saveConfigSnapshot({
     dir, kind: 'auto', reason: 'new', sections,
     state: state([['settings', 'h2']], '2026-09-13T05:00:00.000Z'), idFactory: () => 'new',
+    now: () => new Date('2026-09-13T05:00:00.000Z'),
   });
   await fs.mkdir(path.join(dir, 'corrupt'), { recursive: true });
   await fs.writeFile(path.join(dir, 'corrupt', CONFIG_SNAPSHOT_FILE), 'garbage', 'utf8');
