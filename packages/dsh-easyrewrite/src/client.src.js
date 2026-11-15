@@ -811,32 +811,265 @@ window.__ModuleLoader__.load({
       return parts.join("\n");
     }
 
-    // 官方同款 contentParts：把消息 content 拆为 {text, images, rest}（图片附件用于渲染缩略图）
+    // 官方同款 contentParts：把消息 content 拆为 {text, images, files, rest}。
+    // 图片与文件必须分开收集：宿主 0.2.1 的 UserContent 也是这么分流的（image → 画廊，
+    // file → 内联文件卡）。
     function contentParts(content) {
       var texts = [];
       var images = [];
+      var files = [];
       var rest = [];
       if (Array.isArray(content)) {
         for (var i = 0; i < content.length; i++) {
           var b = content[i];
           if (b && b.type === "text" && typeof b.text === "string") texts.push(b.text);
           else if (b && b.type === "image" && b.attachment !== void 0) images.push({ attachment: b.attachment });
+          else if (b && b.type === "file" && b.attachment !== void 0) files.push(b.attachment);
           else rest.push(b);
         }
       }
-      return { text: texts.join(""), images: images, rest: rest };
+      return { text: texts.join(""), images: images, files: files, rest: rest };
     }
 
-    // 渲染消息图片缩略图：直调官方 renderMessageImages（官方 ImageGallery：大图/宫格/lightbox/重试）。
-    // 方法论 review #1：chat.node 注入必带该 prop，自绘 <img> 兜底属重复造轮子——已删；失败 warn 不静默。
-    function renderMessageImagesCompat(images, props) {
-      if (!images || images.length === 0) return null;
-      if (!props || typeof props.renderMessageImages !== "function") {
-        log("warn", "attach", "renderMessageImages prop 缺失（官方注入面变化？），图片无法渲染");
-        return null;
+    /**
+     * 消息图片画廊（覆盖 chat.node#user 后，官方图片通道不再自动注入）。
+     *
+     * 宿主 0.2.1 删掉了 `renderMessageImages` prop，改用子槽
+     * `conversation.chat.user.images`。我们把整个 keyed 槽覆盖成自己的气泡后，
+     * 那条通道跟着消失，图片必须在这里自己画——否则用户发出的图只剩文字。
+     *
+     * 视觉沿用宿主 ImageGallery 的规则：单图长边 240px、比例夹到 [0.25, 4]，
+     * 多图并列 64px 方块；圆角/描边/底色取宿主自己的 --dsw-* token，
+     * 亮暗两套主题自动跟随。
+     */
+    function MessageImage({ image, loadImage, compact }) {
+      var attachment = image.attachment;
+      var sUrl = React.useState(function () {
+        try { return (loadImage && typeof loadImage.peek === "function") ? (loadImage.peek(attachment) || null) : null; } catch (e) { return null; }
+      });
+      var url = sUrl[0];
+      var setUrl = sUrl[1];
+      var sFailed = React.useState(false);
+      var failed = sFailed[0];
+      var setFailed = sFailed[1];
+      var sOpen = React.useState(false);
+      var open = sOpen[0];
+      var setOpen = sOpen[1];
+      var sAttempt = React.useState(0);
+      var attempt = sAttempt[0];
+      var setAttempt = sAttempt[1];
+
+      React.useEffect(function () {
+        if (!loadImage || typeof loadImage !== "function") {
+          log("warn", "attach", "loadImage 不可用，消息图片无法渲染", { attachmentId: attachment && attachment.attachmentId });
+          return;
+        }
+        var live = true;
+        setFailed(false);
+        if (typeof loadImage.peek === "function") {
+          try { var peeked = loadImage.peek(attachment); if (peeked) setUrl(peeked); } catch (ePeek) { /* 无 peek 缓存 */ }
+        }
+        Promise.resolve(loadImage(attachment)).then(function (resolved) {
+          if (live) setUrl(resolved);
+        }, function (err) {
+          if (live) { setFailed(true); log("warn", "attach", "消息图片加载失败", { err: String(err && err.message ? err.message : err) }); }
+        });
+        return function () { live = false; };
+      }, [attachment, loadImage, attempt]);
+
+      if (failed) {
+        return React.createElement("button", {
+          type: "button",
+          title: "图片加载失败，点击重试",
+          onClick: function (e) { e.stopPropagation(); setAttempt(attempt + 1); },
+          style: { border: ".5px solid var(--dsw-alias-border-l2-darkmode-thin)", borderRadius: "var(--dsw-radius-md)", background: "var(--dsw-alias-interactive-bg-hover-danger)", cursor: "pointer", padding: "10px 12px", color: "var(--dsw-alias-label-tertiary)", fontSize: "12px", lineHeight: "18px" }
+        }, "图片加载失败");
       }
-      try { return props.renderMessageImages({ images: images, align: "end" }); }
-      catch (e) { log("warn", "attach", "官方图片渲染抛错", { err: String(e && e.message ? e.message : e) }); return null; }
+
+      var fit = null;
+      if (!compact) {
+        var w = attachment && typeof attachment.width === "number" ? attachment.width : 0;
+        var h = attachment && typeof attachment.height === "number" ? attachment.height : 0;
+        if (w > 0 && h > 0) {
+          var natural = w / h;
+          var ratio = Math.min(4, Math.max(0.25, natural));
+          var box = ratio >= 1 ? { width: 240, height: 240 / ratio } : { width: 240 * ratio, height: 240 };
+          var scale = Math.min(1, w / box.width, h / box.height);
+          fit = {
+            width: Math.max(1, Math.round(box.width * scale)),
+            height: Math.max(1, Math.round(box.height * scale)),
+            objectPosition: natural < 0.25 ? "center top" : (natural > 4 ? "left center" : "center")
+          };
+        } else {
+          fit = { width: 240, height: 240, objectPosition: "center" };
+        }
+      }
+
+      var frameStyle = {
+        border: ".5px solid var(--dsw-alias-border-l2-darkmode-thin)",
+        borderRadius: "var(--dsw-radius-xl)",
+        background: "var(--dsw-alias-interactive-bg-hover)",
+        cursor: "zoom-in",
+        flex: "none",
+        display: "grid",
+        placeItems: "center",
+        minWidth: "44px",
+        minHeight: "44px",
+        padding: 0,
+        overflow: "hidden",
+        boxSizing: "border-box"
+      };
+      if (compact) {
+        frameStyle.width = "64px";
+        frameStyle.height = "64px";
+        frameStyle.minWidth = "64px";
+        frameStyle.minHeight = "64px";
+      } else if (fit !== null) {
+        frameStyle.width = fit.width + "px";
+        frameStyle.height = fit.height + "px";
+      }
+
+      var imgStyle = { objectFit: "cover", width: "100%", height: "100%", display: "block" };
+      if (fit !== null) imgStyle.objectPosition = fit.objectPosition;
+
+      var label = (attachment && attachment.name) || "图片";
+      return React.createElement(
+        React.Fragment, null,
+        React.createElement("button", {
+          type: "button",
+          style: frameStyle,
+          title: url === null ? "正在加载图片" : "查看原图",
+          "aria-label": url === null ? "正在加载图片" : ("查看原图：" + label),
+          "aria-busy": url === null || undefined,
+          onClick: function (e) { e.stopPropagation(); if (url !== null) setOpen(true); }
+        }, url === null
+          ? React.createElement("span", { style: { color: "var(--dsw-alias-label-tertiary)", fontSize: "12px", lineHeight: "18px" } }, "加载中…")
+          : React.createElement("img", { src: url, alt: label, style: imgStyle })),
+        open && url !== null ? React.createElement(ImageLightboxCompat, {
+          src: url, alt: label, onClose: function () { setOpen(false); }
+        }) : null
+      );
+    }
+
+    /**
+     * 原图灯箱：能用宿主官方 ImageLightbox 就用它（0.2.1 的导出面上有），
+     * 拿不到才退回最小自绘。
+     */
+    var HostImageLightbox = pickIcon(Primitives.ImageLightbox);
+    function ImageLightboxCompat(props) {
+      if (typeof HostImageLightbox === "function") {
+        try {
+          return React.createElement(HostImageLightbox, {
+            src: props.src,
+            alt: props.alt,
+            labels: { dialog: "查看原图", close: "关闭" },
+            onClose: props.onClose
+          });
+        } catch (e) { log("warn", "attach", "官方灯箱渲染抛错，退回自绘", { err: String(e && e.message ? e.message : e) }); }
+      }
+      return React.createElement("div", {
+        role: "dialog",
+        "aria-modal": "true",
+        "aria-label": "查看原图",
+        onClick: function (e) { e.stopPropagation(); props.onClose(); },
+        style: {
+          position: "fixed",
+          inset: 0,
+          zIndex: 1000,
+          background: "rgba(0,0,0,0.72)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "zoom-out"
+        }
+      }, React.createElement("img", {
+        src: props.src,
+        alt: props.alt,
+        style: { maxWidth: "92vw", maxHeight: "92vh", objectFit: "contain" }
+      }));
+    }
+
+    /** 消息文件卡：尺寸与配色照宿主 UserContent 的文件卡（240×64、.5px 描边）。 */
+    function MessageFileCard({ file }) {
+      var name = (file && file.name) || "文件";
+      var ext = "";
+      try {
+        if (typeof Primitives.fileExtension === "function") ext = String(Primitives.fileExtension(name) || "").toUpperCase();
+      } catch (e) { ext = ""; }
+      var size = "";
+      try {
+        if (typeof Primitives.fileSizeText === "function" && file && typeof file.bytes === "number") size = String(Primitives.fileSizeText(file.bytes) || "");
+      } catch (e2) { size = ""; }
+      var meta = [ext, size].filter(function (part) { return part !== ""; }).join(" ");
+      var FileTypeIcon = Primitives.FileTypeIcon;
+      return React.createElement("span", {
+        title: name,
+        style: {
+          border: ".5px solid var(--dsw-alias-border-l2, rgba(0,0,0,0.12))",
+          borderRadius: "var(--dsw-radius-lg)",
+          background: "var(--dsw-specific-input-major, transparent)",
+          boxSizing: "border-box",
+          flex: "0 0 240px",
+          alignItems: "center",
+          gap: "10px",
+          width: "240px",
+          minHeight: "64px",
+          padding: "8px 12px",
+          display: "inline-flex"
+        }
+      },
+        typeof FileTypeIcon === "function"
+          ? React.createElement(FileTypeIcon, { path: name, style: { flex: "none", width: "28px", height: "28px" } })
+          : null,
+        React.createElement("span", { style: { flexDirection: "column", flex: 1, minWidth: 0, display: "flex" } },
+          React.createElement("span", {
+            style: {
+              whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden",
+              color: "var(--dsw-alias-label-primary)", fontSize: "14px", fontWeight: 500, lineHeight: "22px"
+            }
+          }, name),
+          React.createElement("span", {
+            style: {
+              whiteSpace: "nowrap", textOverflow: "ellipsis", overflow: "hidden",
+              color: "var(--dsw-alias-label-tertiary, rgba(0,0,0,0.45))", fontSize: "12px", lineHeight: "15px"
+            }
+          }, meta)
+        )
+      );
+    }
+
+    /**
+     * 一条用户消息的全部附件：图片一组、文件一组，放在文字气泡上方，
+     * 与宿主 UserContent 的 attachmentRow 布局一致。
+     */
+    function MessageAttachments({ images, files, loadImage }) {
+      if ((!images || images.length === 0) && (!files || files.length === 0)) return null;
+      var compactImages = images.length > 1;
+      var children = [];
+      if (files && files.length > 0) {
+        for (var fi = 0; fi < files.length; fi++) {
+          children.push(React.createElement(MessageFileCard, { key: "file:" + fi, file: files[fi] }));
+        }
+      }
+      if (images && images.length > 0) {
+        var tiles = [];
+        for (var ii = 0; ii < images.length; ii++) {
+          tiles.push(React.createElement(MessageImage, {
+            key: "image:" + ii,
+            image: images[ii],
+            loadImage: loadImage,
+            compact: compactImages
+          }));
+        }
+        children.push(React.createElement("div", {
+          key: "images",
+          style: { display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "10px", maxWidth: "100%" }
+        }, tiles));
+      }
+      return React.createElement("div", {
+        "data-message-attachments": true,
+        style: { display: "flex", flexWrap: "wrap", justifyContent: "flex-end", gap: "8px", maxWidth: "100%" }
+      }, children);
     }
 
     /** 操作区图标：内联 SVG，走 macOS 主题的描边图标语言。
@@ -2922,13 +3155,16 @@ window.__ModuleLoader__.load({
         paddingRight: "4px"
       };
 
-      // 问题1 修复：气泡上方渲染消息中的图片附件（覆盖 chat.node 后官方图片槽不再自动注入）
+      // 覆盖 chat.node#user 之后，官方的图片子槽与文件卡都不再进来，附件由我们自己画。
       var pc = contentParts(data.content);
-      var msgImages = pc && pc.images ? pc.images : [];
 
       return React.createElement(
         "div", { style: rowStyle, "data-dsh-easyrewrite": "user", "data-time-hover-root": true },
-        renderMessageImagesCompat(msgImages, props),
+        React.createElement(MessageAttachments, {
+          images: pc.images,
+          files: pc.files,
+          loadImage: props.loadImage
+        }),
         React.createElement(
           "div", { className: "dsh-easyrewrite-bubble", style: bubbleStyle, onClick: onBubbleClick, title: rewriteOnClick() ? L.clickEdit : undefined },
           text || L.emptyMsg
