@@ -46,6 +46,22 @@ export const TOOL_NAMES = {
 };
 
 /**
+ * The toolset the six tools are handed over as.
+ *
+ * Model-facing twice: the model passes this name to `get_tools`, and the
+ * description is the when-to-use line the catalog prints beside it — which is
+ * why it names the jobs (generate, track, pool) and no parameter. The argument
+ * surface arrives with the loaded schemas, so restating one here would duplicate
+ * what the very next turn shows in full.
+ */
+export const TOOLSET_NAME = 'modal_video';
+
+/** Model-facing when-to-use line for the {@link TOOLSET_NAME} toolset. */
+export const TOOLSET_DESCRIPTION =
+  'Generate 4-15 second videos with MiniMax H3 Ref2VA on Modal (references in, native stereo audio out), ' +
+  'track or cancel the generations it submits, and inspect or deploy the Modal account pool they draw on.';
+
+/**
  * Cooperative budget for one generation call.
  *
  * The worker's own ceiling is 630 s per attempt with at most two attempts, so

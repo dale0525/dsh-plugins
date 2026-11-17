@@ -16,6 +16,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { apply, name } from '../src/index.js';
+import { TOOLSET_DESCRIPTION, TOOLSET_NAME } from '../src/tools.js';
 
 /**
  * A minimal cordis-shaped context.
@@ -32,6 +33,7 @@ import { apply, name } from '../src/index.js';
  */
 function fakeContext(options = {}) {
   const registered = [];
+  const toolsets = [];
   const sections = [];
   const effects = [];
   const handlers = new Map();
@@ -61,6 +63,14 @@ function fakeContext(options = {}) {
     },
   };
   if (options.credentials === true) services.credentials = { resolve: async () => undefined };
+  if (options.toolsets === true) {
+    services.toolsets = {
+      register(toolset) {
+        toolsets.push(toolset);
+        return () => {};
+      },
+    };
+  }
   if (options.systemPrompt === true) {
     services.systemPrompt = {
       section(entry) {
@@ -69,19 +79,32 @@ function fakeContext(options = {}) {
       },
     };
   }
-  return { ctx, registered, sections, effects, handlers };
+  // `ctx.toolsets` is reached as a PROPERTY (the real context proxy resolves it
+  // from the inject declaration), so the fake has to expose it the same way as
+  // well as through `get` — code that reads `toolsCtx.toolsets` must not depend
+  // on which of the two the fake happened to implement.
+  ctx.toolsets = services.toolsets;
+  return { ctx, registered, toolsets, sections, effects, handlers };
 }
 
 test('the row id equals the host half name, which nothing automated checks', () => {
   assert.equal(name, 'modal-h3');
 });
 
-test('a full host gets six tools, each with an executor and a unique public name', () => {
-  const { ctx, registered } = fakeContext({ credentials: true, systemPrompt: true });
+test('a full host gets one toolset of six tools and registers none of them globally', () => {
+  // The failure this pins: a directly registered tool costs its schema on EVERY
+  // request whether or not the model ever calls it. The six definitions now
+  // travel as one on-demand toolset, so the only recurring cost is the catalog
+  // line `get_tools` prints for `modal_video`.
+  const { ctx, registered, toolsets } = fakeContext({ credentials: true, toolsets: true, systemPrompt: true });
   apply(ctx);
-  assert.equal(registered.length, 6);
-  const names = registered.map((definition) => definition.name).sort();
-  assert.deepEqual(names, [
+  assert.deepEqual(registered, [], 'a global registration would restore the per-request cost this removes');
+  assert.equal(toolsets.length, 1);
+  const [toolset] = toolsets;
+  assert.equal(toolset.name, TOOLSET_NAME);
+  assert.equal(toolset.description, TOOLSET_DESCRIPTION);
+  assert.ok(toolset.description.length > 60, 'the when-to-use line is the only text the catalog shows');
+  assert.deepEqual(toolset.tools.map((definition) => definition.name).sort(), [
     'mcp__modal_h3__accounts_status',
     'mcp__modal_h3__accounts_sync',
     'mcp__modal_h3__cancel_generation_task',
@@ -89,7 +112,7 @@ test('a full host gets six tools, each with an executor and a unique public name
     'mcp__modal_h3__get_generation_task',
     'mcp__modal_h3__list_generation_tasks',
   ]);
-  for (const definition of registered) {
+  for (const definition of toolset.tools) {
     assert.equal(typeof definition.execute, 'function', `${definition.name} has no executor`);
     assert.equal(typeof definition.description, 'string');
     assert.ok(definition.description.length > 40, `${definition.name} description is too thin`);
@@ -108,17 +131,9 @@ test('a host without a credential provider registers no tools instead of crashin
   assert.deepEqual(sections, []);
 });
 
-test('a host without a system prompt still gets the tools', () => {
-  // Read through `ctx.get` rather than `inject` precisely for this case: a
-  // declared dependency would make the missing prompt take the tools with it.
-  const { ctx, registered, sections } = fakeContext({ credentials: true });
-  apply(ctx);
-  assert.equal(registered.length, 6);
-  assert.deepEqual(sections, []);
-});
 
 test('the announced section is unique, ordered, and states the limits the validator enforces', () => {
-  const { ctx, sections } = fakeContext({ credentials: true, systemPrompt: true });
+  const { ctx, sections } = fakeContext({ credentials: true, toolsets: true, systemPrompt: true });
   apply(ctx);
   const [section] = sections;
   assert.equal(section.name, 'plugin:dsh-modal-h3');
@@ -139,30 +154,23 @@ test('the announced section is unique, ordered, and states the limits the valida
   assert.match(section.text, /wait_for_completion: false/);
 });
 
-test('the generation route is withdrawn from the prompt but stays registered', async () => {
-  // 3,026 characters of schema for a call no local session has made yet. The
-  // section below it already carries the contract, and withdrawing the
-  // definition does not unregister the tool: execution resolves through the
-  // registry's layers, never through the assembly.
-  const { ctx, registered, handlers } = fakeContext({ credentials: true, systemPrompt: true });
+test('without the toolsets service the group does not fall back to global registrations', () => {
+  // `ctx.toolsets` is the only remaining way to publish these six. A fallback to
+  // `tools.register` would silently restore the per-request cost this change
+  // removes, and would do it on exactly the hosts whose tool list is already big.
+  const { ctx, registered, toolsets } = fakeContext({ credentials: true, systemPrompt: true });
   apply(ctx);
-
-  const assemble = handlers.get('system-prompt/assemble');
-  assert.equal(typeof assemble, 'function');
-
-  const announced = registered.map((definition) => ({
-    name: definition.name,
-    description: definition.description,
-    parameters: definition.parameters,
-  }));
-  const assembly = { sections: [], contexts: [], tools: announced, variables: {} };
-  const filtered = await assemble(assembly, {}, async () => assembly);
-
-  assert.equal(
-    filtered.tools.some((tool) => tool.name === 'mcp__modal_h3__generate_video'),
-    false,
-    'generate_video must not be announced',
-  );
-  assert.equal(filtered.tools.length, 5, 'every other tool keeps its definition');
-  assert.equal(registered.length, 6, 'the withdrawn tool remains callable');
+  assert.deepEqual(registered, []);
+  assert.deepEqual(toolsets, []);
 });
+
+test('a host without a system prompt still gets the toolset', () => {
+  // Read through `ctx.get` rather than `inject` precisely for this case: a
+  // declared dependency would make the missing prompt take the group with it.
+  const { ctx, registered, toolsets, sections } = fakeContext({ credentials: true, toolsets: true });
+  apply(ctx);
+  assert.deepEqual(registered, []);
+  assert.equal(toolsets.length, 1);
+  assert.deepEqual(sections, []);
+});
+

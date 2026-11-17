@@ -1,0 +1,8 @@
+# Patch row of @logictan/dsh-tool-toolsets.
+#
+# `id` equals the host half's `export const name` ('tool-toolsets' in index.mjs).
+# `aggregate.mjs --check` does not validate row-id uniqueness; `check:host` does,
+# and a duplicate hard-crashes the host with `duplicate loader entry id`.
+- insert:
+    - id: tool-toolsets
+      name: '@logictan/dsh-tool-toolsets'

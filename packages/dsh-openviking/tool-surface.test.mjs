@@ -36,13 +36,18 @@ test("the guidance names every withdrawn tool and its arguments", () => {
     assert.match(OPENVIKING_GUIDANCE, new RegExp(`mcp__openviking__${raw}\\b`), `${raw} must be named`);
   }
   // Which half keeps its schema is stated, so a model reading only the section
-  // knows where to look. `dsh-tool-surface` presses this plugin's eleven down to
-  // these two, so the section must name exactly these as still in the prompt.
-  assert.match(OPENVIKING_GUIDANCE, /参数表保持完整的是 `read` 与 `find`/);
-  // The nine the outer filter withdraws are still listed by name, in backticks,
-  // so a call to any of them is writable from this section alone.
-  for (const raw of ["write", "edit", "search", "list", "remember", "glob", "grep", "forget", "health"]) {
-    assert.match(OPENVIKING_GUIDANCE, new RegExp(`\`${raw}\``), `${raw} must be listed`);
+  // knows where to look. This plugin's own filter announces eleven of the
+  // server's twenty-seven; since `dsh-tool-surface` was deleted (2026-11-17)
+  // nothing narrows that further, so all eleven keep their schemas and the
+  // section must say so. It previously claimed only `read`/`find` did, which was
+  // true only while the outer filter existed.
+  for (const raw of ["read", "find", "write", "edit", "search", "list", "remember", "glob", "grep", "forget", "health"]) {
+    assert.match(OPENVIKING_GUIDANCE, new RegExp(`\`${raw}\``), `${raw} must be listed as schema-carrying`);
+  }
+  // The sixteen the filter withdraws are still named with their arguments, so a
+  // call to any of them is writable from this section alone.
+  for (const raw of ["add_resource", "add_skill", "tree", "download", "set_acl", "get_acl", "list_users", "list_groups"]) {
+    assert.match(OPENVIKING_GUIDANCE, new RegExp(`\`mcp__openviking__${raw}\``), `${raw} must be listed with its arguments`);
   }
   assert.equal(SECTION_NAME, "plugin:dsh-openviking");
   assert.equal(typeof SECTION_ORDER, "number");

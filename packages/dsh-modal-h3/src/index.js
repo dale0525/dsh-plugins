@@ -50,7 +50,8 @@ import {
   generateVideoTool,
   getTaskTool,
   listTasksTool,
-  SERVER_NAME,
+  TOOLSET_DESCRIPTION,
+  TOOLSET_NAME,
 } from './tools.js';
 
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
@@ -96,17 +97,17 @@ export function apply(ctx) {
     resolveAccounts,
   });
 
-  // `credentials` is a REQUIRED dependency of this block: without it the pool
-  // cannot be read, so there is nothing to register. Waiting on it here (rather
-  // than reading it once in `apply`) is what keeps a slow provider from turning
-  // into "the tools never appeared".
-  ctx.inject(['tools', 'credentials'], (toolsCtx) => {
-    const tools = toolsCtx.get('tools');
+  // `credentials` and `toolsets` are REQUIRED dependencies of this block: without
+  // the first the pool cannot be read, without the second the group has nowhere
+  // to go, and in either case there is nothing to register. Waiting on them here
+  // (rather than reading them once in `apply`) is what keeps a slow provider from
+  // turning into "the tools never appeared".
+  ctx.inject(['tools', 'credentials', 'toolsets'], (toolsCtx) => {
     // `defineTool` is not decoration: it turns the descriptors' per-property
     // spec maps into the JSON Schema the model is shown, and validates both the
     // arguments and the returned value against them. Handing a raw descriptor to
-    // `tools.register` would pass the spec map through verbatim and show the
-    // model a malformed schema.
+    // the registry would pass the spec map through verbatim and show the model a
+    // malformed schema.
     const definitions = [
       defineTool({ ...generateVideoTool(), execute: (args, exec) => service.generate(args, exec) }),
       defineTool({ ...getTaskTool(), execute: (args, exec) => service.get(args, exec) }),
@@ -115,28 +116,19 @@ export function apply(ctx) {
       defineTool({ ...accountsStatusTool(), execute: (args, exec) => service.accountsStatus(args, exec) }),
       defineTool({ ...accountsSyncTool(), execute: (args, exec) => service.accountsSync(args, exec) }),
     ];
-    toolsCtx.effect(() => {
-      const disposers = definitions.map((definition) => tools.register(definition));
-      toolsCtx.logger.info(`modal-h3: registered ${disposers.length} mcp__modal_h3__* tools`);
-      return () => {
-        for (const dispose of disposers) dispose();
-      };
-    }, 'modal-h3: video generation tools');
 
-    // ------------------------------------------------------- announcement
-    // The generation route's own definition — 3,026 characters of prompt for a
-    // call no local session has made yet — stays out of the assembly while the
-    // guidance section below carries the contract it would describe. The tool
-    // stays registered and executable: a model that names it still gets it run,
-    // because execution resolves through the registry's layers, never through
-    // the assembly. The five small tools remain announced; they are what a model
-    // reads a task's state with, and their arguments are not prose-guessable.
-    const withdrawn = new Set([`mcp__${SERVER_NAME}__generate_video`]);
-    toolsCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {
-      const assembly = await next();
-      const kept = assembly.tools.filter((tool) => !withdrawn.has(tool.name));
-      return kept.length === assembly.tools.length ? assembly : { ...assembly, tools: kept };
+    // One registration for the whole group, rather than six global ones. A
+    // toolset's schemas join the request only after the calling agent asks for
+    // them by name; before that the group costs a single catalog line. All six
+    // definitions reach the registry through the same toolset, so they resolve
+    // to the same service instance. Ownership is the calling fiber's: unloading
+    // this plugin removes the toolset and its catalog line with it.
+    toolsCtx.toolsets.register({
+      name: TOOLSET_NAME,
+      description: TOOLSET_DESCRIPTION,
+      tools: definitions,
     });
+    toolsCtx.logger.info(`modal-h3: toolset ${TOOLSET_NAME} holds ${definitions.length} mcp__modal_h3__* tools`);
 
     // ----------------------------------------------------------- guidance
     // Inside this block, and read through `get` rather than `inject`, for two

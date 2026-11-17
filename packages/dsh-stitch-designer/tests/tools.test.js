@@ -22,11 +22,9 @@ import {
   createOutput,
   createToolDefinition,
   extractText,
-  isAnnounced,
   promptSafeInputSchema,
   publicToolName,
   supportedOutputSchema,
-  withoutWithdrawn,
 } from '../src/tools.js';
 
 /** Every tool name Stitch's `tools/list` returns, as of 2026-10-08. */
@@ -199,24 +197,6 @@ test('execute passes structured content through only when Stitch sent it', async
   assert.deepEqual(Object.keys(await withoutStructured.execute({}, {})), ['content']);
 });
 
-test('only the guessable tools are withdrawn from the announcement', () => {
-  // A project id, a screen id, a title or a prompt is what the guidance section
-  // spells out; a DesignSystem or a VariantOptions is not. The split exists so
-  // that the cheap half stops paying for a schema it does not need.
-  for (const raw of ['list_projects', 'get_project', 'get_screen', 'list_screens', 'download_file', 'create_project', 'delete_project', 'remove_screens_from_canvas', 'update_design_system']) {
-    assert.equal(isAnnounced(raw), false, `${raw} should be withdrawn`);
-  }
-  for (const raw of ['create_design_system', 'apply_design_system', 'generate_screen_from_text', 'edit_screens', 'generate_variants', 'upload_design_md']) {
-    assert.equal(isAnnounced(raw), true, `${raw} should stay announced`);
-  }
-});
 
-test('withoutWithdrawn touches only this plugin\'s tools and reuses the array otherwise', () => {
-  const foreign = { name: 'mcp__openviking__search', description: '', parameters: {} };
-  const announced = { name: 'mcp__stitch__generate_screen_from_text', description: '', parameters: {} };
-  const withdrawn = { name: 'mcp__stitch__list_screens', description: '', parameters: {} };
-  const untouched = [foreign, announced];
 
-  assert.equal(withoutWithdrawn(untouched, 'mcp__stitch__'), untouched, 'no copy when nothing is withdrawn');
-  assert.deepEqual(withoutWithdrawn([...untouched, withdrawn], 'mcp__stitch__'), untouched);
-});
+

@@ -36,6 +36,22 @@ import { createToolDefinitions } from './tools.js';
 export const name = 'magpie-image';
 
 /**
+ * The toolset both image tools are handed over as.
+ *
+ * Model-facing twice: the model passes this name to `get_tools`, and the
+ * description is the when-to-use line the catalog prints beside it. Kept under
+ * the 200-char catalog limit so it is never ellipsized, and it names the jobs
+ * rather than the parameters — the argument surface arrives with the schemas a
+ * turn later.
+ */
+export const TOOLSET_NAME = 'magpie_image';
+
+/** Model-facing when-to-use line for the {@link TOOLSET_NAME} toolset. */
+export const TOOLSET_DESCRIPTION =
+  'Generate an image from a text prompt, or edit or combine images passed as reference images; '
+  + 'also collects a generation that was still running, by the task id it returned.';
+
+/**
  * Credential reference holding the magpie gateway key.
  *
  * Deliberately identical to the magpie LLM provider's `apiKeyEnv`, so the
@@ -75,16 +91,23 @@ export function apply(ctx) {
 
   const magpie = createMagpieClient({ resolveApiKey });
 
-  ctx.inject(['tools', 'attachments'], (toolsCtx) => {
-    const tools = toolsCtx.get('tools');
+  // `toolsets`, not `tools`, is the service that owns these definitions: the
+  // group is loaded into the calling agent's own scope on demand, so no tool
+  // schema is paid until the model asks for it. Both tools reach the registry
+  // through one toolset, so they keep resolving to the same client instance.
+  ctx.inject(['toolsets', 'attachments'], (toolsCtx) => {
+    const toolsets = toolsCtx.get('toolsets');
     const definitions = createToolDefinitions(toolsCtx, magpie);
-    toolsCtx.effect(() => {
-      const disposers = definitions.map((definition) => tools.register(definition));
-      toolsCtx.logger.info(`magpie-image: registered ${disposers.length} mcp__magpie__* tools`);
-      return () => {
-        for (const dispose of disposers) dispose();
-      };
-    }, 'magpie-image: tools');
+    toolsCtx.effect(
+      () =>
+        toolsets.register({
+          name: TOOLSET_NAME,
+          description: TOOLSET_DESCRIPTION,
+          tools: definitions,
+        }),
+      'magpie-image: toolset',
+    );
+    toolsCtx.logger.info(`magpie-image: toolset ${TOOLSET_NAME} holds ${definitions.length} mcp__magpie__* tools`);
   });
 
   // The browser half reads generated images over this route. It sits under its

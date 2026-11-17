@@ -41,10 +41,91 @@ import { createCanvasClient } from './canvas.js';
 import { createStitchClient } from './stitch.js';
 import { createInvoker } from './conventions.js';
 import { SECTION_NAME, SECTION_ORDER, STITCH_GUIDANCE } from './guidance.js';
-import { createOutput, createToolDefinition, publicToolName, retryWithBackoff, withoutWithdrawn } from './tools.js';
+import { createOutput, createToolDefinition, publicToolName, retryWithBackoff } from './tools.js';
+
+/**
+ * Name of this plugin's toolset in the `get_tools` catalog.
+ *
+ * Model-facing: the model passes this name to `get_tools`.
+ */
+const TOOLSET_NAME = 'stitch_design';
+
+/** Model-facing when-to-use line for the toolset, printed beside its catalog entry. */
+const TOOLSET_DESCRIPTION =
+  'Google Stitch UI design: projects, screens (list, get, generate, edit, variants), '
+  + 'design systems, file download, canvas removal. Load when the task is to design a UI with Stitch.';
+
+/**
+ * The one tool Stitch does not offer, built here rather than from `tools/list`.
+ *
+ * Stitch has no screen-delete route (`stitch delete screen` answers
+ * `UNSUPPORTED_RESOURCE`, `DELETE .../screens/<id>` answers 404), so the bridge
+ * performs the removal itself through one project-level PATCH. The tool takes a
+ * list because the canvas is one field: N removals are one write, and a single
+ * removal is just the one-element list.
+ *
+ * It travels with the toolset like every other tool: nothing here needs the
+ * upstream catalog, but every path to the canvas needs the API key, so it can
+ * only ever be usable exactly when the toolset is. Its `parameters` stay
+ * verbatim, which is why it does not go through `defineTool`.
+ *
+ * @param canvas - the Canvas REST client.
+ * @returns a registry-ready tool definition.
+ */
+function removeScreensTool(canvas) {
+  return {
+    name: publicToolName(SERVER_NAME, 'remove_screens_from_canvas'),
+    description:
+      'Remove one or more screens from a Stitch project canvas. Stitch has no screen-delete API, so '
+        + 'this rewrites the project\'s canvas without those screens — always in a single write, '
+        + 'however many ids you pass. The screen objects themselves are not destroyed; they disappear '
+        + 'from the project, which is what clears abandoned screens out. Use '
+        + 'mcp__stitch__list_screens to find screen ids first. Ids that are not on the canvas are '
+        + 'reported back rather than failing the whole call.',
+    parameters: {
+      type: 'object',
+      properties: {
+        projectId: {
+          type: 'string',
+          description: 'Stitch project id (bare id, not "projects/<id>").',
+        },
+        screenIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Ids of the screens to remove from the canvas. One id is the normal single-removal case.',
+        },
+      },
+      required: ['projectId', 'screenIds'],
+    },
+    output: createOutput(undefined),
+    async execute(args, exec) {
+      const result = await canvas.removeScreens(args.projectId, args.screenIds, exec);
+      const remaining = Array.isArray(result?.screenInstances) ? result.screenInstances.length : 0;
+      const lines = [
+        `Removed ${result.removed.length} screen(s) from project ${args.projectId}: ${result.removed.join(', ')}.`,
+        `The canvas now holds ${remaining} screen(s).`,
+      ];
+      if (result.missing.length > 0) {
+        lines.push(`Not on the canvas (left alone): ${result.missing.join(', ')}.`);
+      }
+      return { content: [{ type: 'text', text: lines.join(' ') }] };
+    },
+  };
+}
 
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
 export const name = 'stitch-designer';
+
+/**
+ * The `ctx.toolsets` service carries this plugin's entire tool surface.
+ *
+ * Declared at module level (not only inside `apply`) because cordis reads
+ * `inject` off the plugin value it is handed, and a host without the mechanism
+ * cannot serve a single Stitch tool — so the honest outcome is "the plugin is
+ * not mounted", not a guidance section announcing seventeen tools no catalog
+ * lists.
+ */
+export const inject = ['toolsets'];
 
 /**
  * Credential reference holding the Stitch API key.
@@ -57,9 +138,6 @@ export const API_KEY_REF = 'STITCH_API_KEY';
 
 /** Server namespace embedded in every public tool name (`mcp__stitch__*`). */
 export const SERVER_NAME = 'stitch';
-
-/** The prefix every tool this plugin registers carries, announcement filter included. */
-const PUBLIC_PREFIX = `mcp__${SERVER_NAME}__`;
 
 /**
  * How the boot-time `tools/list` is retried before the tools are given up on.
@@ -123,8 +201,8 @@ export function apply(ctx) {
   // that gap: setting the key in the Plugins page registers the tools in the
   // running process, with no restart. Without it the tools would appear only
   // after the user happened to restart, which reads as "the plugin is broken".
-  ctx.inject(['tools', 'credentials'], (toolsCtx) => {
-    const tools = toolsCtx.get('tools');
+  ctx.inject(['toolsets', 'credentials'], (toolsCtx) => {
+    const toolsets = toolsCtx.get('toolsets');
 
     toolsCtx.effect(() => {
       let disposed = false;
@@ -143,9 +221,21 @@ export function apply(ctx) {
             call: (args, exec) => invoke(tool.name, args, exec),
           }),
         );
-        for (const dispose of disposers) dispose();
-        disposers = next.map((definition) => tools.register(definition));
-        toolsCtx.logger.info(`stitch-designer: registered ${disposers.length} mcp__${SERVER_NAME}__* tools`);
+        next.push(removeScreensTool(canvas));
+        // `toolsets.register` is NOT idempotent — a second registration of one
+        // name throws `toolset name "..." is already registered`. Exactly one
+        // registration can exist here because the only two ways into this
+        // function are the boot attempt and the credential listener below, and
+        // that listener is guarded on `disposers.length > 0` — once a sync has
+        // succeeded there is no path back into it for the life of the fiber.
+        // (A failed attempt leaves `disposers` empty, so a retry or a later key
+        // fix registers for the first time, not a second time.)
+        disposers = [toolsets.register({
+          name: TOOLSET_NAME,
+          description: TOOLSET_DESCRIPTION,
+          tools: next,
+        })];
+        toolsCtx.logger.info(`stitch-designer: toolset ${TOOLSET_NAME} carries ${next.length} mcp__${SERVER_NAME}__* tools`);
       };
 
       // One attempt plus bounded backoff, so the boot fetch that failed
@@ -176,75 +266,14 @@ export function apply(ctx) {
         syncWithRetry();
       });
 
-      // `remove_screens_from_canvas` is local, not upstream: Stitch has no
-      // screen-delete route (`stitch delete screen` answers
-      // `UNSUPPORTED_RESOURCE`, `DELETE .../screens/<id>` answers 404), so the
-      // bridge performs the removal itself through one project-level PATCH. The
-      // tool takes a list because the canvas is one field: N removals are one
-      // write, and a single removal is just the one-element list. It is
-      // registered here unconditionally because it needs no `tools/list` to
-      // describe it — its contract is this file's.
-      const removeScreenDispose = tools.register({
-        name: publicToolName(SERVER_NAME, 'remove_screens_from_canvas'),
-        description:
-          'Remove one or more screens from a Stitch project canvas. Stitch has no screen-delete API, so '
-            + 'this rewrites the project\'s canvas without those screens — always in a single write, '
-            + 'however many ids you pass. The screen objects themselves are not destroyed; they disappear '
-            + 'from the project, which is what clears abandoned screens out. Use '
-            + 'mcp__stitch__list_screens to find screen ids first. Ids that are not on the canvas are '
-            + 'reported back rather than failing the whole call.',
-        parameters: {
-          type: 'object',
-          properties: {
-            projectId: {
-              type: 'string',
-              description: 'Stitch project id (bare id, not "projects/<id>").',
-            },
-            screenIds: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Ids of the screens to remove from the canvas. One id is the normal single-removal case.',
-            },
-          },
-          required: ['projectId', 'screenIds'],
-        },
-        output: createOutput(undefined),
-        async execute(args, exec) {
-          const result = await canvas.removeScreens(args.projectId, args.screenIds, exec);
-          const remaining = Array.isArray(result?.screenInstances) ? result.screenInstances.length : 0;
-          const lines = [
-            `Removed ${result.removed.length} screen(s) from project ${args.projectId}: ${result.removed.join(', ')}.`,
-            `The canvas now holds ${remaining} screen(s).`,
-          ];
-          if (result.missing.length > 0) {
-            lines.push(`Not on the canvas (left alone): ${result.missing.join(', ')}.`);
-          }
-          return { content: [{ type: 'text', text: lines.join(' ') }] };
-        },
-      });
-
       return () => {
         disposed = true;
         cancelRetry?.();
         offCredential();
-        removeScreenDispose();
         for (const dispose of disposers) dispose();
         disposers = [];
       };
     }, 'stitch-designer: Stitch tools');
-  });
-
-  // ------------------------------------------------------------ annotation
-  // The withdrawn half of the toolset (see `ANNOUNCED_TOOLS`): registered and
-  // executable, absent from every request's tool list. Filtering by the public
-  // name prefix rather than by a captured registration set keeps this correct
-  // when `tools/list` fails at boot and the tools appear later — either
-  // through the boot retry or a credential update — the names are the
-  // contract, the set of them is not.
-  ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
-    const assembly = await next();
-    const tools = withoutWithdrawn(assembly.tools, PUBLIC_PREFIX);
-    return tools === assembly.tools ? assembly : { ...assembly, tools };
   });
 
   // ------------------------------------------------------------- guidance

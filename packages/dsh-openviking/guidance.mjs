@@ -40,5 +40,5 @@ export const OPENVIKING_GUIDANCE = [
   "- `mcp__openviking__privacy_tree`（`category` 可选，如 `credential`/`skill`；返回 `{{ov_privacy:...}}` 引用而非明文）、`mcp__openviking__privacy_resolve`（`reference` 传整个 `{{ov_privacy:...}}` 占位符）、`mcp__openviking__privacy_upsert`（`category`、`target_key`、`values` 对象）",
   "- `mcp__openviking__rule_search`（`task_context` 必填，`rule_probability_threshold` 阈值）、`mcp__openviking__find_mcp_tools`（`query` + `limit`，返回带 uri 的工具定义）、`mcp__openviking__invoke_mcp_tool`（`tool_uri` 取 find_mcp_tools 返回的 uri，`arguments` 按该工具 schema 填）、`mcp__openviking__list_watches`（无参数）、`mcp__openviking__cancel_watch`（`to_uri`）",
   "",
-  "参数表保持完整的是 `read` 与 `find`，按提示词里的说明填即可；其余九只（`write`、`edit`、`search`、`list`、`remember`、`glob`、`grep`、`forget`、`health`）的参数表已由 dsh-tool-surface 从提示词里撤下，参数按上面这段写明的填，直接按名调用即可。",
+  "参数表保持完整的是 `read`、`find`、`write`、`edit`、`search`、`list`、`remember`、`glob`、`grep`、`forget`、`health` 这十一只，按各自的 schema 填即可；其余工具（上文逐条列出的那些）的参数表不在提示词里，参数按上面写明的填，直接按名调用即可。",
 ].join("\n");

@@ -1,0 +1,37 @@
+{
+  "name": "@logictan/dsh-tool-toolsets",
+  "version": "0.1.0",
+  "description": "On-demand toolset loading for DeepSeek Harness: plugins register named tool groups, the model loads one through a get_tools catalog tool, and its schemas cost nothing until then.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "registry.mjs",
+    "host-toolsets.mjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-scope": "^0.2.1-rc.2"
+  }
+}

@@ -79,8 +79,18 @@ test('apply registers the announcement as one system-prompt section', () => {
 
 test('a missing systemPrompt service does not take the plugin down with it', () => {
   const registered = [];
+  const toolsetRegistrations = [];
   const ctx = {
     get: () => undefined,
+    // `ctx.toolsets` is reached as a PROPERTY at the top of `apply` (the real
+    // context proxy resolves it from the module-level `inject` declaration), so
+    // the fake has to expose it the same way the real context would.
+    toolsets: {
+      register: (toolset) => {
+        toolsetRegistrations.push(toolset);
+        return () => {};
+      },
+    },
     effect: (factory) => factory(),
     on: () => () => {},
     // The tools half runs even though there is no system prompt: a plugin that
@@ -101,6 +111,8 @@ test('a missing systemPrompt service does not take the plugin down with it', () 
 
   assert.doesNotThrow(() => apply(ctx));
   // Only the tools half: the plugin no longer serves any HTTP route, so a host
-  // without `webServer` costs it nothing.
-  assert.deepEqual(registered, [['tools', 'credentials']]);
+  // without `webServer` costs it nothing. The group is a toolset now, so the
+  // injected block no longer asks for `tools` — it asks for `toolsets`.
+  assert.deepEqual(registered, [['toolsets', 'credentials']]);
 });
+

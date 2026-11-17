@@ -65,14 +65,18 @@ patchFrom:
   # consumer's `require` fails with `missed the module table`. Consumers declare
   # it in `dsh.client.external`, which orders this row ahead of them.
   - ../dsh-plugins-shared-client
-  # dsh-tool-surface presses the assembled tool list down to a measured
-  # whitelist and writes the withdrawn tools' arguments into the system prompt.
-  # Order-independent: its `system-prompt/assemble` listener filters AFTER
-  # `next()`, so it sees every other provider's filter result wherever this row
-  # sits. Its section order (100) puts it before every per-plugin guidance block,
-  # because it explains why those blocks carry argument lists for tools whose
-  # schemas are gone.
-  - ../dsh-tool-surface
+  # dsh-tool-toolsets provides ctx.toolsets: plugins register named tool groups,
+  # and the model loads one through a `get_tools` catalog tool. A toolset's
+  # schemas join the request only after the calling agent asks for them, so a
+  # group of rarely-used tools costs one catalog line until needed.
+  #
+  # It also replaced dsh-tool-surface (deleted 2026-11-17). That plugin filtered
+  # the assembled list down to a whitelist and described the withdrawn tools'
+  # arguments in prose; a tool known only by name is not usable, and the two
+  # whitelists it implied silently withdrew openviking's `write`. Claiming the
+  # host's own tool groups (`adopt`) defers them instead of describing them, so
+  # loading a group restores the real schema rather than a one-line summary.
+  - ../dsh-tool-toolsets
   # dsh-lan-access serves the Web UI on one configurable port reachable from both
   # the LAN and 127.0.0.1, by binding the wildcard address itself and forwarding
   # to the host's own listener with the authority rewritten. That is the only
@@ -148,7 +152,5 @@ deps:
   # The access password is the credential DSH_LAN_ACCESS_PASSWORD (set it on the
   # Plugins page), so the row carries no config. Its port must differ from the
   # host's own listener port, or loopback traffic would bypass the plugin's gate.
-  # dsh-tool-surface presses the assembled tool list down to a measured
-  # whitelist and writes the withdrawn tools' arguments into the system prompt.
-  - ../dsh-tool-surface
+  - ../dsh-tool-toolsets
   - ../dsh-lan-access

@@ -61,64 +61,7 @@ export function publicToolName(serverName, rawName) {
   return `${normalized.slice(0, MAX_PUBLIC_NAME_LENGTH - HASH_LENGTH - 1)}_${hash}`;
 }
 
-/**
- * Stitch tools whose definitions stay in the prompt; every other one is withdrawn.
- *
- * Measured on the live `tools/list` (2026-11-11): the 17 definitions cost 45,680
- * characters of a 180,629-character first request, and across 651 local sessions
- * the two heaviest were called twice. Withdrawing a definition from the prompt
- * does not unregister the tool — execution resolves through the registry's layer
- * visibility, not through the assembly — so a model that names one still gets it
- * run; what it loses is the schema, which for simple string-id tools is not the
- * thing that decides whether the call is right.
- *
- * The split follows that test, not usage: a tool stays announced when its
- * arguments are structures the model cannot guess (a `DesignSystem`,
- * a `VariantOptions`, a `screenInstances` entry), and is withdrawn when they are
- * a project id, a screen id, a title or a prompt — all of which the guidance
- * section spells out. The two design-system writers alone are 15,815 characters,
- * so keeping them announced is what makes the split worth anything.
- */
-export const ANNOUNCED_TOOLS = new Set([
-  'create_design_system',
-  'create_design_system_from_design_md',
-  'apply_design_system',
-  'upload_design_md',
-  'generate_screen_from_text',
-  'edit_screens',
-  'generate_variants',
-]);
 
-/**
- * Whether one upstream Stitch tool keeps its definition in the prompt.
- *
- * @param rawName - Stitch's own tool name.
- * @returns `true` when the definition is announced.
- */
-export function isAnnounced(rawName) {
-  return ANNOUNCED_TOOLS.has(rawName);
-}
-
-/**
- * Drop the withdrawn Stitch definitions from an assembled tool list.
- *
- * Names outside the `mcp__<server>__` namespace pass through untouched: the
- * assembly holds every provider's tools, and only this plugin's are its to
- * remove. The prefix test is against the public name, not a captured
- * registration set, so a `tools/list` that failed at boot and succeeded later on
- * a credential update still gets filtered.
- *
- * @param tools - the assembly's tool definitions.
- * @param prefix - the public-name prefix this plugin registers under.
- * @returns the same array when nothing was withdrawn, otherwise a filtered copy.
- */
-export function withoutWithdrawn(tools, prefix) {
-  if (!Array.isArray(tools)) return tools;
-  const kept = tools.filter(
-    (tool) => typeof tool?.name !== 'string' || !tool.name.startsWith(prefix) || isAnnounced(tool.name.slice(prefix.length)),
-  );
-  return kept.length === tools.length ? tools : kept;
-}
 
 /**
  * `x-google-*` fields the prompt pays for and the model cannot use.
