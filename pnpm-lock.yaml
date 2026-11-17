@@ -57,13 +57,13 @@ importers:
         specifier: ^0.1.17
         version: link:../dsh-macos-theme
       '@logictan/dsh-magpie-image':
-        specifier: ^0.1.3
+        specifier: ^0.1.4
         version: link:../dsh-magpie-image
       '@logictan/dsh-modal-h3':
-        specifier: ^0.1.1
+        specifier: ^0.1.2
         version: link:../dsh-modal-h3
       '@logictan/dsh-openviking':
-        specifier: ^0.4.15
+        specifier: ^0.4.16
         version: link:../dsh-openviking
       '@logictan/dsh-plugins-shared-client':
         specifier: ^0.1.1
@@ -75,14 +75,14 @@ importers:
         specifier: ^0.1.4
         version: link:../dsh-ssh
       '@logictan/dsh-stitch-designer':
-        specifier: ^2.1.4
+        specifier: ^2.1.5
         version: link:../dsh-stitch-designer
       '@logictan/dsh-todo-goal':
         specifier: ^0.1.0
         version: link:../dsh-todo-goal
-      '@logictan/dsh-tool-surface':
-        specifier: ^0.1.7
-        version: link:../dsh-tool-surface
+      '@logictan/dsh-tool-toolsets':
+        specifier: ^0.1.0
+        version: link:../dsh-tool-toolsets
       '@logictan/dsh-verbatim-compaction':
         specifier: ^0.13.2
         version: link:../dsh-verbatim-compaction
@@ -435,9 +435,18 @@ importers:
       '@deepseek-ai/dsh-attachment':
         specifier: 0.2.1-rc.2
         version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-brand@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))
+      '@deepseek-ai/dsh-scope':
+        specifier: ^0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: ^0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-llm@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))
       '@deepseek-ai/dsh-tools':
         specifier: ^0.2.1-rc.2
         version: 0.2.1-rc.2(f4f5dafa2004c02f6afbbbc8518bca23)
+      '@logictan/dsh-tool-toolsets':
+        specifier: ^0.1.0
+        version: link:../dsh-tool-toolsets
 
   packages/dsh-modal-h3:
     dependencies:
@@ -564,13 +573,35 @@ importers:
       '@deepseek-ai/cordis':
         specifier: ^4.0.5
         version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+      '@deepseek-ai/dsh-scope':
+        specifier: ^0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: ^0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-llm@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))
       '@deepseek-ai/dsh-tools':
         specifier: ^0.2.1-rc.2
         version: 0.2.1-rc.2(f4f5dafa2004c02f6afbbbc8518bca23)
+      '@logictan/dsh-tool-toolsets':
+        specifier: ^0.1.0
+        version: link:../dsh-tool-toolsets
 
   packages/dsh-todo-goal: {}
 
-  packages/dsh-tool-surface: {}
+  packages/dsh-tool-toolsets:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.5
+        version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+      '@deepseek-ai/dsh-scope':
+        specifier: ^0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: ^0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-llm@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-scope@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))
+      '@deepseek-ai/dsh-tools':
+        specifier: ^0.2.1-rc.2
+        version: 0.2.1-rc.2(f4f5dafa2004c02f6afbbbc8518bca23)
 
   packages/dsh-verbatim-compaction:
     dependencies:
