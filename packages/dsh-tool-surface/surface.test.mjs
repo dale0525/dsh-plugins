@@ -131,3 +131,28 @@ test('every available tool the whitelist withdraws is named in the guidance', ()
   const unnamed = WITHDRAWN_ON_2026_11_11.filter((toolName) => !text.includes(`\`${toolName}\``));
   assert.deepEqual(unnamed, [], 'a withdrawn tool must be named or the model cannot know it exists');
 });
+
+test('a withdrawn write tool carries the sibling warning in its own note', () => {
+  // The failure this pins (2026-11-17, session-5a49b173): the model announced
+  // "now writing the decision memory" four times and called `read` each time —
+  // the write-class tools were withdrawn while `read` and `find` stayed
+  // announced, so the nearest visible sibling absorbed the intent. Naming the
+  // tool (the assertion above) is not enough; the prose has to say the sibling
+  // will not do the job. Nothing errored, and the memory was never written.
+  //
+  // Asserted on the group entries, not on the rendered line: every group renders
+  // as ONE line separated by `、`, so a text regex from `write` to `不要用`
+  // reaches `edit`'s note and passes even when `write` lost its own warning.
+  // That fake assertion was written first and survived the defect, which is the
+  // whole reason this reads the note field instead.
+  //
+  // Only the tools `read` can be mistaken for carry this warning. `forget`
+  // deletes and `list`/`glob`/`grep`/`search` are reads themselves: a sibling
+  // substitution there loses nothing silently, so a warning would be noise.
+  const notes = new Map(
+    GUIDANCE_GROUPS.flatMap((group) => group.tools).map((tool) => [tool.name, tool.note]),
+  );
+  for (const name of ['mcp__openviking__write', 'mcp__openviking__edit', 'mcp__openviking__remember']) {
+    assert.match(notes.get(name) ?? '', /不要用 `mcp__openviking__read`/, `${name} lost its sibling warning`);
+  }
+});

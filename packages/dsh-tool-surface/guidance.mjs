@@ -182,11 +182,23 @@ export const GUIDANCE_GROUPS = [
   {
     title: 'openviking 其余组',
     tools: [
-      { name: 'mcp__openviking__write', args: '`uri` + `content`' },
-      { name: 'mcp__openviking__edit', args: '`uri` + `old_string` + `new_string`' },
+      {
+        name: 'mcp__openviking__write',
+        args: '`uri` + `content`',
+        note: '要落盘就调它，不要用 `mcp__openviking__read`：`read` 只读不写，拿它代替会静默丢失要写的内容',
+      },
+      {
+        name: 'mcp__openviking__edit',
+        args: '`uri` + `old_string` + `new_string`',
+        note: '改已有文件用它，不要用 `mcp__openviking__read`',
+      },
       { name: 'mcp__openviking__search', args: '`query`，可选 `mode`/`limit`' },
       { name: 'mcp__openviking__list', args: '`uri`' },
-      { name: 'mcp__openviking__remember', args: '`messages`' },
+      {
+        name: 'mcp__openviking__remember',
+        args: '`messages`',
+        note: '要把对话沉淀成记忆就调它，不要用 `mcp__openviking__read`',
+      },
       { name: 'mcp__openviking__forget', args: '`uri`' },
       { name: 'mcp__openviking__glob', args: '`pattern` + `uri`' },
       { name: 'mcp__openviking__grep', args: '`uri` + `pattern` 数组' },
