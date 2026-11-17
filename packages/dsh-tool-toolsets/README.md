@@ -97,6 +97,32 @@ symptom — a load that appears to work and then vanishes — has no error anywh
   of provider. `dsh-llm`'s built-in `deferLoading` is a different, provider-level
   mechanism; it can coexist but does not replace this.
 
+## Three failures that only a real host shows
+
+All three were found by pointing a browser at an isolated profile and reading the
+actual `request/header` and tool results. None is reachable from unit tests, and
+each cost a wrong "it works" before it was seen. They are recorded here because
+the same shapes will recur in any deferred-registration work, not just this code.
+
+1. **A plugin's own `ctx.tools.schemas()` is not the host's tool list.** It
+   resolves to that plugin's layer. Measured at mount: 0 tools, and 1 the next
+   tick — the 1 being `get_tools` itself — while the assembly carried 31. Any
+   adoption keyed on that view silently claims nothing.
+2. **The assembly hook cannot register a tool for the same request.**
+   `SystemPrompt.assemble` reads its provider list *before* the waterfall runs,
+   so a catalog registered inside that hook first appears one request later. A
+   first request that withholds tools without naming the loader is unreachable by
+   construction: the model is told nothing about them and cannot ask.
+3. **A blind static claim must be pruned to what exists.** Claiming a group from
+   a name list means a plugin can advertise groups from a configuration this
+   installation never had; `get_tools` then reports the phantom tools as
+   "available", and the next call dies with `unknown tool`. Prune to the names the
+   assembly actually carries, and drop a group whole when nothing is there.
+
+The general lesson: for anything that decides *when* a definition is visible,
+only the assembly is a truthful view, and the ordering between "register" and
+"read the registry" decides whether the first request is correct.
+
 ## Tests
 
 ```sh
