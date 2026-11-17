@@ -16,6 +16,7 @@
 2. **把完整 URL 原文告知用户**，再调用 `browser_agent`。需要人工确认的交互才用 `ask_user_question` 请用户手测、写明要看什么与什么算通过，并阻塞等待回报；不在正文列完步骤后结束轮次。
 3. 调 `browser_agent({url, goal})`，`goal` 写本次改动的可观察行为，不写「看看页面有没有问题」这类无判据目标。
 4. 只有浏览器里的可观察行为符合预期才算通过。`shasum` 一致、`--dump-config` 有 patch 行、`node_modules` 含新代码都只是前置核对，**不是真机验证**。
+   - **改动工具面/提示词时，判据不止「清单对不对」，还要读错误事件**。只数工具只数和字符数会漏掉「形状对、调用即错」的缺陷：实测两次，一次清单从 45 只降到 34 只（看着通过），同一会话里 `get_tools` 却报 `value is not lossless JSON`，另一个组报 `unknown tool "<name>"`。取证据时扫一遍 `tool/result` 里的 `Error:`，不只取 `request/header`。
 5. 不通过就停：保留临时 profile 供排查，不删除、不发版，不通过改 `web` profile 或重启 dsh 来绕。把命令输出与截图结论一起报告。
 
 ## 纯 host-half 特性的诚实边界
