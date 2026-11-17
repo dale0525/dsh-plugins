@@ -33,13 +33,25 @@
     guidance: ''                  # 可选；空串 = 只过滤不注入提示词段
 ```
 
-`keep` 缺省是本机调用次数前 24 名（按次数降序），外加 `pwsh`：
+`keep` 缺省由**两条规则**组成，缺一不可：
+
+1. **本机调用次数前 24 名**（按次数降序），外加 `pwsh`。
+2. **每个「所属插件自己已公告」的工具**（23 只），追加在后。
+
+第 2 条是 2026-11-17 的修复。`dsh-openviking`、`dsh-stitch-designer`、`dsh-modal-h3` 各自也挂一个 `system-prompt/assemble` 过滤器、各有自己的公告白名单。两层过滤器叠加，结果是**交集**：本插件的 `DEFAULT_KEEP` 当时只有 `openviking__read` 与 `openviking__find`，于是 openviking 想公告的 11 只里 9 只被本插件又撤掉一次，`write` 在内。后果是模型被告知「有这个工具」（散文里写着名字与参数）、却**没有它的定义**：那个会话里模型四次说「现在写入」，四次都调了 `read`，没有任何报错，记忆静默没写进去。stitch 的 7 只（含三层 `$defs` 的 `create_design_system`）同样被全撤。
+
+判据：**所属插件比本插件更清楚自家工具的参数能不能靠散文说清**，所以它公告的一律保留；本插件只撤「没有任何插件声明过」的那些。
 
 `bash` `pwsh` `read` `write` `edit` `glob` `grep` `web_fetch` `web_search` `read_image` `todo_write` `ask_user_question` `send_message` `present` `subagent` `list_agents` `job_output` `job_list` `job_kill` `skill` `ssh_exec` `get_goal` `update_goal` `mcp__openviking__read` `mcp__openviking__find`
+`mcp__openviking__write` `mcp__openviking__edit` `mcp__openviking__search` `mcp__openviking__list` `mcp__openviking__remember` `mcp__openviking__forget` `mcp__openviking__glob` `mcp__openviking__grep` `mcp__openviking__health`
+`mcp__stitch__create_design_system` `mcp__stitch__create_design_system_from_design_md` `mcp__stitch__apply_design_system` `mcp__stitch__upload_design_md` `mcp__stitch__generate_screen_from_text` `mcp__stitch__edit_screens` `mcp__stitch__generate_variants`
+`mcp__modal_h3__get_generation_task` `mcp__modal_h3__cancel_generation_task` `mcp__modal_h3__list_generation_tasks` `mcp__modal_h3__accounts_status` `mcp__modal_h3__accounts_sync`
+
+`modal_h3` 自己撤的是 `generate_video`，所以它不在上面这 5 只里——这是它自己的决定，本插件不越权恢复。
 
 `pwsh` 是唯一不属于「调用次数」口径的条目：它和 `bash` 是**同一个 shell 槽位**，按平台互斥。宿主 profile 在 win32 上 `disabled` 掉 `dsh-tool-bash`、启用 `dsh-tool-pwsh`，任何一台机器只公告其中一个，所以两个名字都留着不会让谁多背一份定义。只留 `bash` 时，Windows 安装既丢了 `pwsh` 的 schema，也没在提示词里留下它的名字——2026-11-13 就是这样把 shell 工具整个弄丢的。
 
-按本机 659 个会话统计，前 24 只占 63,718 次调用里的 63,500（99.7%）；工具定义由 81,473 字符降到约 **20,800 字符（−74%）**。
+按本机 659 个会话统计，前 24 只占 63,718 次调用里的 63,500（99.7%）；工具定义由 81,473 字符降到约 **20,800 字符（−74%）**。加上第 2 条后被保留的 23 只，相对 100 只工具的实测快照（127,583 字符）最终公告 46 只、62,931 字符，仍省 **51%**——延迟加载的收益减半，但不再以工具调不出来为代价。
 
 `guidance` 缺省见 `guidance.mjs` 的 `GUIDANCE_GROUPS`，按插件分 11 组。它**按当前 `keep` 渲染**：某组工具如果都在 `keep` 里，那一组就不出现——避免模型读到一份它已经完整拥有的 schema 的转述。
 

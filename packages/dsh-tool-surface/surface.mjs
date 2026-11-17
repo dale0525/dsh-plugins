@@ -60,6 +60,42 @@ export const DEFAULT_KEEP = [
   'update_goal',
   'mcp__openviking__read',
   'mcp__openviking__find',
+  // Everything below is a tool its OWNING plugin already announces, listed here
+  // because both that plugin and this one filter `system-prompt/assemble` and
+  // the two compose to the INTERSECTION. This list is the outer layer with
+  // statistics; the owning plugin knows which of its tools have arguments a
+  // model cannot guess, so its list wins. 2026-11-17 cost nine of openviking's
+  // eleven announced tools, `write` among them: the model said "now writing the
+  // decision memory" four times and called `read` each time — told the tool
+  // exists, given no definition for it, and nothing errored.
+  'mcp__openviking__write',
+  'mcp__openviking__edit',
+  'mcp__openviking__search',
+  'mcp__openviking__list',
+  'mcp__openviking__remember',
+  'mcp__openviking__forget',
+  'mcp__openviking__glob',
+  'mcp__openviking__grep',
+  'mcp__openviking__health',
+  // Stitch announces these seven, three of them because their arguments are
+  // structures prose cannot carry (`create_design_system` is three `$defs` deep
+  // with a 68-value font enum). Withdrawing them here was a silent regression
+  // of the reason stitch-drawer withdrew the other ten.
+  'mcp__stitch__create_design_system',
+  'mcp__stitch__create_design_system_from_design_md',
+  'mcp__stitch__apply_design_system',
+  'mcp__stitch__upload_design_md',
+  'mcp__stitch__generate_screen_from_text',
+  'mcp__stitch__edit_screens',
+  'mcp__stitch__generate_variants',
+  // modal_h3 withdraws `generate_video` itself and announces these five: they
+  // are how a model reads a task's state, and their arguments are not
+  // prose-guessable either.
+  'mcp__modal_h3__get_generation_task',
+  'mcp__modal_h3__cancel_generation_task',
+  'mcp__modal_h3__list_generation_tasks',
+  'mcp__modal_h3__accounts_status',
+  'mcp__modal_h3__accounts_sync',
 ];
 
 /**

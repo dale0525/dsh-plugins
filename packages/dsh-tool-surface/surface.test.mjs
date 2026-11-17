@@ -7,16 +7,20 @@ import { DEFAULT_KEEP, filterAnnounced, renderWithdrawnGuidance } from './surfac
 /** One tool definition as the assembly carries it. */
 const defined = (name) => ({ name, description: '', parameters: {} });
 
-test('the default whitelist is the 24 most-called tools plus the platform shell slot', () => {
-  // Measured on this machine (2026-11-11, the `tool/call` records across 659
-  // local sessions), in call-count order. Order is pinned: it is the only
-  // record of WHY these and not one more.
+test('the default whitelist is the most-called tools, plus every tool an owning plugin announces', () => {
+  // Two rules, and the second one is the fix for 2026-11-17:
   //
-  // `pwsh` is the single addition after the measurement: it is the same shell
-  // slot as `bash`, and the host enables exactly one of the two per platform
-  // (`tool-bash` disabled on win32, `tool-pwsh` enabled). It therefore costs no
-  // platform a definition it would otherwise have carried, and without it a
-  // Windows install had no shell tool left in the prompt at all.
+  // 1. Order is pinned for the call-count picks: it is the only record of WHY
+  //    these and not one more.
+  // 2. Every tool an owning plugin announces is appended, because both that
+  //    plugin and this one filter `system-prompt:assemble` and the two compose
+  //    to the INTERSECTION. The owner knows which of its tools have arguments a
+  //    model cannot guess; this list is an outside layer with statistics.
+  //
+  // `pwsh` is the single addition that is neither: same shell slot as `bash`,
+  // and the host enables exactly one per platform (`tool-bash` disabled on
+  // win32, `tool-pwsh` enabled). Without it a Windows install had no shell tool
+  // left in the prompt at all (2026-11-13).
   assert.deepEqual(DEFAULT_KEEP, [
     'bash', 'pwsh', 'read', 'write', 'edit', 'glob', 'grep',
     'web_fetch', 'web_search', 'read_image',
@@ -24,6 +28,23 @@ test('the default whitelist is the 24 most-called tools plus the platform shell 
     'subagent', 'list_agents', 'job_output', 'job_list', 'job_kill',
     'skill', 'ssh_exec', 'get_goal', 'update_goal',
     'mcp__openviking__read', 'mcp__openviking__find',
+    'mcp__openviking__write', 'mcp__openviking__edit',
+    'mcp__openviking__search', 'mcp__openviking__list',
+    'mcp__openviking__remember', 'mcp__openviking__forget',
+    'mcp__openviking__glob', 'mcp__openviking__grep',
+    'mcp__openviking__health',
+    'mcp__stitch__create_design_system',
+    'mcp__stitch__create_design_system_from_design_md',
+    'mcp__stitch__apply_design_system',
+    'mcp__stitch__upload_design_md',
+    'mcp__stitch__generate_screen_from_text',
+    'mcp__stitch__edit_screens',
+    'mcp__stitch__generate_variants',
+    'mcp__modal_h3__get_generation_task',
+    'mcp__modal_h3__cancel_generation_task',
+    'mcp__modal_h3__list_generation_tasks',
+    'mcp__modal_h3__accounts_status',
+    'mcp__modal_h3__accounts_sync',
   ]);
 });
 
@@ -61,12 +82,21 @@ test('a definition without a string name is kept', () => {
   assert.deepEqual(filterAnnounced([anonymous, defined('ssh_read')]), [anonymous]);
 });
 
-test('every guidance group names at least one of its tools', () => {
+test('every guidance group that survives names at least one of its tools', () => {
+  // A group whose every tool is announced disappears from the prose entirely
+  // (`renderWithdrawnGuidance` skips it), so the assertion is about the groups
+  // that still appear. 2026-11-17 made that a real state rather than a
+  // hypothetical: the whitelist now keeps all eleven of openviking's announced
+  // tools, so its group is gone — asserting the group's title appears would
+  // demand prose describing schemas the prompt already carries in full.
   const text = renderWithdrawnGuidance(GUIDANCE_GROUPS, DEFAULT_KEEP);
   assert.equal(GUIDANCE_GROUPS.length > 0, true);
   for (const group of GUIDANCE_GROUPS) {
-    const named = group.tools.some((tool) => text.includes(`\`${tool.name}\``));
-    assert.ok(named, `${group.title} must name at least one tool`);
+    const withdrawn = group.tools.filter((tool) => !DEFAULT_KEEP.includes(tool.name));
+    if (withdrawn.length === 0) continue;
+    assert.ok(text.includes(group.title), `${group.title} has withdrawn tools and must appear`);
+    const named = withdrawn.some((tool) => text.includes(`\`${tool.name}\``));
+    assert.ok(named, `${group.title} must name at least one of its withdrawn tools`);
   }
 });
 
@@ -95,6 +125,11 @@ test('guidance names only the withdrawn member of a partially kept group', () =>
  * reminder wanted — a withdrawn tool named nowhere is a tool the model cannot
  * know exists, and it fails silently at call time instead of at review time.
  *
+ * Updated 2026-11-17: twenty-one entries moved OUT of this list because the
+ * whitelist now keeps them — every tool its owning plugin announces. They are
+ * no longer withdrawn, so asserting the prose names them would assert that prose
+ * describes tools the prompt already carries in full.
+ *
  * Updated the same day `dsh-imagegen` was removed in favour of
  * `dsh-magpie-image`: `generate_image`, `edit_image` and the two
  * `*_image_generation_task` tools no longer exist, so keeping them here would
@@ -102,24 +137,14 @@ test('guidance names only the withdrawn member of a partially kept group', () =>
  * correspond to a real tool, or the assertion stops meaning anything.
  */
 const WITHDRAWN_ON_2026_11_11 = [
-  'browser_agent', 'config_sync_pull',
-  'config_sync_push', 'create_goal', 'desktop_agent',
-  'exit_plan_mode',
+  'browser_agent', 'config_sync_pull', 'config_sync_push',
+  'create_goal', 'desktop_agent', 'exit_plan_mode',
   'interrupt_agent', 'list_mcp_resource_templates', 'list_mcp_resources',
-  'list_subagent_models', 'mcp__magpie__generate_image',
-  'mcp__magpie__generation_result', 'mcp__modal_h3__accounts_status',
-  'mcp__modal_h3__accounts_sync', 'mcp__modal_h3__cancel_generation_task',
-  'mcp__modal_h3__get_generation_task', 'mcp__modal_h3__list_generation_tasks',
-  'mcp__openviking__edit', 'mcp__openviking__forget', 'mcp__openviking__glob',
-  'mcp__openviking__grep', 'mcp__openviking__health', 'mcp__openviking__list',
-  'mcp__openviking__remember', 'mcp__openviking__search', 'mcp__openviking__write',
-  'mcp__stitch__apply_design_system', 'mcp__stitch__create_design_system',
-  'mcp__stitch__create_design_system_from_design_md', 'mcp__stitch__edit_screens',
-  'mcp__stitch__generate_screen_from_text', 'mcp__stitch__generate_variants',
-  'mcp__stitch__upload_design_md', 'read_mcp_resource', 'schedule_create',
-  'schedule_delete', 'schedule_list', 'schedule_update', 'ssh_download',
-  'ssh_list', 'ssh_read', 'ssh_upload', 'subagent_fork', 'workflow',
-  'working_directory',
+  'list_subagent_models', 'mcp__magpie__generate_image', 'mcp__magpie__generation_result',
+  'read_mcp_resource', 'schedule_create', 'schedule_delete',
+  'schedule_list', 'schedule_update', 'ssh_download',
+  'ssh_list', 'ssh_read', 'ssh_upload',
+  'subagent_fork', 'workflow', 'working_directory',
 ];
 
 test('every available tool the whitelist withdraws is named in the guidance', () => {
@@ -155,4 +180,36 @@ test('a withdrawn write tool carries the sibling warning in its own note', () =>
   for (const name of ['mcp__openviking__write', 'mcp__openviking__edit', 'mcp__openviking__remember']) {
     assert.match(notes.get(name) ?? '', /不要用 `mcp__openviking__read`/, `${name} lost its sibling warning`);
   }
+});
+
+test('the global whitelist never withdraws a tool its owning plugin announces', () => {
+  // The composition failure this pins (2026-11-17, session-5a49b173): both
+  // `dsh-openviking` and this plugin keep an announcement whitelist, both filter
+  // `system-prompt/assemble`, and the two compose to the INTERSECTION. This
+  // plugin's `DEFAULT_KEEP` held only `read` and `find`, so nine of openviking's
+  // eleven announced tools were withdrawn anyway — `write` among them.
+  //
+  // What that cost: the model said "now writing the decision memory" four times
+  // and called `read` each time. It was TOLD the tool existed (the prose names
+  // it) and had NO definition for it (this list removed it). Nothing errored, so
+  // nobody noticed the memory was never written. The same shape silently dropped
+  // all seven of stitch's announced tools, including the three-deep
+  // `create_design_system` schema it keeps announced precisely because prose
+  // cannot replace it.
+  //
+  // The rule is that a plugin's own list wins: it knows which of its tools have
+  // arguments a model cannot guess. This list only gets to withdraw a tool when
+  // no owning plugin announces it. `modal_h3` is deliberately absent below — it
+  // withdraws `generate_video` itself and announces the other five, and those
+  // five are listed here.
+  const OWNERS_ANNOUNCE = {
+    'mcp__openviking__': ['read', 'write', 'edit', 'find', 'search', 'list', 'remember', 'forget', 'glob', 'grep', 'health'],
+    'mcp__stitch__': ['create_design_system', 'create_design_system_from_design_md', 'apply_design_system', 'upload_design_md', 'generate_screen_from_text', 'edit_screens', 'generate_variants'],
+    'mcp__modal_h3__': ['get_generation_task', 'cancel_generation_task', 'list_generation_tasks', 'accounts_status', 'accounts_sync'],
+  };
+  const missing = [];
+  for (const [prefix, names] of Object.entries(OWNERS_ANNOUNCE)) {
+    for (const name of names) if (!DEFAULT_KEEP.includes(prefix + name)) missing.push(prefix + name);
+  }
+  assert.deepEqual(missing, [], 'a tool its owner announces must not be withdrawn here — the model hears about it and cannot call it');
 });
