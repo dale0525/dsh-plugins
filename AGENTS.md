@@ -20,10 +20,15 @@ dsh-plugins/
 │   ├── dsh-config-manager/     # 衍生自上游，已去 fork 化 → 不参与同步
 │   ├── dsh-easyrewrite/        # 衍生自上游，已去 fork 化 → 不参与同步
 │   └── <pkg>/upstream.json     # 该 fork 的上游身份（仅 fork 有）
+├── global-rules/           # 本机 ~/.dsh/AGENTS.md 与 ~/.dsh/skills/ 的单一真源（由 link-global-rules.mjs 软链）
+│   ├── AGENTS.global.md
+│   └── skills/
 ├── scripts/
 │   ├── aggregate.mjs       # aggregate.yml → patch + deps
 │   ├── publish.mjs         # 按依赖边拓扑推导发布顺序（子插件 → 聚合包）
-│   └── sync-upstream.mjs   # 上游同步的只读工具（--list / --changed / --preflight）
+│   ├── sync-upstream.mjs   # 上游同步的只读工具（--list / --changed / --preflight）
+│   ├── check-global-rules.mjs  # 校验 global-rules/ 规范、断链与 public 仓库隐私守卫
+│   └── link-global-rules.mjs   # 备份并软链 ~/.dsh/AGENTS.md 与 ~/.dsh/skills/（支持 --check）
 └── packages/dsh-config-manager/scripts/dev-watch.mjs   # 源 → 产物自动重建（子包内）
 ```
 
@@ -75,3 +80,4 @@ pnpm run check:host                           # 宿主世代兼容 + patch 行 i
 
 - **同步渠道必须指向独立的私有仓库**，与本仓库物理分离：本仓库是 public，fork 的插件源码公开无妨，但同步快照携带明文凭据。
 - 同步通道是明文语义（私有通道自用）：不加密、不脱敏、不做 diff/合并，勾选即同步。`manifest.security.containsSecrets` 必须按实际内容**如实标注**。
+- **`global-rules/` 位于 public 仓库**，禁止写入隐私路径、凭据、token 或内网地址；修改全局规范与技能一律改 `global-rules/`（本机 `~/.dsh/` 仅为软链），由 `scripts/check-global-rules.mjs`（纳入 `pnpm test`）守卫。

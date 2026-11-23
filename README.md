@@ -26,6 +26,9 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest
 | `scripts/aggregate.mjs` | 由 `aggregate.yml` 生成聚合 patch 与 dependencies |
 | `scripts/publish.mjs` | 按依赖边推导发布顺序（子插件 → 聚合包）；`npm run publish:plan` 预览 |
 | `scripts/sync-upstream.mjs` | 上游同步的只读工具：`--list` 看各 fork 上游到哪、`--changed <id>` 看改了什么。同步本身手工做 |
+| `global-rules/` | 本机全局 `AGENTS.global.md` 与 `skills/` 源目录，通过软链挂载到 `~/.dsh/` |
+| `scripts/check-global-rules.mjs` | 校验 `global-rules/` 规范结构与链接完整性 |
+| `scripts/link-global-rules.mjs` | 自动备份原目录并将 `global-rules/` 软链至 `~/.dsh/`（`--check` 仅校验） |
 
 ## 开发
 
@@ -33,6 +36,8 @@ dsh plugin --profile web add @logictan/dsh-plugins-all@latest
 pnpm install
 node scripts/aggregate.mjs --check     # 校验生成物与清单一致
 node scripts/aggregate.mjs             # 重新生成
+pnpm run link:global-rules             # 备份并软链 global-rules/ 到 ~/.dsh/
+pnpm run check:global-rules            # 校验 global-rules/ 结构与链接
 ```
 
 改子插件的 patch 行：编辑该子包自己的 `cordis.patch.yml`，再跑 `node scripts/aggregate.mjs`。
