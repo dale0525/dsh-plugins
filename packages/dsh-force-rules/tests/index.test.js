@@ -14,6 +14,10 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import { apply, inject, name } from '../src/index.js';
 
@@ -187,7 +191,7 @@ function fakeSchedule() {
  * the delegation tools, and it is what makes the difference between querying the
  * registry with a scope and querying it without one observable here.
  */
-function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = [], projections } = {}) {
+function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = [], projections, workingDirectory } = {}) {
   const listeners = new Map();
   const contexts = [];
   const globals = [];
@@ -234,6 +238,7 @@ function harness({ definitions = {}, parents = {}, schedule, llm, agentScoped = 
       if (service === 'schedule') return schedule;
       if (service === 'llm') return llm;
       if (service === 'sessionProjections') return projections;
+      if (service === 'workingDirectory') return workingDirectory;
       if (service === 'systemPrompt') return ctx.systemPrompt;
       return undefined;
     },
@@ -1619,4 +1624,161 @@ test('an empty list is still rejected the way the host rejects it', async () => 
     () => todo.execute({ todos: [{ content: '   ', status: 'pending', owner: 'root' }] }, { agent: rootAgent() }),
     /content/,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Rules 7 and 8: pre-execute guards for unchanged re-runs and staged debug logs.
+// ---------------------------------------------------------------------------
+
+async function makeTempGitRepo(t) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'force-rules-git-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+  git('init');
+  git('config', 'user.name', 'Test User');
+  git('config', 'user.email', 'test@example.com');
+  await fs.writeFile(path.join(dir, 'app.js'), 'export const value = 1;\n', 'utf8');
+  git('add', 'app.js');
+  git('commit', '-m', 'init');
+  return { dir, git };
+}
+
+function bashExec(agent, args) {
+  return {
+    name: 'bash',
+    arguments: args,
+    agent,
+    signal: new AbortController().signal,
+  };
+}
+
+test('rule 7: denies re-running the same test command when workspace is unchanged', async (t) => {
+  const { dir } = await makeTempGitRepo(t);
+  const { listeners } = harness({ workingDirectory: { get: () => dir } });
+  const agent = rootAgent();
+  const exec = bashExec(agent, { command: 'node --test tests/app.test.js' });
+
+  const first = await fire(listeners, 'tools/pre-execute', exec, ALLOW);
+  assert.equal(first.kind, 'allow');
+  await fireNotification(listeners, 'tools/result', exec, { isError: false, content: [{ type: 'text', text: 'ok' }] });
+
+  const second = await fire(listeners, 'tools/pre-execute', exec, ALLOW);
+  assert.equal(second.kind, 'deny');
+  assert.match(second.reason, /no workspace changes|unchanged/i);
+
+  // A denied result must not wipe or corrupt the recorded state.
+  await fireNotification(listeners, 'tools/result', exec, { isError: true, content: [{ type: 'text', text: second.reason }] });
+  const third = await fire(listeners, 'tools/pre-execute', exec, ALLOW);
+  assert.equal(third.kind, 'deny');
+
+  // Modifying a workspace file allows re-running the same test command.
+  await fs.writeFile(path.join(dir, 'app.js'), 'export const value = 2;\n', 'utf8');
+  const fourth = await fire(listeners, 'tools/pre-execute', exec, ALLOW);
+  assert.equal(fourth.kind, 'allow');
+});
+
+test('rule 7: allows independent seat, different workdir, different command, or non-test commands', async (t) => {
+  const { dir } = await makeTempGitRepo(t);
+  const { listeners } = harness({ workingDirectory: { get: () => dir } });
+  const root = rootAgent();
+  const otherSession = { session: { id: 'seat-verify', header: { cwd: dir } } };
+
+  const testExec = bashExec(root, { command: 'pnpm test' });
+  assert.equal((await fire(listeners, 'tools/pre-execute', testExec, ALLOW)).kind, 'allow');
+  await fireNotification(listeners, 'tools/result', testExec, { isError: false, content: [] });
+
+  // Different session (independent seat) is allowed to re-run.
+  assert.equal((await fire(listeners, 'tools/pre-execute', bashExec(otherSession, { command: 'pnpm test' }), ALLOW)).kind, 'allow');
+
+  // Different test command is allowed.
+  assert.equal((await fire(listeners, 'tools/pre-execute', bashExec(root, { command: 'pnpm --filter foo test' }), ALLOW)).kind, 'allow');
+
+  // Non-test commands can be repeated freely.
+  const statusExec = bashExec(root, { command: 'git status' });
+  assert.equal((await fire(listeners, 'tools/pre-execute', statusExec, ALLOW)).kind, 'allow');
+  await fireNotification(listeners, 'tools/result', statusExec, { isError: false, content: [] });
+  assert.equal((await fire(listeners, 'tools/pre-execute', statusExec, ALLOW)).kind, 'allow');
+
+  // Disposing the session clears its test history.
+  await fire(listeners, 'agent/disposed', { agent: root });
+  assert.equal((await fire(listeners, 'tools/pre-execute', testExec, ALLOW)).kind, 'allow');
+});
+
+test('rule 7: outside a git repository, write/edit tool invalidates the cached test run', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'force-rules-nogit-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const { listeners } = harness({ workingDirectory: { get: () => dir } });
+  const root = rootAgent();
+  const exec = bashExec(root, { command: 'pytest tests/test_a.py' });
+
+  assert.equal((await fire(listeners, 'tools/pre-execute', exec, ALLOW)).kind, 'allow');
+  await fireNotification(listeners, 'tools/result', exec, { isError: false, content: [] });
+  assert.equal((await fire(listeners, 'tools/pre-execute', exec, ALLOW)).kind, 'deny');
+
+  // After a write/edit tool succeeds, re-running is allowed.
+  await fireNotification(
+    listeners,
+    'tools/result',
+    { name: 'edit', arguments: { file_path: path.join(dir, 'a.py') }, agent: root },
+    { isError: false, content: [] },
+  );
+  assert.equal((await fire(listeners, 'tools/pre-execute', exec, ALLOW)).kind, 'allow');
+});
+
+test('rule 8: denies git commit when staged additions contain [DEBUG- marker', async (t) => {
+  const { dir, git } = await makeTempGitRepo(t);
+  await fs.writeFile(path.join(dir, 'app.js'), 'console.log("[DEBUG-a4f2] hit");\nexport const value = 1;\n', 'utf8');
+  git('add', 'app.js');
+
+  const { listeners } = harness({ workingDirectory: { get: () => dir } });
+  const decision = await fire(listeners, 'tools/pre-execute', bashExec(rootAgent(), { command: 'git commit -m "fix bug"' }), ALLOW);
+  assert.equal(decision.kind, 'deny');
+  assert.match(decision.reason, /\[DEBUG-/);
+  assert.match(decision.reason, /app\.js/);
+});
+
+test('rule 8: allows cleanup commit that deletes [DEBUG- lines and allows mentioning [DEBUG- in commit message', async (t) => {
+  const { dir, git } = await makeTempGitRepo(t);
+  await fs.writeFile(path.join(dir, 'app.js'), 'console.log("[DEBUG-a4f2] hit");\nexport const value = 1;\n', 'utf8');
+  git('add', 'app.js');
+  git('commit', '-m', 'temp');
+
+  // Now remove the debug line.
+  await fs.writeFile(path.join(dir, 'app.js'), 'export const value = 1;\n', 'utf8');
+  git('add', 'app.js');
+
+  const { listeners } = harness({ workingDirectory: { get: () => dir } });
+  const decision = await fire(
+    listeners,
+    'tools/pre-execute',
+    bashExec(rootAgent(), { command: 'git commit -m "chore: remove [DEBUG-a4f2] logs"' }),
+    ALLOW,
+  );
+  assert.equal(decision.kind, 'allow');
+});
+
+test('rule 8: catches git commit -am and chained git add && git commit with unstaged [DEBUG- additions', async (t) => {
+  const { dir } = await makeTempGitRepo(t);
+  await fs.writeFile(path.join(dir, 'app.js'), 'console.log("[DEBUG-9999] x");\nexport const value = 2;\n', 'utf8');
+
+  const { listeners } = harness({ workingDirectory: { get: () => dir } });
+  const d1 = await fire(listeners, 'tools/pre-execute', bashExec(rootAgent(), { command: 'git commit -am "quick fix"' }), ALLOW);
+  assert.equal(d1.kind, 'deny');
+  assert.match(d1.reason, /app\.js/);
+
+  const d2 = await fire(listeners, 'tools/pre-execute', bashExec(rootAgent(), { command: 'git add app.js && git commit -m "quick fix"' }), ALLOW);
+  assert.equal(d2.kind, 'deny');
+  assert.match(d2.reason, /app\.js/);
+});
+
+test('rule 8: ignores non-commit commands such as echo or git commit --help', async (t) => {
+  const { dir, git } = await makeTempGitRepo(t);
+  await fs.writeFile(path.join(dir, 'app.js'), 'console.log("[DEBUG-1111]");\n', 'utf8');
+  git('add', 'app.js');
+
+  const { listeners } = harness({ workingDirectory: { get: () => dir } });
+  const d1 = await fire(listeners, 'tools/pre-execute', bashExec(rootAgent(), { command: 'echo "git commit -m hi"' }), ALLOW);
+  assert.equal(d1.kind, 'allow');
+  const d2 = await fire(listeners, 'tools/pre-execute', bashExec(rootAgent(), { command: 'git commit --help' }), ALLOW);
+  assert.equal(d2.kind, 'allow');
 });

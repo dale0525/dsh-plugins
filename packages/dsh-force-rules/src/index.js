@@ -52,7 +52,246 @@
  * @module @logictan/dsh-force-rules
  */
 
+import { execFile } from 'node:child_process';
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+
+const execFileAsync = promisify(execFile);
+
+const SHELL_TOOLS = new Set(['bash', 'pwsh']);
+const WORKSPACE_WRITE_TOOLS = new Set(['write', 'edit', 'str_replace_editor', 'apply_patch', 'notebook_edit']);
+const GIT_TIMEOUT_MS = 2500;
+const MAX_STAT_FILES = 64;
+const DEBUG_MARKER_RE = /\[DEBUG-[A-Za-z0-9_-]*/;
+const TEST_COMMAND_RE =
+  /^(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:(?:pnpm|npm|yarn|bun)\s+(?:[^\n;&|]*\s+)?(?:run\s+)?test\b|node\s+(?:[^\n;&|]*\s+)?--test\b|(?:npx|pnpm\s+exec)\s+(?:vitest|jest|mocha|ava|tap|playwright\s+test)\b|(?:vitest|jest|pytest|cargo\s+test|go\s+test|rspec|phpunit|\.?\/?gradlew?\s+test)\b)/;
+const NON_TEST_FLAGS_RE = /(?:^|\s)(?:--help|-h|--list|--watch|-w)(?:\s|$)|[<>]/;
+const READONLY_SHELL_RE = /^(?:git\s+(?:status|diff|log|show|rev-parse|branch)\b|ls\b|pwd\b|cat\b|head\b|tail\b|rg\b|grep\b|find\b|wc\b)/;
+
+/**
+ * Strip single- and double-quoted segments so subcommand matching ignores
+ * text inside arguments such as `echo "git commit"` or `-m "git commit"`.
+ *
+ * @param {string} command
+ * @returns {string}
+ */
+function stripQuotedStrings(command) {
+  let out = '';
+  let quote = null;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i];
+    if (quote !== null) {
+      if (ch === '\\' && quote === '"' && i + 1 < command.length) {
+        out += '  ';
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      out += ' ';
+      continue;
+    }
+    if (ch === '\'' || ch === '"') {
+      quote = ch;
+      out += ' ';
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Normalize a shell test command for duplicate re-run detection.
+ * Returns `null` when the command is not a test runner invocation.
+ *
+ * @param {unknown} rawCommand
+ * @returns {string | null}
+ */
+function normalizeTestCommand(rawCommand) {
+  if (typeof rawCommand !== 'string') return null;
+  const trimmed = rawCommand.trim().replace(/\s+/g, ' ');
+  if (!trimmed || NON_TEST_FLAGS_RE.test(trimmed)) return null;
+  if (!TEST_COMMAND_RE.test(trimmed)) return null;
+  return trimmed;
+}
+
+/**
+ * Resolve the effective working directory for a shell tool call without
+ * adding `workingDirectory` to the plugin's required `inject` list.
+ *
+ * @param {any} ctx
+ * @param {any} exec
+ * @returns {Promise<string | undefined>}
+ */
+async function resolveEffectiveWorkdir(ctx, exec) {
+  const wdService = ctx.get('workingDirectory');
+  let sessionCwd;
+  if (wdService !== undefined && exec.agent !== undefined) {
+    if (typeof wdService.get === 'function' && exec.agent.session !== undefined) {
+      sessionCwd = wdService.get(exec.agent.session);
+    }
+    if (sessionCwd === undefined && typeof wdService.ensure === 'function') {
+      try {
+        sessionCwd = await wdService.ensure(exec.agent, exec.signal);
+      } catch {
+        sessionCwd = undefined;
+      }
+    }
+  }
+  if (sessionCwd === undefined) sessionCwd = exec.agent?.session?.header?.cwd;
+  const argWorkdir = typeof exec.arguments?.workdir === 'string' && exec.arguments.workdir.trim()
+    ? exec.arguments.workdir.trim()
+    : undefined;
+  if (argWorkdir === undefined) return sessionCwd;
+  if (path.isAbsolute(argWorkdir)) return argWorkdir;
+  return sessionCwd ? path.resolve(sessionCwd, argWorkdir) : argWorkdir;
+}
+
+/**
+ * Run a short, non-interactive git query and return stdout, or `null` on error.
+ *
+ * @param {string} cwd
+ * @param {string[]} args
+ * @param {AbortSignal | undefined} signal
+ * @returns {Promise<string | null>}
+ */
+async function runGit(cwd, args, signal) {
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      signal,
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true,
+    });
+    return stdout;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compute a lightweight workspace fingerprint combining git HEAD, porcelain
+ * status, modified-file mtime/size, and session mutation epoch.
+ *
+ * @param {string | undefined} cwd
+ * @param {AbortSignal | undefined} signal
+ * @param {number} mutationEpoch
+ * @returns {Promise<string>}
+ */
+async function computeWorkspaceFingerprint(cwd, signal, mutationEpoch) {
+  if (!cwd) return `nogit:|e:${mutationEpoch}`;
+  const topOut = await runGit(cwd, ['rev-parse', '--show-toplevel'], signal);
+  if (topOut === null) return `nogit:${cwd}|e:${mutationEpoch}`;
+  const repoRoot = topOut.trim();
+  const [headOut, statusOut] = await Promise.all([
+    runGit(repoRoot, ['rev-parse', 'HEAD'], signal),
+    runGit(repoRoot, ['status', '--porcelain=v1', '-uall'], signal),
+  ]);
+  const head = headOut ? headOut.trim() : 'UNBORN';
+  const status = statusOut ?? '';
+  const lines = status.split('\n').filter(Boolean).slice(0, MAX_STAT_FILES);
+  const stats = await Promise.all(
+    lines.map(async (line) => {
+      const rawPath = line.slice(3).trim();
+      const targetPath = rawPath.includes(' -> ') ? rawPath.split(' -> ').pop().trim() : rawPath;
+      try {
+        const st = await stat(path.join(repoRoot, targetPath));
+        return `${targetPath}:${st.mtimeMs}:${st.size}`;
+      } catch {
+        return `${targetPath}:missing`;
+      }
+    }),
+  );
+  return `git:${repoRoot}|${head}|${status}|${stats.join(',')}|e:${mutationEpoch}`;
+}
+
+/**
+ * Inspect whether a shell command contains an actual `git commit` invocation.
+ *
+ * @param {unknown} rawCommand
+ * @returns {{ gitCwd: string | undefined, includeUnstaged: boolean } | null}
+ */
+function inspectGitCommitCommand(rawCommand) {
+  if (typeof rawCommand !== 'string') return null;
+  const unquoted = stripQuotedStrings(rawCommand);
+  const commitMatch = unquoted.match(
+    /(?:^|[;&|\n])\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*git((?:\s+(?:-C\s+\S+|--git-dir(?:=\S+|\s+\S+)|--work-tree(?:=\S+|\s+\S+)))*)\s+commit(\b[^\n;&|]*)/,
+  );
+  if (!commitMatch) return null;
+  const preOpts = commitMatch[1] ?? '';
+  const commitArgs = commitMatch[2] ?? '';
+  if (/(?:^|\s)(?:--help|-h|--dry-run)(?:\s|$)/.test(commitArgs)) return null;
+  const cFlagMatch = preOpts.match(/-C\s+(\S+)/);
+  const hasAllFlag = /(?:^|\s)(?:--all|-[a-zA-Z]*a[a-zA-Z]*)(?:\s|$)/.test(commitArgs);
+  const hasChainedAdd = /(?:^|[;&|\n])\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*git(?:\s+-C\s+\S+)*\s+add\b/.test(unquoted);
+  return {
+    gitCwd: cFlagMatch ? cFlagMatch[1] : undefined,
+    includeUnstaged: hasAllFlag || hasChainedAdd,
+  };
+}
+
+/**
+ * Scan unified diff text (`-U0`) for added lines containing `[DEBUG-` markers.
+ * Deleted lines (`-`) and file headers (`+++ `) are ignored so cleanup commits pass.
+ *
+ * @param {string} diffText
+ * @returns {Array<{ file: string, snippet: string }>}
+ */
+function findDebugMarkersInDiff(diffText) {
+  const hits = [];
+  let currentFile = '<unknown>';
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('+++ b/')) {
+      currentFile = line.slice(6);
+      continue;
+    }
+    if (line.startsWith('+++ ') || line.startsWith('--- ')) continue;
+    if (!line.startsWith('+')) continue;
+    const content = line.slice(1);
+    if (DEBUG_MARKER_RE.test(content)) {
+      hits.push({ file: currentFile, snippet: content.trim().slice(0, 120) });
+      if (hits.length >= 5) break;
+    }
+  }
+  return hits;
+}
+
+/**
+ * Rule 8: deny `git commit` when staged (or auto-staged via `-a`/`git add &&`)
+ * additions contain temporary `[DEBUG-...` instrumentation markers.
+ *
+ * @param {any} ctx
+ * @param {any} exec
+ * @returns {Promise<string | undefined>}
+ */
+async function checkCommitDebugMarkers(ctx, exec) {
+  if (!SHELL_TOOLS.has(exec.name)) return undefined;
+  const info = inspectGitCommitCommand(exec.arguments?.command);
+  if (info === null) return undefined;
+  const baseCwd = await resolveEffectiveWorkdir(ctx, exec);
+  const effectiveCwd = info.gitCwd
+    ? (path.isAbsolute(info.gitCwd) ? info.gitCwd : (baseCwd ? path.resolve(baseCwd, info.gitCwd) : info.gitCwd))
+    : baseCwd;
+  if (!effectiveCwd) return undefined;
+
+  const stagedDiff = await runGit(effectiveCwd, ['diff', '--cached', '-U0', '--no-color'], exec.signal);
+  const hits = stagedDiff ? findDebugMarkersInDiff(stagedDiff) : [];
+  if (hits.length === 0 && info.includeUnstaged) {
+    const unstagedDiff = await runGit(effectiveCwd, ['diff', '-U0', '--no-color'], exec.signal);
+    if (unstagedDiff) hits.push(...findDebugMarkersInDiff(unstagedDiff));
+  }
+  if (hits.length === 0) return undefined;
+
+  const summary = hits.map((h) => `${h.file}: ${h.snippet}`).join('; ');
+  return [
+    'Commit blocked: temporary `[DEBUG-` instrumentation marker found in added lines',
+    `(${summary}).`,
+    'Remove all temporary `[DEBUG-` logs and re-stage before committing.',
+  ].join(' ');
+}
 
 /** Plugin row id; must equal the row id in `cordis.patch.yml`. */
 export const name = 'force-rules';
@@ -787,6 +1026,12 @@ export function apply(ctx) {
    * owner from here. Cleared with the session, like the meter.
    */
   const ownersBySession = new Map();
+  /** Session id -> Map<`${cwd}\0${normalizedTestCmd}`, workspaceFingerprint> for rule 7. */
+  const lastTestBySession = new Map();
+  /** Session id -> monotonic counter incremented on workspace-mutating tool calls. */
+  const mutationEpochBySession = new Map();
+  /** In-flight allowed test execution -> `{ sessionId, key, fingerprint }`. */
+  const pendingTestRuns = new WeakMap();
 
   /**
    * Drive one session's checkpoint to match its current live seats.
@@ -873,6 +1118,41 @@ export function apply(ctx) {
     const profile = profileOf(profiles, exec.agent);
     if (profile === undefined) return next();
     const reason = checkProfile(profile, exec, ctx);
+    if (reason === undefined) return next();
+    return { kind: 'deny', reason };
+  });
+
+  // Rule 7: deny re-running the exact same test command in the same session
+  // when no workspace files have changed since the previous run. Independent
+  // seats have distinct session ids and are unaffected.
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    if (!SHELL_TOOLS.has(exec.name)) return next();
+    const sessionId = exec.agent?.session?.id;
+    if (sessionId === undefined) return next();
+    const normalized = normalizeTestCommand(exec.arguments?.command);
+    if (normalized === null) return next();
+    const cwd = await resolveEffectiveWorkdir(ctx, exec);
+    const key = `${cwd ?? ''}\0${normalized}`;
+    const epoch = mutationEpochBySession.get(sessionId) ?? 0;
+    const fingerprint = await computeWorkspaceFingerprint(cwd, exec.signal, epoch);
+    const previous = lastTestBySession.get(sessionId)?.get(key);
+    if (previous !== undefined && previous === fingerprint) {
+      return {
+        kind: 'deny',
+        reason: [
+          `Unchanged test re-run blocked: \`${normalized}\` already ran in this session with no workspace changes since.`,
+          'Modify code or configuration before re-running the same test command, or delegate independent re-verification to a separate seat.',
+        ].join(' '),
+      };
+    }
+    pendingTestRuns.set(exec, { sessionId, key, fingerprint });
+    return next();
+  });
+
+  // Rule 8: deny `git commit` when staged additions (or `-a` / chained `git add`)
+  // still contain temporary `[DEBUG-` diagnostic markers.
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const reason = await checkCommitDebugMarkers(ctx, exec);
     if (reason === undefined) return next();
     return { kind: 'deny', reason };
   });
@@ -1150,11 +1430,41 @@ export function apply(ctx) {
     return reconcile(parentSessionId);
   });
 
+  // Rule 7 bookkeeping: record completed test runs and bump mutation epoch when
+  // a workspace-mutating tool finishes cleanly.
+  ctx.on('tools/result', (exec, result) => {
+    if (result.isError) return;
+    const sessionId = exec.agent?.session?.id;
+    if (sessionId === undefined) return;
+    const pending = pendingTestRuns.get(exec);
+    if (pending !== undefined) {
+      let table = lastTestBySession.get(pending.sessionId);
+      if (table === undefined) {
+        table = new Map();
+        lastTestBySession.set(pending.sessionId, table);
+      }
+      table.set(pending.key, pending.fingerprint);
+      return;
+    }
+    if (WORKSPACE_WRITE_TOOLS.has(exec.name)) {
+      mutationEpochBySession.set(sessionId, (mutationEpochBySession.get(sessionId) ?? 0) + 1);
+      return;
+    }
+    if (SHELL_TOOLS.has(exec.name)) {
+      const cmd = typeof exec.arguments?.command === 'string' ? exec.arguments.command.trim() : '';
+      if (cmd && !READONLY_SHELL_RE.test(cmd) && normalizeTestCommand(cmd) === null) {
+        mutationEpochBySession.set(sessionId, (mutationEpochBySession.get(sessionId) ?? 0) + 1);
+      }
+    }
+  });
+
   // The meter's counters are per session and the session is what outlives them:
   // without this, every session a long-running host ever opened would keep its
   // counters alive for the life of the process.
   ctx.on('agent/disposed', ({ agent }) => {
     spentBySession.delete(agent.session.id);
     ownersBySession.delete(agent.session.id);
+    lastTestBySession.delete(agent.session.id);
+    mutationEpochBySession.delete(agent.session.id);
   });
 }
