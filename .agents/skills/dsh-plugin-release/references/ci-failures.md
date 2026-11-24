@@ -67,6 +67,27 @@
   `node -p "require('<profile>/node_modules/<pkg>/package.json').version"` 核对落盘版本；
   装不上就先在该 profile 目录直接 `pnpm add <pkg>@<version>` 刷新缓存，再回到 `dsh plugin`。
 
+- **`ERR_PNPM_NO_MATCHING_VERSION` 也可能是镜像站没同步，与「pnpm 缓存旧版」症状完全相同但修法不同**。
+  判据只看**报错里点的是哪个 registry 域名**：报 `from https://registry.npmjs.org/` 才是客户端缓存；
+  报 `from https://registry.npmmirror.com/` 是**镜像站的元数据本身就落后**，清 pnpm 缓存毫无用处。
+  实测 2026-11-24：`dsh-force-rules@0.4.9` 与聚合包 `0.5.187` 于 11:28 / 11:34 UTC 由 CI 发布，官方
+  registry 立刻可查，而 npmmirror 那边**聚合包已同步、子插件仍停在 0.4.8**（该版本元数据与 tarball
+  均 404），于是装 `@logictan/dsh-plugins-all@latest` 时解析 `^0.4.9` 失败 —— 聚合包的新版本号已经
+  可见，却因它依赖的子插件还不可见而装不上。
+  修法是**唤起镜像同步**而不是等：`curl -X PUT https://registry.npmmirror.com/-/package/<urlencoded-pkg>/syncs`
+  返回 `{"ok":true,"type":"sync_package"}` 即已受理，实测约 2 分钟内元数据与 tarball 都到位。
+  核验三件套（缺一则可能只是元数据到了、文件没到）：
+
+  ```bash
+  curl -s "https://registry.npmmirror.com/<urlencoded-pkg>?t=$RANDOM" \
+    | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);console.log(j['dist-tags'].latest,Object.keys(j.versions).length)})"
+  curl -s -o /dev/null -w "%{http_code}\n" "https://registry.npmmirror.com/<pkg>/<ver>"          # 期望 200，不是 404
+  curl -sL -o /dev/null -w "%{http_code} %{size_download}\n" "https://registry.npmmirror.com/<pkg>/-/<pkg>-<ver>.tgz"  # 必须 -L，否则只有 302 无字节
+  ```
+
+  另两个绕行：给命令加 `--registry https://registry.npmjs.org`，或直接装精确版本
+  `@<ver>`（`@latest` 依赖 dist-tags 的新鲜度，精确版本不依赖 dist-tags，但仍要求该版本已被镜像收录）。
+
 - **发布时的 `PUT ... E404` 是「缺 trusted publisher」，不是缓存**：与上面那条相反 ——
   缓存只会让人**读到**旧版本，不会让**写入**被拒；且同一次 run 里其余包都正常处理。
   判据是发布者身份：`npm view <pkg>@<ver> _npmUser` 显示
