@@ -277,15 +277,38 @@ function toolCallsOf(event: SessionEvent): { id: string; name: string; arguments
 /** One question the user answered through the question tool, with its answer. */
 interface AnsweredQuestion {
   question: string
+  /** Option labels offered by `ask_user_question`, used to dedupe paraphrased `## Asked`. */
+  options: string[]
   /** The labels the user picked, in the order they were offered. */
   selected: string[]
   /** What the user typed instead of picking, when they did. */
   typed: string
 }
 
-/** The `questions[]` payload of an `ask_user_question` call, as `{id → text}`. */
-function questionTextsOf(argumentsJson: string): Map<string, string> {
-  const out = new Map<string, string>()
+interface QuestionSpec {
+  question: string
+  options: string[]
+}
+
+function optionLabelsOf(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const labels: string[] = []
+  for (const entry of raw) {
+    if (typeof entry === 'string') {
+      const trimmed = entry.trim()
+      if (trimmed.length > 0) labels.push(trimmed)
+      continue
+    }
+    if (typeof entry !== 'object' || entry === null) continue
+    const label = (entry as Record<string, unknown>)['label']
+    if (typeof label === 'string' && label.trim().length > 0) labels.push(label.trim())
+  }
+  return labels
+}
+
+/** The `questions[]` payload of an `ask_user_question` call, as `{id → {question, options}}`. */
+function questionSpecsOf(argumentsJson: string): Map<string, QuestionSpec> {
+  const out = new Map<string, QuestionSpec>()
   let parsed: unknown
   try {
     parsed = JSON.parse(argumentsJson)
@@ -300,7 +323,9 @@ function questionTextsOf(argumentsJson: string): Map<string, string> {
     const record = question as Record<string, unknown>
     const id = record['id']
     const text = typeof record['question'] === 'string' ? record['question'] : undefined
-    if (typeof id === 'string' && text !== undefined) out.set(id, text)
+    if (typeof id === 'string' && text !== undefined) {
+      out.set(id, { question: text, options: optionLabelsOf(record['options']) })
+    }
   }
   return out
 }
@@ -318,10 +343,10 @@ function questionTextsOf(argumentsJson: string): Map<string, string> {
  * user's actual observations rather than a menu label.
  *
  * @param text - the JSON body.
- * @param texts - question id to question text, from the call's arguments.
+ * @param specs - question id to question text and option labels, from the call's arguments.
  * @returns one entry per answered question; empty when the body is not a batch.
  */
-function answersOf(text: string, texts: ReadonlyMap<string, string>): AnsweredQuestion[] {
+function answersOf(text: string, specs: ReadonlyMap<string, QuestionSpec>): AnsweredQuestion[] {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
@@ -333,13 +358,17 @@ function answersOf(text: string, texts: ReadonlyMap<string, string>): AnsweredQu
   // not depend on the call still being in the same turn's events.
   const body = parsed as Record<string, unknown>
   const own = Array.isArray(body['questions']) ? body['questions'] : []
-  const merged = new Map(texts)
+  const merged = new Map(specs)
   for (const question of own) {
     if (typeof question !== 'object' || question === null) continue
     const record = question as Record<string, unknown>
     const id = record['id']
     const text = record['question']
-    if (typeof id === 'string' && typeof text === 'string') merged.set(id, text)
+    if (typeof id === 'string' && typeof text === 'string') {
+      const existing = merged.get(id)
+      const options = optionLabelsOf(record['options'])
+      merged.set(id, { question: text, options: options.length > 0 ? options : (existing?.options ?? []) })
+    }
   }
   const answers = body['answers']
   if (!Array.isArray(answers)) return []
@@ -348,14 +377,14 @@ function answersOf(text: string, texts: ReadonlyMap<string, string>): AnsweredQu
     if (typeof answer !== 'object' || answer === null) continue
     const record = answer as Record<string, unknown>
     const id = typeof record['id'] === 'string' ? record['id'] : ''
-    const question = merged.get(id)
-    if (question === undefined) continue
+    const spec = merged.get(id)
+    if (spec === undefined) continue
     const selected = Array.isArray(record['selected'])
       ? record['selected'].map((value) => String(value)).filter((value) => value.length > 0)
       : []
     const typed = typeof record['custom'] === 'string' ? record['custom'].trim() : ''
     if (selected.length === 0 && typed.length === 0) continue
-    out.push({ question, selected, typed })
+    out.push({ question: spec.question, options: spec.options, selected, typed })
   }
   return out
 }
@@ -393,7 +422,7 @@ const EXTRACT_INSTRUCTION = [
   '- `options`: what the user could pick from, in order, one short line each, with their own numbering stripped. The list is often a paragraph or two above the question. Use [] when the question offered none.',
   // The reply is the next turn's `## user` line, already verbatim in the digest.
   // Asking for it here printed the same sentence twice.
-  "- Use [] for `asked` when the turn asked nothing or when questions were already answered via `ask_user_question`. Do not report the user's reply.",
+  "- Use [] for `asked` when the turn asked nothing, when questions were already answered via `ask_user_question`, or when questions raised earlier were already resolved later in the same turn's prose. Do not report the user's reply.",
   '',
   'Write strings in the same language as the material. A session whose requests are Chinese gets Chinese text; do not switch to English.',
 ].join('\n')
@@ -898,7 +927,7 @@ function buildSectionsWithEvents(events: readonly SessionEvent[]): {
   }
 
   const recordedObjectives = new Set<string>()
-  const questionTexts = new Map<string, string>()
+  const questionSpecs = new Map<string, QuestionSpec>()
   const questionCallIds = new Set<string>()
 
   for (const event of events) {
@@ -926,12 +955,12 @@ function buildSectionsWithEvents(events: readonly SessionEvent[]): {
       currentEvents?.push(event)
       const callId = (messageOf(event) as { toolCallId?: string } | null)?.toolCallId
       if (callId === undefined || !questionCallIds.has(callId) || currentTurn === undefined) continue
-      currentTurn.answered.push(...answersOf(textOf(event), questionTexts))
+      currentTurn.answered.push(...answersOf(textOf(event), questionSpecs))
       continue
     }
     if (sourceKind(event) === 'user-question-reply') {
       currentEvents?.push(event)
-      if (currentTurn !== undefined) currentTurn.answered.push(...answersOf(textOf(event), questionTexts))
+      if (currentTurn !== undefined) currentTurn.answered.push(...answersOf(textOf(event), questionSpecs))
       continue
     }
     if (event.type !== 'user/message' && event.type !== 'assistant/message') continue
@@ -952,7 +981,7 @@ function buildSectionsWithEvents(events: readonly SessionEvent[]): {
     if (text.length > 0) currentTurn.assistant.push(text)
     for (const call of toolCallsOf(event)) {
       if (call.name === 'ask_user_question') {
-        for (const [id, question] of questionTextsOf(call.arguments)) questionTexts.set(id, question)
+        for (const [id, spec] of questionSpecsOf(call.arguments)) questionSpecs.set(id, spec)
         questionCallIds.add(call.id)
         continue
       }
@@ -1066,23 +1095,138 @@ function materialKey(events: readonly SessionEvent[], options?: { includeToolRes
  * The tool pointer line stays either way: it is one line, and it is the only
  * record of what was actually run when the prose and extraction both say little.
  */
-/** Normalize a question string for fuzzy duplicate comparison between Answers and Asked. */
-function normalizeQuestionText(text: string): string {
-  return text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '')
+/** Generic Chinese/English question boilerplate excluded from token-overlap dedupe. */
+const QUESTION_STOP_TOKENS = new Set([
+  '是否', '要不要', '怎么', '如何', '哪个', '哪种', '哪一', '哪些', '什么', '还是', '或者', '以及',
+  '一下', '一起', '一并', '继续', '现在', '需要', '可以', '应该', '确认', '决定', '选择', '处理',
+  '修改', '改动', '保留', '不动', '直接', '如果', '那么', '这个', '那个', '这两', '两项', '两处',
+  '三处', '四处', '用户', '拍板', '我们', '你们', '他们', '已经', '不要', '不行',
+  'the', 'and', 'for', 'with', 'this', 'that', 'from', 'should', 'would', 'which', 'what', 'how',
+  'are', 'you', 'can', 'not', 'use', 'into', 'about', 'want', 'keep', 'change', 'yes', 'no',
+])
+
+function stripRecommendationTag(text: string): string {
+  return text.replace(/[（(]\s*(?:推荐|recommended)\s*[）)]/gi, '')
 }
 
-/** Drop `asked` entries that duplicate questions already answered via `ask_user_question` in the same turn. */
+/** Normalize a question or option string for fuzzy duplicate comparison between Answers and Asked. */
+function normalizeQuestionText(text: string): string {
+  return stripRecommendationTag(text).toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '')
+}
+
+/** Extract substantive ASCII words and CJK bigrams for cross-question paraphrase matching. */
+function extractQuestionTokens(text: string): Set<string> {
+  const lower = stripRecommendationTag(text).toLowerCase()
+  const tokens = new Set<string>()
+  for (const match of lower.matchAll(/[a-z0-9_]{2,}/g)) {
+    const token = match[0]
+    if (!QUESTION_STOP_TOKENS.has(token)) tokens.add(token)
+  }
+  for (const match of lower.matchAll(/[\p{Script=Han}]{2,}/gu)) {
+    const run = match[0]
+    for (let i = 0; i < run.length - 1; i += 1) {
+      const bigram = run.slice(i, i + 2)
+      if (!QUESTION_STOP_TOKENS.has(bigram)) tokens.add(bigram)
+    }
+  }
+  return tokens
+}
+
+function tokenOverlapCount(source: ReadonlySet<string>, target: ReadonlySet<string>): number {
+  let hits = 0
+  for (const token of source) {
+    if (target.has(token)) hits += 1
+  }
+  return hits
+}
+
+interface OptionMatchTarget {
+  norm: string
+  tokens: Set<string>
+}
+
+function toOptionMatchTarget(text: string): OptionMatchTarget {
+  return {
+    norm: normalizeQuestionText(text),
+    tokens: extractQuestionTokens(text),
+  }
+}
+
+function optionMatchesTarget(candidate: OptionMatchTarget, target: OptionMatchTarget): boolean {
+  if (
+    candidate.norm.length >= 5
+    && target.norm.length >= 5
+    && (target.norm.includes(candidate.norm) || candidate.norm.includes(target.norm))
+  ) {
+    return true
+  }
+  if (candidate.tokens.size >= 3 && target.tokens.size >= 3) {
+    const hits = tokenOverlapCount(candidate.tokens, target.tokens)
+    if (hits >= 3 && hits / candidate.tokens.size >= 0.6) return true
+  }
+  return false
+}
+
+/** Drop `asked` entries that duplicate or paraphrase questions already answered via `ask_user_question` in the same turn. */
 function dedupeAskedAgainstAnswers(extraction: Extraction, answered: readonly AnsweredQuestion[]): Extraction {
   if (answered.length === 0 || extraction.asked.length === 0) return extraction
   const answeredNorms = answered.map((item) => normalizeQuestionText(item.question)).filter((q) => q.length > 0)
   if (answeredNorms.length === 0) return extraction
+
+  // Combined question + answer token corpus catches merged paraphrases across multiple
+  // answered questions; unselected options stay out of this corpus so a later follow-up
+  // prose question sharing a domain noun does not cross-bleed.
+  const corpusTokens = new Set<string>()
+  const answerTargets: OptionMatchTarget[] = []
+  const offeredTargets: OptionMatchTarget[] = []
+  for (const item of answered) {
+    for (const token of extractQuestionTokens(item.question)) corpusTokens.add(token)
+    for (const selected of item.selected) {
+      for (const token of extractQuestionTokens(selected)) corpusTokens.add(token)
+      const target = toOptionMatchTarget(selected)
+      if (target.norm.length >= 5 || target.tokens.size >= 3) answerTargets.push(target)
+    }
+    if (item.typed.length > 0) {
+      for (const token of extractQuestionTokens(item.typed)) corpusTokens.add(token)
+      const target = toOptionMatchTarget(item.typed)
+      if (target.norm.length >= 5 || target.tokens.size >= 3) answerTargets.push(target)
+    }
+    for (const opt of item.options) {
+      const target = toOptionMatchTarget(opt)
+      if (target.norm.length >= 5 || target.tokens.size >= 3) offeredTargets.push(target)
+    }
+  }
+
   const filtered = extraction.asked.filter((pair) => {
     const q = normalizeQuestionText(pair.question)
     if (q.length === 0) return true
-    return !answeredNorms.some((ans) => (
+    if (answeredNorms.some((ans) => (
       ans === q
       || (q.length >= 4 && ans.length >= 4 && (ans.includes(q) || q.includes(ans)))
-    ))
+    ))) {
+      return false
+    }
+    const qTokens = extractQuestionTokens(pair.question)
+    if (qTokens.size > 0 && corpusTokens.size > 0) {
+      const hits = tokenOverlapCount(qTokens, corpusTokens)
+      const ratio = hits / qTokens.size
+      if ((hits >= 3 && ratio >= 0.4) || (hits >= 5 && ratio >= 0.35)) return false
+    }
+    if (pair.options.length > 0 && (answerTargets.length > 0 || offeredTargets.length > 0)) {
+      const matchedOfferedIndices = new Set<number>()
+      for (const opt of pair.options) {
+        const candidate = toOptionMatchTarget(opt)
+        if (answerTargets.some((target) => optionMatchesTarget(candidate, target))) return false
+        for (let i = 0; i < offeredTargets.length; i += 1) {
+          if (optionMatchesTarget(candidate, offeredTargets[i]!)) {
+            matchedOfferedIndices.add(i)
+            break
+          }
+        }
+      }
+      if (matchedOfferedIndices.size >= 2) return false
+    }
+    return true
   })
   return filtered.length === extraction.asked.length ? extraction : { ...extraction, asked: filtered }
 }

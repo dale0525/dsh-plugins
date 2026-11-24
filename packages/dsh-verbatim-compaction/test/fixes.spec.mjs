@@ -856,3 +856,158 @@ test('review regressions: corrupt disk cache entries with missing arrays are ign
     rmSync(cacheDir, { recursive: true, force: true })
   }
 })
+
+test('asked dedupe: strips merged paraphrase combining multiple answered ask_user_question items', () => {
+  const events = [
+    userEv(1, 'Write zip dedup plan'),
+    assistantEv(2, 'plan written', 1, [
+      {
+        id: 'q-merge',
+        name: 'ask_user_question',
+        args: {
+          questions: [
+            {
+              id: 'zip_preview',
+              question: '新 zip 里那份 preview.jpg（在压缩包内部，不是桶里同级那个）要不要一并删掉？',
+              options: [{ label: '删掉（推荐）' }, { label: '保留' }],
+            },
+            {
+              id: 'scope',
+              question: '存量回收先做到多大范围？全量 9.14 万个模型约需 12.8 TB 传输。',
+              options: [{ label: '先做 top 1000 再决定（推荐）' }, { label: '直接全量跑' }],
+            },
+          ],
+        },
+      },
+    ]),
+    toolResultEv(3, 'q-merge', JSON.stringify({
+      answers: [
+        { id: 'zip_preview', selected: ['删掉（推荐）'] },
+        { id: 'scope', selected: ['直接全量跑'] },
+      ],
+    })),
+    userEv(4, '对文档做一次 /blind-review'),
+    assistantEv(5, 'started review', 2),
+  ]
+  const extracted = new Map([
+    ['0:0', {
+      did: ['wrote zip-texture-dedup.md'],
+      concluded: ['server-side multipart copy is unsupported'],
+      overturned: [],
+      asked: [{
+        question: '是否删除 zip 内 preview.jpg 与存量是否全量执行',
+        options: ['删掉 zip 内 preview', '保留 zip 内 preview', '存量全量执行', '先 top 1000 试跑'],
+      }],
+    }],
+    ['1:0', { did: ['started review'], concluded: [], overturned: [], asked: [] }],
+  ])
+  const digest = renderDigest(events, 5000, extracted)
+  assert.ok(digest.includes('## Answers'), 'Answers section must remain')
+  assert.ok(!digest.includes('## Asked'), `merged paraphrase of Answers must be stripped from Asked:\n${digest}`)
+})
+
+test('asked dedupe: strips heavily paraphrased stem when options match answered selection or offered menu', () => {
+  const events = [
+    userEv(1, 'Align event 4 tone'),
+    assistantEv(2, 'options listed', 1, [
+      {
+        id: 'q-opt-sel',
+        name: 'ask_user_question',
+        args: {
+          questions: [
+            {
+              id: 'style',
+              question: '事件 4 的句均 14.6 字、对白占 42%，你要哪一种对齐方式？',
+              options: [{ label: '按事件 1–3 语域整篇重写' }, { label: '保留对白骨架，只补叙述层' }],
+            },
+            {
+              id: 'scope',
+              question: '存量回收先做到多大范围？',
+              options: [{ label: '先做 top 1000 再决定（推荐）' }, { label: '先只做单个模型的验证' }],
+            },
+          ],
+        },
+      },
+    ]),
+    toolResultEv(3, 'q-opt-sel', JSON.stringify({
+      answers: [
+        { id: 'style', selected: ['保留对白骨架，只补叙述层'] },
+        { id: 'scope', selected: [], custom: '先看效果再定' },
+      ],
+    })),
+    userEv(4, '继续'),
+    assistantEv(5, 'done', 2),
+  ]
+  const extracted = new Map([
+    ['0:0', {
+      did: ['checked tone'],
+      concluded: [],
+      overturned: [],
+      asked: [
+        {
+          question: '两条修法选哪条',
+          options: ['按事件 1–3 语域重写一遍', '保留对白骨架只补叙述层'],
+        },
+        {
+          question: '两项待定怎么选',
+          options: ['先做 top 1000 再决定', '先只做单个模型的验证'],
+        },
+      ],
+    }],
+    ['1:0', { did: ['done'], concluded: [], overturned: [], asked: [] }],
+  ])
+  const digest = renderDigest(events, 5000, extracted)
+  assert.ok(digest.includes('## Answers'), 'Answers section must remain')
+  assert.ok(!digest.includes('## Asked'), `option-matched paraphrased Asked must be stripped:\n${digest}`)
+})
+
+test('asked dedupe: preserves genuinely distinct follow-up prose question sharing a domain noun', () => {
+  const events = [
+    userEv(1, 'Fix mesh loop and check sample'),
+    assistantEv(2, 'fixed loop and wrote sample', 1, [
+      {
+        id: 'q-distinct',
+        name: 'ask_user_question',
+        args: {
+          questions: [
+            {
+              id: 'loop',
+              question: '我拆掉了两端的 mesh（这是环路的根源），主路由负载已恢复，现在能连上 Unraid 吗？',
+              options: [{ label: '能连上，继续' }, { label: '还是连不上' }],
+            },
+            {
+              id: 'sample',
+              question: '如果改回叙述主导，是一次性整篇重写，还是先让你看一段样本？',
+              options: [{ label: '按事件 1–3 语域整篇重写' }, { label: '先给样本再整篇（推荐）' }],
+            },
+          ],
+        },
+      },
+    ]),
+    toolResultEv(3, 'q-distinct', JSON.stringify({
+      answers: [
+        { id: 'loop', selected: ['能连上，继续'] },
+        { id: 'sample', selected: ['先给样本再整篇（推荐）'] },
+      ],
+    })),
+    userEv(4, '1'),
+    assistantEv(5, 'applied', 2),
+  ]
+  const extracted = new Map([
+    ['0:0', {
+      did: ['removed loop and produced sample'],
+      concluded: [],
+      overturned: [],
+      asked: [
+        { question: 'mesh 是否继续做', options: ['先不动，保持现状可用', '把主路由升级后再做 802.11s'] },
+        { question: '样本语域是否认可？', options: ['认可，按此档次铺满整场', '指出过或欠处再调整'] },
+      ],
+    }],
+    ['1:0', { did: ['applied'], concluded: [], overturned: [], asked: [] }],
+  ])
+  const digest = renderDigest(events, 5000, extracted)
+  assert.ok(digest.includes('## Answers'), 'Answers section must remain')
+  assert.ok(digest.includes('mesh 是否继续做'), 'distinct follow-up question sharing one noun must survive')
+  assert.ok(digest.includes('样本语域是否认可？'), 'distinct follow-up question after sample delivery must survive')
+})
+
