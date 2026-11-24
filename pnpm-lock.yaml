@@ -84,7 +84,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-tool-toolsets
       '@logictan/dsh-verbatim-compaction':
-        specifier: ^0.13.3
+        specifier: ^0.13.4
         version: link:../dsh-verbatim-compaction
       '@logictan/dsh-worktree-session':
         specifier: ^0.1.14
