@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { DIGEST_TOKEN_CEILING, foldGroupStarts, renderDigest } from '../lib/index.js'
+import { CONDENSE_GROUP, DIGEST_TOKEN_CEILING, foldGroupStarts, renderDigest } from '../lib/index.js'
 
 /**
  * A synthetic session long enough to cross `DIGEST_TOKEN_CEILING`.
@@ -155,8 +155,8 @@ test('folding the whole history always fits inside the budget', () => {
     // `CONDENSE_GROUP` sections, keyed by that group's first section. A single
     // `covers: turns` entry is a shape the engine never produces.
     const condensed = new Map()
-    for (let start = 0; start < turns; start += 100) {
-      condensed.set(`${start}:0`, { text: 'CONDENSED', covers: Math.min(100, turns - start) })
+    for (let start = 0; start < turns; start += CONDENSE_GROUP) {
+      condensed.set(`${start}:0`, { text: 'CONDENSED', covers: Math.min(CONDENSE_GROUP, turns - start) })
     }
     const text = renderDigest(events, DIGEST_TOKEN_CEILING, extracted, condensed)
     assert.ok(
@@ -178,22 +178,23 @@ test('folding is monotone: each group folded never grows the digest', () => {
   const { events, extracted } = longSession(turns)
   // Entries accumulate the way the engine accumulates them: one per group, each
   // keyed by its own first section. The earlier version varied a single entry's
-  // `covers`, which produces one heading instead of seven.
+  // `covers`, which produces one heading instead of multiple.
   //
   // Folded text is sized to the measured 8.2% ratio rather than to a constant: a
   // fixed string longer than the blocks it replaces would grow the digest, which
   // says nothing about the real fold.
   const condensed = new Map()
   let previous = Infinity
-  for (let groups = 1; groups <= 7; groups += 1) {
-    condensed.set(`${(groups - 1) * 100}:0`, { text: 'C'.repeat(Math.round(100 * 170 * 0.082)), covers: 100 })
+  const starts = foldGroupStarts(turns)
+  for (const start of starts) {
+    const covers = Math.min(CONDENSE_GROUP, turns - start)
+    condensed.set(`${start}:0`, { text: 'C'.repeat(Math.round(covers * 170 * 0.082)), covers })
     const size = renderDigest(events, DIGEST_TOKEN_CEILING, extracted, condensed).length
-    assert.ok(size <= previous, `folding ${groups * 100} sections grew the digest: ${previous} -> ${size}`)
+    assert.ok(size <= previous, `folding through ${start + covers} sections grew the digest: ${previous} -> ${size}`)
     assert.ok(size > 0)
     previous = size
   }
-  // Seven groups of seven-hundred sections covers the whole history, so the fold
-  // must have brought it under budget by then.
+  // Covering every group brings the whole history under budget.
   assert.ok(
     previous <= DIGEST_TOKEN_CEILING * 4,
     `folding the whole history still overflows: ${previous}`,
@@ -204,23 +205,24 @@ test('folding is monotone: each group folded never grows the digest', () => {
 test('the fold walk reaches the end of the history, however it divides', () => {
   // `condenseOldest` steps through `foldGroupStarts`. The earlier form bounded its
   // outer loop at `covered < sections.length` while the inner slice ended at
-  // `covered`, so the last group was never folded — and at 100 sections or fewer
+  // `covered`, so the last group was never folded — and at one group or fewer
   // the loop body never ran at all, leaving an overflowing session with no fold
   // available. Both boundaries are pinned here, against the real function.
+  const g = CONDENSE_GROUP
   assert.deepEqual(foldGroupStarts(0), [], 'no sections means no fold')
-  assert.deepEqual(foldGroupStarts(50), [0], 'a 50-section session must still be foldable')
-  assert.deepEqual(foldGroupStarts(100), [0])
-  assert.deepEqual(foldGroupStarts(250), [0, 100, 200], 'the last partial group must be reached')
+  assert.deepEqual(foldGroupStarts(Math.floor(g / 2)), [0], 'a sub-group session must still be foldable')
+  assert.deepEqual(foldGroupStarts(g), [0])
+  assert.deepEqual(foldGroupStarts(g * 2 + Math.floor(g / 2)), [0, g, g * 2], 'the last partial group must be reached')
   assert.deepEqual(
-    foldGroupStarts(700),
-    [0, 100, 200, 300, 400, 500, 600],
+    foldGroupStarts(g * 7),
+    [0, g, g * 2, g * 3, g * 4, g * 5, g * 6],
     'the final group must not be skipped',
   )
   // Every section falls inside exactly one group, so no section is left unfolded
   // when the walk completes.
-  for (const count of [1, 50, 100, 101, 250, 700, 1201]) {
+  for (const count of [1, Math.floor(g / 2), g, g + 1, g * 2 + 5, g * 7, 1201]) {
     const covered = foldGroupStarts(count).reduce(
-      (sum, start) => sum + Math.min(100, count - start), 0,
+      (sum, start) => sum + Math.min(g, count - start), 0,
     )
     assert.equal(covered, count, `the walk over ${count} sections leaves a gap`)
   }

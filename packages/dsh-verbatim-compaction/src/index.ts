@@ -30,9 +30,13 @@
  *
  * @module @logictan/dsh-verbatim-compaction
  */
+import { randomBytes } from 'node:crypto'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { ReasoningEffortId, type ContentBlock, type Message } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, type ContentBlock, type Message, type TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
 import { getLiveConfig, type PurposeConfig } from './purpose.js'
 // Type-only: brings the `ctx.tokenMeter` augmentation into scope.
@@ -89,8 +93,11 @@ export function applyPurposeOverride<T extends object>(
  */
 export const DIGEST_TOKEN_CEILING = 20000
 
-/** Framing overhead `frameSummary` adds: preamble plus both tags, 341 chars = 86 tokens. */
-const FRAME_TOKENS = 86
+/**
+ * Framing overhead `frameSummary` adds under `TokenMeter.estimateMessage`:
+ * 3 text blocks (`BLOCK_OVERHEAD = 4` each) + `ROLE_OVERHEAD = 4` + preamble/tags = 102 tokens.
+ */
+const FRAME_TOKENS = 102
 
 /** Safety margin below the shrink guard, in tokens. */
 const SHRINK_MARGIN_TOKENS = 512
@@ -111,6 +118,45 @@ const USER_BUDGET_SHARE = 0.9
 /** Tool names whose call arguments name a written path. */
 const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit', 'apply_patch'])
 
+/** Max parallel batch extraction calls in flight per compaction. */
+const EXTRACT_CONCURRENCY = 4
+
+/** Default per-call timeout (ms) for extraction and condensation LLM streams. */
+const DEFAULT_LLM_CALL_TIMEOUT_MS = 90_000
+
+/** In-memory cache bounds (FIFO/LRU eviction). */
+const EXTRACTION_CACHE_MAX = 2000
+const CONDENSED_CACHE_MAX = 200
+
+/** Max characters kept per turn when extraction fails and prose falls back verbatim. */
+const FALLBACK_PROSE_MAX_CHARS = 3000
+
+/** Old (non-latest) user messages longer than this are head+tail clipped to prevent paste bloat. */
+const OLD_USER_PASTE_MAX_CHARS = 2400
+
+/** Recent trailing section count whose `## Answers` keep full verbose question stems. */
+const FULL_ANSWER_STEM_RECENT_SECTIONS = 3
+
+/** Max characters for historical `## Answers` question stems (user answers always stay verbatim). */
+const OLD_ANSWER_STEM_MAX_CHARS = 180
+
+/** Max length of a following user turn that counts as a short reply depending on prior `## Asked`. */
+const SHORT_REPLY_MAX_CHARS = 80
+
+/** Thresholds for supplementing single-turn tool-heavy (subagent/research) extraction with sampled tool results. */
+const SINGLE_TURN_TOOL_HEAVY_CALLS = 10
+const SINGLE_TURN_TOOL_HEAVY_PROSE_MAX = 1500
+const SAMPLED_TOOL_RESULT_TOTAL_CHARS = 6000
+const SAMPLED_TOOL_RESULT_PER_CALL_CHARS = 600
+
+/** Keep head and tail of overlong text so both opening context and final conclusions survive. */
+function clipHeadTail(text: string, maxChars: number, headChars: number, tailChars: number): string {
+  if (text.length <= maxChars) return text
+  const omitted = text.length - headChars - tailChars
+  if (omitted <= 0) return text
+  return `${text.slice(0, headChars).trimEnd()}\n…(+${omitted} chars omitted)\n${text.slice(text.length - tailChars).trimStart()}`
+}
+
 /** The replayed prefix the base class hands to `summarize`. */
 export interface SummarizationInput {
   /** Tool schemas reused for prefix-cache alignment; absent when the request carried none. */
@@ -124,6 +170,7 @@ export interface SummaryResult {
   summary: ContentBlock[]
   provider: string
   model: string
+  usage?: TokenUsage
 }
 
 /** The message an event derives to, or null when it derives to none. */
@@ -180,14 +227,24 @@ function isInjection(event: SessionEvent): boolean {
  * @param event - any event; non-goal events yield undefined.
  * @returns the objective text, or undefined.
  */
+/** Auto-generated host continuation goals that restate the todo list rather than a user goal. */
+const AUTO_CONTINUATION_GOAL = /^(?:Continue the \d+ open tasks? this session recorded:|Continue working on the current goal\b)/i
+
 function goalObjective(event: SessionEvent): string | undefined {
   if (sourceKind(event) !== 'goal') return undefined
   const text = textOf(event)
-  const match = /Objective:\s*"([\s\S]*?)"/.exec(text)
-  // The objective arrives with its newlines already escaped inside the JSON
-  // string, so a seven-item list reaches the digest as one unreadable line.
-  const objective = (match?.[1] ?? '').replace(/\\n/g, '\n').trim()
-  return objective.length > 0 ? objective : undefined
+  const match = /Objective:\s*"((?:[^"\\]|\\.)*)"/.exec(text)
+  if (match === null) return undefined
+  const raw = match[1] ?? ''
+  let objective: string
+  try {
+    objective = String(JSON.parse(`"${raw}"`)).trim()
+  } catch {
+    objective = raw.replace(/\\([n"\\])/g, (_, ch: string) => (ch === 'n' ? '\n' : ch)).trim()
+  }
+  if (objective.length === 0) return undefined
+  if (AUTO_CONTINUATION_GOAL.test(objective)) return undefined
+  return objective
 }
 
 /** Whether this user message is a compaction checkpoint written by a backend. */
@@ -336,10 +393,73 @@ const EXTRACT_INSTRUCTION = [
   '- `options`: what the user could pick from, in order, one short line each, with their own numbering stripped. The list is often a paragraph or two above the question. Use [] when the question offered none.',
   // The reply is the next turn's `## user` line, already verbatim in the digest.
   // Asking for it here printed the same sentence twice.
-  "- Use [] for `asked` when the turn asked nothing. Do not report the user's reply.",
+  "- Use [] for `asked` when the turn asked nothing or when questions were already answered via `ask_user_question`. Do not report the user's reply.",
   '',
   'Write strings in the same language as the material. A session whose requests are Chinese gets Chinese text; do not switch to English.',
 ].join('\n')
+
+/** Whether a parsed JSON value looks like an extraction slot payload (object with `slots[]` or array of keyed slots). */
+function isSlotPayload(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) => typeof item === 'object' && item !== null && 'key' in item)
+  }
+  return typeof value === 'object' && value !== null && Array.isArray((value as { slots?: unknown }).slots)
+}
+
+/** Extract the first balanced JSON object or array payload from a model reply that may carry prose or stray braces. */
+function extractJsonPayload(raw: string): unknown {
+  const body = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
+  try {
+    return JSON.parse(body)
+  } catch {
+    // Fall through to balanced scan.
+  }
+  const candidates: unknown[] = []
+  for (let start = 0; start < body.length; start += 1) {
+    const opener = body[start]
+    if (opener !== '{' && opener !== '[') continue
+    const closer = opener === '{' ? '}' : ']'
+    let depth = 0
+    let inString = false
+    let escaped = false
+    for (let end = start; end < body.length; end += 1) {
+      const ch = body[end]
+      if (inString) {
+        if (escaped) escaped = false
+        else if (ch === '\\') escaped = true
+        else if (ch === '"') inString = false
+        continue
+      }
+      if (ch === '"') { inString = true; continue }
+      if (ch === opener) depth += 1
+      else if (ch === closer) {
+        depth -= 1
+        if (depth === 0) {
+          try {
+            const parsed: unknown = JSON.parse(body.slice(start, end + 1))
+            if (isSlotPayload(parsed)) return parsed
+            candidates.push(parsed)
+            start = end
+          } catch {
+            // Do not skip past `end`: valid JSON may be nested inside invalid outer braces.
+          }
+          break
+        }
+      }
+    }
+  }
+  return candidates[0]
+}
+
+/** Normalize model-drifted slot keys like `SLOT 0:0 (turn 1)` back to `0:0`. */
+function normalizeSlotKey(raw: unknown): string {
+  const str = typeof raw === 'string' ? raw : typeof raw === 'number' ? String(raw) : ''
+  return str
+    .trim()
+    .replace(/^SLOT\s+/i, '')
+    .replace(/\s*\(turn\s+[^)]*\)\s*$/i, '')
+    .trim()
+}
 
 /** One slot's extraction, as the model returns it. */
 export interface Extraction {
@@ -392,30 +512,27 @@ export interface AskedPair {
  */
 export function parseExtraction(answer: string): Map<string, Extraction> {
   const out = new Map<string, Extraction>()
-  // Models wrap JSON in a fence often enough that stripping it is not defensive
-  // programming but the common case.
-  const body = answer.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  const start = body.indexOf('{')
-  const end = body.lastIndexOf('}')
-  if (start < 0 || end <= start) return out
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(body.slice(start, end + 1))
-  } catch {
-    return out
-  }
+  const parsed = extractJsonPayload(answer)
   if (typeof parsed !== 'object' || parsed === null) return out
-  const slots = (parsed as Record<string, unknown>)['slots']
+  const slots = Array.isArray(parsed)
+    ? parsed
+    : (parsed as Record<string, unknown>)['slots']
   if (!Array.isArray(slots)) return out
-  const strings = (value: unknown): string[] => (Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === 'string')
+  const strings = (value: unknown): string[] => {
+    const rawList = Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? [value]
+        : []
+    return rawList
+      .filter((item): item is string => typeof item === 'string')
       .map((item) => item.replace(/\s+/g, ' ').trim())
       .filter((item) => item.length > 0)
       // A field is a list, so "nothing here" is an empty list. Models still write a
       // placeholder often enough that dropping it is worth one test.
-      .filter((item) => !/^(?:\(?none\)?|n\/a|na|-{1,2}|无|沒有|没有)$/i.test(item))
+      .filter((item) => !/^(?:\(?none\)?|n\/a|na|-{1,2}|无|沒有|没有|暂无|无变更|无推翻|未发现)[。.！!]*$/i.test(item))
       .filter((item) => !/^(?:未提问|无提问|没有提问|no questions? (?:were |was )?asked|none asked)[。.！!]*$/i.test(item))
-    : [])
+  }
   // Asked is a list of objects, not of strings: a question without its options
   // turns the user's `1` into a number that selects nothing.
   const pairs = (value: unknown): AskedPair[] => (Array.isArray(value)
@@ -431,9 +548,11 @@ export function parseExtraction(answer: string): Map<string, Extraction> {
           ? record['options']
             .filter((option): option is string => typeof option === 'string')
             // The renderer supplies the numbering, so a model that echoes the source
-            // list's own `1.` would print `1. 1. …`. Stripped here rather than asked
-            // for in the prompt alone: three of five real runs kept it.
-            .map((option) => option.replace(/\s+/g, ' ').replace(/^\s*\d{1,2}\s*[.、)]\s*/, '').trim())
+            // list's own `1.` / `(1)` / `A.` would print double prefixes.
+            .map((option) => option
+              .replace(/\s+/g, ' ')
+              .replace(/^\s*(?:(?:\d{1,2}|[A-Za-z])\s*[.、:：)]\s*|[（(]\s*(?:\d{1,2}|[A-Za-z])\s*[)）]\s*)/, '')
+              .trim())
             .filter((option) => option.length > 0)
           : []
         return [{ question, options }]
@@ -442,8 +561,8 @@ export function parseExtraction(answer: string): Map<string, Extraction> {
   for (const slot of slots) {
     if (typeof slot !== 'object' || slot === null) continue
     const record = slot as Record<string, unknown>
-    const key = record['key']
-    if (typeof key !== 'string' || key.length === 0) continue
+    const key = normalizeSlotKey(record['key'])
+    if (key.length === 0) continue
     out.set(key, {
       did: strings(record['did']),
       concluded: strings(record['concluded']),
@@ -458,33 +577,31 @@ export function parseExtraction(answer: string): Map<string, Extraction> {
  * Render one extraction as the digest block, headings included.
  *
  * @param extraction - the fields for one slot.
+ * @param level - graded retention level (3..0).
+ * @param includeAsked - whether to render the `## Asked` section (false for stale historical turns).
  * @returns markdown with a heading per non-empty field; empty string when every
  * field is empty.
  */
-export function renderExtractionBlock(extraction: Extraction | undefined, level: number = 3): string {
+export function renderExtractionBlock(
+  extraction: Extraction | undefined,
+  level: number = 3,
+  includeAsked: boolean = true,
+): string {
   if (extraction === undefined) return ''
   const lines: string[] = []
   const section = (heading: string, items: readonly string[] | undefined): void => {
     if (items === undefined || items.length === 0) return
     lines.push(`## ${heading}`, ...items.map((item) => `- ${item}`))
   }
-  // `level` is how many of the graded sections survive: 3 keeps all, 2 drops
-  // Overturned, 1 keeps only Did, 0 keeps only Asked. Asked is never dropped by
-  // the level because it is the one section nothing later can rebuild — the
-  // reply arrives in the next turn, but the question and its options exist only
-  // here. See `renderDigest` for why the ladder exists at all.
   if (level >= 1) section('Did', extraction.did)
   if (level >= 2) section('Concluded', extraction.concluded)
   if (level >= 3) section('Overturned', extraction.overturned)
   // Asked goes last and its options are listed under it, so the user's reply — the
   // next `## user` line — lands directly under the list it chose from.
-  if (extraction.asked.length > 0) {
+  if (includeAsked && extraction.asked.length > 0) {
     lines.push('## Asked')
     for (const pair of extraction.asked) {
       lines.push(`- ${pair.question}`)
-      // Indented under the question so a reader cannot mistake an option for a
-      // separate question, and numbered so the reply's digit has something to
-      // point at.
       for (const [index, option] of pair.options.entries()) {
         lines.push(`  ${index + 1}. ${option}`)
       }
@@ -541,18 +658,10 @@ const TURNS_PER_CALL = 8
 /**
  * Sections folded into one condensed block when the digest overflows.
  *
- * Each fold is a model call, so the group size trades calls against compression.
- * Simulated on a 700- and a 1200-turn digest at the measured 8.2% fold ratio:
- *
- *   group  20 → 19 and 52 calls
- *   group  50 →  8 and 21 calls
- *   group 100 →  4 and 11 calls
- *
- * Larger groups fold more text per call, which is also where the ratio holds
- * best: a 20-section group is small enough that the model's own paragraph is a
- * larger share of it. 100 keeps a long session to a handful of calls.
+ * Lowered from 100 to 30 so real long sessions (30–80 turns) fold oldest runs
+ * instead of falling straight into destructive body eviction.
  */
-const CONDENSE_GROUP = 100
+export const CONDENSE_GROUP = 30
 
 /**
  * Output tokens allowed for one condensation call.
@@ -673,16 +782,34 @@ export function collectHints(events: readonly SessionEvent[]): string {
   return lines.join('\n')
 }
 
-/** The `path` argument of one tool call, when the call carries one. */
-function pathArgumentOf(argumentsJson: string): string | undefined {
+/** Extract target file paths from write/edit/multiedit/apply_patch tool calls. */
+function writePathsOf(toolName: string, argumentsJson: string): string[] {
+  const paths: string[] = []
+  const add = (candidate: unknown): void => {
+    if (typeof candidate !== 'string') return
+    const trimmed = candidate.trim()
+    if (trimmed.length > 0 && !paths.includes(trimmed)) paths.push(trimmed)
+  }
   try {
     const parsed: unknown = JSON.parse(argumentsJson)
-    if (typeof parsed !== 'object' || parsed === null) return undefined
-    const path = (parsed as { path?: unknown }).path
-    return typeof path === 'string' ? path : undefined
+    if (typeof parsed !== 'object' || parsed === null) return paths
+    const record = parsed as Record<string, unknown>
+    add(record['file_path'])
+    add(record['path'])
+    if (toolName === 'apply_patch') {
+      const patchText = typeof record['input'] === 'string'
+        ? record['input']
+        : typeof record['patch'] === 'string'
+          ? record['patch']
+          : ''
+      for (const match of patchText.matchAll(/^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+)$|^\*\*\*\s+Move to:\s*(.+)$/gm)) {
+        add(match[1] ?? match[2])
+      }
+    }
   } catch {
-    return undefined
+    return paths
   }
+  return paths
 }
 
 /** One turn's accumulated digest material. */
@@ -699,7 +826,6 @@ interface Turn {
   fromRequest: boolean
   user: string[]
   assistant: string[]
-  tools: Map<string, number>
   writes: string[]
   /**
    * Questions this turn put to the user through `ask_user_question`, with the
@@ -737,92 +863,74 @@ function turnOf(event: SessionEvent): number | undefined {
 
 /** A fresh, empty turn accumulator. */
 function emptyTurn(turn: number | undefined, fromRequest: boolean = false): Turn {
-  return { turn, fromRequest, user: [], assistant: [], tools: new Map(), writes: [], answered: [] }
+  return { turn, fromRequest, user: [], assistant: [], writes: [], answered: [] }
 }
 
 /**
- * Group append-origin surface events into per-turn digest material.
- *
- * A section starts at each non-injected user message; assistant-only runs
- * before the first user message join the first section. Turn numbers come from
- * the log: `turn/start` carries `{turn}` and `assistant/message` carries
- * `data.turn`. A user message carries no turn of its own, so it inherits the
- * last one seen.
- *
- * @param events - the digest source in log order.
- * @returns one section per non-injected user message.
+ * Single source of truth for partitioning log events into sections alongside each
+ * section's exact slice of raw events, so rendering and extraction can never drift
+ * off by one section.
  */
-export function buildSections(events: readonly SessionEvent[]): Section[] {
+function buildSectionsWithEvents(events: readonly SessionEvent[]): {
+  sections: Section[]
+  sectionEvents: SessionEvent[][]
+} {
   const sections: Section[] = []
+  const sectionEvents: SessionEvent[][] = []
   let current: Section | undefined
+  let currentEvents: SessionEvent[] | undefined
   let currentTurn: Turn | undefined
   let lastTurn: number | undefined
 
+  const startSection = (): void => {
+    current = { turns: [] }
+    currentEvents = []
+    sections.push(current)
+    sectionEvents.push(currentEvents)
+  }
+
   const openTurn = (turn: number | undefined, fromRequest: boolean = false): Turn => {
-    if (current === undefined) {
-      current = { turns: [] }
-      sections.push(current)
-    }
+    if (current === undefined) startSection()
     const next = emptyTurn(turn, fromRequest)
-    current.turns.push(next)
+    current!.turns.push(next)
     if (turn !== undefined) lastTurn = turn
     return next
   }
 
-  // One objective per section, and never twice: the host re-injects the same
-  // objective on every round, so recording each copy would repeat it dozens of
-  // times across a long autonomous run.
   const recordedObjectives = new Set<string>()
-
-  // Question id to question text, for every `ask_user_question` call seen so far.
-  // The answer batch names questions by id only, and an id like `quota` says
-  // nothing on its own.
   const questionTexts = new Map<string, string>()
-
-  // Call ids of this turn's `ask_user_question` calls. A result is an answer only
-  // when its own call asked something: without this every result in the log was
-  // JSON-parsed (536 KB across 157 results in one measured session, the largest
-  // 49.9 KB) and any output that happened to look like an answer batch — a file
-  // dump, a test fixture — would be recorded as something the user chose.
   const questionCallIds = new Set<string>()
-
 
   for (const event of events) {
     if (event.type === 'turn/start') {
       const turn = turnOf(event)
       if (turn !== undefined) lastTurn = turn
+      currentEvents?.push(event)
       continue
     }
-    const objective = goalObjective(event)
-    if (objective !== undefined) {
-      if (current === undefined) {
-        current = { turns: [] }
-        sections.push(current)
+    if (sourceKind(event) === 'goal') {
+      const objective = goalObjective(event)
+      if (objective === undefined || recordedObjectives.has(objective)) {
+        // Auto todo-continuation goals, malformed goals, and repeated rounds never
+        // penetrate into human `## user` sections.
+        continue
       }
-      if (recordedObjectives.has(objective)) continue
       recordedObjectives.add(objective)
-      // A goal round opens a section like a user request does, and its objective
-      // takes the user slot: it is the request this turn serves.
-      current = { turns: [] }
-      sections.push(current)
+      startSection()
       currentTurn = openTurn(turnOf(event) ?? lastTurn, false)
       currentTurn.user.push(objective)
+      currentEvents!.push(event)
       continue
     }
     if (event.type === 'tool/result') {
-      // An answered question arrives as this call's own result. The call's
-      // arguments named the questions; the result carries the choices.
+      currentEvents?.push(event)
       const callId = (messageOf(event) as { toolCallId?: string } | null)?.toolCallId
       if (callId === undefined || !questionCallIds.has(callId) || currentTurn === undefined) continue
       currentTurn.answered.push(...answersOf(textOf(event), questionTexts))
       continue
     }
-    // The host answers a question two ways. Inside the waiting window the answer
-    // is the tool result above; after the call already returned its pending
-    // notice, it is a `user/message` whose source kind is `user-question-reply`
-    // and whose body is the same answer batch. That message is not a new request,
-    // so it is read here rather than opening a section.
     if (sourceKind(event) === 'user-question-reply') {
+      currentEvents?.push(event)
       if (currentTurn !== undefined) currentTurn.answered.push(...answersOf(textOf(event), questionTexts))
       continue
     }
@@ -831,43 +939,40 @@ export function buildSections(events: readonly SessionEvent[]): Section[] {
 
     const eventTurn = turnOf(event) ?? lastTurn
     if (event.type === 'user/message') {
-      // A user message opens a new section, not merely a new turn: sections are
-      // what the digest headings delimit, and one section per user request is
-      // what makes the digest readable after a hundred turns.
-      current = { turns: [] }
-      sections.push(current)
+      startSection()
       currentTurn = openTurn(eventTurn, true)
       const text = textOf(event)
       if (text.length > 0) currentTurn.user.push(text)
+      currentEvents!.push(event)
       continue
     }
-    // A user message carries no `turn` field while the reply carries one, so a
-    // plain turn-number comparison opened a second turn for the same request: every
-    // real section ended up with an empty request turn plus a reply turn holding no
-    // user text, and the digest printed `## user` and `### assistant` twice.
-    //
-    // The turn number only separates work when the current turn already holds some,
-    // i.e. when the log really moved on to a later turn.
-    // A section is one request, so it is one turn. The log keeps advancing the turn
-    // number inside a single request (7 assistant messages as turn 2, then 9 more as
-    // turn 3), and splitting on the number gave every section a second turn whose
-    // block was the tail of the same request's prose.
     if (currentTurn === undefined) currentTurn = openTurn(eventTurn ?? lastTurn)
+    currentEvents?.push(event)
     const text = textOf(event)
     if (text.length > 0) currentTurn.assistant.push(text)
     for (const call of toolCallsOf(event)) {
-      currentTurn.tools.set(call.name, (currentTurn.tools.get(call.name) ?? 0) + 1)
       if (call.name === 'ask_user_question') {
         for (const [id, question] of questionTextsOf(call.arguments)) questionTexts.set(id, question)
         questionCallIds.add(call.id)
         continue
       }
       if (!WRITE_TOOLS.has(call.name)) continue
-      const path = pathArgumentOf(call.arguments)
-      if (path !== undefined && !currentTurn.writes.includes(path)) currentTurn.writes.push(path)
+      for (const path of writePathsOf(call.name, call.arguments)) {
+        if (!currentTurn.writes.includes(path)) currentTurn.writes.push(path)
+      }
     }
   }
-  return sections
+  return { sections, sectionEvents }
+}
+
+/**
+ * Group append-origin surface events into per-turn digest material.
+ *
+ * @param events - the digest source in log order.
+ * @returns one section per non-injected user message.
+ */
+export function buildSections(events: readonly SessionEvent[]): Section[] {
+  return buildSectionsWithEvents(events).sections
 }
 
 /**
@@ -941,13 +1046,13 @@ function hashText(input: string): string {
  * @param events - one slot's events, in log order.
  * @returns a stable hex key.
  */
-function materialKey(events: readonly SessionEvent[]): string {
+function materialKey(events: readonly SessionEvent[], options?: { includeToolResults?: boolean }): string {
   const prose = events
     .filter((event) => event.type === 'assistant/message')
     .map((event) => textOf(event))
     .filter((text) => text.length > 0)
     .join('\n')
-  return hashText(buildExtractionMaterial(events, prose))
+  return hashText(buildExtractionMaterial(events, prose, options))
 }
 
 /**
@@ -961,17 +1066,72 @@ function materialKey(events: readonly SessionEvent[]): string {
  * The tool pointer line stays either way: it is one line, and it is the only
  * record of what was actually run when the prose and extraction both say little.
  */
+/** Normalize a question string for fuzzy duplicate comparison between Answers and Asked. */
+function normalizeQuestionText(text: string): string {
+  return text.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '')
+}
+
+/** Drop `asked` entries that duplicate questions already answered via `ask_user_question` in the same turn. */
+function dedupeAskedAgainstAnswers(extraction: Extraction, answered: readonly AnsweredQuestion[]): Extraction {
+  if (answered.length === 0 || extraction.asked.length === 0) return extraction
+  const answeredNorms = answered.map((item) => normalizeQuestionText(item.question)).filter((q) => q.length > 0)
+  if (answeredNorms.length === 0) return extraction
+  const filtered = extraction.asked.filter((pair) => {
+    const q = normalizeQuestionText(pair.question)
+    if (q.length === 0) return true
+    return !answeredNorms.some((ans) => (
+      ans === q
+      || (q.length >= 4 && ans.length >= 4 && (ans.includes(q) || q.includes(ans)))
+    ))
+  })
+  return filtered.length === extraction.asked.length ? extraction : { ...extraction, asked: filtered }
+}
+
+/** Whether a section's `## Asked` should survive into the digest. */
+function shouldKeepAsked(sections: readonly Section[], sectionIndex: number): boolean {
+  const isLast = sectionIndex === sections.length - 1
+  if (isLast) return true
+  const nextUser = sections[sectionIndex + 1]?.turns[0]?.user.join('\n').trim() ?? ''
+  return nextUser.length > 0 && nextUser.length <= SHORT_REPLY_MAX_CHARS
+}
+
+/** Index of the latest section carrying a real user request, falling back to the final section. */
+function lastRealUserSectionIndex(sections: readonly Section[]): number {
+  for (let i = sections.length - 1; i >= 0; i -= 1) {
+    if (sections[i]?.turns.some((turn) => turn.fromRequest && turn.user.length > 0)) return i
+  }
+  return sections.length - 1
+}
+
+/** Keep the latest section and the latest real user request unclipped; clip oversized pastes in older sections. */
+function shouldKeepFullUser(sections: readonly Section[] | undefined, sectionIndex: number): boolean {
+  if (sections === undefined) return true
+  if (sectionIndex === sections.length - 1) return true
+  return sectionIndex === lastRealUserSectionIndex(sections)
+}
+
+/** Format a turn's user prose, clipping oversized pastes in older (non-latest) sections. */
+function formatUserText(texts: readonly string[], keepFullUser: boolean): string {
+  if (keepFullUser) return texts.join('\n')
+  return texts
+    .map((text) => clipHeadTail(text, OLD_USER_PASTE_MAX_CHARS, 1400, 800))
+    .join('\n')
+}
+
 function renderSection(
   section: Section,
   level: number,
   condensed: ReadonlyMap<string, Condensed> | undefined,
   sectionIndex: number,
+  allSections?: readonly Section[],
 ): string {
   const lines: string[] = []
-  // The block that covers this section, if any. Looked up by scanning the keys
-  // rather than by probing one key per turn: a fold spans whole sections, so the
-  // covering key belongs to an earlier section, not to this turn's own key.
   const index = sectionIndex ?? 0
+  const totalSections = allSections?.length ?? (index + 1)
+  const keepFullUser = shouldKeepFullUser(allSections, index)
+  const compactAnswerStem = index < totalSections - FULL_ANSWER_STEM_RECENT_SECTIONS
+  const keepAsked = allSections === undefined ? true : shouldKeepAsked(allSections, index)
+
   let covering: { key: string, block: Condensed } | undefined
   if (condensed !== undefined) {
     for (const [key, block] of condensed) {
@@ -983,12 +1143,9 @@ function renderSection(
     }
   }
   if (covering !== undefined) {
-    // The user line stays: a request is a standing constraint. Only the first
-    // covered section prints the folded text — the rest contribute their user
-    // lines alone, which is the room the condensation buys.
     const start = Number(covering.key.split(':')[0])
     for (const turn of section.turns) {
-      if (turn.user.length > 0) lines.push(`\n## user\n${turn.user.join('\n')}`)
+      if (turn.user.length > 0) lines.push(`\n## user\n${formatUserText(turn.user, keepFullUser)}`)
     }
     if (index === start) {
       const range = covering.block.covers <= 1
@@ -998,26 +1155,37 @@ function renderSection(
     }
     return lines.join('\n')
   }
-  for (const [turnIndex, turn] of section.turns.entries()) {
-    if (turn.user.length > 0) lines.push(`\n## user\n${turn.user.join('\n')}`)
-    // An extraction whose every field is empty renders nothing: a heading followed by
-    // no body reads as a turn that did something but says nothing.
-    if (turn.extracted !== undefined && renderExtractionBlock(turn.extracted, level).length > 0) {
-      const block = renderExtractionBlock(turn.extracted, level)
-      // The trailer goes *above* the block, not below it. `## Asked` is the block's
-      // last section and the user's reply is the very next line, so a trailer line
-      // in between would separate the reply from the question it answers.
+  for (const [, turn] of section.turns.entries()) {
+    if (turn.user.length > 0) lines.push(`\n## user\n${formatUserText(turn.user, keepFullUser)}`)
+    const effectiveExtraction = turn.extracted === undefined
+      ? undefined
+      : dedupeAskedAgainstAnswers(turn.extracted, turn.answered)
+    const renderedBlock = renderExtractionBlock(effectiveExtraction, level, keepAsked)
+    if (effectiveExtraction !== undefined && renderedBlock.length > 0) {
       const trailer: string[] = []
       if (turn.writes.length > 0) trailer.push(`  wrote: ${turn.writes.join(', ')}`)
-      const withAnswers = insertAnswers(block, renderAnswers(turn))
+      const withAnswers = insertAnswers(renderedBlock, renderAnswers(turn, compactAnswerStem))
       const body = trailer.length > 0 ? `${trailer.join('\n')}\n${withAnswers}` : withAnswers
       lines.push(`### assistant\n${body}`)
+    } else if (
+      turn.extracted !== undefined
+      && (turn.extracted.did.length > 0
+        || turn.extracted.concluded.length > 0
+        || turn.extracted.overturned.length > 0
+        || turn.extracted.asked.length > 0)
+    ) {
+      // Extraction succeeded with non-empty fields, and everything was filtered at this
+      // level or dropped as stale Asked. Emit answers/writes if present without falling
+      // back to raw prose.
+      const trailer: string[] = []
+      if (turn.writes.length > 0) trailer.push(`  wrote: ${turn.writes.join(', ')}`)
+      const answers = renderAnswers(turn, compactAnswerStem)
+      const parts = [...trailer, answers].filter((part) => part.length > 0)
+      if (parts.length > 0) lines.push(`### assistant\n${parts.join('\n')}`)
     } else {
-      const body = turn.assistant.join('\n')
-      const answers = renderAnswers(turn)
-      // The heading goes on whenever there is anything to put under it. Emitting
-      // the answers bare put `## Answers` directly below `## user`, at the user's
-      // own heading level, where it reads as something the user said.
+      const rawBody = turn.assistant.join('\n')
+      const body = clipHeadTail(rawBody, FALLBACK_PROSE_MAX_CHARS, 1000, 1800)
+      const answers = renderAnswers(turn, compactAnswerStem)
       if (body.length > 0 || answers.length > 0) lines.push(`### assistant\n${[body, answers].filter((part) => part.length > 0).join('\n')}`)
       if (turn.writes.length > 0) lines.push(`  wrote: ${turn.writes.join(', ')}`)
     }
@@ -1025,25 +1193,17 @@ function renderSection(
   return lines.join('\n')
 }
 
-/**
- * Render a turn's tool questions and their answers, or an empty string.
- *
- * This section exists because `## Asked` cannot cover these. `asked` is written by
- * the model from prose, and its contract says the reply is the next `## user` line
- * — true for a question asked in prose, false for one asked through
- * `ask_user_question`: the user answers inside the picker, the answer becomes the
- * tool result, and no user message is ever written. Two consecutive checkpoints of
- * a real session carried neither the question nor the answer.
- *
- * Rendered from the log, so it cannot be paraphrased away, and placed after the
- * assistant block because it belongs to that turn's work.
- *
- * @param turn - one turn's digest material.
- * @returns the `## Answers` section, or an empty string when nothing was asked.
- */
-function renderAnswers(turn: Turn): string {
+function renderAnswers(turn: Turn, compactStem: boolean = false): string {
   if (turn.answered.length === 0) return ''
-  return `## Answers\n${turn.answered.flatMap(renderAnswered).join('\n')}`
+  const items = compactStem
+    ? turn.answered.map((item) => {
+        const collapsed = item.question.replace(/\s+/g, ' ').trim()
+        return collapsed.length > OLD_ANSWER_STEM_MAX_CHARS
+          ? { ...item, question: `${collapsed.slice(0, OLD_ANSWER_STEM_MAX_CHARS).trimEnd()}…` }
+          : { ...item, question: collapsed }
+      })
+    : turn.answered
+  return `## Answers\n${items.flatMap(renderAnswered).join('\n')}`
 }
 
 /**
@@ -1110,13 +1270,28 @@ export function renderDigest(
   extracted?: ReadonlyMap<string, Extraction>,
   condensed?: ReadonlyMap<string, Condensed>,
 ): string {
-  const sections = extracted === undefined ? buildSections(events) : withExtractions(buildSections(events), extracted)
+  const rawSections = extracted === undefined ? buildSections(events) : withExtractions(buildSections(events), extracted)
+  // Normalize oversized pastes in older sections before budgeting and T1 so a
+  // single 50k historical paste is billed at its ~2.2k clipped size instead of
+  // starving earlier standing constraints or being truncated twice.
+  const sections = rawSections.map((section, sectionIndex) => (
+    shouldKeepFullUser(rawSections, sectionIndex)
+      ? section
+      : {
+          turns: section.turns.map((turn) => ({
+            ...turn,
+            user: turn.user.map((text) => clipHeadTail(text, OLD_USER_PASTE_MAX_CHARS, 1400, 800)),
+          })),
+        }
+  ))
   const budgetChars = Math.max(0, budgetTokens * 4)
 
-  const render = (trimmed?: Section[], level: number = 3): string =>
-    (trimmed ?? sections)
-      .map((section, index) => renderSection(section, level, condensed, index))
+  const render = (trimmed?: Section[], level: number = 3): string => {
+    const list = trimmed ?? sections
+    return list
+      .map((section, index) => renderSection(section, level, condensed, index, list))
       .join('\n')
+  }
 
   // User prose is reserved before anything else is placed.
   //
@@ -1308,9 +1483,23 @@ export function renderDigest(
  */
 export function shadowedSeqs(session: Session, input: SummarizationInput): SessionSeq[] {
   const nodes = session.surface.nodes
-  const head = nodes[0] !== undefined && session.eventAt(nodes[0])?.type === 'system/message' ? 1 : 0
-  const take = Math.max(0, input.messages.length - head)
-  return nodes.slice(head, head + take)
+  const firstEvent = nodes[0] !== undefined ? session.eventAt(nodes[0]) : undefined
+  const head = firstEvent?.type === 'system/message' ? 1 : 0
+  const messageCount = Math.max(0, input.messages.length - head)
+  if (messageCount === 0) return []
+  // Match surface nodes that actually derive to a message: the host's
+  // `buildSummarizationInput` skips nodes whose `deriveEventMessage` is null,
+  // while the replaced span still covers every surface node through the last
+  // shadowed message.
+  let seenMessages = 0
+  let endIndex = head
+  for (let i = head; i < nodes.length && seenMessages < messageCount; i += 1) {
+    const seq = nodes[i]
+    const ev = seq === undefined ? undefined : session.eventAt(seq)
+    if (ev !== undefined && messageOf(ev) !== null) seenMessages += 1
+    endIndex = i + 1
+  }
+  return nodes.slice(head, endIndex)
 }
 
 /**
@@ -1357,19 +1546,65 @@ export function digestSource(session: Session, retainedSeqs: ReadonlySet<Session
  * @param prose - that turn's assistant prose, already extracted by the caller.
  * @returns the joined material, or an empty string when the turn has nothing.
  */
-export function buildExtractionMaterial(turn: readonly SessionEvent[], prose: string): string {
+/** Sample non-error, non-question tool results for single-turn tool-heavy (subagent) runs. */
+function sampleToolResults(turn: readonly SessionEvent[]): string {
+  const questionCallIds = new Set<string>()
+  const callNames = new Map<string, string>()
+  for (const event of turn) {
+    if (event.type !== 'assistant/message') continue
+    for (const call of toolCallsOf(event)) {
+      callNames.set(call.id, call.name)
+      if (call.name === 'ask_user_question') questionCallIds.add(call.id)
+    }
+  }
+  const collected: string[] = []
+  let budget = SAMPLED_TOOL_RESULT_TOTAL_CHARS
+  for (let i = turn.length - 1; i >= 0 && budget > 0; i -= 1) {
+    const event = turn[i]
+    if (event === undefined || event.type !== 'tool/result') continue
+    const msg = messageOf(event) as { toolCallId?: string; isError?: boolean } | null
+    if (msg === null || msg.isError === true) continue
+    const callId = msg.toolCallId
+    if (callId !== undefined && questionCallIds.has(callId)) continue
+    const raw = textOf(event).replace(/\s+/g, ' ').trim()
+    if (raw.length === 0) continue
+    const snippet = raw.slice(0, Math.min(SAMPLED_TOOL_RESULT_PER_CALL_CHARS, budget))
+    const toolLabel = callId !== undefined ? (callNames.get(callId) ?? 'tool') : 'tool'
+    const entry = `[${toolLabel}] ${snippet}`
+    collected.push(entry)
+    budget -= entry.length + 1
+  }
+  return collected.reverse().join('\n')
+}
+
+export function buildExtractionMaterial(
+  turn: readonly SessionEvent[],
+  prose: string,
+  options?: { includeToolResults?: boolean },
+): string {
   const userRequest = turn
-    .filter((event) => event.type === 'user/message' && !isInjection(event) && !isCheckpoint(event))
-    .map((event) => textOf(event))
+    .filter((event) => {
+      if (event.type !== 'user/message' || isCheckpoint(event)) return false
+      if (sourceKind(event) === 'goal') return goalObjective(event) !== undefined
+      return !isInjection(event)
+    })
+    .map((event) => (sourceKind(event) === 'goal' ? (goalObjective(event) ?? '') : textOf(event)))
     .filter((text) => text.length > 0)
     .join('\n')
   const hints = collectHints(turn)
-  if (userRequest.length === 0 && prose.length === 0 && hints.length === 0) return ''
-  return [
-    `USER INSTRUCTION (already in the digest verbatim; never copy it into Asked):\n${userRequest.slice(0, 4000) || '(none)'}`,
-    `ASSISTANT PROSE:\n${prose.slice(0, 6000) || '(none)'}`,
+  const toolResults = options?.includeToolResults === true ? sampleToolResults(turn) : ''
+  if (userRequest.length === 0 && prose.length === 0 && hints.length === 0 && toolResults.length === 0) return ''
+  const clippedUser = clipHeadTail(userRequest, 4000, 2500, 1400)
+  const clippedProse = clipHeadTail(prose, 6000, 2000, 3900)
+  const sections = [
+    `USER INSTRUCTION (already in the digest verbatim; never copy it into Asked):\n${clippedUser || '(none)'}`,
+    `ASSISTANT PROSE:\n${clippedProse || '(none)'}`,
     `TOOL TRACE:\n${hints || '(none)'}`,
-  ].join('\n\n')
+  ]
+  if (toolResults.length > 0) {
+    sections.push(`KEY TOOL RESULTS (sampled from tool-heavy single-turn run):\n${toolResults}`)
+  }
+  return sections.join('\n\n')
 }
 
 /**
@@ -1409,54 +1644,239 @@ export function buildExtractionMaterial(turn: readonly SessionEvent[], prose: st
  * @param signal - cancellation forwarded to the adapter.
  * @returns the folded paragraph, or undefined when the call produced nothing.
  */
+/** Mutable accumulator for summing provider-reported token usage across all LLM calls in one compaction. */
+interface UsageAccumulator {
+  seen: boolean
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  hasTotalTokens: boolean
+  cacheReadTokens: number
+  hasCacheRead: boolean
+  cacheWriteTokens: number
+  hasCacheWrite: boolean
+  reasoningTokens: number
+  hasReasoning: boolean
+}
+
+function createUsageAccumulator(): UsageAccumulator {
+  return {
+    seen: false,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    hasTotalTokens: false,
+    cacheReadTokens: 0,
+    hasCacheRead: false,
+    cacheWriteTokens: 0,
+    hasCacheWrite: false,
+    reasoningTokens: 0,
+    hasReasoning: false,
+  }
+}
+
+function addUsage(acc: UsageAccumulator | undefined, usage: unknown): void {
+  if (acc === undefined || typeof usage !== 'object' || usage === null) return
+  const u = usage as Record<string, unknown>
+  const input = typeof u['inputTokens'] === 'number' ? u['inputTokens'] : 0
+  const output = typeof u['outputTokens'] === 'number' ? u['outputTokens'] : 0
+  if (input === 0 && output === 0 && typeof u['totalTokens'] !== 'number') return
+  acc.seen = true
+  acc.inputTokens += input
+  acc.outputTokens += output
+  if (typeof u['totalTokens'] === 'number') {
+    acc.hasTotalTokens = true
+    acc.totalTokens += u['totalTokens']
+  }
+  if (typeof u['cacheReadTokens'] === 'number') {
+    acc.hasCacheRead = true
+    acc.cacheReadTokens += u['cacheReadTokens']
+  }
+  if (typeof u['cacheWriteTokens'] === 'number') {
+    acc.hasCacheWrite = true
+    acc.cacheWriteTokens += u['cacheWriteTokens']
+  }
+  if (typeof u['reasoningTokens'] === 'number') {
+    acc.hasReasoning = true
+    acc.reasoningTokens += u['reasoningTokens']
+  }
+}
+
+function toTokenUsage(acc: UsageAccumulator): TokenUsage | undefined {
+  if (!acc.seen) return undefined
+  return {
+    inputTokens: acc.inputTokens,
+    outputTokens: acc.outputTokens,
+    ...(acc.hasTotalTokens ? { totalTokens: acc.totalTokens } : {}),
+    ...(acc.hasCacheRead ? { cacheReadTokens: acc.cacheReadTokens } : {}),
+    ...(acc.hasCacheWrite ? { cacheWriteTokens: acc.cacheWriteTokens } : {}),
+    ...(acc.hasReasoning ? { reasoningTokens: acc.reasoningTokens } : {}),
+  }
+}
+
+/** Resolve the effective provider and model after applying any configured purpose override. */
+function resolveEffectiveRoute(
+  agent: Agent,
+  override: PurposeConfig | undefined,
+): { provider: string; model: string } | undefined {
+  const sessionRoute = agent.session.requestHeader()?.config
+  const baseProvider = sessionRoute?.provider ?? agent.options.provider
+  const baseModel = sessionRoute?.model ?? agent.options.model
+  const paired = pairedRouteOf(override)
+  const provider = paired?.provider ?? baseProvider
+  const model = paired?.model ?? baseModel
+  if (provider === undefined || model === undefined) return undefined
+  return { provider, model }
+}
+
+/** Read the per-call LLM timeout in ms, honoring an optional environment override. */
+function resolveCallTimeoutMs(): number {
+  const raw = process.env['DSH_VERBATIM_CALL_TIMEOUT_MS']
+  if (raw !== undefined) {
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  return DEFAULT_LLM_CALL_TIMEOUT_MS
+}
+
+/** Combine an optional outer AbortSignal with a per-call timeout. */
+function withCallTimeout(
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController()
+  const onAbort = (): void => {
+    controller.abort(signal?.reason)
+  }
+  if (signal !== undefined) {
+    if (signal.aborted) {
+      controller.abort(signal.reason)
+      return { signal: controller.signal, dispose: () => {} }
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  }
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`verbatim-compaction call timed out after ${timeoutMs}ms`))
+  }, timeoutMs)
+  if (typeof timer === 'object' && timer !== null && 'unref' in timer && typeof timer.unref === 'function') {
+    timer.unref()
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    },
+  }
+}
+
+/** Flatten folded model output into one clean bullet-safe paragraph (no code fences, headings, or multiline breaks). */
+function sanitizeCondensedText(raw: string): string {
+  const unfenced = raw.trim().replace(/^```[a-zA-Z0-9_-]*\s*/i, '').replace(/\s*```$/, '').trim()
+  const cleanedLines = unfenced
+    .split(/\r?\n/)
+    .map((line) => line
+      .trim()
+      .replace(/^#{1,6}\s+/, '')
+      .replace(/^[-*•]\s+/, '')
+      .trim())
+    .filter((line) => line.length > 0 && !/^```/.test(line))
+  return cleanedLines.join(' ').replace(/\s+/g, ' ').trim()
+}
+
+/** Bounded LRU-like Map read/write helpers. */
+function boundedCacheGet<V>(map: Map<string, V>, key: string): V | undefined {
+  const value = map.get(key)
+  if (value !== undefined) {
+    map.delete(key)
+    map.set(key, value)
+  }
+  return value
+}
+
+function boundedCacheSet<V>(map: Map<string, V>, key: string, value: V, maxSize: number): void {
+  if (map.has(key)) map.delete(key)
+  map.set(key, value)
+  while (map.size > maxSize) {
+    const oldest = map.keys().next().value
+    if (oldest === undefined) break
+    map.delete(oldest)
+  }
+}
+
+/** Directory for persistent per-session caches, or undefined when disabled (e.g. under node --test). */
+function resolveCacheDir(): string | undefined {
+  const explicit = process.env['DSH_VERBATIM_CACHE_DIR']
+  if (explicit !== undefined) {
+    const trimmed = explicit.trim()
+    if (trimmed === '' || /^(?:off|none|false|0)$/i.test(trimmed)) return undefined
+    return trimmed
+  }
+  if (process.env['NODE_TEST_CONTEXT'] !== undefined) return undefined
+  const base = process.env['DSH_HOME']?.trim() || join(homedir(), '.dsh')
+  return join(base, 'cache', 'verbatim-compaction')
+}
+
+interface DiskCachePayload {
+  v: 1
+  extraction?: Record<string, Extraction>
+  condensed?: Record<string, string>
+}
+
+function cacheFilePath(dir: string, sessionId: string): string {
+  const safeId = sessionId.replace(/[^a-zA-Z0-9._-]/g, '_') || 'default'
+  return join(dir, `${safeId}.json`)
+}
+
 async function condenseOnce(
   ctx: ExtractionContext,
   agent: Agent,
   material: string,
   signal: AbortSignal | undefined,
   override: PurposeConfig | undefined,
+  usageAcc?: UsageAccumulator,
 ): Promise<string | undefined> {
   const llm = ctx.llm
   if (llm === undefined) {
     ctx.logger?.warn('verbatim-compaction: no llm service, condensation skipped')
     return undefined
   }
-  const route = agent.session.requestHeader()?.config
-  const provider = route?.provider ?? agent.options.provider
-  const model = route?.model ?? agent.options.model
-  if (provider === undefined || model === undefined) {
+  const effective = resolveEffectiveRoute(agent, override)
+  if (effective === undefined) {
     ctx.logger?.warn('verbatim-compaction: no route for condensation, skipped')
     return undefined
   }
 
-  const info = await Promise.resolve()
-    .then(() => llm.resolveModelInfo?.(provider, model, signal))
-    .catch(() => undefined)
-  const cheapest = cheapestEffort(info?.reasoning?.efforts)
-
+  const call = withCallTimeout(signal, resolveCallTimeoutMs())
   const chunks: string[] = []
   try {
+    const info = await Promise.resolve()
+      .then(() => llm.resolveModelInfo?.(effective.provider, effective.model, call.signal))
+      .catch(() => undefined)
+    const cheapest = cheapestEffort(info?.reasoning?.efforts)
+
     const stream = llm.stream(applyPurposeOverride({
-      provider,
-      model,
+      provider: effective.provider,
+      model: effective.model,
       messages: [{ role: 'user', content: [{ type: 'text', text: `${material}\n\n${CONDENSE_INSTRUCTION}` }] }],
       maxTokens: CONDENSE_TOKENS,
       sessionId: agent.session.id,
       purpose: 'compaction',
-      ...(signal === undefined ? {} : { signal }),
+      signal: call.signal,
     }, override, cheapest))
     for await (const chunk of stream) {
-      const delta = chunk as { type?: string; text?: string }
+      const delta = chunk as { type?: string; text?: string; usage?: unknown }
       if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
+      else if (delta.type === 'finish') addUsage(usageAcc, delta.usage)
     }
   } catch (error) {
     ctx.logger?.warn(`verbatim-compaction: condensation call failed: ${String(error)}`)
     return undefined
+  } finally {
+    call.dispose()
   }
-  const text = chunks.join('').trim()
+  const text = sanitizeCondensedText(chunks.join(''))
   if (text.length === 0) {
-    // Silence here is what makes "the digest stopped folding" invisible at runtime:
-    // the summary still renders, just without the room the fold would have bought.
     ctx.logger?.warn(`verbatim-compaction: condensation returned no text for ${material.length} chars of material`)
     return undefined
   }
@@ -1469,12 +1889,17 @@ async function extractBatch(
   batch: readonly ExtractionSlot[],
   signal: AbortSignal | undefined,
   override: PurposeConfig | undefined,
+  usageAcc?: UsageAccumulator,
 ): Promise<Map<string, Extraction>> {
   const out = new Map<string, Extraction>()
-  if (batch.length === 0) return out
+  const isAborted = (): boolean => signal?.aborted === true
+  if (batch.length === 0 || isAborted()) return out
 
-  const attempt = await extractOnce(ctx, agent, batch, signal, override)
-  if (!attempt.truncated) {
+  const attempt = await extractOnce(ctx, agent, batch, signal, override, usageAcc)
+  if (attempt.transportError) return attempt.blocks
+
+  const needsSplit = attempt.truncated || (attempt.blocks.size === 0 && batch.length > 1 && !isAborted())
+  if (!needsSplit) {
     if (attempt.blocks.size === 0) {
       ctx.logger?.warn(
         `verbatim-compaction: extraction returned no usable JSON for ${batch.length} slot(s) `
@@ -1484,22 +1909,28 @@ async function extractBatch(
     return attempt.blocks
   }
 
-  // A truncated answer parses to nothing, so one over-budget turn would cost
-  // every turn in its batch. Measured on 191 real compactions, failures arrived
-  // in runs of exactly `TURNS_PER_CALL`, which is this batching, not the model
-  // failing per turn. Halving bounds the loss to the half that still does not
-  // fit, and a single slot cannot be split further.
   if (batch.length === 1) {
-    ctx.logger?.warn(
-      `verbatim-compaction: extraction truncated at the token cap for slot ${batch[0]?.key ?? '?'}; `
-      + 'that turn keeps its verbatim prose',
-    )
+    if (attempt.blocks.size === 0) {
+      ctx.logger?.warn(
+        `verbatim-compaction: extraction truncated at the token cap for slot ${batch[0]?.key ?? '?'}; `
+        + 'that turn keeps its verbatim prose',
+      )
+    }
     return attempt.blocks
   }
   for (const [key, block] of attempt.blocks) out.set(key, block)
-  const middle = Math.ceil(batch.length / 2)
-  for (const half of [batch.slice(0, middle), batch.slice(middle)]) {
-    for (const [key, block] of await extractBatch(ctx, agent, half, signal, override)) out.set(key, block)
+  const remaining = batch.filter((slot) => !out.has(slot.key))
+  if (remaining.length === 0) return out
+  if (remaining.length === 1) {
+    if (!isAborted()) {
+      for (const [key, block] of await extractBatch(ctx, agent, remaining, signal, override, usageAcc)) out.set(key, block)
+    }
+    return out
+  }
+  const middle = Math.ceil(remaining.length / 2)
+  for (const half of [remaining.slice(0, middle), remaining.slice(middle)]) {
+    if (half.length === 0 || isAborted()) continue
+    for (const [key, block] of await extractBatch(ctx, agent, half, signal, override, usageAcc)) out.set(key, block)
   }
   return out
 }
@@ -1509,12 +1940,14 @@ interface ExtractionSlot {
   key: string
   turn: number | undefined
   events: readonly SessionEvent[]
+  includeToolResults?: boolean
 }
 
-/** What one extraction call produced, and whether the answer was cut short. */
+/** What one extraction call produced, and whether the answer was cut short or failed in transport. */
 interface ExtractionAttempt {
   blocks: Map<string, Extraction>
   truncated: boolean
+  transportError?: boolean
 }
 
 /** The slice of the plugin context an extraction call needs. */
@@ -1526,80 +1959,29 @@ interface ExtractionContext {
   logger?: { warn: (message: string) => void }
 }
 
-/**
- * The cheapest effort a route advertises, or undefined when it advertises none.
- *
- * The route's own default is not used: it is typically the highest level, and
- * thinking is paid out of the answer's token budget. The list is ordered from
- * least to greatest effort by the host's own contract, so the first entry is the
- * cheapest. `off` is skipped even when present — pi-ai maps it to a wire value
- * the route may reject, and a level that cannot be sent is worse than a cheap
- * one that can.
- *
- * @param efforts - the route's advertised efforts, in escalation order.
- * @returns the cheapest usable effort id, or undefined to leave the choice alone.
- */
-function cheapestEffort(efforts: readonly { id: string }[] | undefined): string | undefined {
-  return efforts?.find((entry) => entry.id !== 'off')?.id
+function cheapestEffort(efforts: readonly (string | { id: string })[] | undefined): string | undefined {
+  if (efforts === undefined) return undefined
+  for (const entry of efforts) {
+    const id = typeof entry === 'string' ? entry : entry.id
+    if (id !== 'off') return id
+  }
+  return undefined
 }
 
-/**
- * One extraction request, no retry.
- *
- * The cap must carry a fixed thinking reserve on top of the per-slot output
- * budget. `maxTokens` covers thinking and the answer together, and thinking is
- * a per-call cost that does not shrink when the batch does. Measured against the
- * live route (deepseek-flash, `reasoning_effort` unset, real-length material):
- * a single slot at the old `220 x 1` cap returned zero parseable slots in 4 of 4
- * runs, the thinking block having consumed the entire cap; the same single slot
- * at `220 x 1 + 1000` parsed in 4 of 4. The reserve is what makes the cap work
- * for a batch of any size, including the batches the caller splits down to.
- *
- * The effort is pinned to the route's cheapest advertised level rather than left
- * to the route default. Thinking is paid out of the same `maxTokens` as the
- * answer, so a default that thinks hard shrinks the answer budget even with the
- * reserve in place. Measured on the live route at a 2-slot cap with the reserve:
- * `low` spent 375 thinking tokens and parsed 3 of 3; `high` spent 931 and parsed
- * 2 of 3.
- *
- * Two things that look like fixes and are not:
- *
- *   - `off` cannot be reached through pi-ai. Its `deepseek` thinking format maps
- *     the `off` level to `reasoning_effort: "minimal"`, which the route rejects
- *     outright (`valid levels: low, medium, high`), and its `thinking` field is
- *     pinned to `{type: "enabled"}` for every level. Captured from pi-ai 1.3.0
- *     against a local echo server, not inferred.
- *   - Only the provider's own `thinking: {type: "disabled"}` actually stops
- *     thinking (0 thinking tokens, measured), but `GenerateOptions` has no field
- *     that carries it, so no plugin on this seam can send it.
- *
- * An effort is requested only when the route advertises it, because the host
- * rejects one it does not.
- *
- * @param ctx - plugin context carrying the `llm` service and a logger.
- * @param agent - owner of the session being compacted.
- * @param batch - slots to ask about in this one call.
- * @param signal - cancellation forwarded to the adapter.
- * @returns the parsed blocks and whether the model stopped at the token cap.
- */
 async function extractOnce(
   ctx: ExtractionContext,
   agent: Agent,
   batch: readonly ExtractionSlot[],
   signal: AbortSignal | undefined,
   override: PurposeConfig | undefined,
+  usageAcc?: UsageAccumulator,
 ): Promise<ExtractionAttempt> {
   const out = new Map<string, Extraction>()
   const llm = ctx.llm
   if (llm === undefined) return { blocks: out, truncated: false }
-  const route = agent.session.requestHeader()?.config
-  const provider = route?.provider ?? agent.options.provider
-  const model = route?.model ?? agent.options.model
-  if (provider === undefined || model === undefined) return { blocks: out, truncated: false }
+  const effective = resolveEffectiveRoute(agent, override)
+  if (effective === undefined) return { blocks: out, truncated: false }
 
-  // The label the model echoes back is the slot key, not the turn number: two
-  // requests can share a number, and a duplicate label would collapse two blocks
-  // into one entry.
   const parts: string[] = []
   for (const slot of batch) {
     const prose = slot.events
@@ -1607,44 +1989,80 @@ async function extractOnce(
       .map((event) => textOf(event))
       .filter((text) => text.length > 0)
       .join('\n')
-    const material = buildExtractionMaterial(slot.events, prose)
+    const material = buildExtractionMaterial(
+      slot.events,
+      prose,
+      slot.includeToolResults === true ? { includeToolResults: true } : undefined,
+    )
     if (material.length === 0) continue
     parts.push(`=== SLOT ${slot.key} (turn ${slot.turn ?? '?'}) ===\n${material}`)
   }
   if (parts.length === 0) return { blocks: out, truncated: false }
 
-  const info = await Promise.resolve()
-    .then(() => llm.resolveModelInfo?.(provider, model, signal))
-    .catch(() => undefined)
-  const cheapest = cheapestEffort(info?.reasoning?.efforts)
-
+  const call = withCallTimeout(signal, resolveCallTimeoutMs())
   const chunks: string[] = []
   let truncated = false
   try {
+    const info = await Promise.resolve()
+      .then(() => llm.resolveModelInfo?.(effective.provider, effective.model, call.signal))
+      .catch(() => undefined)
+    const cheapest = cheapestEffort(info?.reasoning?.efforts)
+
     const stream = llm.stream(applyPurposeOverride({
-      provider,
-      model,
+      provider: effective.provider,
+      model: effective.model,
       messages: [
         { role: 'user', content: [{ type: 'text', text: `${parts.join('\n\n')}\n\n${EXTRACT_INSTRUCTION}` }] },
       ],
       maxTokens: EXTRACT_TOKENS_PER_TURN * parts.length + EXTRACT_THINKING_RESERVE_TOKENS,
       sessionId: agent.session.id,
       purpose: 'compaction',
-      ...(signal === undefined ? {} : { signal }),
+      signal: call.signal,
     }, override, cheapest))
     for await (const chunk of stream) {
-      const delta = chunk as { type?: string; text?: string; reason?: { kind?: string } }
+      const delta = chunk as { type?: string; text?: string; reason?: { kind?: string }; usage?: unknown }
       if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
-      else if (delta.type === 'finish' && delta.reason?.kind === 'max-tokens') truncated = true
+      else if (delta.type === 'finish') {
+        if (delta.reason?.kind === 'max-tokens') truncated = true
+        addUsage(usageAcc, delta.usage)
+      }
     }
   } catch (error) {
     ctx.logger?.warn(`verbatim-compaction: extraction call failed for ${parts.length} slot(s): ${String(error)}`)
-    return { blocks: out, truncated: false }
+    const abortedOrTimedOut = call.signal.aborted || signal?.aborted === true
+    return { blocks: out, truncated: false, transportError: abortedOrTimedOut }
+  } finally {
+    call.dispose()
   }
 
   const answer = chunks.join('').trim()
   if (answer.length === 0) return { blocks: out, truncated }
   return { blocks: parseExtraction(answer), truncated }
+}
+
+/** Validate a deserialized extraction object before hydrating from disk cache. */
+function isValidExtraction(value: unknown): value is Extraction {
+  if (value === null || typeof value !== 'object') return false
+  const rec = value as Record<string, unknown>
+  const isStringArray = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every((item) => typeof item === 'string')
+  if (!isStringArray(rec['did']) || !isStringArray(rec['concluded']) || !isStringArray(rec['overturned'])) {
+    return false
+  }
+  const asked = rec['asked']
+  if (!Array.isArray(asked)) return false
+  return asked.every((entry) => {
+    if (entry === null || typeof entry !== 'object') return false
+    const pair = entry as Record<string, unknown>
+    return typeof pair['question'] === 'string' && isStringArray(pair['options'])
+  })
+}
+
+/** Trim a plain record to its newest `max` entries in insertion order. */
+function trimRecord<T>(record: Record<string, T>, max: number): Record<string, T> {
+  const entries = Object.entries(record)
+  if (entries.length <= max) return record
+  return Object.fromEntries(entries.slice(-max))
 }
 
 
@@ -1678,13 +2096,92 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
    */
   private readonly extractionCache = new Map<string, Extraction>()
   /**
-   * Folded text, keyed by provider, model and a hash of the material folded.
-   *
-   * Same reasoning as `extractionCache`: the fold is a model call over material
-   * rebuilt from the raw log on every compaction, so the same run of old turns is
-   * re-folded on every later compaction unless it is remembered.
+   * Folded text, keyed by effective provider, model and a hash of the material folded.
    */
   private readonly condensedCache = new Map<string, string>()
+  /** Session ids whose on-disk cache has already been hydrated into memory. */
+  private readonly hydratedSessions = new Set<string>()
+
+  private hydrateDiskCache(sessionId: string): void {
+    if (this.hydratedSessions.has(sessionId)) return
+    this.hydratedSessions.add(sessionId)
+    const dir = resolveCacheDir()
+    if (dir === undefined) return
+    try {
+      const raw = readFileSync(cacheFilePath(dir, sessionId), 'utf8')
+      const parsed = JSON.parse(raw) as Partial<DiskCachePayload>
+      if (parsed.v !== 1) return
+      if (parsed.extraction !== undefined && typeof parsed.extraction === 'object' && parsed.extraction !== null) {
+        for (const [key, value] of Object.entries(parsed.extraction)) {
+          if (isValidExtraction(value)) {
+            boundedCacheSet(this.extractionCache, key, value, EXTRACTION_CACHE_MAX)
+          }
+        }
+      }
+      if (parsed.condensed !== undefined && typeof parsed.condensed === 'object' && parsed.condensed !== null) {
+        for (const [key, value] of Object.entries(parsed.condensed)) {
+          if (typeof value === 'string' && value.length > 0) {
+            boundedCacheSet(this.condensedCache, key, value, CONDENSED_CACHE_MAX)
+          }
+        }
+      }
+    } catch {
+      // Cache miss or corrupt file — start cold without failing compaction.
+    }
+  }
+
+  private persistDiskCache(
+    sessionId: string,
+    newExtractions: ReadonlyMap<string, Extraction>,
+    newCondensed: ReadonlyMap<string, string>,
+  ): void {
+    if (newExtractions.size === 0 && newCondensed.size === 0) return
+    const dir = resolveCacheDir()
+    if (dir === undefined) return
+    try {
+      mkdirSync(dir, { recursive: true })
+      const target = cacheFilePath(dir, sessionId)
+      let payload: DiskCachePayload = { v: 1, extraction: {}, condensed: {} }
+      try {
+        const existing = JSON.parse(readFileSync(target, 'utf8')) as Partial<DiskCachePayload>
+        if (existing.v === 1) {
+          const validExtraction: Record<string, Extraction> = {}
+          if (existing.extraction !== undefined && typeof existing.extraction === 'object' && existing.extraction !== null) {
+            for (const [key, value] of Object.entries(existing.extraction)) {
+              if (isValidExtraction(value)) validExtraction[key] = value
+            }
+          }
+          const validCondensed: Record<string, string> = {}
+          if (existing.condensed !== undefined && typeof existing.condensed === 'object' && existing.condensed !== null) {
+            for (const [key, value] of Object.entries(existing.condensed)) {
+              if (typeof value === 'string' && value.length > 0) validCondensed[key] = value
+            }
+          }
+          payload = { v: 1, extraction: validExtraction, condensed: validCondensed }
+        }
+      } catch {
+        // Fresh cache file.
+      }
+      payload.extraction ??= {}
+      payload.condensed ??= {}
+      for (const [key, value] of newExtractions) {
+        delete payload.extraction[key]
+        payload.extraction[key] = value
+      }
+      for (const [key, value] of newCondensed) {
+        delete payload.condensed[key]
+        payload.condensed[key] = value
+      }
+      payload.extraction = trimRecord(payload.extraction, EXTRACTION_CACHE_MAX)
+      payload.condensed = trimRecord(payload.condensed, CONDENSED_CACHE_MAX)
+      const tmp = `${target}.${process.pid}.${Date.now()}.${randomBytes(6).toString('hex')}.tmp`
+      writeFileSync(tmp, JSON.stringify(payload), 'utf8')
+      renameSync(tmp, target)
+    } catch (error) {
+      this.ctx.logger?.warn(`verbatim-compaction: failed to persist cache for ${sessionId}: ${String(error)}`)
+    }
+  }
+
   /**
    * Build the replacement checkpoint content from the session log.
    *
@@ -1698,7 +2195,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
    * @param input - replayed conversation prefix the base class is shadowing.
    * @param agent - owner of the session being compacted.
    * @param signal - cancellation forwarded to the extraction and fold calls.
-   * @returns text summary blocks, unmarked by any LLM call.
+   * @returns text summary blocks, route metadata, and aggregated LLM usage.
    */
   protected override async summarize(
     input: SummarizationInput,
@@ -1706,6 +2203,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     signal?: AbortSignal,
   ): Promise<SummaryResult> {
     const session = agent.session
+    this.hydrateDiskCache(session.id)
     const shadowed = shadowedSeqs(session, input)
     const shadowedSet = new Set(shadowed)
     const retained = new Set(session.surface.nodes.filter((seq) => !shadowedSet.has(seq)))
@@ -1723,13 +2221,16 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       Math.min(DIGEST_TOKEN_CEILING, shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS),
     )
 
-    const extracted = await this.extractAll(source, agent, signal, getLiveConfig())
+    const override = getLiveConfig()
+    const usageAcc = createUsageAccumulator()
+    const extracted = await this.extractAll(source, agent, signal, override, usageAcc)
 
-    // Fold the oldest turns up only when the plain digest overflows. The fold is an
-    // LLM call, so a digest that already fits must not pay for one.
+    // Check overflow against the *unclipped* digest. Measuring `renderDigest(source, budget, extracted)`
+    // was always <= `budget * 4` because `renderDigest` clips to budget, making `condenseOldest` dead code.
     let condensed: ReadonlyMap<string, Condensed> | undefined
-    if (renderDigest(source, budget, extracted).length > budget * 4) {
-      condensed = await this.condenseOldest(source, extracted, agent, budget, signal, getLiveConfig())
+    const unclippedLength = renderDigest(source, Math.floor(Number.MAX_SAFE_INTEGER / 4), extracted).length
+    if (unclippedLength > budget * 4) {
+      condensed = await this.condenseOldest(source, extracted, agent, budget, signal, override, usageAcc)
     }
     // The fold path returns its digest whole, so it can still overflow when every
     // group has been folded and the user lines alone are too long. The budget is a
@@ -1745,37 +2246,23 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       text = renderDigest(source, budget, extracted)
     }
 
+    const effective = resolveEffectiveRoute(agent, override)
     const route = session.requestHeader()?.config
+    const usage = toTokenUsage(usageAcc)
     return {
       summary: [{ type: 'text', text }],
-      provider: route?.provider ?? agent.options.provider ?? 'verbatim',
-      model: route?.model ?? agent.options.model ?? 'digest',
+      provider: effective?.provider ?? route?.provider ?? agent.options.provider ?? 'verbatim',
+      model: effective?.model ?? route?.model ?? agent.options.model ?? 'digest',
+      ...(usage === undefined ? {} : { usage }),
     }
   }
 
   /**
    * Fold the oldest turns into condensed blocks until the digest fits.
    *
-   * Only reached when the plain digest overflows `budget`. The oldest turns are
-   * the right ones to fold: they describe work already superseded, while the
-   * newest are what the next request depends on.
-   *
-   * Linear in groups, not bisected: a fold is not monotone in how much is folded —
-   * a paragraph's length depends on what the model chose to keep — so there is no
-   * boundary to bisect. The walk stops at the first size that fits, which is the
-   * fewest calls that buy enough room. Each block covers `CONDENSE_GROUP`
-   * consecutive sections, so the number of calls is proportional to the digest,
-   * not to the number of turns.
-   *
-   * Cached by content, like the extraction: the same prefix of turns folds to the
-   * same text, and a later compaction re-reads the same history.
-   *
-   * @param source - digest source events, in log order.
-   * @param extracted - per-turn extractions already computed.
-   * @param agent - owner of the session being compacted.
-   * @param budget - token budget the digest must fit.
-   * @param signal - cancellation forwarded to every call.
-   * @returns condensed blocks keyed by the `turnKey` of the first covered section.
+   * Only reached when the unclipped plain digest overflows `budget`. The oldest
+   * turns are the right ones to fold: they describe work already superseded, while
+   * the newest are what the next request depends on.
    */
   private async condenseOldest(
     source: readonly SessionEvent[],
@@ -1784,26 +2271,17 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     budget: number,
     signal: AbortSignal | undefined,
     override: PurposeConfig | undefined,
+    usageAcc?: UsageAccumulator,
   ): Promise<ReadonlyMap<string, Condensed>> {
     const sections = withExtractions(buildSections(source), extracted)
     const budgetChars = budget * 4
     const out = new Map<string, Condensed>()
 
-    // One group per iteration, oldest first, checking after each whether the digest
-    // fits. Single loop, `start` monotone: the earlier two-level form advanced its
-    // inner start from `out.size`, so a group whose call failed was retried on every
-    // outer pass (45 calls instead of 4 with the model down), and the outer bound
-    // `covered < sections.length` stopped one group short of the end — at 700
-    // sections the last 100 were never folded, and at 100 or fewer the loop body
-    // never ran at all.
     for (const start of foldGroupStarts(sections.length)) {
       if (signal?.aborted === true) break
       const group = sections.slice(start, start + CONDENSE_GROUP)
       if (group.length === 0) continue
-      const text = await this.condenseGroup(group, agent, signal, override)
-      // A failed group is skipped rather than retried: the next group still buys
-      // room, and retrying the same material against a failing model only spends
-      // calls. The remaining turns keep their own blocks either way.
+      const text = await this.condenseGroup(group, agent, signal, override, usageAcc)
       if (text === undefined) continue
       out.set(turnKey(start, 0), { text, covers: group.length })
       if (renderDigest(source, budget, extracted, out).length <= budgetChars) return out
@@ -1813,24 +2291,14 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
 
   /**
    * Hand one group of turns to the model and return its folded text.
-   *
-   * @param group - consecutive sections to fold into one paragraph.
-   * @param agent - owner of the session being compacted.
-   * @param signal - cancellation forwarded to the call.
-   * @returns the folded paragraph, or undefined when the call produced nothing.
    */
   private async condenseGroup(
     group: readonly Section[],
     agent: Agent,
     signal: AbortSignal | undefined,
     override: PurposeConfig | undefined,
+    usageAcc?: UsageAccumulator,
   ): Promise<string | undefined> {
-    // Both sources, because a turn has one or the other: extraction succeeds and
-    // the block replaces the prose, or it fails and the verbatim prose is what the
-    // digest shows. Reading only `extracted` meant a run of turns whose extraction
-    // failed contributed nothing — and because the fold then still replaced them,
-    // their content vanished from the digest entirely rather than merely being
-    // summarised badly.
     const material = group
       .map((section) => section.turns
         .map((turn) => {
@@ -1845,116 +2313,103 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
 
     const llm = this.ctx.llm
     if (llm === undefined) return undefined
-    const route = agent.session.requestHeader()?.config
-    const provider = route?.provider ?? agent.options.provider
-    const model = route?.model ?? agent.options.model
-    if (provider === undefined || model === undefined) return undefined
+    const effective = resolveEffectiveRoute(agent, override)
+    if (effective === undefined) return undefined
 
-    const key = `${provider}:${model}:${hashText(material)}`
-    const cached = this.condensedCache.get(key)
+    const key = `${effective.provider}:${effective.model}:${hashText(material)}`
+    const cached = boundedCacheGet(this.condensedCache, key)
     if (cached !== undefined) return cached
 
-    const text = await condenseOnce(this.ctx, agent, material, signal, override)
+    const text = await condenseOnce(this.ctx, agent, material, signal, override, usageAcc)
     if (text === undefined) return undefined
-    this.condensedCache.set(key, text)
+    boundedCacheSet(this.condensedCache, key, text, CONDENSED_CACHE_MAX)
+    this.persistDiskCache(agent.session.id, new Map(), new Map([[key, text]]))
     return text
   }
 
   /**
-   * Run the extraction for every turn in the digest source.
+   * Run the extraction for every section in the digest source.
    *
-   * Sequential rather than parallel: these calls share the session's routed
-   * model and the provider's KV cache, and firing a dozen at once would both
-   * multiply the cost and defeat the cache the host's own summarizer relies on.
-   *
-   * A turn that fails is simply absent from the output; one bad turn must not
-   * drop the extraction for the rest.
-   *
-   * Batched rather than one call per turn. One call per turn meant 131 calls on a
-   * 122-turn session, each with its own round trip: a measured extraction budget
-   * of 131 x 400 tokens could on its own exceed the whole digest ceiling. A
-   * batch of `TURNS_PER_CALL` turns costs one round trip and shares the prompt
-   * prefix, so the provider's KV cache is reused rather than rebuilt.
-   *
-   * @param source - digest source events, in log order.
-   * @param agent - owner of the session being compacted.
-   * @param signal - cancellation forwarded to every call.
-   * @returns turn number to extracted block, omitting turns that yielded none.
+   * Uses `buildSectionsWithEvents` as the single source of truth so slot keys can
+   * never drift out of alignment with rendered sections. Uncached batches execute
+   * with bounded concurrency (`EXTRACT_CONCURRENCY`), and newly extracted entries
+   * are persisted to the per-session disk cache.
    */
   private async extractAll(
     source: readonly SessionEvent[],
     agent: Agent,
     signal: AbortSignal | undefined,
     override: PurposeConfig | undefined,
+    usageAcc?: UsageAccumulator,
   ): Promise<Map<string, Extraction>> {
-    // Walk the same sections the renderer will use, so a key addresses the exact
-    // slot the block will be written into. Grouping by turn number instead lost
-    // blocks whenever the log reused a number.
-    // Partition the source into the same sections `buildSections` produced, then
-    // hand each section to its slot. A slot is a section, not a single message:
-    // the earlier version stopped at the first message, so a turn with 69
-    // assistant messages and 112 tool calls contributed 2 events out of 164 and
-    // the extractor reported "no work observed" for a turn that did plenty.
-    const sections = buildSections(source)
-    // Attribute events to sections by replaying the same walk `buildSections`
-    // does, so the two can never disagree about where a section starts. An
-    // independent scan drifted by one section on the fixture: `buildSections`
-    // opens a new section for an unclosed turn without consuming a user message.
-    const grouped: SessionEvent[][] = []
-    let sectionIndex = -1
-    const openedObjectives = new Set<string>()
-    for (const event of source) {
-      const objective = goalObjective(event)
-      let startsSection = false
-      if (objective !== undefined) {
-        if (!openedObjectives.has(objective)) {
-          openedObjectives.add(objective)
-          startsSection = true
-        }
-      } else if (event.type === 'user/message' && !isInjection(event) && !isCheckpoint(event)) {
-        startsSection = true
-      }
-      if (startsSection) {
-        sectionIndex += 1
-        grouped[sectionIndex] = []
-      }
-      if (sectionIndex >= 0) grouped[sectionIndex]?.push(event)
-    }
-
-    // One slot per section, addressed to the section's first turn.
-    //
-    // The material is about what the section did as a whole, so handing it to
-    // every turn in the section made the model answer twice with the same block:
-    // a real section holding two turns produced two identical `## Concluded`
-    // bodies plus `(duplicate of SLOT 4:0)` placeholders in the digest. The extra
-    // turns keep their prose and their own headings; only the first carries the
-    // section's extraction.
+    const { sections, sectionEvents } = buildSectionsWithEvents(source)
+    const singleSection = sections.length === 1
     const slots: ExtractionSlot[] = []
     for (const [sectionIndex, section] of sections.entries()) {
       const first = section.turns[0]
       if (first === undefined) continue
-      slots.push({ key: turnKey(sectionIndex, 0), turn: first.turn, events: grouped[sectionIndex] ?? [] })
+      const events = sectionEvents[sectionIndex] ?? []
+      let includeToolResults = false
+      if (singleSection) {
+        let toolCallCount = 0
+        let proseChars = 0
+        for (const ev of events) {
+          if (ev.type !== 'assistant/message') continue
+          toolCallCount += toolCallsOf(ev).length
+          proseChars += textOf(ev).length
+        }
+        if (toolCallCount >= SINGLE_TURN_TOOL_HEAVY_CALLS && proseChars <= SINGLE_TURN_TOOL_HEAVY_PROSE_MAX) {
+          includeToolResults = true
+        }
+      }
+      slots.push({
+        key: turnKey(sectionIndex, 0),
+        turn: first.turn,
+        events,
+        ...(includeToolResults ? { includeToolResults: true } : {}),
+      })
     }
 
+    const effective = resolveEffectiveRoute(agent, override)
+    const routePrefix = effective === undefined ? '' : `${effective.provider}:${effective.model}:`
+    const cacheKeyFor = (slot: ExtractionSlot): string =>
+      `${routePrefix}${slot.includeToolResults === true ? 'tr:' : ''}${materialKey(slot.events, slot.includeToolResults === true ? { includeToolResults: true } : undefined)}`
+
     const extracted = new Map<string, Extraction>()
-    const missing: typeof slots = []
+    const missing: ExtractionSlot[] = []
     for (const slot of slots) {
-      const cached = this.extractionCache.get(materialKey(slot.events))
+      const cached = boundedCacheGet(this.extractionCache, cacheKeyFor(slot))
       if (cached === undefined) missing.push(slot)
       else extracted.set(slot.key, cached)
     }
 
+    const batches: ExtractionSlot[][] = []
     for (let index = 0; index < missing.length; index += TURNS_PER_CALL) {
-      if (signal?.aborted === true) break
-      const batch = missing.slice(index, index + TURNS_PER_CALL)
-      const blocks = await extractBatch(this.ctx, agent, batch, signal, override)
-      for (const slot of batch) {
-        const block = blocks.get(slot.key)
-        if (block === undefined) continue
-        extracted.set(slot.key, block)
-        this.extractionCache.set(materialKey(slot.events), block)
+      batches.push(missing.slice(index, index + TURNS_PER_CALL))
+    }
+
+    const newlyExtracted = new Map<string, Extraction>()
+    let nextBatch = 0
+    const workerCount = Math.min(EXTRACT_CONCURRENCY, batches.length)
+    const worker = async (): Promise<void> => {
+      while (nextBatch < batches.length) {
+        if (signal?.aborted === true) break
+        const batch = batches[nextBatch]
+        nextBatch += 1
+        if (batch === undefined) break
+        const blocks = await extractBatch(this.ctx, agent, batch, signal, override, usageAcc)
+        for (const slot of batch) {
+          const block = blocks.get(slot.key)
+          if (block === undefined) continue
+          extracted.set(slot.key, block)
+          const ckey = cacheKeyFor(slot)
+          boundedCacheSet(this.extractionCache, ckey, block, EXTRACTION_CACHE_MAX)
+          newlyExtracted.set(ckey, block)
+        }
       }
     }
+    await Promise.all(Array.from({ length: workerCount }, () => worker()))
+    this.persistDiskCache(agent.session.id, newlyExtracted, new Map())
     return extracted
   }
 }
