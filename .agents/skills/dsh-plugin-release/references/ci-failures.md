@@ -88,6 +88,33 @@
   另两个绕行：给命令加 `--registry https://registry.npmjs.org`，或直接装精确版本
   `@<ver>`（`@latest` 依赖 dist-tags 的新鲜度，精确版本不依赖 dist-tags，但仍要求该版本已被镜像收录）。
 
+- **`ERR_PNPM_TARBALL_HTTP_STATUS` + tarball 404：官方 registry 上「元数据已到、文件未到」**。
+  第三种「装不上」，与前两条症状也不同——报错里点的域名是 `registry.npmjs.org`，但报的不是
+  `NO_MATCHING_VERSION` 而是 tarball 404：
+
+  ```
+  ERR_PNPM_TARBALL_HTTP_STATUS
+  Tarball server returned HTTP 404 for https://registry.npmjs.org/
+    @logictan/<pkg>/-/<pkg>-<ver>.tgz
+  ```
+
+  此时 **`npm view <pkg>@<ver> version` 与 `_npmUser` 都正常**（元数据已传播），CI 日志也是
+  `is live`——因为 CI 的发布门禁只轮询 `npm view "$name@$version" version`，**不校验 tarball**，
+  所以元数据先到就能让 run 转绿，而真正的包体还在传播。实测 2026-11-25：CI 日志在
+  `18:02:56Z` 打出 `@logictan/dsh-verbatim-compaction@0.13.4 is live`，到 `18:08:11Z`
+  该 tarball 才返回 200（滞后约 5 分钟），其间 `npm view` 一直正常、安装一直 404；
+  而同批聚合包 `0.5.188` 在同一时段的 tarball 已是 200——**同一 run 内不同包的传播进度可以不一致**，
+  所以「另一个包能装」不能证明这个包已就绪。
+
+  判据只能是 tarball 本身，取 HTTP 状态而非 `npm view`：
+
+  ```bash
+  curl -sI "https://registry.npmjs.org/<pkg>/-/<pkg>-<ver>.tgz" | head -1   # 需 200，不是 404
+  ```
+
+  修法是轮询到 200 再重装，**不要**改版本号重发（该版本已正常上线，重发只会白扔一个版本号），
+  也**不要**清 pnpm 缓存（与前两条不同，这次缓存里是新鲜的、错的只是 CDN 上的文件）。
+
 - **发布时的 `PUT ... E404` 是「缺 trusted publisher」，不是缓存**：与上面那条相反 ——
   缓存只会让人**读到**旧版本，不会让**写入**被拒；且同一次 run 里其余包都正常处理。
   判据是发布者身份：`npm view <pkg>@<ver> _npmUser` 显示
