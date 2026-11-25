@@ -20,6 +20,13 @@ patchFrom:
   - ../dsh-goal-resume
   - ../dsh-force-rules
   - ../dsh-reasoning-strip
+  # dsh-context-envelope wraps the runtime-context and time-context notes in
+  # `<system-reminder>` before a request leaves the adapter boundary. A gateway
+  # that decides a turn by the last user message *with words of the user's*
+  # (magpie's `when="message ..."` and its intent classifier) then reads the
+  # user's ask instead of a timestamp. It cannot serve `when="last ..."`,
+  # which reads the last user message's raw text; see the package README.
+  - ../dsh-context-envelope
   # dsh-verbatim-compaction replaces the summarizer half of compaction-basic with
   # a deterministic digest: prose verbatim, tool results as one-line pointers,
   # reasoning never read, no model call. Its own row ships `disabled: true` and
@@ -106,6 +113,8 @@ deps:
   - ../dsh-goal-resume
   - ../dsh-force-rules
   - ../dsh-reasoning-strip
+  # See the note in patchFrom: this plugin only changes what an adapter sends.
+  - ../dsh-context-envelope
   - ../dsh-verbatim-compaction
   # dsh-stitch-designer registers the 15 `mcp__stitch__*` tool names itself, so it
   # REPLACES the global `mcp-stitch` patch row rather than coexisting with it.

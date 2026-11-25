@@ -32,6 +32,9 @@ importers:
       '@logictan/dsh-config-manager':
         specifier: ^0.1.86
         version: link:../dsh-config-manager
+      '@logictan/dsh-context-envelope':
+        specifier: ^0.1.0
+        version: link:../dsh-context-envelope
       '@logictan/dsh-desktop-agent':
         specifier: ^0.1.10
         version: link:../dsh-desktop-agent
@@ -293,6 +296,18 @@ importers:
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
+
+  packages/dsh-context-envelope:
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.5
+        version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+      '@deepseek-ai/dsh-llm':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
 
   packages/dsh-desktop-agent:
     dependencies:

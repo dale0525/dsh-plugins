@@ -244,6 +244,16 @@
     - id: reasoning-strip
       name: '@logictan/dsh-reasoning-strip'
 
+# from ../dsh-context-envelope
+# dsh-context-envelope bundle patch layer.
+#
+# One row: the plugin's host half. The row id must stay equal to the host
+# half's `export const name` — cordis-plugin-loader keys mounted rows by id
+# and hard-crashes on a duplicate across the whole profile.
+- insert:
+    - id: context-envelope
+      name: '@logictan/dsh-context-envelope'
+
 # from ../dsh-verbatim-compaction
 # dsh-verbatim-compaction bundle patch layer.
 #
