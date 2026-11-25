@@ -880,11 +880,121 @@ test('the edit profile scopes the editor tool by its own path argument', async (
   assert.equal(outside.kind, 'deny');
 });
 
-test('the edit profile does not grant commands', async () => {
+test('the edit profile runs read-only commands and still refuses mutating ones', async () => {
   const { listeners } = harness();
   const agent = seatAgent({ prompt: '[编辑: src/a.js] fix the bug' });
-  const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'bash', { command: 'git status' }), ALLOW);
-  assert.equal(decision.kind, 'deny');
+  // An edit seat has to see what it changed: `ls`, `git diff` and `wc -l` were
+  // refused 58 times across 228 measured seats, every one of them read-only.
+  for (const command of ['git status', 'ls -la src', 'wc -l src/a.js', 'git diff --stat', 'grep -n TODO src/a.js']) {
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'bash', { command }), ALLOW);
+    assert.deepEqual(decision, { kind: 'allow' }, command);
+  }
+  for (const command of ['git commit -m x', 'rm -rf build', 'node build.mjs', 'mv src/a.js /tmp/']) {
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'bash', { command }), ALLOW);
+    assert.equal(decision.kind, 'deny', command + ' mutates');
+  }
+});
+
+test('read-only commands compose, because the useful ones always were composed', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[审核] check the diff' });
+  // Each of these is a verbatim refusal from a measured session: every segment
+  // observes, and the old single-segment rule refused all of them.
+  for (const command of [
+    'git status --porcelain=v1 | head -80; echo "---"; git log --oneline -3',
+    'git diff --stat; echo "=== staged ==="; git diff --cached --stat',
+    'cd /Volumes/LogicExt/Git/XPeng && ls apps/mobile/src/core/ && wc -l apps/mobile/src/core/ble.ts',
+    'ls -la /tmp/xk24/ && wc -l /tmp/xk24/x.log',
+    'ls -la x 2>&1 | head -50',
+    'git show HEAD:a.md > /dev/null && git show HEAD:a.md',
+    'grep -n "function seatOf\\|function sortedEntries" src/index.mjs',
+    // `-o` is how grep prints only the match; the writing form is curl's.
+    'grep -o "seatOf" src/index.mjs | head -5',
+    'sort -u /tmp/a.txt -o /tmp/b.txt',
+    "awk '/^11-24 /{print $2}' /tmp/x.log | sort | uniq -c | sort -rn",
+  ]) {
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'bash', { command }), ALLOW);
+    assert.deepEqual(decision, { kind: 'allow' }, command);
+  }
+});
+
+test('read-only commands still refuse anything a segment could turn into a write', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[审核] check the diff' });
+  for (const command of [
+    'ls && rm -rf build',
+    'git log | sh',
+    'ls; git commit -m x',
+    'find . -name "*.log" -delete',
+    'find . -name "*.md" -exec rm {} \\;',
+    'sed -i s/a/b/ src/a.js',
+    'echo hi > out.txt',
+    'curl -sL https://example.com -o probe.bin',
+    'curl -s https://example.com --output probe.bin',
+    "awk 'BEGIN{system(\"rm -rf build\")}'",
+    'ls & rm -rf build',
+    'echo $(rm -rf build)',
+    'node -e "require(\'fs\').rmSync(\'x\')"',
+    'python3 script.py',
+  ]) {
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'bash', { command }), ALLOW);
+    assert.equal(decision.kind, 'deny', command + ' is not read-only');
+  }
+});
+
+test('a directory entry authorizes the files beneath it', async () => {
+  const { listeners } = harness();
+  // Measured: six seats were told to write into a directory they named, and
+  // every write beneath it was refused because a trailing-slash entry could
+  // only ever match the directory itself.
+  for (const [prompt, path] of [
+    ['[编辑: /tmp/canon-new/] write the cast', '/tmp/canon-new/loc_yanping_studio.yaml'],
+    ['[编辑: packages/dsh-modal-h3/] fix the tool', '/repo/packages/dsh-modal-h3/src/tools.js'],
+    ['[编辑: packages/dsh-stitch-designer/] fix it', 'packages/dsh-stitch-designer/src/index.js'],
+    ['[编辑: .agents/skills/web-novel-craft] fix it', '.agents/skills/web-novel-craft/references/style.md'],
+  ]) {
+    const agent = seatAgent({ prompt, id: 'child-dir-' + path });
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'write', { file_path: path }), ALLOW);
+    assert.deepEqual(decision, { kind: 'allow' }, prompt + ' -> ' + path);
+  }
+  const agent = seatAgent({ prompt: '[编辑: packages/fixed/] fix it', id: 'child-dir-outside' });
+  const outside = await fire(
+    listeners,
+    'tools/pre-execute',
+    seatCall(agent, 'write', { file_path: 'packages/other/src/a.js' }),
+    ALLOW,
+  );
+  assert.equal(outside.kind, 'deny', 'a directory entry must not authorize a sibling directory');
+});
+
+test('a read-only seat reaches read-only MCP and ssh tools but not mutating ones', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[只读] research the question' });
+  for (const toolName of [
+    'mcp__openviking__find',
+    'mcp__openviking__read',
+    'mcp__openviking__grep',
+    'mcp__openviking__list',
+    'mcp__openviking__tree',
+    'mcp__openviking__search',
+    'ssh_list',
+    'ssh_read',
+  ]) {
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, toolName, {}), ALLOW);
+    assert.deepEqual(decision, { kind: 'allow' }, toolName + ' only reads');
+  }
+  for (const toolName of [
+    'mcp__openviking__write',
+    'mcp__openviking__forget',
+    'mcp__openviking__remember',
+    'mcp__modal_h3__generate_video',
+    'ssh_exec',
+    'ssh_upload',
+    'ssh_download',
+  ]) {
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, toolName, {}), ALLOW);
+    assert.equal(decision.kind, 'deny', toolName + ' changes something');
+  }
 });
 
 test('a forked continuation is not a seat and keeps full authority', async () => {
@@ -1148,8 +1258,8 @@ test('a read-only seat cannot delegate its way into commands or writes', async (
     const agent = seatAgent({ prompt: '[只读] survey the codebase', id: prompt });
     const decision = await fire(listeners, 'tools/pre-execute', routeDelegation({ prompt }, agent), ALLOW);
     assert.equal(decision.kind, 'deny', prompt);
-    assert.match(decision.reason, /exceeds the parent/);
-    assert.match(decision.reason, /different non-read-only profile/);
+    assert.match(decision.reason, /may receive only what this seat already has/);
+    assert.match(decision.reason, /grants writing to a seat that cannot write/);
   }
 });
 
@@ -1166,13 +1276,15 @@ test('a review seat delegates to a review or read-only seat, but not to an edit 
   }
 });
 
-test('an edit seat delegates only within its own authorized paths', async () => {
+test('an edit seat delegates within its authorized paths, and to a review seat it could already match', async () => {
   const { listeners } = harness({ definitions: { subagent: ROUTE_TOOL } });
   for (const [prompt, allowed] of [
     ['[编辑: src/a.js] fix it', true],
     ['[编辑: ./src/a.js] fix it', true],
     ['[只读] read it', true],
-    ['[审核] check it', false],
+    // An edit seat runs read-only commands itself, so a review child adds no
+    // authority the parent lacked; a child that may write is still refused.
+    ['[审核] check it', true],
     ['[编辑: src/b.js] fix it', false],
     ['[编辑: src/a.js, src/b.js] fix both', false],
   ]) {

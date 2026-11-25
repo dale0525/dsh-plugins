@@ -432,6 +432,18 @@ function isDelegation(ctx, exec, scope = exec.agent) {
  * tools named here and nothing else. A deny-list would silently grant every
  * mutating tool the host adds later, which is the exact failure this profile
  * exists to prevent.
+ *
+ * The list is kept to tools every deployment is expected to have; a tool this
+ * machine happens not to mount costs nothing by being named here, while one it
+ * does mount and this list lacks is a refusal the seat cannot work around.
+ * Denying a reading tool does not prevent a side effect, it only stops the
+ * seat from doing the research it was delegated (measured: 11 refusals for
+ * `mcp__openviking__find/read/grep/list` and 1 for `ssh_list`).
+ *
+ * Only the reading half of each server is named. `ssh_exec`, `ssh_upload`,
+ * `ssh_download`, `mcp__openviking__write/forget/remember` and every
+ * generation tool stay out, so a read-only seat still reaches nothing that
+ * changes state.
  */
 const READ_ONLY_TOOLS = new Set([
   'read',
@@ -450,6 +462,26 @@ const READ_ONLY_TOOLS = new Set([
   'job_list',
   'job_output',
   'get_goal',
+  // OpenViking retrieval: find/read/grep/list/tree/search only report what the
+  // store already holds.
+  'mcp__openviking__find',
+  'mcp__openviking__read',
+  'mcp__openviking__grep',
+  'mcp__openviking__list',
+  'mcp__openviking__tree',
+  'mcp__openviking__search',
+  'mcp__openviking__glob',
+  'mcp__openviking__health',
+  'mcp__openviking__get_acl',
+  'mcp__openviking__list_users',
+  'mcp__openviking__list_groups',
+  'mcp__openviking__rule_search',
+  'mcp__openviking__find_mcp_tools',
+  'mcp__openviking__list_watches',
+  // ssh: listing hosts and reading a remote file report state; running a
+  // command on that host and moving files do not.
+  'ssh_list',
+  'ssh_read',
   // agy-link's mirror tool replays activity agy already recorded and throws for
   // an unknown run/step, so it performs no side effect: denying it prevents
   // nothing. It must stay allowed because agy re-emits one mirror call per
@@ -482,15 +514,19 @@ const PROFILE_MARKERS = new Map([
 ]);
 
 /**
- * Commands that only observe, for the review profile.
+ * Commands that only observe, for the review and edit profiles.
  *
  * Every pattern anchors on the command word, so a mutating subcommand of the
  * same tool (git commit, git push, npm publish) cannot match by prefix.
+ *
+ * A segment may still carry a write flag (`find ... -delete`, `sed -i`) or a
+ * redirect; {@link isReadOnlyCommand} refuses those separately, because the
+ * command word alone does not decide what a segment does.
  */
-const DRY_RUN_COMMANDS = [
+const READ_ONLY_COMMANDS = [
   /^git (status|diff|log|show|branch|remote|tag|stash|rev-parse|ls-files|blame|describe|shortlog|whatchanged)\b/,
   /^git config --(get|list)\b/,
-  /^(ls|cat|head|tail|wc|grep|rg|find|fd|tree|stat|file|du|df|pwd|echo|which|type|env|printenv)\b/,
+  /^(ls|cat|head|tail|wc|grep|rg|find|fd|tree|stat|file|du|df|pwd|echo|which|type|env|printenv|cd|true|date|basename|dirname|realpath|uniq|tr|cut|jq|awk|sort|sed|column|diff)\b/,
   /^(node|python|python3|pnpm|npm|go|cargo|rustc) (--version|-v|-V)\b/,
   /^(npm|pnpm) (ls|list|why|outdated|view|info)\b/,
   /^terraform (plan|validate|show|output|state list)\b/,
@@ -501,13 +537,41 @@ const DRY_RUN_COMMANDS = [
 ];
 
 /**
+ * Flags that make an otherwise read-only command word write.
+ *
+ * `find` was already permitted and `find . -delete` was already possible: the
+ * command word was checked, its flags were not. The same hole covered `awk`'s
+ * `system()`, `sed -i`, and any `curl -o`. They are refused as flags rather
+ * than as whole commands so that the reading forms stay open.
+ */
+const WRITING_FLAGS = [
+  /(^|\s)-delete(\s|$)/,
+  /(^|\s)-exec(dir)?(\s|$)/,
+  /(^|\s)-execdir(\s|$)/,
+  /(^|\s)-ok(dir)?(\s|$)/,
+  /(^|\s)sed\b[^|;&]*\s-i(\s|$)/,
+  /(^|\s)sed\b[^|;&]*\s--in-place(\s|$)/,
+  // Scoped to the downloading tools on purpose: bare `-o` is a read-only flag
+  // for grep, sort, uniq and column, so a global rule would have refused the
+  // reading forms it is meant to protect.
+  /(^|\s)(curl|wget)\b[^|;&]*(--output|--output-document|--output-dir|-o|-O)(=|\s|$)/,
+  /system\s*\(/,
+];
+
+/**
  * Shell syntax that would let one permitted command run a second, unchecked one.
  *
- * A whitelist on the leading command word is not enough by itself: "git status
- * && rm -rf build" and "git log | sh" both open with a permitted command.
+ * Splitting on these is only safe because every segment is itself checked
+ * against the read-only set: "git status && rm -rf build" yields the segments
+ * `git status` (permitted) and `rm -rf build` (refused), so the chain is
+ * refused as a whole. What this regex still forbids outright is the syntax
+ * that runs a command whose text cannot be scanned statically — substitutions
+ * and backticks — and a redirect, which writes a file by itself.
+ *
  * Written with \x60 for the backtick so this rule survives being quoted.
  */
-const SHELL_CHAINING = /[;&|<>$\x60\n]/;
+const UNSCANNABLE_SUBSTITUTION = /[$]\s*\(|\x60/;
+const REDIRECT = /(^|[^0-9&])[<>]/;
 
 /** Tools that write one file, and the argument naming it. */
 const WRITTEN_PATH_ARGUMENT = {
@@ -646,16 +710,84 @@ function profileOf(cache, agent) {
 }
 
 /**
- * Whether one command is a permitted dry run.
+ * Whether one shell command only observes.
+ *
+ * Checked per segment rather than per whole line. The old rule demanded a
+ * single unchained command, and every one of the 21 measured refusals was a
+ * read-only line the seat needed: `git status --porcelain | head`,
+ * `cd repo && ls && wc -l file`. A seat cannot audit what it cannot list.
+ *
+ * Composition is safe because every segment is judged: `ls && rm -rf build`
+ * splits into a permitted segment and a refused one, so the line is refused.
+ * What stays forbidden outright is the syntax whose effect cannot be scanned
+ * statically (command substitution, backticks) and a redirect, which writes a
+ * file by itself. `2>&1`, `> /dev/null` and `--foo=bar` are not redirects.
  *
  * @param command - the shell command the call supplied.
- * @returns whether it is a single, whitelisted, unchained command.
+ * @returns whether every segment observes.
  */
-function isDryRunCommand(command) {
-  if (typeof command !== 'string') return false;
-  if (SHELL_CHAINING.test(command)) return false;
-  const trimmed = command.trim();
-  return DRY_RUN_COMMANDS.some((pattern) => pattern.test(trimmed));
+function isReadOnlyCommand(command) {
+  if (typeof command !== 'string' || command.trim().length === 0) return false;
+  if (UNSCANNABLE_SUBSTITUTION.test(command)) return false;
+  // A redirect writes a file by itself; `2>&1` and `> /dev/null` do not, and
+  // both appear in nearly every read-only line a seat composes. Stripped on
+  // the whole line before splitting, so the file descriptor digits that the
+  // split would otherwise take for a segment go with them.
+  const written = command
+    .replace(/\d*>\s*\/dev\/null/g, ' ')
+    .replace(/\d*>&?\s*\d+/g, ' ');
+  if (REDIRECT.test(written)) return false;
+  return splitSegments(written)
+    .filter((segment) => segment.length > 0)
+    .every((segment) => {
+      if (WRITING_FLAGS.some((pattern) => pattern.test(segment))) return false;
+      return READ_ONLY_COMMANDS.some((pattern) => pattern.test(segment));
+    });
+}
+
+/**
+ * Split one shell line into its commands, ignoring separators inside quotes.
+ *
+ * A quote-blind split cut `grep -n "function a\|function b" src/x.mjs` in half
+ * at the alternation bar, and the right half (`function b"...`) is not a
+ * command word, so a plain grep was refused for containing a regex. Quotes are
+ * tracked only to find separators; the segment keeps its quoting.
+ *
+ * @param command - the shell line.
+ * @returns the segment texts, trimmed.
+ */
+function splitSegments(command) {
+  const segments = [];
+  let current = '';
+  let quote = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (quote !== null) {
+      current += character;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      current += character;
+      continue;
+    }
+    const pair = command.slice(index, index + 2);
+    if (pair === '&&' || pair === '||') {
+      segments.push(current.trim());
+      current = '';
+      index += 1;
+      continue;
+    }
+    if (character === ';' || character === '|' || character === '&' || character === '\n') {
+      segments.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += character;
+  }
+  segments.push(current.trim());
+  return segments;
 }
 
 /**
@@ -665,6 +797,14 @@ function isDryRunCommand(command) {
  * leading "./", or by its absolute path all match. This is a guardrail against
  * a seat drifting outside its slice, not a filesystem sandbox.
  *
+ * An entry authorizes the file it names and every file beneath it when it
+ * names a directory. Before, only an exact match (or a path ending in the
+ * entry) was authorized, so `[编辑: /tmp/canon-new/]` authorized the literal
+ * directory and refused every write inside it — six measured seats hit this,
+ * each having written exactly the directory the delegator told them to write.
+ * A delegator who names a directory means its contents; one who names a file
+ * is unaffected, because `src/a.js` never prefixes `src/a.js.bak`.
+ *
  * @param paths - the authorized paths.
  * @param candidate - the path the call supplied.
  * @returns whether the write is authorized.
@@ -672,8 +812,25 @@ function isDryRunCommand(command) {
 function isAuthorizedPath(paths, candidate) {
   if (typeof candidate !== 'string' || candidate.length === 0) return false;
   const normalized = normalizePath(candidate);
-  return paths.some((path) => normalized === path || normalized.endsWith('/' + path));
+  return paths.some((entry) => {
+    const path = entry.endsWith('/') ? entry.slice(0, -1) : entry;
+    if (path.length === 0) return false;
+    return normalized === path
+      || normalized.startsWith(path + '/')
+      || normalized.endsWith('/' + path)
+      || normalized.includes('/' + path + '/');
+  });
 }
+
+/**
+ * Profiles that may not change anything outside the seat's own conversation.
+ *
+ * Review and edit both sit here now: an edit seat that cannot run `git diff`
+ * or `ls` cannot check its own work, and 58 of the 216 measured refusals were
+ * exactly that. The command is still read-only-checked per segment; only the
+ * write authority differs between the two profiles.
+ */
+const WRITES_NOTHING = new Set(['review', 'edit']);
 
 /**
  * Judge one call against the seat's profile.
@@ -688,14 +845,15 @@ function checkProfile(profile, exec, ctx) {
   if (toolName === PTC_TRANSPORT) return undefined;
   if (READ_ONLY_TOOLS.has(toolName)) return undefined;
   if (isDelegation(ctx, exec)) return checkChildAuthority(profile, exec.arguments?.prompt);
-  if (profile.kind === 'review' && (toolName === 'bash' || toolName === 'pwsh')) {
+  if (WRITES_NOTHING.has(profile.kind) && (toolName === 'bash' || toolName === 'pwsh')) {
     const command = exec.arguments?.command;
-    if (isDryRunCommand(command)) return undefined;
+    if (isReadOnlyCommand(command)) return undefined;
     return [
-      'The [审核] (review) profile governs this seat: it may run only read-only commands.',
+      'The [' + (profile.kind === 'review' ? '审核' : '编辑') + '] profile governs this seat: it may run only read-only commands.',
       'Refused: ' + JSON.stringify(typeof command === 'string' ? command : null) + '.',
-      'A permitted command is a single command from the dry-run set (git status/diff/log, ls, cat, grep, terraform plan, kubectl get, ...) with no shell chaining.',
-      'Report the finding instead, or ask the delegator to re-issue the seat with [编辑: <paths>].',
+      'Every segment must be a read-only command (git status/diff/log, ls, cat, grep, wc, find without -delete/-exec, terraform plan, kubectl get, ...).',
+      'Command substitution, backticks, redirects and writing flags are refused even on an allowed command word.',
+      'Run the step as the delegator, or report the finding instead.',
     ].join(' ');
   }
   if (profile.kind === 'edit') {
@@ -753,11 +911,13 @@ function namedValue(value) {
 /**
  * Judge the authority a seat grants to a child seat.
  *
- * Review and edit are not nested: review may run read-only commands but cannot
- * write, edit may write but cannot run commands. A rank comparison would let an
- * edit seat gain command execution through a review child, so only the same
- * profile or read-only is allowed. An edit child's paths must also be a subset
- * of its parent's, or the delegation would widen the files it may write.
+ * An edit child may only stay inside its parent: an edit seat can write, a
+ * review seat cannot, so delegating an EDIT child from a REVIEW parent would
+ * hand the child a capability the parent never had, and that stays refused.
+ * The reverse is now allowed, because an edit seat itself runs read-only
+ * commands: a review child of an edit parent adds no authority the parent
+ * already lacked. An edit child's paths must also be a subset of its parent's,
+ * or the delegation would widen the files it may write.
  *
  * The host freezes `exec.arguments` and offers no replacement decision, so an
  * over-granting prompt is refused rather than rewritten.
@@ -769,19 +929,22 @@ function namedValue(value) {
 function checkChildAuthority(parent, childPrompt) {
   const child = parseProfile(childPrompt);
   if (child.kind === 'readonly') return undefined;
-  if (parent.kind === 'readonly' || child.kind !== parent.kind) {
+  const nested = child.kind === parent.kind || (parent.kind === 'edit' && child.kind === 'review');
+  if (parent.kind === 'readonly' || !nested) {
     return [
       'This seat is governed by the [' + (parent.kind === 'review' ? '审核' : parent.kind === 'edit' ? '编辑' : '只读') + '] profile.',
-      'A delegated seat may receive only the same profile or read-only.',
-      'A child marker that exceeds the parent or grants a different non-read-only profile is refused.',
+      'A delegated seat may receive only what this seat already has: its own profile, a read-only seat, or (from an edit seat) a review seat.',
+      'A child marker that grants writing to a seat that cannot write is refused.',
       'Keep the child at the parent profile or omit its marker, and report the blocked step to the delegator.',
     ].join(' ');
   }
-  if (parent.kind === 'edit' && !child.paths.every((path) => isAuthorizedPath(parent.paths, path))) {
+  // Only an edit child carries paths; a review child cannot write at all, so
+  // there is no path set to compare and nothing to widen.
+  if (child.kind === 'edit' && !(child.paths ?? []).every((path) => isAuthorizedPath(parent.paths ?? [], path))) {
     return [
       'This seat may write only the files named in its own instruction.',
       'A delegated edit seat cannot name paths outside that set.',
-      'Authorized: ' + (parent.paths.length === 0 ? 'none' : parent.paths.join(', ')) + '.',
+      'Authorized: ' + ((parent.paths ?? []).length === 0 ? 'none' : (parent.paths ?? []).join(', ')) + '.',
     ].join(' ');
   }
   return undefined;
@@ -842,13 +1005,14 @@ function checkRoute(ctx, exec) {
 const MARKER_REQUIREMENT = [
   'The `prompt` MUST begin with an authority marker, which decides what the seat may do:',
   '`[只读]` (read files, search, research, report — also the default when no marker is given),',
-  '`[审核]` (the above plus read-only commands such as `git status`/`git diff`),',
-  '`[编辑: <paths>]` (the above plus writing exactly those files).',
+  '`[审核]` (the above plus read-only commands such as `git status`/`git diff`, alone or composed),',
+  '`[编辑: <paths>]` (the same read-only commands plus writing exactly those files; a path ending',
+  'in `/` authorizes everything beneath that directory).',
   'A prompt with no marker grants read-only authority, and the seat is refused a write only',
   'when it reaches one — so state the marker deliberately. English spellings',
   '(`[readonly]`, `[review]`, `[edit: ...]`) are equivalent. When a seat delegates,',
-  'the child may receive only the same profile or read-only — never a different',
-  'non-read-only profile, and an edit child may name only paths the parent can write.',
+  'the child may receive only what the parent already has: its own profile, a read-only seat,',
+  'or — from an edit parent — a review seat. An edit child may name only paths the parent can write.',
 ].join(' ');
 
 /**
