@@ -116,6 +116,16 @@
 
 档案在席位启动时读一次并缓存 —— 指令在席位存活期间不会变。**Root 会话不受授权档案限制**：它没有派单方；一次性禁令与半路由门禁仍按工具声明对它生效。
 
+### 为什么这层不能交给宿主
+
+宿主**没有**按席位收紧工具或沙箱的层，所以「吊销这层、让宿主管」不是可选方案。已核对当前宿主（0.2.1-rc.2）：
+
+- 派单只做两件事：按 `delegationDepth` 封顶（`dsh-subagent`：`SubagentDepthError`），以及把**父会话**的沙箱覆盖原样快照给子会话并**无条件**把 approval 钉成 `never`（`dsh-subagent/lib/types/child-agent.js`：`captureDelegatedPolicyOverrides`）。它不按席位降权——父是 `danger-full-access`，席位就是全盘可写。
+- 宿主自带的 `tools/pre-execute` 监听器没有一个管「席位只读」；MCP 工具直接注册进全局层，子作用域作为继承面全部可见。
+- 宿主确实提供工具白名单 `tools.restrict({allow, deny})`（`dsh-tools/lib/types/index.js`），但派单工具通道已封闭：`tool-subagent` 对 `toolFilter`／`persona` 直接抛 `no longer supported; configure persona and tool plugins in an Agent Preset`。替代品 `agentPreset` 是**静态的整套预设**，表达不了「同一个预设内，按这一条指令逐席位细化」。
+
+因此「按指令动态推导档案」「把命令收窄成只读」「把写入收窄到点名的路径」这三件事只有本插件在做。反过来，本插件**不该**把 `READ_ONLY_TOOLS` 当成第二套工具清单去追宿主新增的工具——那正是过去 13 次只读 MCP 工具被误拒的成因（见上文）。
+
 ## 派单路由门禁
 
 **只管「写了一半」，不管「没写」。** 省略 `provider`/`model` 时宿主让席位继承父会话的路由——这是派单方自己的选择，不是缺陷。只写其中一个才识别不出任何路由，所以拒绝的是那种情况。
