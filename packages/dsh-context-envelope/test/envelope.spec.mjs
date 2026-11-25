@@ -170,3 +170,46 @@ test('a prepared call is wrapped on its dispatch path', async () => {
 
   assert.equal(adapter.seen.at(-1).messages[1].content[0].text, wrapped(RUNTIME))
 })
+
+const MEMORY = '<openviking-context source="profile">\n<user-profile uri="memory://profile">\n- home router 192.168.123.1\n</openviking-context>'
+const FORCE = 'Cost of this turn so far: 1 tool call, 516 characters returned. Before spending more on exploration, check whether the answer you need is already in hand.'
+
+test('an openviking recall block is wrapped, so it cannot count as a turn', async () => {
+  const { llm, adapter } = await harness()
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: ASK }], id: 'u1', source: { kind: 'user' } },
+    text('u2', 'plugin:openviking-memory', MEMORY),
+  ]
+  await drain(llm.stream(request(messages, 's11')))
+
+  assert.equal(adapter.seen.at(-1).messages[1].content[0].text, wrapped(MEMORY))
+})
+
+test('a force-rules nudge is wrapped, so it cannot count as a turn', async () => {
+  const { llm, adapter } = await harness()
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: ASK }], id: 'u1', source: { kind: 'user' } },
+    text('u2', 'force-rules', FORCE),
+  ]
+  await drain(llm.stream(request(messages, 's12')))
+
+  assert.equal(adapter.seen.at(-1).messages[1].content[0].text, wrapped(FORCE))
+})
+
+test("a subagent's own task is not wrapped: it is the child's ask", async () => {
+  const { llm, adapter } = await harness()
+  const task = { role: 'user', content: [{ type: 'text', text: '[readonly] inspect the upstream Go source' }], id: 'u1', source: { kind: 'user' } }
+  await drain(llm.stream(request([task], 's13')))
+
+  const seen = adapter.seen.at(-1)
+  assert.equal(seen.messages[0].content[0].text, '[readonly] inspect the upstream Go source')
+  assert.equal(seen.messages[0], task)
+})
+
+test('a working-directory notice that opens the session stays bare', async () => {
+  const { llm, adapter } = await harness()
+  const notice = { role: 'user', content: [{ type: 'text', text: 'The working directory changed from "/a" to "/b".' }], id: 'u1', source: { kind: 'working-directory' } }
+  await drain(llm.stream(request([notice], 's14')))
+
+  assert.equal(adapter.seen.at(-1).messages[0], notice)
+})

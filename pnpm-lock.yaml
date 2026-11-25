@@ -33,7 +33,7 @@ importers:
         specifier: ^0.1.86
         version: link:../dsh-config-manager
       '@logictan/dsh-context-envelope':
-        specifier: ^0.1.0
+        specifier: ^0.1.1
         version: link:../dsh-context-envelope
       '@logictan/dsh-desktop-agent':
         specifier: ^0.1.10

@@ -40,8 +40,21 @@
 
 - `runtime-context`（`@deepseek-ai/dsh-system-prompt` 生成的运行时上下文快照）
 - `time-context`（`@deepseek-ai/dsh-time-context` 的时间读数）
+- `force-rules`（`@logictan/dsh-force-rules` 每步的嘀咕）
+- `plugin:openviking-memory`（记忆召回块）
 
-技能目录那条 `skill-catalog` 不动：宿主本来就用 `<system-reminder>` 包着它，再包一层只会嵌套标签。
+这四条的代价不看不知道：一个新建会话里只提了一个问题，magpie 数出 **12 轮**——提问 1 轮，其余全是这些注。四类都包壳后是 **1 轮**。
+
+三类刻意不动：
+
+- `skill-catalog`、`agent-instructions` 宿主已用 `<system-reminder>` 包着，再包一层只会嵌套标签。
+- `working-directory` 在「目录变更后新建会话」时会排在提问**之前**，而 magpie 用开场 user 消息的字节推会话身份——包壳等于换掉会话 id 的输入。
+
+## v0.1.0 漏掉的两类（已修）
+
+v0.1.0 只包了前两类。上线后实测一个新会话：`turn` 仍是 3 而不是 1，分类器读到的是记忆文本、判成「问题不明确」，之后 13 步 `said` 全空。根因是 `force-rules` 与 `plugin:openviking-memory` 同样是纯文本 user 消息，同样被算作一轮。
+
+修的时候有个坑：子代理派单的初始任务也是 `source.kind === 'user'`，那是子会话自己的提问，**不能**包。它和用户提问的区别在 source 上——用户消息带 `rpcId`，子代理任务只有 `{kind:'user'}`。这也是本插件不碰 `user` 这个 kind 的第二个理由。
 
 消息里已有 `<system-reminder>` 开头的块不会重复包；文本中的 `</system-reminder>` 会被转义成 `<\/system-reminder>`，以免提前闭合、把注的剩余部分漏成"用户的话"。
 

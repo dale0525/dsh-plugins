@@ -1,6 +1,6 @@
 {
   "name": "@logictan/dsh-context-envelope",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Wraps the harness context notes the model reads but the user never said into one <system-reminder> block on the user's own message, at the adapter boundary. Gateways that route on the last user message then read the user's ask again; the transcript and the session log keep every note where it was.",
   "type": "module",
   "main": "lib/index.js",

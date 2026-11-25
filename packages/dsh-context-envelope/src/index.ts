@@ -53,12 +53,30 @@ export const inject = ['llm']
 /**
  * The `Message.source.kind` of the notes this plugin wraps.
  *
- * Both are declared by the host packages that emit them, and both are
- * user-role messages whose text the user never typed. `skill-catalog` is
- * deliberately absent: `dsh-tool-skill` already sends its catalog inside a
- * `<system-reminder>`, so wrapping it again would nest the tag.
+ * Every one is a user-role message whose text the user never typed, and
+ * every one is plain text, so a gateway counts it as an ask. Measured on a
+ * fresh single-question session, magpie counted twelve turns where the host
+ * had run one step: the ask plus both of this plugin's first two kinds plus
+ * the recall below plus another kind that fires on every step.
+ *
+ * `openviking-memory` is named as the emitting package spells it, not by the
+ * host's convention: it carries no `form`/`sections`, because it is written
+ * by a plugin rather than by a system-prompt section.
+ *
+ * Three kinds are deliberately absent:
+ * - `skill-catalog` and `agent-instructions` already arrive inside a
+ *   `<system-reminder>` block; wrapping them again would nest the tag.
+ * - `working-directory` sits in front of a session's ask when the session
+ *   opens after the directory changed, and magpie hashes a conversation's
+ *   identity from its opening user message. Wrapping it would put a tag
+ *   where a hash of the ask used to be.
  */
-const NOTE_KINDS = new Set(['runtime-context', 'time-context'])
+const NOTE_KINDS = new Set([
+  'runtime-context',
+  'time-context',
+  'force-rules',
+  'plugin:openviking-memory',
+])
 
 const OPEN = '<system-reminder>'
 const CLOSE = '</system-reminder>'
