@@ -173,7 +173,7 @@ pnpm add @logictan/dsh-verbatim-compaction
 
 **这是本插件唯一不直观的地方。** 真正在用的 `compaction` 组嵌在 4 个 agent preset（`preset-standard` / `preset-ptc` / `preset-minimal` / `preset-cordis`）的 `config.plugins` 里，带 `isolate: {compaction: true}`，每个 preset 各持一个 `compaction` 服务实例，根上下文看不到它们。因此：
 
-- 顶层新增一行 `compaction` 服务**不会被任何 agent 用到**；
+- 顶层**启用**一行 `compaction` 服务不会给 preset 里的 agent 提供该服务，但它照样会挂一个引擎、照样收事件——`agent/pre-step` 监听器不带 scope 标记时由 `dsh-scope` 沿链向上分发给所有 agent，于是它先跑、先把 surface 压到阈值以下就返回，preset 组里那个真正能拿到 `toolResultPruner` 的引擎轮到时直接命中「低于阈值」提前返回，`pruneSession` 永不执行，且全程无日志；
 - 往 preset 的 `config.plugins` 里 `insert` 会报 `patch insert: entry "compaction" not found`（`applyEntryPatches` 的 `entryMap` 只收录顶层条目与 `group: true` 条目）；
 - 新行也不能与 `compaction-basic` 并存在同一组：`provide('compaction')` 重复注册会抛 `service "compaction" has been registered at <...>`。
 
@@ -206,6 +206,8 @@ pnpm add @logictan/dsh-verbatim-compaction
 代价是每个要改的 preset 都要重述一遍 `plugins`；换来的是确定性——不依赖任何监听器顺序。
 
 `cordis.patch.yml` 里那行占位必须保留，且 `id` 与本包宿主半边的 `export const name`（`verbatim-compaction`）一致，否则 `check:host` 会报 patch 行 id 不一致。
+
+那行占位在 profile 里必须保持 `disabled: true`。把它的 `disabled` 改成 `false` 会同时激活根作用域的引擎，按上一段描述抢在 preset 组之前压完，令 `toolResultPruner` 静默失效——此时 profile 与 preset 两份 config 都看不出异常，只有会话日志里 `compaction/prune` 事件消失。判定办法：`dsh --profile <name> --dump-config` 应显示根层没有任何启用的 `compaction` 服务提供者。
 
 ## 配置
 
