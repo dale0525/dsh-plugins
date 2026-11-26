@@ -84,7 +84,7 @@
 |---|---|
 | （无标记） | 只读：读文件、检索、联网查资料、回报结论 |
 | `[只读]` | 同上（显式写法） |
-| `[审核]` | 只读 **+** 只读命令（`git status/diff/log`、`ls`、`cat`、`grep`、`terraform plan`、`kubectl get` …） |
+| `[审核]` | 只读 **+** 只读命令（`git status/diff/log`、`ls`、`cat`、`grep`、`terraform plan`、`kubectl get`；`pwsh` 上还有 `Get-ChildItem`、`Get-Content`、`Select-String` 等 …） |
 | `[编辑: src/a.js, src/b.js]` | **+** 只读命令 **+** 只写这几个文件（目录名含其下全部文件） |
 
 英文拼写 `[readonly]` / `[review]` / `[edit: …]` 等价。
@@ -107,6 +107,8 @@
 **审核与编辑档案跑同一套只读命令判定，逐段校验而不是整行校验**：`git status --porcelain | head`、`cd repo && ls && wc -l file` 这种真实只读组合一律放行；`ls && rm -rf build` 拆成两段后有一段不合法，整行拒绝。`2>&1` 与 `> /dev/null` 不算重定向。仍**整体拒绝**的是无法静态扫描效果的语法（`$()`、反引号）与真会写文件的重定向。编辑席位以前连 `ls`、`git diff` 都跑不了，实测 58 次被拒全是在看自己刚改的文件。
 
 **写标志单独拒绝**：只白名单命令词不够——`find` 本来就放行，于是 `find . -delete` 也放行过。`-delete`、`-exec`、`sed -i`、`--output`、`awk` 的 `system()` 现在按标志拒绝，读的形式保持开放。
+
+**命令词按 shell 分家**：`pwsh` 与 `bash` 都进同一条只读判定，但 PowerShell 的 cmdlet 只对 `pwsh` 放行，所以一条 `Get-ChildItem` 不会让 `bash` 也开口子。Windows 上 `pwsh` 是唯一的 shell、`bash` 根本没挂载，而原先的名单只有 POSIX 命令词，于是席位需要的读操作全被拒——`Get-ChildItem -Recurse`、`Get-Content README.md`、`Select-String -Path a.js` 逐条实测都是 deny，能过的只有恰好拼成 POSIX 词的别名（`ls`、`cat`）。现在 `Get-ChildItem`／`Get-Content`／`Get-Item`／`Select-String`／`Select-Object`／`Where-Object`／`Test-Path`／`Resolve-Path` 等只读 cmdlet 放行，且按大小写折叠匹配（PowerShell 本身不区分大小写）；`Set-Content`、`Add-Content`、`Out-File`、`New-Item`、`Remove-Item`、`Copy-Item`、`Move-Item`、`Start-Process` 不在名单里，仍然拒绝。**PowerShell 脚本块整体拒绝**：`Where-Object { Remove-Item x }` 里的代码不会以命令词形式出现在扫描器眼里，所以含 `{`／`}` 的行在 `pwsh` 上一律拒绝（引号内的花括号不算，`Select-String -Pattern '{'` 照常放行）。
 
 **编辑档案按路径后缀比对**，所以 `src/a.js`、`./src/a.js` 与绝对路径都能匹配。**以 `/` 结尾的条目（或任何目录名）授权该目录下的所有文件**——指令写 `[编辑: /tmp/canon-new/]` 却连目录下的新文件都写不了，实测 6 个席位踩到，每个写到的正是派单方点名的那个目录。它是防止席位跑偏出切片的**护栏**，不是文件系统沙箱。
 
@@ -190,7 +192,7 @@
 ## 开发
 
 ```bash
-pnpm test          # node --test（100 个用例，覆盖六条规范、派单槽位与归属字段、三类误报、三档授权档案与中断/唤醒生命周期）
+pnpm test          # node --test（104 个用例，覆盖六条规范、派单槽位与归属字段、三类误报、三档授权档案与中断/唤醒生命周期）
 node build.mjs     # src/ → lib/（prepare / prepack 也会跑）
 ```
 

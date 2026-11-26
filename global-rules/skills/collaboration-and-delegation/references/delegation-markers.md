@@ -20,6 +20,7 @@
 ## 只读命令的边界（`[审核]` 与 `[编辑]` 都适用）
 
 - **逐段校验**：`git status --porcelain | head`、`cd repo && ls && wc -l file` 这类只读组合放行；只要有一段不是只读命令，整行拒绝。
+- **命令词按 shell 分家**：`pwsh` 上另有 PowerShell 只读 cmdlet（`Get-ChildItem`、`Get-Content`、`Get-Item`、`Select-String`、`Select-Object`、`Where-Object`、`Test-Path`、`Resolve-Path` 等，大小写不敏感），`bash` 不认这些名字；写类 cmdlet（`Set-Content`、`Add-Content`、`Out-File`、`New-Item`、`Remove-Item`、`Copy-Item`、`Move-Item`、`Start-Process`）一律拒绝，含 `{`／`}` 的脚本块在 `pwsh` 上整行拒绝。
 - **写标志仍拒绝**：`find -delete`、`find -exec`、`sed -i`、`curl -o`、`awk` 里的 `system()`、`$()`、反引号、真会写文件的重定向一律拒绝。`2>&1` 与 `> /dev/null` 不算重定向。
 - **跑测试、构建、提交仍要由派单方自己做**：这些不在只读命令集里。
 

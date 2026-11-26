@@ -537,6 +537,45 @@ const READ_ONLY_COMMANDS = [
 ];
 
 /**
+ * PowerShell cmdlets that only observe, for the review and edit profiles.
+ *
+ * The list above is a POSIX vocabulary. A Windows deployment mounts `pwsh` as
+ * its only shell and has no `bash`, so every cmdlet a seat needed in order to
+ * inspect the repository was refused: `pwsh "Get-ChildItem -Recurse"`,
+ * `pwsh "Get-Content README.md"` and `pwsh "Select-String -Path a.js -Pattern x"`
+ * all returned deny, and the only commands that passed were the PowerShell
+ * aliases that happen to spell a POSIX word (`ls`, `cat`, `grep`).
+ *
+ * Written lowercase and matched against a case-folded segment, because
+ * PowerShell is itself case-insensitive: `get-childitem` and `Get-ChildItem`
+ * are one command.
+ *
+ * Writing cmdlets are absent rather than denied: `Set-Content`, `Add-Content`,
+ * `Out-File`, `New-Item`, `Remove-Item`, `Copy-Item`, `Move-Item`, `Tee-Object`,
+ * `Export-Csv` and `Start-Process` never match, so the allow-list stays an
+ * allow-list on this shell too.
+ */
+const POWERSHELL_READ_ONLY_COMMANDS = [
+  /^get-(childitem|content|item|itemproperty|location|process|service|command|help|member|module|variable|date|filehash|acl)\b/,
+  /^select-(string|object)\b/,
+  /^where-object\b/,
+  /^(sort|group|measure|compare)-object\b/,
+  /^(format|out)-(table|list|wide|string|host|null)\b/,
+  /^convert(to|from)-(json|csv)\b/,
+  /^(test|resolve|split|join|convert)-path\b/,
+  /^(write-output|write-host)\b/,
+  // `cd` is permitted above, and this is its PowerShell spelling.
+  /^set-location\b/,
+];
+
+/**
+ * A PowerShell script block runs code whose text never appears as a command
+ * word, so the segment scanner cannot judge it: `Where-Object { Remove-Item x }`
+ * is one permitted cmdlet carrying a second, unchecked one.
+ */
+const POWERSHELL_SCRIPT_BLOCK = /[{}]/;
+
+/**
  * Flags that make an otherwise read-only command word write.
  *
  * `find` was already permitted and `find . -delete` was already possible: the
@@ -723,12 +762,23 @@ function profileOf(cache, agent) {
  * statically (command substitution, backticks) and a redirect, which writes a
  * file by itself. `2>&1`, `> /dev/null` and `--foo=bar` are not redirects.
  *
+ * The command vocabulary depends on the shell that will run the line: the
+ * PowerShell list is added for `pwsh` and only there, so a cmdlet name cannot
+ * widen what `bash` may run. PowerShell is case-insensitive, so its segments are
+ * matched case-folded; a script block is refused outright on that shell because
+ * the code inside one never reaches the segment scanner as a command word.
+ *
  * @param command - the shell command the call supplied.
+ * @param shellName - the tool that will run it (`bash` or `pwsh`).
  * @returns whether every segment observes.
  */
-function isReadOnlyCommand(command) {
+function isReadOnlyCommand(command, shellName) {
   if (typeof command !== 'string' || command.trim().length === 0) return false;
   if (UNSCANNABLE_SUBSTITUTION.test(command)) return false;
+  const powershell = shellName === 'pwsh';
+  // Judged on the quote-stripped text so a pattern that merely contains a brace
+  // (`Select-String -Pattern '{'`) is not mistaken for a script block.
+  if (powershell && POWERSHELL_SCRIPT_BLOCK.test(stripQuotedStrings(command))) return false;
   // A redirect writes a file by itself; `2>&1` and `> /dev/null` do not, and
   // both appear in nearly every read-only line a seat composes. Stripped on
   // the whole line before splitting, so the file descriptor digits that the
@@ -740,8 +790,10 @@ function isReadOnlyCommand(command) {
   return splitSegments(written)
     .filter((segment) => segment.length > 0)
     .every((segment) => {
-      if (WRITING_FLAGS.some((pattern) => pattern.test(segment))) return false;
-      return READ_ONLY_COMMANDS.some((pattern) => pattern.test(segment));
+      const judged = powershell ? segment.toLowerCase() : segment;
+      if (WRITING_FLAGS.some((pattern) => pattern.test(judged))) return false;
+      if (READ_ONLY_COMMANDS.some((pattern) => pattern.test(judged))) return true;
+      return powershell && POWERSHELL_READ_ONLY_COMMANDS.some((pattern) => pattern.test(judged));
     });
 }
 
@@ -847,12 +899,13 @@ function checkProfile(profile, exec, ctx) {
   if (isDelegation(ctx, exec)) return checkChildAuthority(profile, exec.arguments?.prompt);
   if (WRITES_NOTHING.has(profile.kind) && (toolName === 'bash' || toolName === 'pwsh')) {
     const command = exec.arguments?.command;
-    if (isReadOnlyCommand(command)) return undefined;
+    if (isReadOnlyCommand(command, toolName)) return undefined;
     return [
       'The [' + (profile.kind === 'review' ? '审核' : '编辑') + '] profile governs this seat: it may run only read-only commands.',
       'Refused: ' + JSON.stringify(typeof command === 'string' ? command : null) + '.',
-      'Every segment must be a read-only command (git status/diff/log, ls, cat, grep, wc, find without -delete/-exec, terraform plan, kubectl get, ...).',
-      'Command substitution, backticks, redirects and writing flags are refused even on an allowed command word.',
+      'Every segment must be a read-only command (git status/diff/log, ls, cat, grep, wc, find without -delete/-exec, terraform plan, kubectl get, ...;',
+      'on `pwsh`: Get-ChildItem, Get-Content, Select-String, Test-Path, Select-Object, Where-Object, ...).',
+      'Command substitution, backticks, redirects, writing flags and PowerShell script blocks are refused even on an allowed command word.',
       'Run the step as the delegator, or report the finding instead.',
     ].join(' ');
   }

@@ -942,6 +942,83 @@ test('read-only commands still refuse anything a segment could turn into a write
   }
 });
 
+// ---------------------------------------------------------------------------
+// PowerShell is a shell the read-only set has to know about, not just a tool
+// name it recognises.
+//
+// `pwsh` reached the command gate from the start, but every pattern in the
+// allow-list was a POSIX command word, so a Windows deployment — where `pwsh`
+// is the only shell mounted and `bash` is absent — had no cmdlet that passed.
+// The gate therefore refused exactly the reads it exists to permit, and the
+// only commands that did pass were the PowerShell aliases that happen to spell
+// a POSIX word (`ls`, `cat`).
+// ---------------------------------------------------------------------------
+
+test('the review profile allows PowerShell reads', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[审核] check the diff' });
+  for (const command of [
+    'Get-ChildItem -Recurse -File',
+    'Get-Content README.md -TotalCount 40',
+    'Select-String -Path src/index.js -Pattern pwsh',
+    'Get-ChildItem src | Select-Object -First 5',
+    'git status --porcelain | Select-Object -First 5',
+    // PowerShell is case-insensitive; a seat that types the canonical
+    // capitalisation and one that types lowercase mean the same command.
+    'get-childitem -Path src',
+    'Test-Path src/index.js',
+    'Get-ChildItem | Where-Object Name -like *.js',
+    // A brace inside a quoted pattern is not a script block.
+    "Select-String -Path src/index.js -Pattern '{'",
+  ]) {
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'pwsh', { command }), ALLOW);
+    assert.deepEqual(decision, { kind: 'allow' }, command);
+  }
+});
+
+test('the review profile still refuses PowerShell writes', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[审核] check the diff' });
+  for (const command of [
+    'Remove-Item -Recurse build',
+    'Get-ChildItem | Remove-Item',
+    'Set-Content -Path a.txt -Value x',
+    'Add-Content a.txt x',
+    'Out-File a.txt',
+    'New-Item a.txt',
+    'Copy-Item a.txt b.txt',
+    'Move-Item a.txt b.txt',
+    'Start-Process powershell',
+    'Invoke-Expression "Remove-Item a.txt"',
+    'Get-ChildItem > out.txt',
+    // A script block runs code the segment scanner never sees as a command
+    // word, so the block itself is refused rather than its contents guessed at.
+    'Get-ChildItem | Where-Object { Remove-Item a.txt }',
+    'ForEach-Object { Remove-Item a.txt }',
+  ]) {
+    const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'pwsh', { command }), ALLOW);
+    assert.equal(decision.kind, 'deny', command + ' is not read-only');
+  }
+});
+
+test('the edit profile runs PowerShell reads too', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[编辑: src/a.js] fix the bug' });
+  const inside = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'pwsh', { command: 'Get-Content src/a.js' }), ALLOW);
+  assert.deepEqual(inside, { kind: 'allow' });
+  const outside = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'pwsh', { command: 'Remove-Item src/a.js' }), ALLOW);
+  assert.equal(outside.kind, 'deny');
+});
+
+test('a cmdlet is judged by the shell that runs it', async () => {
+  const { listeners } = harness();
+  const agent = seatAgent({ prompt: '[审核] check the diff' });
+  // The same text under bash is not a command this allow-list knows; the
+  // per-shell split is what keeps the PowerShell list from widening bash.
+  const decision = await fire(listeners, 'tools/pre-execute', seatCall(agent, 'bash', { command: 'Get-ChildItem src' }), ALLOW);
+  assert.equal(decision.kind, 'deny');
+});
+
 test('a directory entry authorizes the files beneath it', async () => {
   const { listeners } = harness();
   // Measured: six seats were told to write into a directory they named, and
