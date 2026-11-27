@@ -90,7 +90,7 @@ importers:
         specifier: ^0.13.4
         version: link:../dsh-verbatim-compaction
       '@logictan/dsh-worktree-session':
-        specifier: ^0.1.14
+        specifier: ^0.1.15
         version: link:../dsh-worktree-session
 
   packages/dsh-better-reasoning-effort:
