@@ -119,6 +119,28 @@ const SINGLE_TURN_TOOL_HEAVY_PROSE_MAX = 1500
 const SAMPLED_TOOL_RESULT_TOTAL_CHARS = 6000
 const SAMPLED_TOOL_RESULT_PER_CALL_CHARS = 600
 
+/** Thresholds and budgets for long/multi-step turns that need expanded extraction capacity. */
+const LONG_TURN_TOOL_CALLS = 25
+const LONG_TURN_ASSISTANT_MSGS = 8
+const LONG_TURN_PROSE_CHARS = 10000
+const LONG_TURN_PROSE_BUDGET = 16000
+const LONG_TURN_PROSE_HEAD_CHARS = 3000
+const LONG_TURN_PROSE_TAIL_CHARS = 6000
+const LONG_TURN_MIN_MILESTONE_CHARS = 160
+
+/** Short human continuation replies that keep the penultimate section's open tasks active. */
+const SHORT_CONTINUATION_REPLY = /^(?:(?:继续|接着|往下|按计划|按这个|按上面|好|好的|可以|行|同意|确认|收到|开始|continue|proceed|go\s+on|keep\s+going|resume|yes|ok|okay|sure|y|\d+)(?:[，,、。！!\s]|$))/i
+const SHORT_CONTINUATION_MAX_CHARS = 32
+
+/** Budgets for subagent reports (`agent-message` / `subagent-settled`) fed to extraction. */
+const SUBAGENT_REPORT_TOTAL_CHARS = 12000
+const SUBAGENT_REPORT_PER_MSG_CHARS = 7000
+const SUBAGENT_REPORT_MAX_COUNT = 12
+
+/** Bounds for the active open-tasks block preserved at the tail of the digest. */
+const MAX_ACTIVE_OPEN_TASKS = 16
+const MAX_ACTIVE_TASK_LINE_CHARS = 240
+
 /** Keep head and tail of overlong text so both opening context and final conclusions survive. */
 function clipHeadTail(text: string, maxChars: number, headChars: number, tailChars: number): string {
   if (text.length <= maxChars) return text
@@ -197,10 +219,26 @@ function isInjection(event: SessionEvent): boolean {
  * @param event - any event; non-goal events yield undefined.
  * @returns the objective text, or undefined.
  */
+/** Whether a user/message event is a subagent relay or settled closing notice. */
+function isSubagentReport(event: SessionEvent): boolean {
+  const kind = sourceKind(event)
+  return kind === 'agent-message' || kind === 'subagent-settled'
+}
+
+/** Sender session id recorded on a subagent relay/settled event, if present. */
+function senderSessionIdOf(event: SessionEvent): string | undefined {
+  if (event.type !== 'user/message') return undefined
+  const source = (event.data as { source?: { senderSessionId?: unknown } }).source
+  return typeof source?.senderSessionId === 'string' && source.senderSessionId.length > 0
+    ? source.senderSessionId
+    : undefined
+}
+
 /** Auto-generated host continuation goals that restate the todo list rather than a user goal. */
 const AUTO_CONTINUATION_GOAL = /^(?:Continue the \d+ open tasks? this session recorded:|Continue working on the current goal\b)/i
 
-function goalObjective(event: SessionEvent): string | undefined {
+/** Extract the raw unescaped `Objective: "..."` string from a `goal` event, if present. */
+function extractGoalRawObjective(event: SessionEvent): string | undefined {
   if (sourceKind(event) !== 'goal') return undefined
   const text = textOf(event)
   const match = /Objective:\s*"((?:[^"\\]|\\.)*)"/.exec(text)
@@ -212,9 +250,68 @@ function goalObjective(event: SessionEvent): string | undefined {
   } catch {
     objective = raw.replace(/\\([n"\\])/g, (_, ch: string) => (ch === 'n' ? '\n' : ch)).trim()
   }
-  if (objective.length === 0) return undefined
+  return objective.length > 0 ? objective : undefined
+}
+
+function goalObjective(event: SessionEvent): string | undefined {
+  const objective = extractGoalRawObjective(event)
+  if (objective === undefined) return undefined
   if (AUTO_CONTINUATION_GOAL.test(objective)) return undefined
   return objective
+}
+
+/** One active unfinished task recovered from the latest `todo_write` or auto-continuation goal. */
+export interface ActiveTask {
+  status?: 'in_progress' | 'pending'
+  content: string
+}
+
+/** Parse numbered/bulleted open task items carried inside an `AUTO_CONTINUATION_GOAL` event. */
+function autoContinuationGoalTasks(event: SessionEvent): ActiveTask[] {
+  const objective = extractGoalRawObjective(event)
+  if (objective === undefined || !AUTO_CONTINUATION_GOAL.test(objective)) return []
+  const lines = objective.split(/\r?\n/).slice(1)
+  const tasks: ActiveTask[] = []
+  for (const line of lines) {
+    const cleaned = line
+      .trim()
+      .replace(/^\d+[.)]\s*/, '')
+      .replace(/^[-*•]\s*/, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (cleaned.length > 0) tasks.push({ content: cleaned })
+  }
+  return tasks
+}
+
+/** Parse a `todo_write` tool call's arguments into its remaining unfinished tasks. */
+function parseTodoWriteArgs(argumentsJson: string): { open: ActiveTask[]; valid: boolean } {
+  try {
+    const parsed: unknown = JSON.parse(argumentsJson)
+    if (typeof parsed !== 'object' || parsed === null) return { open: [], valid: false }
+    const todos = (parsed as { todos?: unknown }).todos
+    if (!Array.isArray(todos)) return { open: [], valid: false }
+    const open: ActiveTask[] = []
+    for (const item of todos) {
+      if (typeof item !== 'object' || item === null) continue
+      const rec = item as Record<string, unknown>
+      const status = typeof rec['status'] === 'string' ? rec['status'].trim().toLowerCase() : ''
+      const content = typeof rec['content'] === 'string' ? rec['content'].replace(/\s+/g, ' ').trim() : ''
+      if (content.length === 0) continue
+      if (status === 'completed' || status === 'done' || status === 'cancelled') continue
+      open.push({
+        ...(status === 'in_progress'
+          ? { status: 'in_progress' as const }
+          : status === 'pending'
+            ? { status: 'pending' as const }
+            : {}),
+        content,
+      })
+    }
+    return { open, valid: true }
+  } catch {
+    return { open: [], valid: false }
+  }
 }
 
 /** Whether this user message is a compaction checkpoint written by a backend. */
@@ -380,7 +477,7 @@ const EXTRACT_INSTRUCTION = [
   'Shape: {"slots":[{"key":"<the slot key>","did":["…"],"concluded":["…"],"overturned":["…"],"asked":[{"question":"…","options":["…"]}]}]}',
   'Rules:',
   '- `key` must be copied exactly from the `=== SLOT <key> ===` line. One entry per slot, in the order given. Never skip a slot.',
-  '- `did`: what was done, at most two short strings. `concluded`: findings a later turn needs, at most two. `overturned`: earlier conclusions this turn disproved.',
+  '- `did`: what was done (at most 2 short strings for a normal slot; up to 6–8 covering major phases for a LONG slot). `concluded`: findings, subagent audit conclusions, verification outcomes, and unresolved blockers a later turn needs (at most 2 for a normal slot; up to 6–8 for a LONG slot). `overturned`: earlier conclusions this turn disproved.',
   '- Each field is an array of short strings. Use [] for a field with nothing to say.',
   '- Never write a heading, a bullet, or a field name inside a string.',
   '- Never invent. If the material does not support a claim, leave the field empty.',
@@ -698,6 +795,9 @@ const CONDENSE_INSTRUCTION = [
  */
 const EXTRACT_TOKENS_PER_TURN = 900
 
+/** Output tokens allowed for one expanded/long multi-step slot. */
+const EXTRACT_TOKENS_PER_LONG_TURN = 2200
+
 /**
  * Fixed thinking reserve added to every extraction call's `maxTokens`.
  *
@@ -759,8 +859,7 @@ function hintOf(argumentsJson: string): string {
  * @returns newline-joined hints, or an empty string when the turn has none.
  */
 export function collectHints(events: readonly SessionEvent[]): string {
-  const lines: string[] = []
-  let calls = 0
+  const all: string[] = []
   for (const event of events) {
     // Tool calls are blocks inside `assistant/message`, not standalone events:
     // `digestSource` emits no `tool/call` type at all, so selecting on that type
@@ -772,13 +871,19 @@ export function collectHints(events: readonly SessionEvent[]): string {
       // restate it in `asked` — the same exchange printed twice, once of them
       // paraphrased.
       if (call.name === 'ask_user_question') continue
-      if (calls >= MAX_HINTS_PER_TURN) break
-      calls += 1
       const hint = hintOf(call.arguments)
-      lines.push(hint.length > 0 ? `TOOL ${call.name}: ${hint}` : `TOOL ${call.name}`)
+      all.push(hint.length > 0 ? `TOOL ${call.name}: ${hint}` : `TOOL ${call.name}`)
     }
   }
-  return lines.join('\n')
+  if (all.length <= MAX_HINTS_PER_TURN) return all.join('\n')
+  const headCount = 45
+  const tailCount = MAX_HINTS_PER_TURN - headCount - 1
+  const omitted = all.length - headCount - tailCount
+  return [
+    ...all.slice(0, headCount),
+    `…(+${omitted} tool calls omitted)`,
+    ...all.slice(all.length - tailCount),
+  ].join('\n')
 }
 
 /** Extract target file paths from write/edit/multiedit/apply_patch tool calls. */
@@ -910,8 +1015,13 @@ function buildSectionsWithEvents(events: readonly SessionEvent[]): {
     if (sourceKind(event) === 'goal') {
       const objective = goalObjective(event)
       if (objective === undefined || recordedObjectives.has(objective)) {
-        // Auto todo-continuation goals, malformed goals, and repeated rounds never
-        // penetrate into human `## user` sections.
+        // Auto todo-continuation goals never penetrate into human `## user`
+        // sections, but are still kept in `currentEvents` so the trailing
+        // active open-tasks state can be recovered when mid-turn compaction
+        // shadows the live todo list.
+        if (autoContinuationGoalTasks(event).length > 0) {
+          currentEvents?.push(event)
+        }
         continue
       }
       recordedObjectives.add(objective)
@@ -931,6 +1041,10 @@ function buildSectionsWithEvents(events: readonly SessionEvent[]): {
     if (sourceKind(event) === 'user-question-reply') {
       currentEvents?.push(event)
       if (currentTurn !== undefined) currentTurn.answered.push(...answersOf(textOf(event), questionSpecs))
+      continue
+    }
+    if (isSubagentReport(event)) {
+      currentEvents?.push(event)
       continue
     }
     if (event.type !== 'user/message' && event.type !== 'assistant/message') continue
@@ -1045,7 +1159,10 @@ function hashText(input: string): string {
  * @param events - one slot's events, in log order.
  * @returns a stable hex key.
  */
-function materialKey(events: readonly SessionEvent[], options?: { includeToolResults?: boolean }): string {
+function materialKey(
+  events: readonly SessionEvent[],
+  options?: { includeToolResults?: boolean; expanded?: boolean },
+): string {
   const prose = events
     .filter((event) => event.type === 'assistant/message')
     .map((event) => textOf(event))
@@ -1232,16 +1349,113 @@ function formatUserText(texts: readonly string[], keepFullUser: boolean): string
     .join('\n')
 }
 
+/** Extract active unfinished tasks from the trailing section's latest `todo_write` or auto-continuation goal. */
+export function extractActiveOpenTasks(
+  sections: readonly Section[],
+  sectionEvents: readonly (readonly SessionEvent[])[],
+): ActiveTask[] {
+  if (sections.length === 0) return []
+
+  const extractFromEvents = (events: readonly SessionEvent[]): { found: boolean; tasks: ActiveTask[] } => {
+    const failedCallIds = new Set<string>()
+    for (const event of events) {
+      if (event.type !== 'tool/result') continue
+      const msg = messageOf(event) as { toolCallId?: string; isError?: boolean } | null
+      if (msg?.isError === true && typeof msg.toolCallId === 'string') {
+        failedCallIds.add(msg.toolCallId)
+      }
+    }
+    let foundTodo = false
+    let latestTodo: ActiveTask[] = []
+    let latestGoalTasks: ActiveTask[] = []
+    for (const event of events) {
+      if (event.type === 'assistant/message') {
+        for (const call of toolCallsOf(event)) {
+          if (call.name !== 'todo_write' || failedCallIds.has(call.id)) continue
+          const parsed = parseTodoWriteArgs(call.arguments)
+          if (parsed.valid) {
+            foundTodo = true
+            latestTodo = parsed.open
+          }
+        }
+        continue
+      }
+      if (sourceKind(event) === 'goal') {
+        const goalTasks = autoContinuationGoalTasks(event)
+        if (goalTasks.length > 0) {
+          latestGoalTasks = goalTasks
+        }
+      }
+    }
+    // `todo_write` is the authoritative ground truth (carries `completed` status
+    // updates), whereas `<goal_round>` auto-continuation text can repeat a stale
+    // snapshot across rounds. Fall back to auto-goal tasks only when no valid
+    // `todo_write` occurred in the section.
+    if (foundTodo) return { found: true, tasks: latestTodo }
+    if (latestGoalTasks.length > 0) return { found: true, tasks: latestGoalTasks }
+    return { found: false, tasks: [] }
+  }
+
+  const lastIdx = sections.length - 1
+  let result = extractFromEvents(sectionEvents[lastIdx] ?? [])
+
+  // If the trailing section is a short human continuation ("继续", "好的", "continue")
+  // with no todo update of its own, inherit the penultimate section's latest open tasks.
+  if (!result.found && lastIdx >= 1) {
+    const lastTurn = sections[lastIdx]?.turns[0]
+    const lastUserText = lastTurn?.user.join('\n').trim() ?? ''
+    if (
+      lastTurn?.fromRequest === true
+      && lastUserText.length > 0
+      && lastUserText.length <= SHORT_CONTINUATION_MAX_CHARS
+      && SHORT_CONTINUATION_REPLY.test(lastUserText)
+    ) {
+      result = extractFromEvents(sectionEvents[lastIdx - 1] ?? [])
+    }
+  }
+
+  if (!result.found || result.tasks.length === 0) return []
+
+  const deduped: ActiveTask[] = []
+  const seen = new Set<string>()
+  for (const task of result.tasks) {
+    const norm = task.content.toLowerCase()
+    if (seen.has(norm)) continue
+    seen.add(norm)
+    deduped.push(task)
+    if (deduped.length >= MAX_ACTIVE_OPEN_TASKS) break
+  }
+  return deduped
+}
+
+function renderOpenTasks(tasks: readonly ActiveTask[]): string {
+  if (tasks.length === 0) return ''
+  const lines = ['## Open Tasks']
+  for (const task of tasks) {
+    const prefix = task.status !== undefined ? `[${task.status}] ` : ''
+    const content = task.content.length > MAX_ACTIVE_TASK_LINE_CHARS
+      ? `${task.content.slice(0, MAX_ACTIVE_TASK_LINE_CHARS).trimEnd()}…`
+      : task.content
+    lines.push(`- ${prefix}${content}`)
+  }
+  return lines.join('\n')
+}
+
 function renderSection(
   section: Section,
   level: number,
   condensed: ReadonlyMap<string, Condensed> | undefined,
   sectionIndex: number,
   allSections?: readonly Section[],
+  openTasksBlock?: string,
 ): string {
   const lines: string[] = []
   const index = sectionIndex ?? 0
   const totalSections = allSections?.length ?? (index + 1)
+  const isFinalSection = index === totalSections - 1
+  const activeOpenTasks = isFinalSection && level >= 1 && openTasksBlock !== undefined && openTasksBlock.length > 0
+    ? openTasksBlock
+    : ''
   const keepFullUser = shouldKeepFullUser(allSections, index)
   const compactAnswerStem = index < totalSections - FULL_ANSWER_STEM_RECENT_SECTIONS
   const keepAsked = allSections === undefined ? true : shouldKeepAsked(allSections, index)
@@ -1267,9 +1481,11 @@ function renderSection(
         : `sections ${start + 1}-${start + covering.block.covers}`
       lines.push(`\n### assistant\n## Condensed (condensed from ${range})\n- ${covering.block.text}`)
     }
+    if (activeOpenTasks.length > 0) lines.push(activeOpenTasks)
     return lines.join('\n')
   }
-  for (const [, turn] of section.turns.entries()) {
+  for (const [turnIndex, turn] of section.turns.entries()) {
+    const turnOpenTasks = turnIndex === section.turns.length - 1 ? activeOpenTasks : ''
     if (turn.user.length > 0) lines.push(`\n## user\n${formatUserText(turn.user, keepFullUser)}`)
     const effectiveExtraction = turn.extracted === undefined
       ? undefined
@@ -1279,7 +1495,8 @@ function renderSection(
       const trailer: string[] = []
       if (turn.writes.length > 0) trailer.push(`  wrote: ${turn.writes.join(', ')}`)
       const withAnswers = insertAnswers(renderedBlock, renderAnswers(turn, compactAnswerStem))
-      const body = trailer.length > 0 ? `${trailer.join('\n')}\n${withAnswers}` : withAnswers
+      const withTasks = insertAnswers(withAnswers, turnOpenTasks)
+      const body = trailer.length > 0 ? `${trailer.join('\n')}\n${withTasks}` : withTasks
       lines.push(`### assistant\n${body}`)
     } else if (
       turn.extracted !== undefined
@@ -1294,13 +1511,14 @@ function renderSection(
       const trailer: string[] = []
       if (turn.writes.length > 0) trailer.push(`  wrote: ${turn.writes.join(', ')}`)
       const answers = renderAnswers(turn, compactAnswerStem)
-      const parts = [...trailer, answers].filter((part) => part.length > 0)
+      const parts = [...trailer, answers, turnOpenTasks].filter((part) => part.length > 0)
       if (parts.length > 0) lines.push(`### assistant\n${parts.join('\n')}`)
     } else {
       const rawBody = turn.assistant.join('\n')
       const body = clipHeadTail(rawBody, FALLBACK_PROSE_MAX_CHARS, 1000, 1800)
       const answers = renderAnswers(turn, compactAnswerStem)
-      if (body.length > 0 || answers.length > 0) lines.push(`### assistant\n${[body, answers].filter((part) => part.length > 0).join('\n')}`)
+      const parts = [body, answers, turnOpenTasks].filter((part) => part.length > 0)
+      if (parts.length > 0) lines.push(`### assistant\n${parts.join('\n')}`)
       if (turn.writes.length > 0) lines.push(`  wrote: ${turn.writes.join(', ')}`)
     }
   }
@@ -1384,7 +1602,9 @@ export function renderDigest(
   extracted?: ReadonlyMap<string, Extraction>,
   condensed?: ReadonlyMap<string, Condensed>,
 ): string {
-  const rawSections = extracted === undefined ? buildSections(events) : withExtractions(buildSections(events), extracted)
+  const { sections: builtSections, sectionEvents } = buildSectionsWithEvents(events)
+  const rawSections = extracted === undefined ? builtSections : withExtractions(builtSections, extracted)
+  const openTasksBlock = renderOpenTasks(extractActiveOpenTasks(rawSections, sectionEvents))
   // Normalize oversized pastes in older sections before budgeting and T1 so a
   // single 50k historical paste is billed at its ~2.2k clipped size instead of
   // starving earlier standing constraints or being truncated twice.
@@ -1403,7 +1623,7 @@ export function renderDigest(
   const render = (trimmed?: Section[], level: number = 3): string => {
     const list = trimmed ?? sections
     return list
-      .map((section, index) => renderSection(section, level, condensed, index, list))
+      .map((section, index) => renderSection(section, level, condensed, index, list, openTasksBlock))
       .join('\n')
   }
 
@@ -1691,10 +1911,197 @@ function sampleToolResults(turn: readonly SessionEvent[]): string {
   return collected.reverse().join('\n')
 }
 
+/** Collect bounded subagent reports (`agent-message`, plus `subagent-settled` closing notes when no relay arrived). */
+function collectSubagentReports(turn: readonly SessionEvent[]): string {
+  const relaySenders = new Set<string>()
+  for (const event of turn) {
+    if (sourceKind(event) !== 'agent-message') continue
+    const sender = senderSessionIdOf(event)
+    if (sender !== undefined) relaySenders.add(sender)
+    const textSender = /^Agent\s+([^\s]+)\s+sent a message:/i.exec(textOf(event).trim())?.[1]
+    if (textSender !== undefined && textSender.length > 0) relaySenders.add(textSender)
+  }
+
+  const entries: { label: string; body: string }[] = []
+  for (const event of turn) {
+    const kind = sourceKind(event)
+    if (kind === 'agent-message') {
+      const raw = textOf(event).trim()
+      if (raw.length === 0) continue
+      const match = /^Agent\s+([^\s]+)\s+sent a message:\s*/i.exec(raw)
+      const sender = match?.[1] ?? senderSessionIdOf(event)
+      const body = (match !== null ? raw.slice(match[0].length) : raw).trim()
+      if (body.length === 0) continue
+      entries.push({ label: sender ? sender.slice(0, 8) : 'subagent', body })
+      continue
+    }
+    if (kind === 'subagent-settled') {
+      const sender = senderSessionIdOf(event)
+      if (sender !== undefined && relaySenders.has(sender)) continue
+      const raw = textOf(event).trim()
+      const closing = /Its closing message:\s*([\s\S]+)$/i.exec(raw)?.[1]?.trim() ?? ''
+      if (closing.length === 0) continue
+      entries.push({ label: sender ? `${sender.slice(0, 8)} (settled)` : 'subagent (settled)', body: closing })
+    }
+  }
+
+  if (entries.length === 0) return ''
+  const selected = entries.length > SUBAGENT_REPORT_MAX_COUNT
+    ? entries.slice(entries.length - SUBAGENT_REPORT_MAX_COUNT)
+    : entries
+
+  // Water-fill budget allocation: short reports stay verbatim while long reports
+  // share the remaining budget up to `SUBAGENT_REPORT_PER_MSG_CHARS` each.
+  const caps = new Array<number>(selected.length).fill(0)
+  const order = selected
+    .map((entry, idx) => ({ idx, len: entry.body.length }))
+    .sort((a, b) => a.len - b.len)
+  let remainingBudget = SUBAGENT_REPORT_TOTAL_CHARS
+  for (let i = 0; i < order.length; i += 1) {
+    const item = order[i]!
+    const left = order.length - i
+    const share = Math.min(SUBAGENT_REPORT_PER_MSG_CHARS, Math.max(400, Math.floor(remainingBudget / left)))
+    const alloc = Math.min(item.len, share)
+    caps[item.idx] = alloc
+    remainingBudget = Math.max(0, remainingBudget - alloc)
+  }
+
+  const rendered: string[] = []
+  for (let i = 0; i < selected.length; i += 1) {
+    const entry = selected[i]!
+    const cap = caps[i] ?? SUBAGENT_REPORT_PER_MSG_CHARS
+    const body = entry.body.length > cap
+      ? clipHeadTail(entry.body, cap, Math.floor(cap * 0.55), Math.floor(cap * 0.4))
+      : entry.body
+    rendered.push(`[subagent ${entry.label}]\n${body}`)
+  }
+  return rendered.join('\n\n')
+}
+
+/** Whether a turn is long/multi-step enough to warrant expanded extraction capacity. */
+export function isExpandedTurn(turn: readonly SessionEvent[], prose: string): boolean {
+  if (prose.length >= LONG_TURN_PROSE_CHARS) return true
+  let toolCallCount = 0
+  let assistantMsgCount = 0
+  for (const event of turn) {
+    if (event.type === 'assistant/message') {
+      toolCallCount += toolCallsOf(event).length
+      if (textOf(event).trim().length > 0) assistantMsgCount += 1
+    } else if (isSubagentReport(event)) {
+      return true
+    }
+  }
+  return toolCallCount >= LONG_TURN_TOOL_CALLS || assistantMsgCount >= LONG_TURN_ASSISTANT_MSGS
+}
+
+/** Sample assistant prose: head+tail for normal turns; stage-sampled head/middle/tail for long turns. */
+function sampleAssistantProse(turn: readonly SessionEvent[], prose: string, expanded: boolean): string {
+  if (!expanded) return clipHeadTail(prose, 6000, 2000, 3900)
+  if (prose.length <= LONG_TURN_PROSE_BUDGET) return prose
+
+  const segments = turn
+    .filter((event) => event.type === 'assistant/message')
+    .map((event) => textOf(event).trim())
+    .filter((text) => text.length > 0)
+
+  const segmentsTotal = segments.reduce((sum, seg) => sum + seg.length, 0)
+  if (segments.length >= 4 && segmentsTotal >= prose.length * 0.8) {
+    const headParts: string[] = []
+    let headChars = 0
+    let headEnd = 0
+    for (let i = 0; i < segments.length; i += 1) {
+      const seg = segments[i]!
+      if (headParts.length === 0) {
+        const clipped = seg.length > LONG_TURN_PROSE_HEAD_CHARS
+          ? clipHeadTail(seg, LONG_TURN_PROSE_HEAD_CHARS, 1800, 1100)
+          : seg
+        headParts.push(clipped)
+        headChars += clipped.length
+        headEnd = i + 1
+        if (headChars >= LONG_TURN_PROSE_HEAD_CHARS) break
+      } else if (headChars + seg.length + 1 <= LONG_TURN_PROSE_HEAD_CHARS) {
+        headParts.push(seg)
+        headChars += seg.length + 1
+        headEnd = i + 1
+      } else {
+        break
+      }
+    }
+
+    const tailParts: string[] = []
+    let tailChars = 0
+    let tailStart = segments.length
+    for (let i = segments.length - 1; i >= headEnd; i -= 1) {
+      const seg = segments[i]!
+      if (tailParts.length === 0) {
+        const clipped = seg.length > LONG_TURN_PROSE_TAIL_CHARS
+          ? clipHeadTail(seg, LONG_TURN_PROSE_TAIL_CHARS, 2000, 3800)
+          : seg
+        tailParts.push(clipped)
+        tailChars += clipped.length
+        tailStart = i
+        if (tailChars >= LONG_TURN_PROSE_TAIL_CHARS) break
+      } else if (tailChars + seg.length + 1 <= LONG_TURN_PROSE_TAIL_CHARS) {
+        tailParts.push(seg)
+        tailChars += seg.length + 1
+        tailStart = i
+      } else {
+        break
+      }
+    }
+    tailParts.reverse()
+
+    const midCount = Math.max(0, tailStart - headEnd)
+    const midBudget = LONG_TURN_PROSE_BUDGET - headChars - tailChars
+    if (midCount > 0 && midBudget >= 400) {
+      const maxSlots = Math.max(1, Math.floor(midBudget / LONG_TURN_MIN_MILESTONE_CHARS))
+      const chosenIndices: number[] = []
+      if (midCount <= maxSlots) {
+        for (let idx = headEnd; idx < tailStart; idx += 1) chosenIndices.push(idx)
+      } else {
+        for (let s = 0; s < maxSlots; s += 1) {
+          const idx = headEnd + Math.floor(((s + 0.5) * midCount) / maxSlots)
+          if (chosenIndices.at(-1) !== idx) chosenIndices.push(idx)
+        }
+      }
+      const perSample = Math.max(120, Math.floor(midBudget / chosenIndices.length) - 28)
+      const midParts = chosenIndices.map((idx) => {
+        const seg = segments[idx]!
+        const clipped = seg.length > perSample
+          ? clipHeadTail(seg, perSample, Math.floor(perSample * 0.65), Math.floor(perSample * 0.3))
+          : seg
+        return `[milestone ${idx + 1}/${segments.length}] ${clipped}`
+      })
+      return [
+        headParts.join('\n'),
+        `…(sampled ${chosenIndices.length} of ${midCount} intermediate assistant messages)`,
+        midParts.join('\n'),
+        '…',
+        tailParts.join('\n'),
+      ].join('\n')
+    }
+    return `${headParts.join('\n')}\n…(${midCount} intermediate messages omitted)\n${tailParts.join('\n')}`
+  }
+
+  // Fallback for a single oversized prose string without segment boundaries: head + 2 middle windows + tail.
+  const head = prose.slice(0, LONG_TURN_PROSE_HEAD_CHARS).trimEnd()
+  const tail = prose.slice(prose.length - LONG_TURN_PROSE_TAIL_CHARS).trimStart()
+  const midSpanStart = LONG_TURN_PROSE_HEAD_CHARS
+  const midSpanEnd = prose.length - LONG_TURN_PROSE_TAIL_CHARS
+  const midSpan = midSpanEnd - midSpanStart
+  if (midSpan <= 4000) return clipHeadTail(prose, LONG_TURN_PROSE_BUDGET, LONG_TURN_PROSE_HEAD_CHARS, LONG_TURN_PROSE_TAIL_CHARS)
+  const win = 3000
+  const m1Start = midSpanStart + Math.floor(midSpan / 3) - Math.floor(win / 2)
+  const m2Start = midSpanStart + Math.floor((2 * midSpan) / 3) - Math.floor(win / 2)
+  const m1 = prose.slice(Math.max(midSpanStart, m1Start), Math.min(midSpanEnd, m1Start + win)).trim()
+  const m2 = prose.slice(Math.max(midSpanStart, m2Start), Math.min(midSpanEnd, m2Start + win)).trim()
+  return `${head}\n…(middle stage 1/2)\n${m1}\n…(middle stage 2/2)\n${m2}\n…\n${tail}`
+}
+
 export function buildExtractionMaterial(
   turn: readonly SessionEvent[],
   prose: string,
-  options?: { includeToolResults?: boolean },
+  options?: { includeToolResults?: boolean; expanded?: boolean },
 ): string {
   const userRequest = turn
     .filter((event) => {
@@ -1706,15 +2113,30 @@ export function buildExtractionMaterial(
     .filter((text) => text.length > 0)
     .join('\n')
   const hints = collectHints(turn)
+  const subagentReports = collectSubagentReports(turn)
   const toolResults = options?.includeToolResults === true ? sampleToolResults(turn) : ''
-  if (userRequest.length === 0 && prose.length === 0 && hints.length === 0 && toolResults.length === 0) return ''
+  if (
+    userRequest.length === 0
+    && prose.length === 0
+    && hints.length === 0
+    && subagentReports.length === 0
+    && toolResults.length === 0
+  ) {
+    return ''
+  }
+  const expanded = options?.expanded ?? isExpandedTurn(turn, prose)
   const clippedUser = clipHeadTail(userRequest, 4000, 2500, 1400)
-  const clippedProse = clipHeadTail(prose, 6000, 2000, 3900)
+  const clippedProse = sampleAssistantProse(turn, prose, expanded)
   const sections = [
     `USER INSTRUCTION (already in the digest verbatim; never copy it into Asked):\n${clippedUser || '(none)'}`,
     `ASSISTANT PROSE:\n${clippedProse || '(none)'}`,
     `TOOL TRACE:\n${hints || '(none)'}`,
   ]
+  if (subagentReports.length > 0) {
+    sections.push(
+      `SUBAGENT REPORTS (subagent audits/findings delivered during this turn; extract key conclusions, decisions, and blockers):\n${subagentReports}`,
+    )
+  }
   if (toolResults.length > 0) {
     sections.push(`KEY TOOL RESULTS (sampled from tool-heavy single-turn run):\n${toolResults}`)
   }
@@ -2050,6 +2472,7 @@ interface ExtractionSlot {
   turn: number | undefined
   events: readonly SessionEvent[]
   includeToolResults?: boolean
+  expanded?: boolean
 }
 
 /** What one extraction call produced, and whether the answer was cut short or failed in transport. */
@@ -2091,6 +2514,7 @@ async function extractOnce(
   if (effective === undefined) return { blocks: out, truncated: false }
 
   const parts: string[] = []
+  const usedSlots: ExtractionSlot[] = []
   for (const slot of batch) {
     const prose = slot.events
       .filter((event) => event.type === 'assistant/message')
@@ -2100,10 +2524,17 @@ async function extractOnce(
     const material = buildExtractionMaterial(
       slot.events,
       prose,
-      slot.includeToolResults === true ? { includeToolResults: true } : undefined,
+      slot.includeToolResults === true || slot.expanded === true
+        ? {
+            ...(slot.includeToolResults === true ? { includeToolResults: true } : {}),
+            ...(slot.expanded === true ? { expanded: true } : {}),
+          }
+        : undefined,
     )
     if (material.length === 0) continue
-    parts.push(`=== SLOT ${slot.key} (turn ${slot.turn ?? '?'}) ===\n${material}`)
+    const headerMeta = slot.expanded === true ? `turn ${slot.turn ?? '?'}, LONG` : `turn ${slot.turn ?? '?'}`
+    parts.push(`=== SLOT ${slot.key} (${headerMeta}) ===\n${material}`)
+    usedSlots.push(slot)
   }
   if (parts.length === 0) return { blocks: out, truncated: false }
 
@@ -2115,6 +2546,10 @@ async function extractOnce(
       .then(() => llm.resolveModelInfo?.(effective.provider, effective.model, call.signal))
       .catch(() => undefined)
     const cheapest = cheapestEffort(info?.reasoning?.efforts)
+    const slotOutputBudget = usedSlots.reduce(
+      (sum, slot) => sum + (slot.expanded === true ? EXTRACT_TOKENS_PER_LONG_TURN : EXTRACT_TOKENS_PER_TURN),
+      0,
+    )
 
     const stream = llm.stream({
       provider: effective.provider,
@@ -2122,7 +2557,7 @@ async function extractOnce(
       messages: [
         { role: 'user', content: [{ type: 'text', text: `${parts.join('\n\n')}\n\n${EXTRACT_INSTRUCTION}` }] },
       ],
-      maxTokens: EXTRACT_TOKENS_PER_TURN * parts.length + EXTRACT_THINKING_RESERVE_TOKENS,
+      maxTokens: slotOutputBudget + EXTRACT_THINKING_RESERVE_TOKENS,
       sessionId: agent.session.id,
       purpose: 'compaction',
       signal: call.signal,
@@ -2454,31 +2889,39 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       const first = section.turns[0]
       if (first === undefined) continue
       const events = sectionEvents[sectionIndex] ?? []
-      let includeToolResults = false
-      if (singleSection) {
-        let toolCallCount = 0
-        let proseChars = 0
-        for (const ev of events) {
-          if (ev.type !== 'assistant/message') continue
-          toolCallCount += toolCallsOf(ev).length
-          proseChars += textOf(ev).length
-        }
-        if (toolCallCount >= SINGLE_TURN_TOOL_HEAVY_CALLS && proseChars <= SINGLE_TURN_TOOL_HEAVY_PROSE_MAX) {
-          includeToolResults = true
-        }
+      let toolCallCount = 0
+      const proseParts: string[] = []
+      for (const ev of events) {
+        if (ev.type !== 'assistant/message') continue
+        toolCallCount += toolCallsOf(ev).length
+        const t = textOf(ev)
+        if (t.length > 0) proseParts.push(t)
       }
+      const prose = proseParts.join('\n')
+      const includeToolResults = singleSection
+        && toolCallCount >= SINGLE_TURN_TOOL_HEAVY_CALLS
+        && prose.length <= SINGLE_TURN_TOOL_HEAVY_PROSE_MAX
+      const expanded = isExpandedTurn(events, prose)
       slots.push({
         key: turnKey(sectionIndex, 0),
         turn: first.turn,
         events,
         ...(includeToolResults ? { includeToolResults: true } : {}),
+        ...(expanded ? { expanded: true } : {}),
       })
     }
 
     const effective = resolveEffectiveRoute(agent)
     const routePrefix = effective === undefined ? '' : `${effective.provider}:${effective.model}:`
-    const cacheKeyFor = (slot: ExtractionSlot): string =>
-      `${routePrefix}${slot.includeToolResults === true ? 'tr:' : ''}${materialKey(slot.events, slot.includeToolResults === true ? { includeToolResults: true } : undefined)}`
+    const cacheKeyFor = (slot: ExtractionSlot): string => {
+      const opts = slot.includeToolResults === true || slot.expanded === true
+        ? {
+            ...(slot.includeToolResults === true ? { includeToolResults: true } : {}),
+            ...(slot.expanded === true ? { expanded: true } : {}),
+          }
+        : undefined
+      return `${routePrefix}${slot.includeToolResults === true ? 'tr:' : ''}${slot.expanded === true ? 'long:' : ''}${materialKey(slot.events, opts)}`
+    }
 
     const extracted = new Map<string, Extraction>()
     const missing: ExtractionSlot[] = []
@@ -2489,9 +2932,23 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     }
 
     const batches: ExtractionSlot[][] = []
-    for (let index = 0; index < missing.length; index += TURNS_PER_CALL) {
-      batches.push(missing.slice(index, index + TURNS_PER_CALL))
+    let currentBatch: ExtractionSlot[] = []
+    for (const slot of missing) {
+      if (slot.expanded === true) {
+        if (currentBatch.length > 0) {
+          batches.push(currentBatch)
+          currentBatch = []
+        }
+        batches.push([slot])
+        continue
+      }
+      currentBatch.push(slot)
+      if (currentBatch.length >= TURNS_PER_CALL) {
+        batches.push(currentBatch)
+        currentBatch = []
+      }
     }
+    if (currentBatch.length > 0) batches.push(currentBatch)
 
     const newlyExtracted = new Map<string, Extraction>()
     let nextBatch = 0

@@ -9,7 +9,9 @@ import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import VerbatimCompactionEngine, {
   buildExtractionMaterial,
   buildSections,
+  collectHints,
   foldGroupStarts,
+  isExpandedTurn,
   parseExtraction,
   renderDigest,
   shadowedSeqs,
@@ -1007,4 +1009,289 @@ test('asked dedupe: preserves genuinely distinct follow-up prose question sharin
   assert.ok(digest.includes('mesh 是否继续做'), 'distinct follow-up question sharing one noun must survive')
   assert.ok(digest.includes('样本语域是否认可？'), 'distinct follow-up question after sample delivery must survive')
 })
+
+test('long-turn fidelity 1: agent-message and unique subagent-settled feed extraction without polluting ## user', async () => {
+  const bigAuditBody = `AUDIT-HEAD: 11 项必改点与迁移编号偏差\n${'a'.repeat(22000)}\nAUDIT-TAIL: 必须将迁移账本与业务表分离`
+  const smallAuditBody = `FILTER-AUDIT: 平台文件选择器 filters 在 Linux 下需统一小写扩展名`
+  const events = [
+    requestHeaderEv(1),
+    userEv(2, '按计划开始实施'),
+    assistantEv(3, '已派出两席做审计，等待回报。', 1),
+    userEv(
+      4,
+      `Agent seat-audit-001 sent a message: ${bigAuditBody}`,
+      { kind: 'agent-message', form: 'relay', senderSessionId: 'seat-audit-001' },
+    ),
+    // Duplicate settled notice from the same sender must be deduplicated
+    userEv(
+      5,
+      'Background subagent seat-audit-001 finished and will do no further work unless you send it more.Its closing message:DUPLICATE-SETTLED-TEXT',
+      { kind: 'subagent-settled', form: 'notice', senderSessionId: 'seat-audit-001' },
+    ),
+    userEv(
+      6,
+      `Agent seat-filter-002 sent a message: ${smallAuditBody}`,
+      { kind: 'agent-message', form: 'relay', senderSessionId: 'seat-filter-002' },
+    ),
+    // Settled notice from a sender that never sent agent-message must still contribute its closing message
+    userEv(
+      7,
+      'Background subagent seat-solo-003 finished and will do no further work unless you send it more.Its closing message:SOLO-SETTLED-FINDING: typecheck 通过',
+      { kind: 'subagent-settled', form: 'notice', senderSessionId: 'seat-solo-003' },
+    ),
+    assistantEv(8, '收到席位回报，开始落盘修改。', 1),
+  ]
+
+  // Must never pollute ## user or create extra sections
+  const sections = buildSections(events)
+  assert.equal(sections.length, 1)
+  assert.deepEqual(sections[0].turns[0].user, ['按计划开始实施'])
+
+  const seenPrompts = []
+  const seenMaxTokens = []
+  const h = await makeHarness({
+    answer: (req) => {
+      const prompt = req.messages[0].content[0].text
+      seenPrompts.push(prompt)
+      seenMaxTokens.push(req.maxTokens)
+      return {
+        text: JSON.stringify({
+          slots: slotKeysOf(req).map((key) => ({
+            key,
+            did: ['派单完成两席审计并落盘'],
+            concluded: ['11 项必改点与迁移编号偏差', 'filters 在 Linux 下统一小写扩展名', 'typecheck 通过'],
+            overturned: [],
+            asked: [],
+          })),
+        }),
+      }
+    },
+  })
+  try {
+    const s = makeSession(events, 'subagent-reports-extraction')
+    await h.engine.compactRegion(s.surface.nodes[0], s.surface.nodes.at(-1), agentFor(s))
+    assert.equal(seenPrompts.length, 1)
+    const prompt = seenPrompts[0]
+    // Magpie routing rule anchor must stay intact
+    assert.ok(prompt.includes('Reply with ONE JSON object and nothing else'))
+    // Slot containing subagent reports is promoted to LONG with expanded output cap
+    assert.ok(prompt.includes('=== SLOT 0:0 (turn 1, LONG) ==='), prompt.slice(0, 200))
+    assert.ok(seenMaxTokens[0] >= 3200, `expected expanded maxTokens >= 3200, got ${seenMaxTokens[0]}`)
+    // Subagent reports reach extraction with water-fill budget (big head+tail, small verbatim, solo settled included, dup skipped)
+    assert.ok(prompt.includes('SUBAGENT REPORTS'))
+    assert.ok(prompt.includes('AUDIT-HEAD: 11 项必改点与迁移编号偏差'))
+    assert.ok(prompt.includes('AUDIT-TAIL: 必须将迁移账本与业务表分离'))
+    assert.ok(prompt.includes('FILTER-AUDIT: 平台文件选择器 filters'))
+    assert.ok(prompt.includes('SOLO-SETTLED-FINDING: typecheck 通过'))
+    assert.ok(!prompt.includes('DUPLICATE-SETTLED-TEXT'))
+
+    const digest = checkpointTextOf(s)
+    assert.ok(!digest.includes('Agent seat-audit-001 sent a message'))
+    assert.ok(digest.includes('11 项必改点与迁移编号偏差'))
+    assert.ok(digest.includes('filters 在 Linux 下统一小写扩展名'))
+  } finally {
+    await h.stop()
+  }
+})
+
+test('long-turn fidelity 2: long multi-step turn stage-samples middle prose, preserves head+tail hints, and isolates LONG batch', async () => {
+  const events = [
+    requestHeaderEv(1),
+    userEv(2, '普通第一轮'),
+    assistantEv(3, '完成小改动', 1),
+    userEv(4, '按计划完整改造并验证'),
+  ]
+  let seq = 5
+  const longTurnEvents = [events[3]]
+  for (let i = 0; i < 40; i += 1) {
+    const marker = i === 0
+      ? 'STAGE-FIRST: 初始化方案'
+      : i === 18
+        ? 'STAGE-MID-PIVOT: 迁移账本分离是转折点'
+        : i === 29
+          ? 'STAGE-MID-CHECK: 安装完成后 typecheck 退出码 0'
+          : i === 39
+            ? 'STAGE-LAST: 仅剩步骤 4 待回归验证'
+            : `STAGE-${i}: 常规推进记录`
+    const body = `${marker}\n${'x'.repeat(700)}`
+    const toolCalls = []
+    for (let j = 0; j < 4; j += 1) {
+      const idx = i * 4 + j
+      toolCalls.push({ id: `c-${idx}`, name: 'bash', args: { description: `run step ${idx}` } })
+    }
+    const ev = assistantEv(seq++, body, 2, toolCalls)
+    events.push(ev)
+    longTurnEvents.push(ev)
+    for (const tc of toolCalls) {
+      const tr = toolResultEv(seq++, tc.id, `ok ${tc.id}`)
+      events.push(tr)
+      longTurnEvents.push(tr)
+    }
+  }
+
+  // Head + tail hints survive even past 120 tool calls (160 calls total)
+  const hints = collectHints(longTurnEvents)
+  assert.ok(hints.includes('run step 0'), 'earliest tool hint must survive')
+  assert.ok(hints.includes('run step 159'), 'latest tool hint must survive')
+  assert.ok(hints.includes('tool calls omitted'))
+  assert.ok(hints.length < 12000)
+
+  // Stage-sampled prose preserves head, middle milestones, and tail
+  const fullProse = longTurnEvents
+    .filter((e) => e.type === 'assistant/message')
+    .map((e) => e.data.message.content[0].text)
+    .join('\n')
+  assert.equal(isExpandedTurn(longTurnEvents, fullProse), true)
+  const material = buildExtractionMaterial(longTurnEvents, fullProse)
+  assert.ok(material.includes('STAGE-FIRST: 初始化方案'))
+  assert.ok(material.includes('STAGE-MID-PIVOT: 迁移账本分离是转折点'), 'middle milestone must survive stage sampling')
+  assert.ok(material.includes('STAGE-MID-CHECK: 安装完成后 typecheck 退出码 0'), 'later middle milestone must survive stage sampling')
+  assert.ok(material.includes('STAGE-LAST: 仅剩步骤 4 待回归验证'))
+  assert.ok(material.length < 32000, `material must stay bounded, got ${material.length}`)
+
+  // Live compaction isolates LONG slot into its own call with expanded maxTokens and allows > 2 findings
+  const calls = []
+  const h = await makeHarness({
+    answer: (req) => {
+      const prompt = req.messages[0].content[0].text
+      const keys = slotKeysOf(req)
+      calls.push({ keys, maxTokens: req.maxTokens, prompt })
+      return {
+        text: JSON.stringify({
+          slots: keys.map((key) => (
+            key === '1:0'
+              ? {
+                  key,
+                  did: ['阶段 1 初始化', '阶段 2 拆离迁移账本', '阶段 3 跑通 typecheck', '阶段 4 准备回归'],
+                  concluded: ['迁移账本分离是转折点', 'typecheck 退出码 0', '剩余步骤 4 受阻于旧 fixture'],
+                  overturned: [],
+                  asked: [],
+                }
+              : { key, did: ['完成小改动'], concluded: [], overturned: [], asked: [] }
+          )),
+        }),
+      }
+    },
+  })
+  try {
+    const s = makeSession(events, 'long-turn-expanded')
+    await h.engine.compactRegion(s.surface.nodes[0], s.surface.nodes.at(-1), agentFor(s))
+    assert.equal(calls.length, 2, 'normal slot and expanded LONG slot must run in separate calls')
+    const longCall = calls.find((c) => c.keys.includes('1:0'))
+    assert.ok(longCall)
+    assert.deepEqual(longCall.keys, ['1:0'])
+    assert.match(longCall.prompt, /=== SLOT 1:0 \(turn [^)]+, LONG\) ===/)
+    assert.ok(longCall.maxTokens >= 3200)
+    const digest = checkpointTextOf(s)
+    assert.ok(digest.includes('迁移账本分离是转折点'))
+    assert.ok(digest.includes('typecheck 退出码 0'))
+    assert.ok(digest.includes('剩余步骤 4 受阻于旧 fixture'))
+  } finally {
+    await h.stop()
+  }
+})
+
+test('long-turn fidelity 3: preserves latest active open tasks at tail while blocking stale history and honoring tight budgets', () => {
+  // 3a: trailing AUTO_CONTINUATION_GOAL with no todo_write survives cleanly under ## Open Tasks (no ## user leak)
+  const autoGoalOnly = [
+    userEv(1, '按计划开始实施'),
+    assistantEv(2, '开始第一阶段', 1),
+    goalEv(
+      3,
+      '<goal_round>\nObjective: "Continue the 4 open tasks this session recorded:\\n1. [root] 完成迁移账本分离\\n2. [root] 修复 filters 小写化\\n3. [seat: audit] 复核资料组隔离\\n4. [root] 运行全量 typecheck 与回归"\nRound: 1/256\n</goal_round>',
+    ),
+    assistantEv(4, '正在推进中', 1),
+  ]
+  assert.equal(buildSections(autoGoalOnly).length, 1, 'auto-continuation goal must not open a ## user section')
+  const digestGoal = renderDigest(autoGoalOnly, 5000)
+  assert.ok(!digestGoal.includes('Continue the 4 open tasks'), 'boilerplate header must not leak')
+  assert.ok(digestGoal.includes('## Open Tasks'), digestGoal)
+  assert.ok(digestGoal.includes('完成迁移账本分离'))
+  assert.ok(digestGoal.includes('运行全量 typecheck 与回归'))
+
+  // 3b: authoritative todo_write overrides stale repeated AUTO_CONTINUATION_GOAL, skips completed & failed calls, keeps ## Asked last
+  const withTodo = [
+    userEv(1, '开始多步修复'),
+    assistantEv(2, '先建任务表', 1, [
+      {
+        id: 't1',
+        name: 'todo_write',
+        args: {
+          todos: [
+            { content: '任务一（已完成）', status: 'completed' },
+            { content: '任务二（进行中）', status: 'in_progress' },
+            { content: '任务三（待办）', status: 'pending' },
+          ],
+        },
+      },
+    ]),
+    toolResultEv(3, 't1', 'Updated todo list'),
+    // Failed todo_write must be ignored
+    assistantEv(4, '尝试错误写入', 1, [
+      { id: 't-bad', name: 'todo_write', args: { todos: [{ content: '失败写入的脏任务', status: 'pending' }] } },
+    ]),
+    toolResultEv(5, 't-bad', 'validation error', true),
+    // Stale repeated goal_round from earlier snapshot must NOT resurrect completed 任务一
+    goalEv(
+      6,
+      '<goal_round>\nObjective: "Continue the 3 open tasks this session recorded:\\n1. 任务一（已完成）\\n2. 任务二（进行中）\\n3. 任务三（待办）"\nRound: 2/256\n</goal_round>',
+    ),
+  ]
+  const extractedWithAsked = new Map([
+    ['0:0', {
+      did: ['完成任务一'],
+      concluded: ['核心路径已通'],
+      overturned: [],
+      asked: [{ question: '是否先发布测试版？', options: ['先发布', '全部修完再发'] }],
+    }],
+  ])
+  const digestTodo = renderDigest(withTodo, 5000, extractedWithAsked)
+  assert.ok(digestTodo.includes('## Open Tasks'), digestTodo)
+  assert.ok(!digestTodo.includes('任务一（已完成）'), 'completed task must not appear in Open Tasks')
+  assert.ok(!digestTodo.includes('失败写入的脏任务'), 'failed todo_write must be ignored')
+  assert.ok(digestTodo.includes('- [in_progress] 任务二（进行中）'))
+  assert.ok(digestTodo.includes('- [pending] 任务三（待办）'))
+  // ## Asked must remain strictly after ## Open Tasks
+  assert.ok(digestTodo.indexOf('## Open Tasks') < digestTodo.indexOf('## Asked'), digestTodo)
+
+  // 3c: when latest todo_write marks all tasks completed, no ## Open Tasks is emitted
+  const allDone = [
+    ...withTodo,
+    assistantEv(7, '全部完成', 1, [
+      {
+        id: 't2',
+        name: 'todo_write',
+        args: {
+          todos: [
+            { content: '任务一（已完成）', status: 'completed' },
+            { content: '任务二（进行中）', status: 'completed' },
+            { content: '任务三（待办）', status: 'completed' },
+          ],
+        },
+      },
+    ]),
+    toolResultEv(8, 't2', 'Updated todo list'),
+  ]
+  assert.ok(!renderDigest(allDone, 5000).includes('## Open Tasks'))
+
+  // 3d: short human continuation ("继续") inherits penultimate section's open tasks; brand-new long request does not
+  const shortContinue = [
+    ...withTodo,
+    userEv(10, '继续'),
+    assistantEv(11, '继续执行任务二', 2),
+  ]
+  assert.ok(renderDigest(shortContinue, 5000).includes('任务二（进行中）'))
+
+  const topicShift = [
+    ...withTodo,
+    userEv(10, '现在我们换一个完全不相关的新话题，帮我检查一下仓库里的 CI 发布脚本和依赖版本是否全部对齐并且没有冗余的旧脚本残留。'),
+    assistantEv(11, '开始检查 CI 脚本', 2),
+  ]
+  assert.ok(!renderDigest(topicShift, 5000).includes('## Open Tasks'))
+
+  // 3e: tight budget invariant must still hold strictly
+  const tinyDigest = renderDigest(autoGoalOnly, 20)
+  assert.ok(tinyDigest.length <= 80, `expected tiny digest <= 80 chars, got ${tinyDigest.length}`)
+})
+
 
