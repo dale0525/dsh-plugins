@@ -211,7 +211,7 @@ pnpm add @logictan/dsh-verbatim-compaction
 
 ## 配置
 
-默认无需配置。预算、注入折叠、错误首行长度均为内部常量；基类的 `thresholdRatio` / `retainRatio` 照旧从 `compaction-basic` 的配置读，提取/折叠专用路由可通过本插件的 purpose 设置行覆写。此外提供两个可选环境变量用于运维调优：
+默认无需配置。预算、注入折叠、错误首行长度均为内部常量；基类的 `thresholdRatio` / `retainRatio` 照旧从 `compaction-basic` 的配置读。提取/折叠的模型调用一律走会话自己那条路由（`session.requestHeader().config`，缺省回落到 agent 的 provider/model），插件本身不提供换模型的开关；要给压缩单独指定模型，在网关侧按请求正文分流（这两类请求都不带 system，正文是 `EXTRACT_INSTRUCTION` / `CONDENSE_INSTRUCTION` 加待压缩素材）。此外提供两个可选环境变量用于运维调优：
 
 - `DSH_VERBATIM_CALL_TIMEOUT_MS`：单次提取/折叠模型调用超时毫秒数（默认 `90000`）。
 - `DSH_VERBATIM_CACHE_DIR`：提取与折叠结果的落盘缓存目录（默认 `~/.dsh/cache/verbatim-compaction`，置空字符串或 `off` 可禁用落盘缓存）。

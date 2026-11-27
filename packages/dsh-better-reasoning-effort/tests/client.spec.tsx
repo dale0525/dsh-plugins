@@ -93,6 +93,10 @@ afterEach(() => {
 })
 
 describe('client apply()', () => {
+  it('keeps the English and Chinese dictionaries aligned', () => {
+    expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort())
+  })
+
   it('registers dictionaries and styles, mounts editors, and cleans up on dispose', async () => {
     let join = makeJoin(structuredClone(JOIN_FIXTURE))
     const api = fakeApi(() => Promise.resolve(join))

@@ -38,41 +38,11 @@ import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ReasoningEffortId, type ContentBlock, type Message, type TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
-import { getLiveConfig, type PurposeConfig } from './purpose.js'
 // Type-only: brings the `ctx.tokenMeter` augmentation into scope.
 import type {} from '@deepseek-ai/dsh-token-meter'
 
 /** Cordis companion plugin name. Must equal this plugin's `cordis.patch.yml` row id. */
 export const name = 'verbatim-compaction'
-
-/** A provider/model override takes effect only as a complete pair. */
-export function pairedRouteOf(config: PurposeConfig | undefined): { provider: string; model: string } | undefined {
-  const provider = config?.provider?.get().trim()
-  const model = config?.model?.get().trim()
-  return provider !== undefined && provider !== '' && model !== undefined && model !== ''
-    ? { provider, model }
-    : undefined
-}
-
-/**
- * Apply the optional override; without a configured effort the cheapest usable
- * effort still wins, because a route's own default is typically the priciest.
- */
-export function applyPurposeOverride<T extends object>(
-  options: T,
-  config: PurposeConfig | undefined,
-  cheapest: string | undefined,
-): T {
-  const route = pairedRouteOf(config)
-  const configured = config?.reasoningEffort?.get().trim()
-  const effort = configured !== undefined && configured !== '' ? configured : cheapest
-  if (route === undefined && effort === undefined) return options
-  return {
-    ...options,
-    ...(route === undefined ? {} : { provider: route.provider, model: route.model }),
-    ...(effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) }),
-  } as T
-}
 
 /**
  * Absolute ceiling for one digest, in the meter's fixed 4-chars-per-token
@@ -1858,17 +1828,13 @@ function toTokenUsage(acc: UsageAccumulator): TokenUsage | undefined {
   }
 }
 
-/** Resolve the effective provider and model after applying any configured purpose override. */
+/** The route this compaction's model calls go to: the session's own. */
 function resolveEffectiveRoute(
   agent: Agent,
-  override: PurposeConfig | undefined,
 ): { provider: string; model: string } | undefined {
   const sessionRoute = agent.session.requestHeader()?.config
-  const baseProvider = sessionRoute?.provider ?? agent.options.provider
-  const baseModel = sessionRoute?.model ?? agent.options.model
-  const paired = pairedRouteOf(override)
-  const provider = paired?.provider ?? baseProvider
-  const model = paired?.model ?? baseModel
+  const provider = sessionRoute?.provider ?? agent.options.provider
+  const model = sessionRoute?.model ?? agent.options.model
   if (provider === undefined || model === undefined) return undefined
   return { provider, model }
 }
@@ -1977,7 +1943,6 @@ async function condenseOnce(
   agent: Agent,
   material: string,
   signal: AbortSignal | undefined,
-  override: PurposeConfig | undefined,
   usageAcc?: UsageAccumulator,
 ): Promise<string | undefined> {
   const llm = ctx.llm
@@ -1985,7 +1950,7 @@ async function condenseOnce(
     ctx.logger?.warn('verbatim-compaction: no llm service, condensation skipped')
     return undefined
   }
-  const effective = resolveEffectiveRoute(agent, override)
+  const effective = resolveEffectiveRoute(agent)
   if (effective === undefined) {
     ctx.logger?.warn('verbatim-compaction: no route for condensation, skipped')
     return undefined
@@ -1999,7 +1964,7 @@ async function condenseOnce(
       .catch(() => undefined)
     const cheapest = cheapestEffort(info?.reasoning?.efforts)
 
-    const stream = llm.stream(applyPurposeOverride({
+    const stream = llm.stream({
       provider: effective.provider,
       model: effective.model,
       messages: [{ role: 'user', content: [{ type: 'text', text: `${material}\n\n${CONDENSE_INSTRUCTION}` }] }],
@@ -2007,7 +1972,8 @@ async function condenseOnce(
       sessionId: agent.session.id,
       purpose: 'compaction',
       signal: call.signal,
-    }, override, cheapest))
+      ...(cheapest === undefined ? {} : { reasoningEffort: ReasoningEffortId(cheapest) }),
+    })
     for await (const chunk of stream) {
       const delta = chunk as { type?: string; text?: string; usage?: unknown }
       if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
@@ -2032,14 +1998,13 @@ async function extractBatch(
   agent: Agent,
   batch: readonly ExtractionSlot[],
   signal: AbortSignal | undefined,
-  override: PurposeConfig | undefined,
   usageAcc?: UsageAccumulator,
 ): Promise<Map<string, Extraction>> {
   const out = new Map<string, Extraction>()
   const isAborted = (): boolean => signal?.aborted === true
   if (batch.length === 0 || isAborted()) return out
 
-  const attempt = await extractOnce(ctx, agent, batch, signal, override, usageAcc)
+  const attempt = await extractOnce(ctx, agent, batch, signal, usageAcc)
   if (attempt.transportError) return attempt.blocks
 
   const needsSplit = attempt.truncated || (attempt.blocks.size === 0 && batch.length > 1 && !isAborted())
@@ -2067,14 +2032,14 @@ async function extractBatch(
   if (remaining.length === 0) return out
   if (remaining.length === 1) {
     if (!isAborted()) {
-      for (const [key, block] of await extractBatch(ctx, agent, remaining, signal, override, usageAcc)) out.set(key, block)
+      for (const [key, block] of await extractBatch(ctx, agent, remaining, signal, usageAcc)) out.set(key, block)
     }
     return out
   }
   const middle = Math.ceil(remaining.length / 2)
   for (const half of [remaining.slice(0, middle), remaining.slice(middle)]) {
     if (half.length === 0 || isAborted()) continue
-    for (const [key, block] of await extractBatch(ctx, agent, half, signal, override, usageAcc)) out.set(key, block)
+    for (const [key, block] of await extractBatch(ctx, agent, half, signal, usageAcc)) out.set(key, block)
   }
   return out
 }
@@ -2117,13 +2082,12 @@ async function extractOnce(
   agent: Agent,
   batch: readonly ExtractionSlot[],
   signal: AbortSignal | undefined,
-  override: PurposeConfig | undefined,
   usageAcc?: UsageAccumulator,
 ): Promise<ExtractionAttempt> {
   const out = new Map<string, Extraction>()
   const llm = ctx.llm
   if (llm === undefined) return { blocks: out, truncated: false }
-  const effective = resolveEffectiveRoute(agent, override)
+  const effective = resolveEffectiveRoute(agent)
   if (effective === undefined) return { blocks: out, truncated: false }
 
   const parts: string[] = []
@@ -2152,7 +2116,7 @@ async function extractOnce(
       .catch(() => undefined)
     const cheapest = cheapestEffort(info?.reasoning?.efforts)
 
-    const stream = llm.stream(applyPurposeOverride({
+    const stream = llm.stream({
       provider: effective.provider,
       model: effective.model,
       messages: [
@@ -2162,7 +2126,8 @@ async function extractOnce(
       sessionId: agent.session.id,
       purpose: 'compaction',
       signal: call.signal,
-    }, override, cheapest))
+      ...(cheapest === undefined ? {} : { reasoningEffort: ReasoningEffortId(cheapest) }),
+    })
     for await (const chunk of stream) {
       const delta = chunk as { type?: string; text?: string; reason?: { kind?: string }; usage?: unknown }
       if (delta.type === 'text-delta' && typeof delta.text === 'string') chunks.push(delta.text)
@@ -2365,16 +2330,15 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       Math.min(DIGEST_TOKEN_CEILING, shadowedPrice - FRAME_TOKENS - SHRINK_MARGIN_TOKENS),
     )
 
-    const override = getLiveConfig()
     const usageAcc = createUsageAccumulator()
-    const extracted = await this.extractAll(source, agent, signal, override, usageAcc)
+    const extracted = await this.extractAll(source, agent, signal, usageAcc)
 
     // Check overflow against the *unclipped* digest. Measuring `renderDigest(source, budget, extracted)`
     // was always <= `budget * 4` because `renderDigest` clips to budget, making `condenseOldest` dead code.
     let condensed: ReadonlyMap<string, Condensed> | undefined
     const unclippedLength = renderDigest(source, Math.floor(Number.MAX_SAFE_INTEGER / 4), extracted).length
     if (unclippedLength > budget * 4) {
-      condensed = await this.condenseOldest(source, extracted, agent, budget, signal, override, usageAcc)
+      condensed = await this.condenseOldest(source, extracted, agent, budget, signal, usageAcc)
     }
     // The fold path returns its digest whole, so it can still overflow when every
     // group has been folded and the user lines alone are too long. The budget is a
@@ -2390,7 +2354,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       text = renderDigest(source, budget, extracted)
     }
 
-    const effective = resolveEffectiveRoute(agent, override)
+    const effective = resolveEffectiveRoute(agent)
     const route = session.requestHeader()?.config
     const usage = toTokenUsage(usageAcc)
     return {
@@ -2414,7 +2378,6 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     agent: Agent,
     budget: number,
     signal: AbortSignal | undefined,
-    override: PurposeConfig | undefined,
     usageAcc?: UsageAccumulator,
   ): Promise<ReadonlyMap<string, Condensed>> {
     const sections = withExtractions(buildSections(source), extracted)
@@ -2425,7 +2388,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       if (signal?.aborted === true) break
       const group = sections.slice(start, start + CONDENSE_GROUP)
       if (group.length === 0) continue
-      const text = await this.condenseGroup(group, agent, signal, override, usageAcc)
+      const text = await this.condenseGroup(group, agent, signal, usageAcc)
       if (text === undefined) continue
       out.set(turnKey(start, 0), { text, covers: group.length })
       if (renderDigest(source, budget, extracted, out).length <= budgetChars) return out
@@ -2440,7 +2403,6 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     group: readonly Section[],
     agent: Agent,
     signal: AbortSignal | undefined,
-    override: PurposeConfig | undefined,
     usageAcc?: UsageAccumulator,
   ): Promise<string | undefined> {
     const material = group
@@ -2457,14 +2419,14 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
 
     const llm = this.ctx.llm
     if (llm === undefined) return undefined
-    const effective = resolveEffectiveRoute(agent, override)
+    const effective = resolveEffectiveRoute(agent)
     if (effective === undefined) return undefined
 
     const key = `${effective.provider}:${effective.model}:${hashText(material)}`
     const cached = boundedCacheGet(this.condensedCache, key)
     if (cached !== undefined) return cached
 
-    const text = await condenseOnce(this.ctx, agent, material, signal, override, usageAcc)
+    const text = await condenseOnce(this.ctx, agent, material, signal, usageAcc)
     if (text === undefined) return undefined
     boundedCacheSet(this.condensedCache, key, text, CONDENSED_CACHE_MAX)
     this.persistDiskCache(agent.session.id, new Map(), new Map([[key, text]]))
@@ -2483,7 +2445,6 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
     source: readonly SessionEvent[],
     agent: Agent,
     signal: AbortSignal | undefined,
-    override: PurposeConfig | undefined,
     usageAcc?: UsageAccumulator,
   ): Promise<Map<string, Extraction>> {
     const { sections, sectionEvents } = buildSectionsWithEvents(source)
@@ -2514,7 +2475,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
       })
     }
 
-    const effective = resolveEffectiveRoute(agent, override)
+    const effective = resolveEffectiveRoute(agent)
     const routePrefix = effective === undefined ? '' : `${effective.provider}:${effective.model}:`
     const cacheKeyFor = (slot: ExtractionSlot): string =>
       `${routePrefix}${slot.includeToolResults === true ? 'tr:' : ''}${materialKey(slot.events, slot.includeToolResults === true ? { includeToolResults: true } : undefined)}`
@@ -2541,7 +2502,7 @@ export default class VerbatimCompactionEngine extends BasicCompactionEngine {
         const batch = batches[nextBatch]
         nextBatch += 1
         if (batch === undefined) break
-        const blocks = await extractBatch(this.ctx, agent, batch, signal, override, usageAcc)
+        const blocks = await extractBatch(this.ctx, agent, batch, signal, usageAcc)
         for (const slot of batch) {
           const block = blocks.get(slot.key)
           if (block === undefined) continue

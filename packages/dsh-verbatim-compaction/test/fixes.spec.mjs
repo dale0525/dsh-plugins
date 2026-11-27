@@ -14,7 +14,6 @@ import VerbatimCompactionEngine, {
   renderDigest,
   shadowedSeqs,
 } from '../lib/index.js'
-import { Config as PurposeSchema, setLiveConfig } from '../lib/purpose.js'
 
 const userEv = (seq, text, source = { kind: 'user' }) => ({
   type: 'user/message',
@@ -446,7 +445,7 @@ test('fix 6: buildExtractionMaterial preserves head and tail of long user and as
   assert.ok(material.includes('PROSE-TAIL-MARK'))
 })
 
-test('fix 7: resolves modelInfo on overridden route, reports override route + usage, and parses lenient JSON', async () => {
+test('fix 7: calls the session route, reports it with usage, and parses lenient JSON', async () => {
   // 7a: lenient parseExtraction
   const messy = 'Here is the note {ignore me}:\n'
     + JSON.stringify([
@@ -466,12 +465,9 @@ test('fix 7: resolves modelInfo on overridden route, reports override route + us
   assert.deepEqual(slot.concluded, ['real finding'])
   assert.deepEqual(slot.asked[0].options, ['Yes', 'No', 'Later'])
 
-  // 7b: route override resolves modelInfo on override route & reports override provider/model + usage
-  setLiveConfig(PurposeSchema({ provider: 'ov-prov', model: 'ov-mod', reasoningEffort: '' }))
+  // 7b: the call goes to the route the session is on, and the summary reports it
   const h = await makeHarness({
-    modelInfo: (prov, mod) => (prov === 'ov-prov' && mod === 'ov-mod'
-      ? { reasoning: { efforts: ['minimal', 'high'] } }
-      : { reasoning: { efforts: ['xhigh'] } }),
+    modelInfo: () => ({ reasoning: { efforts: ['minimal', 'high'] } }),
     answer: (req) => ({
       text: JSON.stringify({
         slots: slotKeysOf(req).map((key) => ({
@@ -486,23 +482,24 @@ test('fix 7: resolves modelInfo on overridden route, reports override route + us
     }),
   })
   try {
+    // The request header's route, not the agent's fallback, is what the session
+    // is actually on — the two differ here so the assertion can tell them apart.
     const s = makeSession([
-      requestHeaderEv(1, 'main-prov', 'main-mod'),
+      requestHeaderEv(1, 'hdr-prov', 'hdr-mod'),
       userEv(2, 'REQ'),
       assistantEv(3, 'A'.repeat(5000), 1),
-    ], 'override-route-session')
+    ], 'session-route')
     await h.engine.compactRegion(s.surface.nodes[0], s.surface.nodes.at(-1), agentFor(s))
-    assert.deepEqual(h.resolveCalls[0], { provider: 'ov-prov', model: 'ov-mod' })
-    assert.equal(h.streamCalls[0].provider, 'ov-prov')
-    assert.equal(h.streamCalls[0].model, 'ov-mod')
+    assert.deepEqual(h.resolveCalls[0], { provider: 'hdr-prov', model: 'hdr-mod' })
+    assert.equal(h.streamCalls[0].provider, 'hdr-prov')
+    assert.equal(h.streamCalls[0].model, 'hdr-mod')
     assert.equal(h.streamCalls[0].reasoningEffort, 'minimal')
     const sumEv = s.snapshotEvents().find((e) => e.type === 'compaction/summary')
-    assert.equal(sumEv?.data?.provider, 'ov-prov')
-    assert.equal(sumEv?.data?.model, 'ov-mod')
+    assert.equal(sumEv?.data?.provider, 'hdr-prov')
+    assert.equal(sumEv?.data?.model, 'hdr-mod')
     assert.equal(sumEv?.data?.usage?.inputTokens, 120)
     assert.equal(sumEv?.data?.usage?.outputTokens, 45)
   } finally {
-    setLiveConfig(undefined)
     await h.stop()
   }
 })

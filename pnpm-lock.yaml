@@ -21,7 +21,7 @@ importers:
   packages/all:
     dependencies:
       '@logictan/dsh-better-reasoning-effort':
-        specifier: ^0.5.12
+        specifier: ^0.5.13
         version: link:../dsh-better-reasoning-effort
       '@logictan/dsh-browser-agent':
         specifier: ^0.2.7
@@ -87,7 +87,7 @@ importers:
         specifier: ^0.1.0
         version: link:../dsh-tool-toolsets
       '@logictan/dsh-verbatim-compaction':
-        specifier: ^0.13.4
+        specifier: ^0.13.5
         version: link:../dsh-verbatim-compaction
       '@logictan/dsh-worktree-session':
         specifier: ^0.1.15
@@ -619,10 +619,6 @@ importers:
         version: 0.2.1-rc.2(f4f5dafa2004c02f6afbbbc8518bca23)
 
   packages/dsh-verbatim-compaction:
-    dependencies:
-      '@deepseek-ai/schemastery':
-        specifier: ^3.18.5
-        version: 3.18.5
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.5
